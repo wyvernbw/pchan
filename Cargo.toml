@@ -1,0 +1,12 @@
+[package]
+name = "pchan"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+resolver = "3"
+members = ["pchan-emu", "pchan-macros"]
+
+[workspace.dependencies]
+pchan-emu = { path = "./pchan-emu" }
+pchan-macros = { path = "./pchan-macros"}
