@@ -1,5 +1,3 @@
-use std::mem;
-
 use pchan_macros::{OpCode, opcode};
 
 pub struct Cpu {
@@ -17,6 +15,11 @@ impl Op {
     fn primary(&self) -> PrimaryOp {
         let code = self.0 >> 26;
         PrimaryOp::MAP[code as usize]
+    }
+    #[inline]
+    fn secondary(&self) -> SecondaryOp {
+        let code = self.0 & 0x3F;
+        SecondaryOp::MAP[code as usize]
     }
 }
 
@@ -74,17 +77,6 @@ pub enum PrimaryOp {
     ILLEGAL,
 }
 
-// Secondary opcode field (Bit 0..5) (when Primary opcode = 00h)
-
-//   00h=SLL   08h=JR      10h=MFHI 18h=MULT  20h=ADD  28h=N/A  30h=N/A  38h=N/A
-//   01h=N/A   09h=JALR    11h=MTHI 19h=MULTU 21h=ADDU 29h=N/A  31h=N/A  39h=N/A
-//   02h=SRL   0Ah=N/A     12h=MFLO 1Ah=DIV   22h=SUB  2Ah=SLT  32h=N/A  3Ah=N/A
-//   03h=SRA   0Bh=N/A     13h=MTLO 1Bh=DIVU  23h=SUBU 2Bh=SLTU 33h=N/A  3Bh=N/A
-//   04h=SLLV  0Ch=SYSCALL 14h=N/A  1Ch=N/A   24h=AND  2Ch=N/A  34h=N/A  3Ch=N/A
-//   05h=N/A   0Dh=BREAK   15h=N/A  1Dh=N/A   25h=OR   2Dh=N/A  35h=N/A  3Dh=N/A
-//   06h=SRLV  0Eh=N/A     16h=N/A  1Eh=N/A   26h=XOR  2Eh=N/A  36h=N/A  3Eh=N/A
-//   07h=SRAV  0Fh=N/A     17h=N/A  1Fh=N/A   27h=NOR  2Fh=N/A  37h=N/A  3Fh=N/A
-
 #[repr(u8)]
 #[derive(OpCode, Debug, Clone, Copy, PartialEq, Eq)]
 enum SecondaryOp {
@@ -130,4 +122,49 @@ enum SecondaryOp {
 
     #[opcode(default)]
     ILLEGAL,
+}
+
+#[cfg(test)]
+pub mod tests {
+    use super::*;
+
+    #[test]
+    fn test_primary_op_decoding() {
+        // Example: ADDI instruction (opcode 0x08)
+        let instr = Op(0x20010001); // 0010 0000 0000 0001 0000 0000 0000 0001
+        assert_eq!(instr.primary(), PrimaryOp::ADDI);
+
+        // Example: J instruction (opcode 0x02)
+        let instr = Op(0x08000000); // 0000 1000 0000 0000 0000 0000 0000 0000
+        assert_eq!(instr.primary(), PrimaryOp::J);
+
+        // Example: ILLEGAL opcode
+        let instr = Op(0xFC000000); // 1111 1100 ...
+        assert_eq!(instr.primary(), PrimaryOp::ILLEGAL);
+    }
+
+    #[test]
+    fn test_secondary_op_decoding() {
+        // Example: ADD instruction (secondary 0x20)
+        let instr = Op(0x00000020); // SPECIAL primary, ADD secondary
+        assert_eq!(instr.secondary(), SecondaryOp::ADD);
+
+        // Example: JR instruction (secondary 0x08)
+        let instr = Op(0x00000008);
+        assert_eq!(instr.secondary(), SecondaryOp::JR);
+
+        // Example: ILLEGAL secondary opcode
+        let instr = Op(0x0000003F); // 0x3F = 63
+        assert_eq!(instr.secondary(), SecondaryOp::ILLEGAL);
+    }
+
+    #[test]
+    fn test_register_access() {
+        let mut cpu = Cpu { reg: [0; 32] };
+        cpu.reg[SP] = 0xDEADBEEF;
+        assert_eq!(cpu.reg[SP], 0xDEADBEEF);
+
+        cpu.reg[1] = 42;
+        assert_eq!(cpu.reg[1], 42);
+    }
 }
