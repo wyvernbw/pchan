@@ -11,8 +11,6 @@ impl ValidRepr {
     const fn max(&self) -> usize {
         match self {
             ValidRepr::U8 => u8::MAX as usize,
-            ValidRepr::U16 => u16::MAX as usize,
-            ValidRepr::U32 => u32::MAX as usize,
         }
     }
 }
@@ -32,8 +30,6 @@ pub fn derive_opcode(stream: TokenStream) -> TokenStream {
                 use ValidRepr::*;
                 let res = match ident.as_str() {
                     "u8" => Some(U8),
-                    "u16" => Some(U16),
-                    "u32" => Some(U32),
                     _ => None,
                 };
                 repr = res;
