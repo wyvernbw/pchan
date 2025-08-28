@@ -8,8 +8,16 @@ pub struct Bootloader {
     bios_path: PathBuf,
 }
 
+impl Default for Bootloader {
+    fn default() -> Self {
+        Bootloader {
+            bios_path: "./SCPH1001.BIN".into(),
+        }
+    }
+}
+
 #[derive(Debug, Error)]
-enum BootError {
+pub enum BootError {
     #[error(transparent)]
     BiosFileOpenError(std::io::Error),
     #[error("bios file could not be read: {0}")]
@@ -17,7 +25,7 @@ enum BootError {
 }
 
 impl Bootloader {
-    fn load_bios(&self, mem: &mut Memory) -> Result<(), BootError> {
+    pub(crate) fn load_bios(&self, mem: &mut Memory) -> Result<(), BootError> {
         let mut bios_file =
             fs::File::open(&self.bios_path).map_err(BootError::BiosFileOpenError)?;
         let mut bios = buffer(kb(600));

@@ -1,5 +1,7 @@
 use pchan_macros::{OpCode, opcode};
 
+use crate::memory::Memory;
+
 #[derive(Default)]
 pub struct Cpu {
     reg: [u32; 32],
@@ -7,8 +9,10 @@ pub struct Cpu {
     cycle: usize,
 }
 
+pub enum Interrupt {}
+
 impl Cpu {
-    fn run_cycle(&mut self) {
+    pub(crate) fn run_cycle(&mut self, mem: &mut Memory) -> Option<Interrupt> {
         self.cycle += 1;
         // draw the rest of the owl
     }
