@@ -18,20 +18,30 @@ impl Default for Memory {
     }
 }
 
+// cost of dynamic dispatch doesnt matter since we are
+// on the cold path anyways
+type PrintableAddress = Box<dyn core::fmt::Debug>;
+
 #[derive(Error, Debug)]
-enum MemReadError {
-    #[error("read from unmapped address {0}")]
-    UnmappedRead(u32),
+pub enum MemReadError {
+    #[error("read from unmapped address {0:?}")]
+    UnmappedRead(PrintableAddress),
     #[error(transparent)]
     DerefErr(DerefError),
     #[error("out of bounds read at address {0}")]
     OutOfBoundsRead(u32),
 }
 
+impl MemReadError {
+    fn unmapped(addr: impl core::fmt::Debug + 'static) -> Self {
+        MemReadError::UnmappedRead(Box::new(addr) as Box<_>)
+    }
+}
+
 #[derive(Error, Debug)]
-enum MemWriteError {
-    #[error("write to unmapped address {0}")]
-    UnmappedWrite(u32),
+pub enum MemWriteError {
+    #[error("write to unmapped address {0:?}")]
+    UnmappedWrite(PrintableAddress),
     #[error(transparent)]
     DerefErr(DerefError),
     #[error("partial write into buffer {0:?} (size: {1}) from buffer {2:?} (size:{3})")]
@@ -40,11 +50,17 @@ enum MemWriteError {
     OutOfBoundsWrite(u32),
 }
 
+impl MemWriteError {
+    fn unmapped(addr: impl core::fmt::Debug + 'static) -> Self {
+        MemWriteError::UnmappedWrite(Box::new(addr) as Box<_>)
+    }
+}
+
 #[derive(Debug, Error)]
 #[error("error dereferencing slice")]
 pub struct DerefError;
 
-trait MemRead: Sized {
+pub(crate) trait MemRead: Sized {
     fn from_slice(buf: &[u8]) -> Result<Self, DerefError>;
 }
 
@@ -68,7 +84,7 @@ impl MemRead for u32 {
     }
 }
 
-trait MemWrite: Sized {
+pub(crate) trait MemWrite: Sized {
     fn to_bytes(&self) -> [u8; size_of::<Self>()];
     fn write(buf: &mut [u8], value: &Self) -> Result<(), MemWriteError>
     where
@@ -110,9 +126,13 @@ impl MemWrite for u32 {
     }
 }
 
+pub(crate) trait Address: TryInto<PhysAddr> + core::fmt::Debug + 'static + Copy {}
+
+impl<T> Address for T where T: TryInto<PhysAddr> + core::fmt::Debug + 'static + Copy {}
+
 impl Memory {
-    fn try_read<T: MemRead>(&self, addr: u32) -> Result<T, MemReadError> {
-        let addr = PhysAddr::try_new(addr).ok_or(MemReadError::UnmappedRead(addr))?;
+    pub(crate) fn try_read<T: MemRead>(&self, addr: impl Address) -> Result<T, MemReadError> {
+        let addr = addr.try_into().map_err(|_| MemReadError::unmapped(addr))?;
         let addr = addr.as_usize();
         let slice = self
             .0
@@ -121,14 +141,18 @@ impl Memory {
         let value = T::from_slice(slice).map_err(MemReadError::DerefErr)?;
         Ok(value)
     }
-    fn read<T: MemRead>(&self, addr: u32) -> T {
+    pub(crate) fn read<T: MemRead>(&self, addr: impl Address) -> T {
         self.try_read(addr).unwrap()
     }
-    fn try_write<T: MemWrite>(&mut self, addr: u32, value: T) -> Result<(), MemWriteError>
+    pub(crate) fn try_write<T: MemWrite>(
+        &mut self,
+        addr: impl Address,
+        value: T,
+    ) -> Result<(), MemWriteError>
     where
         [(); size_of::<T>()]:,
     {
-        let addr = PhysAddr::try_new(addr).ok_or(MemWriteError::UnmappedWrite(addr))?;
+        let addr = addr.try_into().map_err(|_| MemWriteError::unmapped(addr))?;
         let addr = addr.as_usize();
         let slice = self
             .0
@@ -136,7 +160,7 @@ impl Memory {
             .ok_or(MemWriteError::OutOfBoundsWrite(addr as u32))?;
         T::write(slice, &value)
     }
-    fn write<T: MemWrite>(&mut self, addr: u32, value: T)
+    pub(crate) fn write<T: MemWrite>(&mut self, addr: impl Address, value: T)
     where
         [(); size_of::<T>()]:,
     {
@@ -146,15 +170,19 @@ impl Memory {
 
 pub struct PhysAddr(u32);
 
+#[derive(Debug, Error)]
+#[error("address header does not match KSEG0 or KSEG1 headers")]
+pub struct PhysAddrWrongHeader;
+
 impl PhysAddr {
-    fn try_new(address: u32) -> Option<Self> {
+    fn try_new(address: u32) -> Result<Self, PhysAddrWrongHeader> {
         let header = address & 0xE000_0000;
         match header {
             // KSEG0
-            0x8000_0000 => Some(PhysAddr(address - 0x8000_0000)),
+            0x8000_0000 => Ok(KSEG0Addr(address).to_phys()),
             // KSEG1
-            0xA000_0000 => Some(PhysAddr(address - 0xA000_0000)),
-            _ => None,
+            0xA000_0000 => Ok(KSEG1Addr(address).to_phys()),
+            _ => Err(PhysAddrWrongHeader),
         }
     }
     fn new(address: u32) -> Self {
@@ -162,6 +190,43 @@ impl PhysAddr {
     }
     fn as_usize(self) -> usize {
         self.into()
+    }
+}
+
+impl TryFrom<u32> for PhysAddr {
+    type Error = PhysAddrWrongHeader;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        PhysAddr::try_new(value)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct KSEG0Addr(pub u32);
+#[derive(Debug, Clone, Copy)]
+pub struct KSEG1Addr(pub u32);
+
+impl KSEG0Addr {
+    pub const fn to_phys(self) -> PhysAddr {
+        PhysAddr(self.0 - 0x8000_0000u32)
+    }
+}
+
+impl KSEG1Addr {
+    pub const fn to_phys(self) -> PhysAddr {
+        PhysAddr(self.0 - 0xA000_0000u32)
+    }
+}
+
+impl From<KSEG0Addr> for PhysAddr {
+    fn from(value: KSEG0Addr) -> Self {
+        value.to_phys()
+    }
+}
+
+impl From<KSEG1Addr> for PhysAddr {
+    fn from(value: KSEG1Addr) -> Self {
+        value.to_phys()
     }
 }
 
@@ -201,8 +266,8 @@ mod physaddr_tests {
 
     #[test]
     fn try_new_returns_none_for_unmapped() {
-        assert!(PhysAddr::try_new(0x0000_0000).is_none());
-        assert!(PhysAddr::try_new(0xC000_0000).is_none()); // KSEG2
+        assert!(PhysAddr::try_new(0x0000_0000).is_err());
+        assert!(PhysAddr::try_new(0xC000_0000).is_err()); // KSEG2
     }
 }
 

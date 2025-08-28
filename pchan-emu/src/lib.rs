@@ -4,5 +4,6 @@
 #![feature(portable_simd)]
 #![feature(iter_collect_into)]
 
+pub mod bootloader;
 pub mod cpu;
 pub mod memory;
