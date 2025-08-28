@@ -1,12 +1,23 @@
 use pchan_macros::{OpCode, opcode};
 
+#[derive(Default)]
 pub struct Cpu {
     reg: [u32; 32],
+    pc: u32,
+    cycle: usize,
+}
+
+impl Cpu {
+    fn run_cycle(&mut self) {
+        self.cycle += 1;
+        // draw the rest of the owl
+    }
 }
 
 type RegisterId = usize;
 
 const SP: RegisterId = 29;
+const RA: RegisterId = 31;
 
 pub struct Op(u32);
 
@@ -160,7 +171,10 @@ pub mod tests {
 
     #[test]
     fn test_register_access() {
-        let mut cpu = Cpu { reg: [0; 32] };
+        let mut cpu = Cpu {
+            reg: [0; 32],
+            ..Default::default()
+        };
         cpu.reg[SP] = 0xDEADBEEF;
         assert_eq!(cpu.reg[SP], 0xDEADBEEF);
 
