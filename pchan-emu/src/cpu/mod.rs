@@ -1,20 +1,74 @@
-use pchan_macros::{OpCode, opcode};
+use std::ops::Range;
 
-use crate::memory::Memory;
+use pchan_macros::{OpCode, opcode};
+use tracing::instrument;
+
+use crate::memory::{Address, MemRead, Memory, ToWord};
 
 #[derive(Default)]
 pub struct Cpu {
     reg: [u32; 32],
     pc: u32,
     cycle: usize,
+    known: usize,
 }
 
 pub enum Interrupt {}
 
 impl Cpu {
+    #[instrument(skip_all)]
     pub(crate) fn run_cycle(&mut self, mem: &mut Memory) -> Option<Interrupt> {
+        // TODO: the rest of the owl
+        let op = mem.read::<Op>(self.pc);
+        let mut cycle_known = true;
+        match op.primary() {
+            PrimaryOp::LW => {
+                self.load_zeroed::<u32>(mem, op.load_args());
+            }
+            PrimaryOp::LB => {
+                self.load_signed::<u8>(mem, op.load_args());
+            }
+            PrimaryOp::LBU => {
+                self.load_zeroed::<u8>(mem, op.load_args());
+            }
+            PrimaryOp::LH => {
+                self.load_signed::<u16>(mem, op.load_args());
+            }
+            PrimaryOp::LHU => {
+                self.load_zeroed::<u16>(mem, op.load_args());
+            }
+            _ => cycle_known = false,
+        }
         self.cycle += 1;
-        // draw the rest of the owl
+        self.pc += 4;
+        if cycle_known {
+            self.known += 1;
+        }
+        None
+    }
+
+    #[inline]
+    fn load_signed<T: MemRead + ToWord>(&mut self, mem: &Memory, args: LoadArgs) {
+        let LoadArgs {
+            rs: src,
+            rt: dest,
+            imm: offset,
+        } = args;
+        let addr = self.reg[src].wrapping_add_signed(offset as i32);
+        let data = mem.read::<T>(addr);
+        self.reg[dest] = data.to_word_signed();
+    }
+
+    #[inline]
+    fn load_zeroed<T: MemRead + ToWord>(&mut self, mem: &Memory, args: LoadArgs) {
+        let LoadArgs {
+            rs: src,
+            rt: dest,
+            imm: offset,
+        } = args;
+        let addr = self.reg[src].wrapping_add_signed(offset as i32);
+        let data = mem.read::<T>(addr);
+        self.reg[dest] = data.to_word_zeroed();
     }
 }
 
@@ -25,16 +79,42 @@ const RA: RegisterId = 31;
 
 pub struct Op(u32);
 
+impl MemRead for Op {
+    fn from_slice(buf: &[u8]) -> Result<Self, crate::memory::DerefError> {
+        u32::from_slice(buf).map(Op)
+    }
+}
+
+struct LoadArgs {
+    rs: RegisterId,
+    rt: RegisterId,
+    imm: i16,
+}
+
 impl Op {
     #[inline]
-    fn primary(&self) -> PrimaryOp {
+    const fn primary(&self) -> PrimaryOp {
         let code = self.0 >> 26;
         PrimaryOp::MAP[code as usize]
     }
     #[inline]
-    fn secondary(&self) -> SecondaryOp {
+    const fn secondary(&self) -> SecondaryOp {
         let code = self.0 & 0x3F;
         SecondaryOp::MAP[code as usize]
+    }
+    #[inline]
+    const fn bits(&self, range: Range<u8>) -> u32 {
+        let mask = (0xFFFFFFFFu32.unbounded_shl(range.start as u32))
+            ^ ((0xFFFFFFFFu32).unbounded_shl(range.end as u32));
+        (self.0 & mask).unbounded_shr(range.start as u32)
+    }
+
+    fn load_args(&self) -> LoadArgs {
+        LoadArgs {
+            rs: self.bits(21..26) as usize,
+            rt: self.bits(16..21) as usize,
+            imm: self.bits(0..16) as i16,
+        }
     }
 }
 
@@ -142,6 +222,7 @@ enum SecondaryOp {
 #[cfg(test)]
 pub mod tests {
     use super::*;
+    use pretty_assertions::assert_eq;
 
     #[test]
     fn test_primary_op_decoding() {
@@ -184,5 +265,53 @@ pub mod tests {
 
         cpu.reg[1] = 42;
         assert_eq!(cpu.reg[1], 42);
+    }
+
+    #[test]
+    fn test_bits_basic() {
+        let op = Op(0b1111_0000_1010_1100_0101_0011_1001_0110);
+
+        // Extract lower 4 bits (0..4)
+        assert_eq!(op.bits(0..4), 0b0110);
+
+        // Extract bits 4..8
+        assert_eq!(op.bits(4..8), 0b1001);
+
+        // Extract bits 8..16
+        assert_eq!(op.bits(8..16), 0b0101_0011);
+
+        // Extract bits 16..24
+        assert_eq!(op.bits(16..24), 0b1010_1100);
+
+        // Extract bits 24..32
+        assert_eq!(op.bits(24..32), 0b1111_0000);
+    }
+
+    #[test]
+    fn test_bits_single_bit() {
+        let op = Op(0b1010_1010);
+
+        // Each bit individually
+        for i in 0..8 {
+            let expected = (op.0 >> i) & 1;
+            assert_eq!(op.bits(i..i + 1), expected);
+        }
+    }
+
+    #[test]
+    fn test_bits_full_width() {
+        let op = Op(0xDEAD_BEEF);
+        assert_eq!(op.bits(0..32), 0xDEAD_BEEF);
+    }
+
+    #[test]
+    fn test_bits_top_edge() {
+        let op = Op(0x8000_0001);
+
+        // top bit only
+        assert_eq!(op.bits(31..32), 0b1);
+
+        // bottom bit only
+        assert_eq!(op.bits(0..1), 0b1);
     }
 }

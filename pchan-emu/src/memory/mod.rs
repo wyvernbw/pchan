@@ -65,6 +65,7 @@ pub(crate) trait MemRead: Sized {
 }
 
 impl MemRead for u8 {
+    #[inline]
     fn from_slice(buf: &[u8]) -> Result<u8, DerefError> {
         Ok(buf[0])
     }
@@ -105,6 +106,7 @@ pub(crate) trait MemWrite: Sized {
 }
 
 impl MemWrite for u8 {
+    #[inline]
     fn to_bytes(&self) -> [u8; 1] {
         [*self]
     }
@@ -115,14 +117,57 @@ impl MemWrite for u8 {
 }
 
 impl MemWrite for u16 {
+    #[inline]
     fn to_bytes(&self) -> [u8; 2] {
         self.to_be_bytes()
     }
 }
 
 impl MemWrite for u32 {
+    #[inline]
     fn to_bytes(&self) -> [u8; 4] {
         self.to_be_bytes()
+    }
+}
+
+pub(crate) trait ToWord {
+    fn to_word_signed(&self) -> u32;
+    fn to_word_zeroed(&self) -> u32;
+}
+
+impl ToWord for u8 {
+    #[inline]
+    fn to_word_signed(&self) -> u32 {
+        *self as i8 as i32 as u32
+    }
+
+    #[inline]
+    fn to_word_zeroed(&self) -> u32 {
+        *self as u32
+    }
+}
+
+impl ToWord for u16 {
+    #[inline]
+    fn to_word_signed(&self) -> u32 {
+        *self as i16 as i32 as u32
+    }
+
+    #[inline]
+    fn to_word_zeroed(&self) -> u32 {
+        *self as u32
+    }
+}
+
+impl ToWord for u32 {
+    #[inline]
+    fn to_word_signed(&self) -> u32 {
+        *self as i32 as u32
+    }
+
+    #[inline]
+    fn to_word_zeroed(&self) -> u32 {
+        *self as u32
     }
 }
 
@@ -332,5 +377,51 @@ mod memory_tests {
             mem.try_write(addr, 0x1234u16),
             Err(super::MemWriteError::OutOfBoundsWrite(_))
         ));
+    }
+}
+#[cfg(test)]
+mod sign_extension_tests {
+    use super::*;
+
+    #[test]
+    fn test_u8_to_word() {
+        let a: u8 = 0x7F; // 127
+        let b: u8 = 0xFF; // 255 -> -1 as i8
+
+        // Signed extension
+        assert_eq!(a.to_word_signed(), 0x0000007F);
+        assert_eq!(b.to_word_signed(), 0xFFFFFFFF);
+
+        // Zero extension
+        assert_eq!(a.to_word_zeroed(), 0x0000007F);
+        assert_eq!(b.to_word_zeroed(), 0x000000FF);
+    }
+
+    #[test]
+    fn test_u16_to_word() {
+        let a: u16 = 0x7FFF; // 32767
+        let b: u16 = 0xFFFF; // 65535 -> -1 as i16
+
+        // Signed extension
+        assert_eq!(a.to_word_signed(), 0x00007FFF);
+        assert_eq!(b.to_word_signed(), 0xFFFFFFFF);
+
+        // Zero extension
+        assert_eq!(a.to_word_zeroed(), 0x00007FFF);
+        assert_eq!(b.to_word_zeroed(), 0x0000FFFF);
+    }
+
+    #[test]
+    fn test_u32_to_word() {
+        let a: u32 = 0x12345678;
+        let b: u32 = 0xFFFFFFFF;
+
+        // Signed extension (no-op)
+        assert_eq!(a.to_word_signed(), 0x12345678);
+        assert_eq!(b.to_word_signed(), 0xFFFFFFFF);
+
+        // Zero extension (no-op)
+        assert_eq!(a.to_word_zeroed(), 0x12345678);
+        assert_eq!(b.to_word_zeroed(), 0xFFFFFFFF);
     }
 }

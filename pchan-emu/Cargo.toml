@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 pchan-macros = { workspace = true }
 thiserror = "2.0.16"
+tracing = { workspace = true }
 
 [dev-dependencies]
 pretty_assertions = {version = "1.4.1", features = ["unstable"]}
