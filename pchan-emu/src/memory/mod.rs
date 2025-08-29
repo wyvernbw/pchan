@@ -213,6 +213,7 @@ impl Memory {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
 pub struct PhysAddr(u32);
 
 #[derive(Debug, Error)]
@@ -220,7 +221,7 @@ pub struct PhysAddr(u32);
 pub struct PhysAddrWrongHeader;
 
 impl PhysAddr {
-    fn try_new(address: u32) -> Result<Self, PhysAddrWrongHeader> {
+    pub fn try_new(address: u32) -> Result<Self, PhysAddrWrongHeader> {
         let header = address & 0xE000_0000;
         match header {
             // KSEG0
@@ -230,11 +231,14 @@ impl PhysAddr {
             _ => Err(PhysAddrWrongHeader),
         }
     }
-    fn new(address: u32) -> Self {
+    pub fn new(address: u32) -> Self {
         PhysAddr::try_new(address).expect(&format!("unmapped address: {address}"))
     }
-    fn as_usize(self) -> usize {
+    pub fn as_usize(self) -> usize {
         self.into()
+    }
+    pub fn as_u32(self) -> u32 {
+        self.0
     }
 }
 

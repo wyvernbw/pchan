@@ -1,49 +1,216 @@
-use std::ops::Range;
+use std::{arch::aarch64::uint32x4x2_t, ops::Range};
 
 use pchan_macros::{OpCode, opcode};
 use tracing::instrument;
 
-use crate::memory::{Address, MemRead, Memory, ToWord};
+use crate::memory::{Address, MemRead, Memory, PhysAddr, ToWord};
 
 #[derive(Default)]
 pub struct Cpu {
     reg: [u32; 32],
     pc: u32,
     cycle: usize,
+    running_op: Option<RunningOp>,
+    pipe: PipelineQueue,
     known: usize,
+}
+
+#[derive(Default)]
+struct PipelineQueue {
+    fetch_in: Option<FetchOut>,
+    fetch_out: Option<FetchOut>,
+    id_in: Option<IdIn>,
+    id_out: Option<IdOut>,
+    ex_in: Option<ExIn>,
+    ex_out: Option<ExOut>,
+    mem_in: Option<MemIn>,
+    mem_out: Option<MemOut>,
+    wb_in: Option<WbIn>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct FetchOut {
+    op: Op,
+}
+
+type IdIn = FetchOut;
+
+#[derive(Debug, Clone, Copy)]
+enum IdOut {
+    Load(LoadArgs),
+    Alu,
+}
+
+type ExIn = IdOut;
+
+#[derive(Debug, Clone, Copy)]
+enum ExOut {
+    Load {
+        rt_value: PhysAddr,
+        dest: RegisterId,
+    },
+    // pass through all the way to WB
+    Alu {
+        out: u32,
+        dest: RegisterId,
+    },
+}
+
+type MemIn = ExOut;
+
+#[derive(Debug, Clone, Copy)]
+struct MemOut {
+    dest: RegisterId,
+    value: u32,
+}
+
+type WbIn = MemOut;
+type WbOut = ();
+
+#[derive(Debug, Clone, Copy)]
+struct RunningOp {
+    op: Op,
+    cycles_left: i32,
 }
 
 pub enum Interrupt {}
 
 impl Cpu {
     #[instrument(skip_all)]
-    pub(crate) fn run_cycle(&mut self, mem: &mut Memory) -> Option<Interrupt> {
-        // TODO: the rest of the owl
-        let op = mem.read::<Op>(self.pc);
-        let mut cycle_known = true;
-        match op.primary() {
-            PrimaryOp::LW => {
-                self.load_zeroed::<u32>(mem, op.load_args());
-            }
-            PrimaryOp::LB => {
-                self.load_signed::<u8>(mem, op.load_args());
-            }
-            PrimaryOp::LBU => {
-                self.load_zeroed::<u8>(mem, op.load_args());
-            }
-            PrimaryOp::LH => {
-                self.load_signed::<u16>(mem, op.load_args());
-            }
-            PrimaryOp::LHU => {
-                self.load_zeroed::<u16>(mem, op.load_args());
-            }
-            _ => cycle_known = false,
-        }
+    pub(crate) fn advance_cycle(&mut self) {
         self.cycle += 1;
-        self.pc += 4;
-        if cycle_known {
-            self.known += 1;
+    }
+
+    fn pipeline_fetch(&mut self, mem: &mut Memory) {
+        self.pipe.fetch_in = Some(FetchOut {
+            op: mem.read::<Op>(self.pc),
+        });
+
+        match self.pipe.fetch_out.take() {
+            None => {
+                self.pipe.fetch_out = self.pipe.fetch_in;
+            }
+            Some(out) => {
+                self.pipe.id_in = Some(out);
+            }
         }
+    }
+
+    fn pipeline_id(&mut self, mem: &mut Memory) {
+        match (self.pipe.id_in.take(), self.pipe.id_out.take()) {
+            (Some(id_in), None) => match id_in.op.primary() {
+                PrimaryOp::LW | PrimaryOp::LB | PrimaryOp::LBU | PrimaryOp::LH | PrimaryOp::LHU => {
+                    let args = id_in.op.load_args();
+                    self.pipe.id_out = Some(IdOut::Load(args));
+                }
+                _ => todo!(),
+            },
+            (Some(_), Some(id_out)) => {
+                self.pipe.ex_in = Some(id_out);
+            }
+            (None, None) => {}
+            (None, Some(_)) => unreachable!(),
+        }
+    }
+
+    fn pipeline_ex(&mut self, mem: &mut Memory) {
+        match (self.pipe.ex_in.take(), self.pipe.ex_out.take()) {
+            (Some(ex_in), None) => {
+                self.pipe.ex_out = Some(match ex_in {
+                    IdOut::Load(load_args) => ExOut::Load {
+                        rt_value: PhysAddr::new(
+                            self.forward_register(load_args.rs)
+                                .unwrap_or(self.reg[load_args.rs])
+                                .wrapping_add_signed(load_args.imm as i32),
+                        ),
+                        dest: load_args.rt,
+                    },
+                    // TODO: implement ALU args
+                    IdOut::Alu => ExOut::Alu {
+                        out: todo!(),
+                        dest: todo!(),
+                    },
+                })
+            }
+            (Some(_), Some(ex_out)) => {
+                self.pipe.mem_in = Some(ex_out);
+            }
+            (None, None) => {}
+            (None, Some(_)) => unreachable!(),
+        }
+    }
+
+    fn forward_register(&self, src: RegisterId) -> Option<u32> {
+        // poke mem
+        match self.pipe.mem_in {
+            Some(MemIn::Alu { out, dest }) if dest == src => {
+                return Some(out);
+            }
+            _ => {}
+        };
+        match self.pipe.mem_out {
+            Some(MemOut { dest, value }) if dest == src => {
+                return Some(value);
+            }
+            _ => {}
+        };
+
+        // poke wb
+        match self.pipe.wb_in {
+            Some(WbIn { dest, value }) if dest == src => {
+                return Some(value);
+            }
+            _ => {}
+        };
+
+        None
+    }
+
+    fn pipeline_mem(&mut self, mem: &mut Memory) {
+        match (self.pipe.mem_in.take(), self.pipe.mem_out.take()) {
+            (Some(mem_in), None) => {
+                self.pipe.mem_out = Some(match mem_in {
+                    MemIn::Load {
+                        rt_value: value,
+                        dest,
+                    } => {
+                        let value = mem.read(value);
+                        MemOut { dest, value }
+                    }
+                    ExOut::Alu { out, dest } => MemOut { dest, value: out },
+                })
+            }
+            (Some(_), Some(mem_out)) => {
+                self.pipe.wb_in = Some(mem_out);
+            }
+            (None, None) => {}
+            (None, Some(_)) => unreachable!(),
+        }
+    }
+
+    fn pipeline_wb(&mut self, mem: &mut Memory) {
+        match self.pipe.wb_in.take() {
+            Some(wb_in) => {
+                self.reg_write(wb_in.dest, wb_in.value);
+            }
+            None => {}
+        }
+    }
+
+    fn reg_write(&mut self, dest: RegisterId, value: u32) {
+        self.reg[dest] = value;
+    }
+
+    #[instrument(skip_all)]
+    pub(crate) fn run_cycle(&mut self, mem: &mut Memory) -> Option<Interrupt> {
+        // DONE: the rest of the owl
+
+        self.pipeline_fetch(mem);
+        self.pipeline_id(mem);
+        self.pipeline_ex(mem);
+        self.pipeline_mem(mem);
+        self.pipeline_wb(mem);
+
         None
     }
 
@@ -77,6 +244,7 @@ type RegisterId = usize;
 const SP: RegisterId = 29;
 const RA: RegisterId = 31;
 
+#[derive(Debug, Clone, Copy)]
 pub struct Op(u32);
 
 impl MemRead for Op {
@@ -85,6 +253,7 @@ impl MemRead for Op {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
 struct LoadArgs {
     rs: RegisterId,
     rt: RegisterId,

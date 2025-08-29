@@ -24,6 +24,7 @@ impl Emu {
         self.boot.load_bios(&mut self.mem)?;
         loop {
             let interrupt = self.cpu.run_cycle(&mut self.mem);
+            self.cpu.advance_cycle();
             match interrupt {
                 None => {}
                 Some(_) => {}
