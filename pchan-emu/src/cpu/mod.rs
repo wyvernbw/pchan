@@ -3,7 +3,7 @@ use std::{fmt::Display, ops::Range};
 use pchan_macros::{OpCode, opcode};
 use tracing::instrument;
 
-use crate::memory::{MapAddress, MemRead, Memory, PhysAddr, ToWord};
+use crate::memory::{MapAddress, MemRead, MemWrite, Memory, PhysAddr, ToWord};
 
 /// # Cpu
 /// models the PSX cpu.
@@ -316,6 +316,12 @@ impl MemRead for Op {
     }
 }
 
+impl MemWrite for Op {
+    fn to_bytes(&self) -> [u8; size_of::<Self>()] {
+        self.0.to_bytes()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct LoadArgs {
     rs: RegisterId,
@@ -608,18 +614,22 @@ pub mod pipeline_tests {
         let mut cpu = Cpu::default();
         let mut mem = Memory::default();
 
-        let instr1 = 0x8D280004; // LW r8, 4(r9)
-        let instr2 = 0x81090001; // LB r9, 1(r8)
-        let instr3 = 0x814A0002; // LBU r10, 2(r10)
+        let instr1 = Op(0x8D280004); // LW r8, 4(r9)
+        tracing::info!(%instr1);
+        let instr2 = Op(0x81090001); // LB r9, 1(r8)
+        tracing::info!(%instr2);
+        let instr3 = Op(0x814A0002); // LBU r10, 2(r10)
+        tracing::info!(%instr3);
 
         cpu.reg[9] = 0x1000;
         cpu.reg[10] = 0x2000;
 
-        mem.write::<u32>(PhysAddr::new(0x0), instr1);
-        mem.write::<u32>(PhysAddr::new(0x4), instr2);
-        mem.write::<u32>(PhysAddr::new(0x8), instr3);
+        mem.write(PhysAddr::new(0), instr1);
+        mem.write(PhysAddr::new(4), Op::NOP);
+        mem.write(PhysAddr::new(8), instr2);
+        mem.write(PhysAddr::new(12), instr3);
 
-        mem.write::<u32>(PhysAddr::new(0x1004), 0x12345678); // LW source
+        mem.write::<u32>(PhysAddr::new(0x1004), 0x1234); // LW source
         mem.write::<u8>(PhysAddr::new(0x1235), 0x7F); // LB source (0x1235 = r8 + 1)
         mem.write::<u8>(PhysAddr::new(0x2002), 0xFF); // LBU source (r10 + 2)
 
@@ -629,8 +639,8 @@ pub mod pipeline_tests {
             cpu.advance_cycle();
         }
 
-        assert_eq!(cpu.reg[8], 0x12345678, "LW should load 0x12345678 into r8");
-        assert_eq!(cpu.reg[9] as u8, 0x7F, "LB should load 0x7F into r9");
-        assert_eq!(cpu.reg[10] as u8, 0xFF, "LBU should load 0xFF into r10");
+        assert_eq!(cpu.reg[8], 0x1234, "LW should load 0x1234 into r8");
+        assert_eq!(cpu.reg[9], 0x7F000000, "LB should load 0x7F into r9");
+        assert_eq!(cpu.reg[10], 0xFF000000, "LBU should load 0xFF into r10");
     }
 }

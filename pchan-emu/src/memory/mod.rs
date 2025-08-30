@@ -25,11 +25,11 @@ type PrintableAddress = Box<dyn core::fmt::Debug>;
 
 #[derive(Error, Debug)]
 pub enum MemReadError {
-    #[error("read from unmapped address {0:?}")]
+    #[error("read from unmapped address 0x{0:08X?}")]
     UnmappedRead(PrintableAddress),
     #[error(transparent)]
     DerefErr(DerefError),
-    #[error("out of bounds read at address {0}")]
+    #[error("out of bounds read at address 0x{0:08X}")]
     OutOfBoundsRead(u32),
 }
 
