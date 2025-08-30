@@ -1,0 +1,11 @@
+[package]
+name = "pchan-utils"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rstest = "*"
+tracing-subscriber = { workspace = true }
+color-eyre = { workspace = true }
+tracing = { workspace = true }
+tracing-panic = "0.1.2"

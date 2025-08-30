@@ -1,4 +1,5 @@
 use thiserror::Error;
+use tracing::instrument;
 
 pub const fn kb(value: usize) -> usize {
     value * 1024
@@ -176,6 +177,7 @@ pub(crate) trait Address: TryInto<PhysAddr> + core::fmt::Debug + 'static + Copy 
 impl<T> Address for T where T: TryInto<PhysAddr> + core::fmt::Debug + 'static + Copy {}
 
 impl Memory {
+    #[instrument(err, skip(self))]
     pub(crate) fn try_read<T: MemRead>(&self, addr: impl Address) -> Result<T, MemReadError> {
         let addr = addr.try_into().map_err(|_| MemReadError::unmapped(addr))?;
         let addr = addr.as_usize();
@@ -189,6 +191,7 @@ impl Memory {
     pub(crate) fn read<T: MemRead>(&self, addr: impl Address) -> T {
         self.try_read(addr).unwrap()
     }
+    #[instrument(err, skip(self, value))]
     pub(crate) fn try_write<T: MemWrite>(
         &mut self,
         addr: impl Address,
@@ -213,15 +216,24 @@ impl Memory {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct PhysAddr(u32);
+
+impl core::fmt::Debug for PhysAddr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("PhysAddr")
+            .field_with(|f| write!(f, "0x{:08X}", self.0))
+            .finish()
+    }
+}
 
 #[derive(Debug, Error)]
 #[error("address header does not match KSEG0 or KSEG1 headers")]
 pub struct PhysAddrWrongHeader;
 
 impl PhysAddr {
-    pub fn try_new(address: u32) -> Result<Self, PhysAddrWrongHeader> {
+    #[instrument(err)]
+    pub fn try_map(address: u32) -> Result<Self, PhysAddrWrongHeader> {
         let header = address & 0xE000_0000;
         match header {
             // KSEG0
@@ -231,8 +243,11 @@ impl PhysAddr {
             _ => Err(PhysAddrWrongHeader),
         }
     }
+    pub fn map(address: u32) -> Self {
+        Self::try_map(address).unwrap()
+    }
     pub fn new(address: u32) -> Self {
-        PhysAddr::try_new(address).expect(&format!("unmapped address: {address}"))
+        PhysAddr(address)
     }
     pub fn as_usize(self) -> usize {
         self.into()
@@ -242,18 +257,12 @@ impl PhysAddr {
     }
 }
 
-impl TryFrom<u32> for PhysAddr {
-    type Error = PhysAddrWrongHeader;
-
-    fn try_from(value: u32) -> Result<Self, Self::Error> {
-        PhysAddr::try_new(value)
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KSEG0Addr(pub u32);
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KSEG1Addr(pub u32);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Addr(pub u32);
 
 impl KSEG0Addr {
     pub const fn to_phys(self) -> PhysAddr {
@@ -279,6 +288,14 @@ impl From<KSEG1Addr> for PhysAddr {
     }
 }
 
+impl TryFrom<Addr> for PhysAddr {
+    type Error = PhysAddrWrongHeader;
+
+    fn try_from(value: Addr) -> Result<Self, Self::Error> {
+        PhysAddr::try_map(value.0)
+    }
+}
+
 impl From<PhysAddr> for usize {
     fn from(value: PhysAddr) -> Self {
         value.0 as usize
@@ -291,38 +308,48 @@ mod physaddr_tests {
 
     #[test]
     fn kseg0_to_physical() {
-        let addr = PhysAddr::new(0x8000_0000);
+        let addr = PhysAddr::map(0x8000_0000);
         assert_eq!(addr.0, 0x0000_0000);
 
-        let addr = PhysAddr::new(0x8020_0100);
+        let addr = PhysAddr::map(0x8020_0100);
         assert_eq!(addr.0, 0x0020_0100);
     }
 
     #[test]
     fn kseg1_to_physical() {
-        let addr = PhysAddr::new(0xA000_0000);
+        let addr = PhysAddr::map(0xA000_0000);
         assert_eq!(addr.0, 0x0000_0000);
 
-        let addr = PhysAddr::new(0xA020_0100);
+        let addr = PhysAddr::map(0xA020_0100);
         assert_eq!(addr.0, 0x0020_0100);
     }
 
     #[test]
-    #[should_panic(expected = "unmapped address")]
+    #[should_panic]
     fn unmapped_address_panics() {
-        PhysAddr::new(0x0000_0000); // KUSEG (unmapped)
+        PhysAddr::map(0x0000_0000); // KUSEG (unmapped)
     }
 
     #[test]
     fn try_new_returns_none_for_unmapped() {
-        assert!(PhysAddr::try_new(0x0000_0000).is_err());
-        assert!(PhysAddr::try_new(0xC000_0000).is_err()); // KSEG2
+        assert!(PhysAddr::try_map(0x0000_0000).is_err());
+        assert!(PhysAddr::try_map(0xC000_0000).is_err()); // KSEG2
+    }
+}
+
+pub trait MapAddress {
+    fn map(self) -> PhysAddr;
+}
+
+impl MapAddress for u32 {
+    fn map(self) -> PhysAddr {
+        PhysAddr::map(self)
     }
 }
 
 #[cfg(test)]
 mod memory_tests {
-    use super::{Memory, PhysAddr};
+    use super::*;
     use pretty_assertions::assert_eq;
     use pretty_assertions::assert_matches;
     #[allow(unused_imports)]
@@ -331,7 +358,7 @@ mod memory_tests {
     #[test]
     fn read_write_u8_kseg0() {
         let mut mem = Memory::default();
-        let addr = 0x8000_1234;
+        let addr = 0x8000_1234.map();
         mem.write(addr, 0xABu8);
         assert_eq!(mem.read::<u8>(addr), 0xAB);
     }
@@ -339,8 +366,8 @@ mod memory_tests {
     #[test]
     fn read_write_u16_u32_kseg1() {
         let mut mem = Memory::default();
-        let addr0 = 0x8000_1000;
-        let addr1 = 0xA000_1000;
+        let addr0 = 0x8000_1000.map();
+        let addr1 = 0xA000_1000.map();
 
         mem.write(addr0, 0x1234u16);
         assert_eq!(mem.read::<u16>(addr1), 0x1234);
@@ -355,11 +382,11 @@ mod memory_tests {
         use super::{MemReadError, MemWriteError};
 
         assert_matches!(
-            mem.try_read::<u8>(0x0000_0000),
+            mem.try_read::<u8>(Addr(0x0000_0000)),
             Err(MemReadError::UnmappedRead(_))
         );
         assert_matches!(
-            mem.try_write(0x0000_0000, 0x12u8),
+            mem.try_write(Addr(0x0000_0000), 0x12u8),
             Err(MemWriteError::UnmappedWrite(_))
         );
     }
@@ -372,6 +399,7 @@ mod memory_tests {
 
         // Pick an address near the end of RAM to trigger OutOfBounds
         let addr = base_kseg0 + (phys_size as u32) - 1;
+        let addr = addr.map();
 
         assert!(matches!(
             mem.try_read::<u32>(addr),

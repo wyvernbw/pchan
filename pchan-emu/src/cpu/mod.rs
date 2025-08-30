@@ -1,21 +1,32 @@
-use std::{arch::aarch64::uint32x4x2_t, ops::Range};
+use std::{fmt::Display, ops::Range};
 
 use pchan_macros::{OpCode, opcode};
 use tracing::instrument;
 
-use crate::memory::{Address, MemRead, Memory, PhysAddr, ToWord};
+use crate::memory::{MapAddress, MemRead, Memory, PhysAddr, ToWord};
 
-#[derive(Default)]
+/// # Cpu
+/// models the PSX cpu.
+#[derive(Default, Debug)]
 pub struct Cpu {
     reg: [u32; 32],
     pc: u32,
     cycle: usize,
-    running_op: Option<RunningOp>,
     pipe: PipelineQueue,
     known: usize,
 }
 
-#[derive(Default)]
+/// # PipelineQueue
+/// models the PSX cpu pipeline.
+/// the pipeline is divided in 5 stages:
+/// - fetch: reads an op from memory at `pc` (program counter)
+/// - id: decodes the op
+/// - ex: executes arithmetic operations and computes the `[rs+imm]` for load ops
+/// - mem: reads/writes to memory
+/// - wb: writes values to registers
+/// each stage takes a cycle, however alus implement instruction forwarding effectively making them
+/// take 1 cycle instead.
+#[derive(Default, Debug)]
 struct PipelineQueue {
     fetch_in: Option<FetchOut>,
     fetch_out: Option<FetchOut>,
@@ -28,14 +39,14 @@ struct PipelineQueue {
     wb_in: Option<WbIn>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct FetchOut {
     op: Op,
 }
 
 type IdIn = FetchOut;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum IdOut {
     Load(LoadArgs),
     Alu,
@@ -43,7 +54,7 @@ enum IdOut {
 
 type ExIn = IdOut;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExOut {
     Load {
         rt_value: PhysAddr,
@@ -58,7 +69,7 @@ enum ExOut {
 
 type MemIn = ExOut;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct MemOut {
     dest: RegisterId,
     value: u32,
@@ -66,12 +77,6 @@ struct MemOut {
 
 type WbIn = MemOut;
 type WbOut = ();
-
-#[derive(Debug, Clone, Copy)]
-struct RunningOp {
-    op: Op,
-    cycles_left: i32,
-}
 
 pub enum Interrupt {}
 
@@ -81,63 +86,82 @@ impl Cpu {
         self.cycle += 1;
     }
 
+    /// fetches instruction at the program counter and passes it forward to the
+    /// `id` stage. it then advances the program counter.
+    #[instrument(skip_all)]
     fn pipeline_fetch(&mut self, mem: &mut Memory) {
-        self.pipe.fetch_in = Some(FetchOut {
-            op: mem.read::<Op>(self.pc),
-        });
+        let op = mem.read::<Op>(PhysAddr::new(self.pc));
+        self.pipe.fetch_in = Some(FetchOut { op });
 
-        match self.pipe.fetch_out.take() {
-            None => {
-                self.pipe.fetch_out = self.pipe.fetch_in;
-            }
-            Some(out) => {
-                self.pipe.id_in = Some(out);
-            }
+        if let Some(out) = self.pipe.fetch_out.take() {
+            self.pipe.id_in = Some(out);
+            tracing::trace!(send = %out.op);
         }
+
+        if let Some(fetch_in) = self.pipe.fetch_in.take() {
+            self.pipe.fetch_out = Some(fetch_in);
+            tracing::trace!(at = ?self.pc, loaded = %op);
+        }
+
+        self.pc += 4;
     }
 
+    #[instrument(skip_all)]
     fn pipeline_id(&mut self, mem: &mut Memory) {
-        match (self.pipe.id_in.take(), self.pipe.id_out.take()) {
-            (Some(id_in), None) => match id_in.op.primary() {
+        // flush `id_out`
+        if let Some(id_out) = self.pipe.id_out.take() {
+            tracing::trace!(send = ?id_out);
+            self.pipe.ex_in = Some(id_out);
+        }
+
+        // move `id_in` into `id_out`
+        if let Some(id_in) = self.pipe.id_in.take() {
+            tracing::trace!(recv = %id_in.op);
+            // handle NOP
+            if id_in.op == Op::NOP {
+                return;
+            }
+            match id_in.op.primary() {
                 PrimaryOp::LW | PrimaryOp::LB | PrimaryOp::LBU | PrimaryOp::LH | PrimaryOp::LHU => {
                     let args = id_in.op.load_args();
                     self.pipe.id_out = Some(IdOut::Load(args));
                 }
-                _ => todo!(),
-            },
-            (Some(_), Some(id_out)) => {
-                self.pipe.ex_in = Some(id_out);
+                other => todo!("{other:x?} not yet implemented"),
             }
-            (None, None) => {}
-            (None, Some(_)) => unreachable!(),
         }
     }
 
+    #[instrument(skip_all)]
     fn pipeline_ex(&mut self, mem: &mut Memory) {
-        match (self.pipe.ex_in.take(), self.pipe.ex_out.take()) {
-            (Some(ex_in), None) => {
-                self.pipe.ex_out = Some(match ex_in {
-                    IdOut::Load(load_args) => ExOut::Load {
-                        rt_value: PhysAddr::new(
-                            self.forward_register(load_args.rs)
-                                .unwrap_or(self.reg[load_args.rs])
-                                .wrapping_add_signed(load_args.imm as i32),
-                        ),
-                        dest: load_args.rt,
-                    },
-                    // TODO: implement ALU args
-                    IdOut::Alu => ExOut::Alu {
-                        out: todo!(),
-                        dest: todo!(),
-                    },
-                })
-            }
-            (Some(_), Some(ex_out)) => {
-                self.pipe.mem_in = Some(ex_out);
-            }
-            (None, None) => {}
-            (None, Some(_)) => unreachable!(),
+        // flush `ex_out`
+        if let Some(ex_out) = self.pipe.ex_out.take() {
+            tracing::trace!(send = ?ex_out);
+            self.pipe.mem_in = Some(ex_out);
         }
+
+        // move `ex_in` into `ex_out`
+        if let Some(ex_in) = self.pipe.ex_in.take() {
+            tracing::trace!(recv = ?ex_in);
+            self.pipe.ex_out = Some(match ex_in {
+                IdOut::Load(load_args) => ExOut::Load {
+                    rt_value: PhysAddr::new(
+                        self.reg(load_args.rs)
+                            .wrapping_add_signed(load_args.imm as i32),
+                    ),
+                    dest: load_args.rt,
+                },
+                // TODO: implement ALU args
+                IdOut::Alu => ExOut::Alu {
+                    out: todo!(),
+                    dest: todo!(),
+                },
+            })
+        }
+    }
+
+    /// reads value from register, forwarding values if possible
+    fn reg(&self, id: RegisterId) -> u32 {
+        self.forward_register(id).unwrap_or_else(|| self.reg[id])
     }
 
     fn forward_register(&self, src: RegisterId) -> Option<u32> {
@@ -166,34 +190,36 @@ impl Cpu {
         None
     }
 
+    #[instrument(skip_all)]
     fn pipeline_mem(&mut self, mem: &mut Memory) {
-        match (self.pipe.mem_in.take(), self.pipe.mem_out.take()) {
-            (Some(mem_in), None) => {
-                self.pipe.mem_out = Some(match mem_in {
-                    MemIn::Load {
-                        rt_value: value,
-                        dest,
-                    } => {
-                        let value = mem.read(value);
-                        MemOut { dest, value }
-                    }
-                    ExOut::Alu { out, dest } => MemOut { dest, value: out },
-                })
-            }
-            (Some(_), Some(mem_out)) => {
-                self.pipe.wb_in = Some(mem_out);
-            }
-            (None, None) => {}
-            (None, Some(_)) => unreachable!(),
+        // flush `mem_out`
+        if let Some(mem_out) = self.pipe.mem_out.take() {
+            tracing::trace!(send = ?mem_out);
+            self.pipe.wb_in = Some(mem_out);
+        }
+
+        // move `mem_in` into `mem_out`
+        if let Some(mem_in) = self.pipe.mem_in.take() {
+            tracing::trace!(recv = ?mem_in);
+            let out = match mem_in {
+                MemIn::Load {
+                    rt_value: value,
+                    dest,
+                } => {
+                    let value = mem.read(value);
+                    MemOut { dest, value }
+                }
+                MemIn::Alu { out, dest } => MemOut { dest, value: out },
+            };
+            self.pipe.mem_out = Some(out);
         }
     }
 
+    #[instrument(skip_all)]
     fn pipeline_wb(&mut self, mem: &mut Memory) {
-        match self.pipe.wb_in.take() {
-            Some(wb_in) => {
-                self.reg_write(wb_in.dest, wb_in.value);
-            }
-            None => {}
+        if let Some(wb_in) = self.pipe.wb_in.take() {
+            tracing::trace!(recv = ?wb_in);
+            self.reg_write(wb_in.dest, wb_in.value);
         }
     }
 
@@ -201,15 +227,28 @@ impl Cpu {
         self.reg[dest] = value;
     }
 
-    #[instrument(skip_all)]
+    #[instrument(fields(cycle = self.cycle), skip(mem, self))]
     pub(crate) fn run_cycle(&mut self, mem: &mut Memory) -> Option<Interrupt> {
         // DONE: the rest of the owl
+
+        // tracing::trace!(?self.cycle, "pre cycle: {:#?}", self.pipe);
 
         self.pipeline_fetch(mem);
         self.pipeline_id(mem);
         self.pipeline_ex(mem);
         self.pipeline_mem(mem);
         self.pipeline_wb(mem);
+
+        let reg = self
+            .reg
+            .iter()
+            .enumerate()
+            .filter(|(_, x)| **x != 0)
+            .map(|(i, x)| format!("{i}:0x{x:08X}"))
+            .intersperse(" ".to_string())
+            .collect::<String>();
+        tracing::trace!(?reg);
+        println!();
 
         None
     }
@@ -221,8 +260,8 @@ impl Cpu {
             rt: dest,
             imm: offset,
         } = args;
-        let addr = self.reg[src].wrapping_add_signed(offset as i32);
-        let data = mem.read::<T>(addr);
+        let addr = self.reg(src).wrapping_add_signed(offset as i32);
+        let data = mem.read::<T>(addr.map());
         self.reg[dest] = data.to_word_signed();
     }
 
@@ -233,8 +272,8 @@ impl Cpu {
             rt: dest,
             imm: offset,
         } = args;
-        let addr = self.reg[src].wrapping_add_signed(offset as i32);
-        let data = mem.read::<T>(addr);
+        let addr = self.reg(src).wrapping_add_signed(offset as i32);
+        let data = mem.read::<T>(addr.map());
         self.reg[dest] = data.to_word_zeroed();
     }
 }
@@ -244,8 +283,32 @@ type RegisterId = usize;
 const SP: RegisterId = 29;
 const RA: RegisterId = 31;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Op(u32);
+
+impl core::fmt::Debug for Op {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Op")
+            .field_with(|f| write!(f, "0x{:08X}", &self.0))
+            .finish()
+    }
+}
+
+impl Display for Op {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let primary = self.primary();
+        if self.0 == 0 {
+            return write!(f, "NOP");
+        }
+        match primary {
+            PrimaryOp::LW | PrimaryOp::LB | PrimaryOp::LBU | PrimaryOp::LH | PrimaryOp::LHU => {
+                let args = self.load_args();
+                write!(f, "{:?} {} {} {}", primary, args.rs, args.rt, args.imm)
+            }
+            _ => write!(f, "0x{:08X}", self.0),
+        }
+    }
+}
 
 impl MemRead for Op {
     fn from_slice(buf: &[u8]) -> Result<Self, crate::memory::DerefError> {
@@ -253,7 +316,7 @@ impl MemRead for Op {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct LoadArgs {
     rs: RegisterId,
     rt: RegisterId,
@@ -261,6 +324,8 @@ struct LoadArgs {
 }
 
 impl Op {
+    const NOP: Op = Op(0x00000000);
+
     #[inline]
     const fn primary(&self) -> PrimaryOp {
         let code = self.0 >> 26;
@@ -278,7 +343,7 @@ impl Op {
         (self.0 & mask).unbounded_shr(range.start as u32)
     }
 
-    fn load_args(&self) -> LoadArgs {
+    const fn load_args(&self) -> LoadArgs {
         LoadArgs {
             rs: self.bits(21..26) as usize,
             rt: self.bits(16..21) as usize,
@@ -391,7 +456,7 @@ enum SecondaryOp {
 #[cfg(test)]
 pub mod tests {
     use super::*;
-    use pretty_assertions::assert_eq;
+    use pretty_assertions::{assert_eq, assert_ne};
 
     #[test]
     fn test_primary_op_decoding() {
@@ -482,5 +547,90 @@ pub mod tests {
 
         // bottom bit only
         assert_eq!(op.bits(0..1), 0b1);
+    }
+}
+
+#[cfg(test)]
+pub mod pipeline_tests {
+    use super::*;
+    use crate::memory::{MemRead, PhysAddr};
+    use pchan_utils::setup_tracing;
+    use pretty_assertions::{assert_eq, assert_matches};
+    use rstest::*;
+
+    #[rstest]
+    #[instrument]
+    fn test_pipeline_single_load(setup_tracing: ()) {
+        tracing::info!("testing single load");
+        let mut cpu = Cpu::default();
+        let mut mem = Memory::default();
+
+        let instr = 0x8D280004;
+        cpu.reg[9] = 0x1000; // r9 = 0x1000
+        mem.write::<u32>(PhysAddr::new(0x0), instr); // Instruction at PC=0
+        mem.write::<u32>(PhysAddr::new(0x1004), 0x12345678); // Data at 0x1004
+
+        // Run 5 cycles to complete one load instruction
+        for _ in 0..5 {
+            cpu.run_cycle(&mut mem);
+            cpu.advance_cycle();
+        }
+
+        tracing::info!("{:08x}", cpu.reg[8]);
+
+        // Verify $t0 (reg 8) contains the loaded value
+        assert_eq!(cpu.reg[8], 0x12345678, "LW should load 0x12345678 into $t0");
+    }
+    #[rstest]
+    #[instrument]
+    fn test_pipeline_lb(setup_tracing: ()) {
+        tracing::info!("testing LB instruction");
+        let mut cpu = Cpu::default();
+        let mut mem = Memory::default();
+
+        let instr = 0x81080002; // LB r8, 2(r8)
+        cpu.reg[8] = 0x1000;
+        mem.write::<u32>(PhysAddr::new(0x0), instr);
+        mem.write::<u8>(PhysAddr::new(0x1002), 0xAB); // byte to load
+
+        for _ in 0..5 {
+            cpu.run_cycle(&mut mem);
+            cpu.advance_cycle();
+        }
+
+        assert_eq!(cpu.reg[8], 0xAB000000, "LB should load 0xAB into r8");
+    }
+
+    #[rstest]
+    #[instrument]
+    fn test_pipeline_multiple_loads(setup_tracing: ()) {
+        tracing::info!("testing multiple loads in a row");
+        let mut cpu = Cpu::default();
+        let mut mem = Memory::default();
+
+        let instr1 = 0x8D280004; // LW r8, 4(r9)
+        let instr2 = 0x81090001; // LB r9, 1(r8)
+        let instr3 = 0x814A0002; // LBU r10, 2(r10)
+
+        cpu.reg[9] = 0x1000;
+        cpu.reg[10] = 0x2000;
+
+        mem.write::<u32>(PhysAddr::new(0x0), instr1);
+        mem.write::<u32>(PhysAddr::new(0x4), instr2);
+        mem.write::<u32>(PhysAddr::new(0x8), instr3);
+
+        mem.write::<u32>(PhysAddr::new(0x1004), 0x12345678); // LW source
+        mem.write::<u8>(PhysAddr::new(0x1235), 0x7F); // LB source (0x1235 = r8 + 1)
+        mem.write::<u8>(PhysAddr::new(0x2002), 0xFF); // LBU source (r10 + 2)
+
+        // Run enough cycles to complete all three loads
+        for _ in 0..15 {
+            cpu.run_cycle(&mut mem);
+            cpu.advance_cycle();
+        }
+
+        assert_eq!(cpu.reg[8], 0x12345678, "LW should load 0x12345678 into r8");
+        assert_eq!(cpu.reg[9] as u8, 0x7F, "LB should load 0x7F into r9");
+        assert_eq!(cpu.reg[10] as u8, 0xFF, "LBU should load 0xFF into r10");
     }
 }

@@ -1,4 +1,6 @@
 #![allow(incomplete_features)]
+#![feature(debug_closure_helpers)]
+#![feature(iter_intersperse)]
 #![feature(generic_const_exprs)]
 #![feature(slice_as_array)]
 #![feature(portable_simd)]
