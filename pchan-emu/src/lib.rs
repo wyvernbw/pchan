@@ -1,4 +1,6 @@
 #![allow(incomplete_features)]
+#![feature(const_from)]
+#![feature(const_trait_impl)]
 #![feature(debug_closure_helpers)]
 #![feature(iter_intersperse)]
 #![feature(generic_const_exprs)]

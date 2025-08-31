@@ -1,9 +1,11 @@
-use std::{fmt::Display, ops::Range};
-
-use pchan_macros::{OpCode, opcode};
 use tracing::instrument;
 
-use crate::memory::{MapAddress, MemRead, MemWrite, Memory, PhysAddr, ToWord};
+use crate::{
+    cpu::op::{Op, PrimaryOp, load::LoadOp, store::StoreOp},
+    memory::{Address, MapAddress, MemRead, Memory, PhysAddr, ToWord},
+};
+
+pub(crate) mod op;
 
 /// # Cpu
 /// models the PSX cpu.
@@ -39,6 +41,22 @@ struct PipelineQueue {
     wb_in: Option<WbIn>,
 }
 
+impl PipelineQueue {
+    pub(crate) fn handle_store(
+        mem: &mut Memory,
+        rt_value: u32,
+        dest: impl Address,
+        header: PrimaryOp,
+    ) {
+        match header {
+            PrimaryOp::SB => mem.write(dest, (rt_value as u8).to_word_zeroed()),
+            PrimaryOp::SH => mem.write(dest, (rt_value as u16).to_word_zeroed()),
+            PrimaryOp::SW => mem.write(dest, rt_value),
+            _ => unreachable!(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct FetchOut {
     op: Op,
@@ -48,7 +66,8 @@ type IdIn = FetchOut;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum IdOut {
-    Load(LoadArgs),
+    Load(LoadOp),
+    Store(StoreOp),
     Alu,
 }
 
@@ -59,6 +78,11 @@ enum ExOut {
     Load {
         rt_value: PhysAddr,
         dest: RegisterId,
+    },
+    Store {
+        header: PrimaryOp,
+        rt_value: u32,
+        dest: PhysAddr,
     },
     // pass through all the way to WB
     Alu {
@@ -123,8 +147,13 @@ impl Cpu {
             }
             match id_in.op.primary() {
                 PrimaryOp::LW | PrimaryOp::LB | PrimaryOp::LBU | PrimaryOp::LH | PrimaryOp::LHU => {
-                    let args = id_in.op.load_args();
+                    let args = id_in.op.load_op();
                     self.pipe.id_out = Some(IdOut::Load(args));
+                }
+                PrimaryOp::SB | PrimaryOp::SH | PrimaryOp::SW => {
+                    let args: StoreOp = id_in.op.into();
+                    // send it straight to ex
+                    self.pipe.ex_in = Some(IdOut::Store(args));
                 }
                 other => todo!("{other:x?} not yet implemented"),
             }
@@ -142,7 +171,7 @@ impl Cpu {
         // move `ex_in` into `ex_out`
         if let Some(ex_in) = self.pipe.ex_in.take() {
             tracing::trace!(recv = ?ex_in);
-            self.pipe.ex_out = Some(match ex_in {
+            let ex_out = match ex_in {
                 IdOut::Load(load_args) => ExOut::Load {
                     rt_value: PhysAddr::new(
                         self.reg(load_args.rs)
@@ -150,12 +179,18 @@ impl Cpu {
                     ),
                     dest: load_args.rt,
                 },
+                IdOut::Store(store) => ExOut::Store {
+                    header: store.header,
+                    rt_value: self.reg(store.rt),
+                    dest: PhysAddr::new(self.reg(store.rs).wrapping_add_signed(store.imm as i32)),
+                },
                 // TODO: implement ALU args
                 IdOut::Alu => ExOut::Alu {
                     out: todo!(),
                     dest: todo!(),
                 },
-            })
+            };
+            self.pipe.ex_out = Some(ex_out);
         }
     }
 
@@ -199,20 +234,30 @@ impl Cpu {
         }
 
         // move `mem_in` into `mem_out`
-        if let Some(mem_in) = self.pipe.mem_in.take() {
+        self.pipe.mem_out = self.pipe.mem_in.take().and_then(|mem_in| {
             tracing::trace!(recv = ?mem_in);
-            let out = match mem_in {
+            match mem_in {
                 MemIn::Load {
                     rt_value: value,
                     dest,
                 } => {
+                    // FIXME: handle differnet load types
                     let value = mem.read(value);
-                    MemOut { dest, value }
+                    Some(MemOut { dest, value })
                 }
-                MemIn::Alu { out, dest } => MemOut { dest, value: out },
-            };
-            self.pipe.mem_out = Some(out);
-        }
+
+                MemIn::Store {
+                    rt_value,
+                    dest,
+                    header,
+                } => {
+                    PipelineQueue::handle_store(mem, rt_value, dest, header);
+                    None
+                }
+
+                MemIn::Alu { out, dest } => Some(MemOut { dest, value: out }),
+            }
+        });
     }
 
     #[instrument(skip_all)]
@@ -254,11 +299,12 @@ impl Cpu {
     }
 
     #[inline]
-    fn load_signed<T: MemRead + ToWord>(&mut self, mem: &Memory, args: LoadArgs) {
-        let LoadArgs {
+    fn load_signed<T: MemRead + ToWord>(&mut self, mem: &Memory, args: LoadOp) {
+        let LoadOp {
             rs: src,
             rt: dest,
             imm: offset,
+            ..
         } = args;
         let addr = self.reg(src).wrapping_add_signed(offset as i32);
         let data = mem.read::<T>(addr.map());
@@ -266,11 +312,12 @@ impl Cpu {
     }
 
     #[inline]
-    fn load_zeroed<T: MemRead + ToWord>(&mut self, mem: &Memory, args: LoadArgs) {
-        let LoadArgs {
+    fn load_zeroed<T: MemRead + ToWord>(&mut self, mem: &Memory, args: LoadOp) {
+        let LoadOp {
             rs: src,
             rt: dest,
             imm: offset,
+            ..
         } = args;
         let addr = self.reg(src).wrapping_add_signed(offset as i32);
         let data = mem.read::<T>(addr.map());
@@ -282,279 +329,6 @@ type RegisterId = usize;
 
 const SP: RegisterId = 29;
 const RA: RegisterId = 31;
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub struct Op(u32);
-
-impl core::fmt::Debug for Op {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("Op")
-            .field_with(|f| write!(f, "0x{:08X}", &self.0))
-            .finish()
-    }
-}
-
-impl Display for Op {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let primary = self.primary();
-        if self.0 == 0 {
-            return write!(f, "NOP");
-        }
-        match primary {
-            PrimaryOp::LW | PrimaryOp::LB | PrimaryOp::LBU | PrimaryOp::LH | PrimaryOp::LHU => {
-                let args = self.load_args();
-                write!(f, "{:?} {} {} {}", primary, args.rs, args.rt, args.imm)
-            }
-            _ => write!(f, "0x{:08X}", self.0),
-        }
-    }
-}
-
-impl MemRead for Op {
-    fn from_slice(buf: &[u8]) -> Result<Self, crate::memory::DerefError> {
-        u32::from_slice(buf).map(Op)
-    }
-}
-
-impl MemWrite for Op {
-    fn to_bytes(&self) -> [u8; size_of::<Self>()] {
-        self.0.to_bytes()
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct LoadArgs {
-    rs: RegisterId,
-    rt: RegisterId,
-    imm: i16,
-}
-
-impl Op {
-    const NOP: Op = Op(0x00000000);
-
-    #[inline]
-    const fn primary(&self) -> PrimaryOp {
-        let code = self.0 >> 26;
-        PrimaryOp::MAP[code as usize]
-    }
-    #[inline]
-    const fn secondary(&self) -> SecondaryOp {
-        let code = self.0 & 0x3F;
-        SecondaryOp::MAP[code as usize]
-    }
-    #[inline]
-    const fn bits(&self, range: Range<u8>) -> u32 {
-        let mask = (0xFFFFFFFFu32.unbounded_shl(range.start as u32))
-            ^ ((0xFFFFFFFFu32).unbounded_shl(range.end as u32));
-        (self.0 & mask).unbounded_shr(range.start as u32)
-    }
-
-    const fn load_args(&self) -> LoadArgs {
-        LoadArgs {
-            rs: self.bits(21..26) as usize,
-            rt: self.bits(16..21) as usize,
-            imm: self.bits(0..16) as i16,
-        }
-    }
-}
-
-#[repr(u8)]
-#[derive(OpCode, Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PrimaryOp {
-    SPECIAL = 0x00,
-    BCONDZ = 0x01,
-    J = 0x02,
-    JAL = 0x03,
-    BEQ = 0x04,
-    BNE = 0x05,
-    BLEZ = 0x06,
-    BGTZ = 0x07,
-
-    ADDI = 0x08,
-    ADDIU = 0x09,
-    SLTI = 0x0A,
-    SLTIU = 0x0B,
-    ANDI = 0x0C,
-    ORI = 0x0D,
-    XORI = 0x0E,
-    LUI = 0x0F,
-
-    COP0 = 0x10,
-    COP1 = 0x11,
-    COP2 = 0x12,
-    COP3 = 0x13,
-
-    LB = 0x20,
-    LH = 0x21,
-    LWL = 0x22,
-    LW = 0x23,
-    LBU = 0x24,
-    LHU = 0x25,
-    LWR = 0x26,
-
-    SB = 0x28,
-    SH = 0x29,
-    SWL = 0x2A,
-    SW = 0x2B,
-    SWR = 0x2E,
-
-    LWC0 = 0x30,
-    LWC1 = 0x31,
-    LWC2 = 0x32,
-    LWC3 = 0x33,
-
-    SWC0 = 0x38,
-    SWC1 = 0x39,
-    SWC2 = 0x3A,
-    SWC3 = 0x3B,
-
-    #[opcode(default)]
-    ILLEGAL,
-}
-
-#[repr(u8)]
-#[derive(OpCode, Debug, Clone, Copy, PartialEq, Eq)]
-enum SecondaryOp {
-    // Shift instructions
-    SLL = 0x00,
-    SRL = 0x02,
-    SRA = 0x03,
-    SLLV = 0x04,
-    SRLV = 0x06,
-    SRAV = 0x07,
-
-    // Jump instructions
-    JR = 0x08,
-    JALR = 0x09,
-
-    // Move from/to special registers
-    MFHI = 0x10,
-    MTHI = 0x11,
-    MFLO = 0x12,
-    MTLO = 0x13,
-
-    // Multiply/Divide
-    MULT = 0x18,
-    MULTU = 0x19,
-    DIV = 0x1A,
-    DIVU = 0x1B,
-
-    // Arithmetic
-    ADD = 0x20,
-    ADDU = 0x21,
-    SUB = 0x22,
-    SUBU = 0x23,
-    AND = 0x24,
-    OR = 0x25,
-    XOR = 0x26,
-    NOR = 0x27,
-    SLT = 0x2A,
-    SLTU = 0x2B,
-
-    // System
-    SYSCALL = 0x0C,
-    BREAK = 0x0D,
-
-    #[opcode(default)]
-    ILLEGAL,
-}
-
-#[cfg(test)]
-pub mod tests {
-    use super::*;
-    use pretty_assertions::{assert_eq, assert_ne};
-
-    #[test]
-    fn test_primary_op_decoding() {
-        // Example: ADDI instruction (opcode 0x08)
-        let instr = Op(0x20010001); // 0010 0000 0000 0001 0000 0000 0000 0001
-        assert_eq!(instr.primary(), PrimaryOp::ADDI);
-
-        // Example: J instruction (opcode 0x02)
-        let instr = Op(0x08000000); // 0000 1000 0000 0000 0000 0000 0000 0000
-        assert_eq!(instr.primary(), PrimaryOp::J);
-
-        // Example: ILLEGAL opcode
-        let instr = Op(0xFC000000); // 1111 1100 ...
-        assert_eq!(instr.primary(), PrimaryOp::ILLEGAL);
-    }
-
-    #[test]
-    fn test_secondary_op_decoding() {
-        // Example: ADD instruction (secondary 0x20)
-        let instr = Op(0x00000020); // SPECIAL primary, ADD secondary
-        assert_eq!(instr.secondary(), SecondaryOp::ADD);
-
-        // Example: JR instruction (secondary 0x08)
-        let instr = Op(0x00000008);
-        assert_eq!(instr.secondary(), SecondaryOp::JR);
-
-        // Example: ILLEGAL secondary opcode
-        let instr = Op(0x0000003F); // 0x3F = 63
-        assert_eq!(instr.secondary(), SecondaryOp::ILLEGAL);
-    }
-
-    #[test]
-    fn test_register_access() {
-        let mut cpu = Cpu {
-            reg: [0; 32],
-            ..Default::default()
-        };
-        cpu.reg[SP] = 0xDEADBEEF;
-        assert_eq!(cpu.reg[SP], 0xDEADBEEF);
-
-        cpu.reg[1] = 42;
-        assert_eq!(cpu.reg[1], 42);
-    }
-
-    #[test]
-    fn test_bits_basic() {
-        let op = Op(0b1111_0000_1010_1100_0101_0011_1001_0110);
-
-        // Extract lower 4 bits (0..4)
-        assert_eq!(op.bits(0..4), 0b0110);
-
-        // Extract bits 4..8
-        assert_eq!(op.bits(4..8), 0b1001);
-
-        // Extract bits 8..16
-        assert_eq!(op.bits(8..16), 0b0101_0011);
-
-        // Extract bits 16..24
-        assert_eq!(op.bits(16..24), 0b1010_1100);
-
-        // Extract bits 24..32
-        assert_eq!(op.bits(24..32), 0b1111_0000);
-    }
-
-    #[test]
-    fn test_bits_single_bit() {
-        let op = Op(0b1010_1010);
-
-        // Each bit individually
-        for i in 0..8 {
-            let expected = (op.0 >> i) & 1;
-            assert_eq!(op.bits(i..i + 1), expected);
-        }
-    }
-
-    #[test]
-    fn test_bits_full_width() {
-        let op = Op(0xDEAD_BEEF);
-        assert_eq!(op.bits(0..32), 0xDEAD_BEEF);
-    }
-
-    #[test]
-    fn test_bits_top_edge() {
-        let op = Op(0x8000_0001);
-
-        // top bit only
-        assert_eq!(op.bits(31..32), 0b1);
-
-        // bottom bit only
-        assert_eq!(op.bits(0..1), 0b1);
-    }
-}
 
 #[cfg(test)]
 pub mod pipeline_tests {
@@ -623,6 +397,16 @@ pub mod pipeline_tests {
 
         cpu.reg[9] = 0x1000;
         cpu.reg[10] = 0x2000;
+
+        mem.write_all(
+            PhysAddr::new(0),
+            [
+                Op::lw(8, 9, 4),
+                Op::NOP,
+                Op::lb(9, 8, 1),
+                Op::lbu(10, 10, 2),
+            ],
+        );
 
         mem.write(PhysAddr::new(0), instr1);
         mem.write(PhysAddr::new(4), Op::NOP);

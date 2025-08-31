@@ -1,3 +1,5 @@
+use std::ops::Add;
+
 use thiserror::Error;
 use tracing::instrument;
 
@@ -86,11 +88,11 @@ impl MemRead for u32 {
     }
 }
 
-pub(crate) trait MemWrite: Sized {
-    fn to_bytes(&self) -> [u8; size_of::<Self>()];
+pub(crate) trait MemWrite<const N: usize = { size_of::<Self>() }>: Sized {
+    fn to_bytes(&self) -> [u8; N];
     fn write(buf: &mut [u8], value: &Self) -> Result<(), MemWriteError>
     where
-        [(); size_of::<Self>()]:,
+        [(); N]:,
     {
         let bytes = &value.to_bytes();
         if bytes.len() != buf.len() {
@@ -214,6 +216,29 @@ impl Memory {
     {
         self.try_write(addr, value).unwrap();
     }
+    pub(crate) fn try_write_all<I, A, T>(&mut self, start: A, iter: I) -> Result<(), MemWriteError>
+    where
+        I: IntoIterator<Item = T>,
+        T: MemWrite,
+        A: Address + Add<u32, Output = A>,
+        [(); size_of::<T>()]:,
+    {
+        let offset = size_of::<I::Item>() as u32;
+        for (i, value) in iter.into_iter().enumerate() {
+            let i = i as u32;
+            self.try_write(start + i * offset, value)?;
+        }
+        Ok(())
+    }
+    pub(crate) fn write_all<I, A, T>(&mut self, start: A, iter: I)
+    where
+        I: IntoIterator<Item = T>,
+        T: MemWrite,
+        A: Address + Add<u32, Output = A>,
+        [(); size_of::<T>()]:,
+    {
+        self.try_write_all(start, iter).unwrap();
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -254,6 +279,14 @@ impl PhysAddr {
     }
     pub fn as_u32(self) -> u32 {
         self.0
+    }
+}
+
+impl Add<u32> for PhysAddr {
+    type Output = PhysAddr;
+
+    fn add(self, rhs: u32) -> Self::Output {
+        PhysAddr(self.0 + rhs)
     }
 }
 
