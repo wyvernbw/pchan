@@ -1,13 +1,15 @@
 use std::fmt::Display;
 
-use tracing::instrument;
+use tracing::{Instrument, instrument};
 
 use crate::{
-    cpu::op::{Op, PrimaryOp, load::LoadOp, store::StoreOp},
+    cpu::op::{Op, PrimaryOp, SecondaryOp, add::AddOp, load::LoadOp, store::StoreOp},
     memory::{Address, MapAddress, MemRead, MemWrite, Memory, PhysAddr, ToWord},
 };
 
 pub(crate) mod op;
+#[cfg(test)]
+pub mod pipeline_tests;
 
 /// # Cpu
 /// models the PSX cpu.
@@ -89,7 +91,7 @@ type IdIn = FetchOut;
 enum IdOut {
     Load(LoadOp),
     Store(StoreOp),
-    Alu,
+    AluAdd(AddOp),
 }
 
 type ExIn = IdOut;
@@ -174,9 +176,15 @@ impl Cpu {
                 }
                 PrimaryOp::SB | PrimaryOp::SH | PrimaryOp::SW => {
                     let args: StoreOp = id_in.op.into();
-                    // send it straight to ex
-                    self.pipe.ex_in = Some(IdOut::Store(args));
+                    self.pipe.id_out = Some(IdOut::Store(args));
                 }
+                PrimaryOp::SPECIAL => match id_in.op.secondary() {
+                    SecondaryOp::ADD | SecondaryOp::ADDU => {
+                        let args: AddOp = id_in.op.into();
+                        self.pipe.id_out = Some(IdOut::AluAdd(args));
+                    }
+                    other => todo!("{other:x?} not yet implemented"),
+                },
                 other => todo!("{other:x?} not yet implemented"),
             }
         }
@@ -208,10 +216,10 @@ impl Cpu {
                     dest: PhysAddr::new(self.reg(store.rs).wrapping_add_signed(store.imm as i32)),
                 },
                 // TODO: implement ALU args
-                IdOut::Alu => ExOut::Alu {
-                    out: todo!(),
-                    dest: todo!(),
-                },
+                IdOut::AluAdd(add) => {
+                    let out = self.reg(add.rs) + self.reg(add.rt);
+                    ExOut::Alu { out, dest: add.rd }
+                }
             };
             self.pipe.ex_out = Some(ex_out);
         }
@@ -278,7 +286,11 @@ impl Cpu {
                     None
                 }
 
-                MemIn::Alu { out, dest } => Some(MemOut { dest, value: out }),
+                MemIn::Alu { out, dest } => {
+                    // immediate pass through
+                    self.pipe.wb_in = Some(MemOut { dest, value: out });
+                    None
+                }
             }
         });
     }
@@ -351,89 +363,5 @@ impl<T: AsRef<[Op]>> IntoIterator for Program<T> {
 
     fn into_iter(self) -> Self::IntoIter {
         self.0.as_ref().to_vec().into_iter()
-    }
-}
-
-#[cfg(test)]
-pub mod pipeline_tests {
-    use super::*;
-    use crate::memory::{MemRead, PhysAddr};
-    use pchan_utils::setup_tracing;
-    use pretty_assertions::{assert_eq, assert_matches};
-    use rstest::*;
-
-    #[rstest]
-    #[instrument]
-    fn test_pipeline_single_load(setup_tracing: ()) {
-        tracing::info!("testing single load");
-        let mut cpu = Cpu::default();
-        let mut mem = Memory::default();
-
-        cpu.reg[9] = 0x1000; // r9 = 0x1000
-        mem.write(PhysAddr::new(0x0), Op::lw(8, 9, 4)); // Instruction at PC=0
-        mem.write::<u32>(PhysAddr::new(0x1000 + 4), 0x12345678); // Data at 0x1004
-
-        // Run 5 cycles to complete one load instruction
-        for _ in 0..5 {
-            cpu.run_cycle(&mut mem);
-            cpu.advance_cycle();
-        }
-
-        tracing::info!("{:08x}", cpu.reg[8]);
-
-        // Verify $t0 (reg 8) contains the loaded value
-        assert_eq!(cpu.reg[8], 0x12345678, "LW should load 0x12345678 into $t0");
-    }
-    #[rstest]
-    #[instrument]
-    fn test_pipeline_lb(setup_tracing: ()) {
-        tracing::info!("testing LB instruction");
-        let mut cpu = Cpu::default();
-        let mut mem = Memory::default();
-
-        cpu.reg[8] = 0x1000;
-        mem.write(PhysAddr::new(0x0), Op::lbu(8, 8, 2));
-        mem.write::<u8>(PhysAddr::new(0x1002), 0xAB); // byte to load
-
-        for _ in 0..5 {
-            cpu.run_cycle(&mut mem);
-            cpu.advance_cycle();
-        }
-
-        assert_eq!(cpu.reg[8], 0xAB, "LB should load 0xAB into r8");
-    }
-
-    #[rstest]
-    #[instrument]
-    fn test_pipeline_multiple_loads(setup_tracing: ()) {
-        tracing::info!("testing multiple loads in a row");
-        let mut cpu = Cpu::default();
-        let mut mem = Memory::default();
-
-        cpu.reg[9] = 0x1000;
-        cpu.reg[10] = 0x2000;
-
-        let program = Program::new([
-            Op::lw(8, 9, 4),
-            Op::NOP,
-            Op::lb(9, 8, 1),
-            Op::lbu(10, 10, 2),
-        ]);
-        tracing::info!(%program);
-        mem.write_all(PhysAddr::new(0), program);
-
-        mem.write::<u32>(PhysAddr::new(0x1004), 0x1234); // LW source
-        mem.write::<u8>(PhysAddr::new(0x1235), 0x7F); // LB source (0x1235 = r8 + 1)
-        mem.write::<u8>(PhysAddr::new(0x2002), 0xFF); // LBU source (r10 + 2)
-
-        // Run enough cycles to complete all three loads
-        for _ in 0..15 {
-            cpu.run_cycle(&mut mem);
-            cpu.advance_cycle();
-        }
-
-        assert_eq!(cpu.reg[8], 0x1234, "LW should load 0x1234 into r8");
-        assert_eq!(cpu.reg[9], 0x7F, "LB should load 0x7F into r9");
-        assert_eq!(cpu.reg[10], 0xFF, "LBU should load 0xFF into r10");
     }
 }

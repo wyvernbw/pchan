@@ -1,3 +1,4 @@
+pub(crate) mod add;
 pub(crate) mod load;
 pub(crate) mod store;
 
@@ -6,7 +7,7 @@ use std::{fmt::Display, ops::Range, u8};
 use pchan_macros::OpCode;
 
 use crate::{
-    cpu::op::store::StoreOp,
+    cpu::op::{add::AddOp, store::StoreOp},
     memory::{MemRead, MemWrite},
 };
 
@@ -24,10 +25,18 @@ impl core::fmt::Debug for Op {
 impl Display for Op {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let primary = self.primary();
+        let secondary = self.secondary();
         if self.0 == 0 {
             return write!(f, "NOP");
         }
         match primary {
+            PrimaryOp::SPECIAL => match secondary {
+                SecondaryOp::ADD | SecondaryOp::ADDU => {
+                    let args: AddOp = (*self).into();
+                    write!(f, "{}", args)
+                }
+                _ => write!(f, "0x{:08X}", self.0),
+            },
             PrimaryOp::LW | PrimaryOp::LB | PrimaryOp::LBU | PrimaryOp::LH | PrimaryOp::LHU => {
                 let args = self.load_op();
                 write!(f, "{:?} {} {} {}", primary, args.rt, args.rs, args.imm)
