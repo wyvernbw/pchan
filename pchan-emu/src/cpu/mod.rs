@@ -42,6 +42,7 @@ struct PipelineQueue {
 }
 
 impl PipelineQueue {
+    #[instrument(skip(mem))]
     pub(crate) fn handle_store(
         mem: &mut Memory,
         rt_value: u32,
@@ -54,6 +55,24 @@ impl PipelineQueue {
             PrimaryOp::SW => mem.write(dest, rt_value),
             _ => unreachable!(),
         }
+    }
+
+    #[instrument(skip(mem))]
+    pub(crate) fn handle_load(
+        mem: &Memory,
+        at: PhysAddr,
+        header: PrimaryOp,
+        dest: RegisterId,
+    ) -> MemOut {
+        let value = match header {
+            PrimaryOp::LB => mem.read::<u8>(at).to_word_signed(),
+            PrimaryOp::LBU => mem.read::<u8>(at).to_word_zeroed(),
+            PrimaryOp::LH => mem.read::<u16>(at).to_word_signed(),
+            PrimaryOp::LHU => mem.read::<u16>(at).to_word_zeroed(),
+            PrimaryOp::LW => mem.read::<u32>(at).to_word_signed(),
+            _ => unreachable!("invalid header passed to load"),
+        };
+        MemOut { dest, value }
     }
 }
 
@@ -76,6 +95,7 @@ type ExIn = IdOut;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExOut {
     Load {
+        header: PrimaryOp,
         rt_value: PhysAddr,
         dest: RegisterId,
     },
@@ -173,6 +193,7 @@ impl Cpu {
             tracing::trace!(recv = ?ex_in);
             let ex_out = match ex_in {
                 IdOut::Load(load_args) => ExOut::Load {
+                    header: load_args.header,
                     rt_value: PhysAddr::new(
                         self.reg(load_args.rs)
                             .wrapping_add_signed(load_args.imm as i32),
@@ -238,12 +259,12 @@ impl Cpu {
             tracing::trace!(recv = ?mem_in);
             match mem_in {
                 MemIn::Load {
-                    rt_value: value,
+                    header,
+                    rt_value: at,
                     dest,
                 } => {
-                    // FIXME: handle differnet load types
-                    let value = mem.read(value);
-                    Some(MemOut { dest, value })
+                    // DONE: handle differnet load types
+                    Some(PipelineQueue::handle_load(mem, at, header, dest))
                 }
 
                 MemIn::Store {
@@ -297,32 +318,6 @@ impl Cpu {
 
         None
     }
-
-    #[inline]
-    fn load_signed<T: MemRead + ToWord>(&mut self, mem: &Memory, args: LoadOp) {
-        let LoadOp {
-            rs: src,
-            rt: dest,
-            imm: offset,
-            ..
-        } = args;
-        let addr = self.reg(src).wrapping_add_signed(offset as i32);
-        let data = mem.read::<T>(addr.map());
-        self.reg[dest] = data.to_word_signed();
-    }
-
-    #[inline]
-    fn load_zeroed<T: MemRead + ToWord>(&mut self, mem: &Memory, args: LoadOp) {
-        let LoadOp {
-            rs: src,
-            rt: dest,
-            imm: offset,
-            ..
-        } = args;
-        let addr = self.reg(src).wrapping_add_signed(offset as i32);
-        let data = mem.read::<T>(addr.map());
-        self.reg[dest] = data.to_word_zeroed();
-    }
 }
 
 type RegisterId = usize;
@@ -345,10 +340,9 @@ pub mod pipeline_tests {
         let mut cpu = Cpu::default();
         let mut mem = Memory::default();
 
-        let instr = 0x8D280004;
         cpu.reg[9] = 0x1000; // r9 = 0x1000
-        mem.write::<u32>(PhysAddr::new(0x0), instr); // Instruction at PC=0
-        mem.write::<u32>(PhysAddr::new(0x1004), 0x12345678); // Data at 0x1004
+        mem.write(PhysAddr::new(0x0), Op::lw(8, 9, 4)); // Instruction at PC=0
+        mem.write::<u32>(PhysAddr::new(0x1000 + 4), 0x12345678); // Data at 0x1004
 
         // Run 5 cycles to complete one load instruction
         for _ in 0..5 {
@@ -368,9 +362,8 @@ pub mod pipeline_tests {
         let mut cpu = Cpu::default();
         let mut mem = Memory::default();
 
-        let instr = 0x81080002; // LB r8, 2(r8)
         cpu.reg[8] = 0x1000;
-        mem.write::<u32>(PhysAddr::new(0x0), instr);
+        mem.write(PhysAddr::new(0x0), Op::lbu(8, 8, 2));
         mem.write::<u8>(PhysAddr::new(0x1002), 0xAB); // byte to load
 
         for _ in 0..5 {
@@ -378,7 +371,7 @@ pub mod pipeline_tests {
             cpu.advance_cycle();
         }
 
-        assert_eq!(cpu.reg[8], 0xAB000000, "LB should load 0xAB into r8");
+        assert_eq!(cpu.reg[8], 0xAB, "LB should load 0xAB into r8");
     }
 
     #[rstest]
@@ -387,13 +380,6 @@ pub mod pipeline_tests {
         tracing::info!("testing multiple loads in a row");
         let mut cpu = Cpu::default();
         let mut mem = Memory::default();
-
-        let instr1 = Op(0x8D280004); // LW r8, 4(r9)
-        tracing::info!(%instr1);
-        let instr2 = Op(0x81090001); // LB r9, 1(r8)
-        tracing::info!(%instr2);
-        let instr3 = Op(0x814A0002); // LBU r10, 2(r10)
-        tracing::info!(%instr3);
 
         cpu.reg[9] = 0x1000;
         cpu.reg[10] = 0x2000;
@@ -408,11 +394,6 @@ pub mod pipeline_tests {
             ],
         );
 
-        mem.write(PhysAddr::new(0), instr1);
-        mem.write(PhysAddr::new(4), Op::NOP);
-        mem.write(PhysAddr::new(8), instr2);
-        mem.write(PhysAddr::new(12), instr3);
-
         mem.write::<u32>(PhysAddr::new(0x1004), 0x1234); // LW source
         mem.write::<u8>(PhysAddr::new(0x1235), 0x7F); // LB source (0x1235 = r8 + 1)
         mem.write::<u8>(PhysAddr::new(0x2002), 0xFF); // LBU source (r10 + 2)
@@ -424,7 +405,7 @@ pub mod pipeline_tests {
         }
 
         assert_eq!(cpu.reg[8], 0x1234, "LW should load 0x1234 into r8");
-        assert_eq!(cpu.reg[9], 0x7F000000, "LB should load 0x7F into r9");
-        assert_eq!(cpu.reg[10], 0xFF000000, "LBU should load 0xFF into r10");
+        assert_eq!(cpu.reg[9], 0x7F, "LB should load 0x7F into r9");
+        assert_eq!(cpu.reg[10], 0xFF, "LBU should load 0xFF into r10");
     }
 }

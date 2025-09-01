@@ -77,14 +77,14 @@ impl MemRead for u8 {
 impl MemRead for u16 {
     fn from_slice(buf: &[u8]) -> Result<u16, DerefError> {
         let buf = buf.as_array().ok_or(DerefError)?;
-        Ok(u16::from_be_bytes(*buf))
+        Ok(u16::from_le_bytes(*buf))
     }
 }
 
 impl MemRead for u32 {
     fn from_slice(buf: &[u8]) -> Result<u32, DerefError> {
         let buf = buf.as_array().ok_or(DerefError)?;
-        Ok(u32::from_be_bytes(*buf))
+        Ok(u32::from_le_bytes(*buf))
     }
 }
 
@@ -122,14 +122,14 @@ impl MemWrite for u8 {
 impl MemWrite for u16 {
     #[inline]
     fn to_bytes(&self) -> [u8; 2] {
-        self.to_be_bytes()
+        self.to_le_bytes()
     }
 }
 
 impl MemWrite for u32 {
     #[inline]
     fn to_bytes(&self) -> [u8; 4] {
-        self.to_be_bytes()
+        self.to_le_bytes()
     }
 }
 
@@ -459,7 +459,7 @@ mod sign_extension_tests {
 
         // Zero extension
         assert_eq!(a.to_word_zeroed(), 0x0000007F);
-        assert_eq!(b.to_word_zeroed(), 0x000000FF);
+        assert_eq!(b.to_word_zeroed(), 0xFF);
     }
 
     #[test]
