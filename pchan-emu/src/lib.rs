@@ -1,4 +1,5 @@
 #![allow(incomplete_features)]
+#![feature(impl_trait_in_assoc_type)]
 #![feature(const_from)]
 #![feature(const_trait_impl)]
 #![feature(debug_closure_helpers)]

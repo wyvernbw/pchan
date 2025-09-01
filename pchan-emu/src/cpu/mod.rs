@@ -1,8 +1,10 @@
+use std::fmt::Display;
+
 use tracing::instrument;
 
 use crate::{
     cpu::op::{Op, PrimaryOp, load::LoadOp, store::StoreOp},
-    memory::{Address, MapAddress, MemRead, Memory, PhysAddr, ToWord},
+    memory::{Address, MapAddress, MemRead, MemWrite, Memory, PhysAddr, ToWord},
 };
 
 pub(crate) mod op;
@@ -325,6 +327,33 @@ type RegisterId = usize;
 const SP: RegisterId = 29;
 const RA: RegisterId = 31;
 
+pub(crate) struct Program<T: AsRef<[Op]>>(T);
+
+impl<T: AsRef<[Op]>> Program<T> {
+    const fn new(prog: T) -> Self {
+        Program(prog)
+    }
+}
+
+impl<T: AsRef<[Op]>> Display for Program<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0
+            .as_ref()
+            .into_iter()
+            .map(|op| write!(f, "{op}"))
+            .fold(Ok(()), |acc, el| acc.or(el))
+    }
+}
+impl<T: AsRef<[Op]>> IntoIterator for Program<T> {
+    type Item = Op;
+
+    type IntoIter = impl Iterator<Item = Op>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.as_ref().to_vec().into_iter()
+    }
+}
+
 #[cfg(test)]
 pub mod pipeline_tests {
     use super::*;
@@ -384,15 +413,14 @@ pub mod pipeline_tests {
         cpu.reg[9] = 0x1000;
         cpu.reg[10] = 0x2000;
 
-        mem.write_all(
-            PhysAddr::new(0),
-            [
-                Op::lw(8, 9, 4),
-                Op::NOP,
-                Op::lb(9, 8, 1),
-                Op::lbu(10, 10, 2),
-            ],
-        );
+        let program = Program::new([
+            Op::lw(8, 9, 4),
+            Op::NOP,
+            Op::lb(9, 8, 1),
+            Op::lbu(10, 10, 2),
+        ]);
+        tracing::info!(%program);
+        mem.write_all(PhysAddr::new(0), program);
 
         mem.write::<u32>(PhysAddr::new(0x1004), 0x1234); // LW source
         mem.write::<u8>(PhysAddr::new(0x1235), 0x7F); // LB source (0x1235 = r8 + 1)
