@@ -8,11 +8,9 @@ resolver = "3"
 members = ["pchan-emu", "pchan-macros", "pchan-utils"]
 
 [workspace.dependencies]
-pchan-emu = { path = "./pchan-emu" }
 pchan-macros = { path = "./pchan-macros"}
 pchan-utils = { path = "./pchan-utils"}
 tracing = "0.1.41"
-tracing-test = "0.1"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 color-eyre = "0.6.5"
 

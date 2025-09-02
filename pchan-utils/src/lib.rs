@@ -13,5 +13,6 @@ pub fn setup_tracing() {
             src = location,
             panic = %info.payload_as_str().unwrap_or_default()
         );
+        panic!();
     }));
 }

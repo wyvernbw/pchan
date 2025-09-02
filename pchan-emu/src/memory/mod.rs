@@ -242,7 +242,19 @@ impl Memory {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub struct PhysAddr(u32);
+pub struct PhysAddr(pub u32);
+
+impl PhysAddr {
+    pub const fn to_kseg0(self) -> KSEG0Addr {
+        KSEG0Addr(self.0 + 0xA000_0000u32)
+    }
+}
+
+impl MemWrite<{ size_of::<Self>() }> for PhysAddr {
+    fn to_bytes(&self) -> [u8; size_of::<Self>()] {
+        KSEG0Addr(self.0).to_phys().0.to_bytes()
+    }
+}
 
 impl core::fmt::Debug for PhysAddr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -257,7 +269,7 @@ impl core::fmt::Debug for PhysAddr {
 pub struct PhysAddrWrongHeader;
 
 impl PhysAddr {
-    #[instrument(err)]
+    #[instrument(err, fields(address = %format!("0x{:08X}", address)))]
     pub fn try_map(address: u32) -> Result<Self, PhysAddrWrongHeader> {
         let header = address & 0xE000_0000;
         match header {
@@ -301,11 +313,26 @@ impl KSEG0Addr {
     pub const fn to_phys(self) -> PhysAddr {
         PhysAddr(self.0 - 0x8000_0000u32)
     }
+    pub const fn from_phys(value: u32) -> Self {
+        PhysAddr(value).to_kseg0()
+    }
+    pub const fn as_u32(self) -> u32 {
+        self.0
+    }
+}
+
+impl MemWrite<{ size_of::<Self>() }> for KSEG0Addr {
+    fn to_bytes(&self) -> [u8; size_of::<Self>()] {
+        self.0.to_le_bytes()
+    }
 }
 
 impl KSEG1Addr {
     pub const fn to_phys(self) -> PhysAddr {
         PhysAddr(self.0 - 0xA000_0000u32)
+    }
+    pub const fn as_u32(self) -> u32 {
+        self.0
     }
 }
 

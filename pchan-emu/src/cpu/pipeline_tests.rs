@@ -1,5 +1,5 @@
 use super::*;
-use crate::memory::{MemRead, PhysAddr};
+use crate::memory::{KSEG0Addr, MemRead, PhysAddr};
 use pchan_utils::setup_tracing;
 use pretty_assertions::{assert_eq, assert_matches};
 use rstest::*;
@@ -11,7 +11,7 @@ fn test_pipeline_single_load(setup_tracing: ()) {
     let mut cpu = Cpu::default();
     let mut mem = Memory::default();
 
-    cpu.reg[9] = 0x1000; // r9 = 0x1000
+    cpu.reg[9] = PhysAddr(0x1000).to_kseg0().as_u32(); // r9 = 0x1000
     mem.write(PhysAddr::new(0x0), Op::lw(8, 9, 4)); // Instruction at PC=0
     mem.write::<u32>(PhysAddr::new(0x1000 + 4), 0x12345678); // Data at 0x1004
 
@@ -33,7 +33,7 @@ fn test_pipeline_lb(setup_tracing: ()) {
     let mut cpu = Cpu::default();
     let mut mem = Memory::default();
 
-    cpu.reg[8] = 0x1000;
+    cpu.reg[8] = KSEG0Addr::from_phys(0x1000).as_u32();
     mem.write(PhysAddr::new(0x0), Op::lbu(8, 8, 2));
     mem.write::<u8>(PhysAddr::new(0x1002), 0xAB); // byte to load
 
@@ -52,8 +52,11 @@ fn test_pipeline_multiple_loads(setup_tracing: ()) {
     let mut cpu = Cpu::default();
     let mut mem = Memory::default();
 
-    cpu.reg[9] = 0x1000;
-    cpu.reg[10] = 0x2000;
+    cpu.reg[9] = PhysAddr(0x1000).to_kseg0().as_u32();
+    assert!(PhysAddr::try_map(cpu.reg[9]).is_ok());
+    assert!(PhysAddr::try_map(cpu.reg[9] + 4).is_ok());
+    cpu.reg[10] = PhysAddr(0x2000).to_kseg0().as_u32();
+    assert!(PhysAddr::try_map(cpu.reg[10]).is_ok());
 
     let program = Program::new([
         Op::lw(8, 9, 4),
@@ -64,7 +67,8 @@ fn test_pipeline_multiple_loads(setup_tracing: ()) {
     tracing::info!(%program);
     mem.write_all(PhysAddr::new(0), program);
 
-    mem.write::<u32>(PhysAddr::new(0x1004), 0x1234); // LW source
+    mem.write(PhysAddr::new(0x1004), KSEG0Addr::from_phys(0x1234)); // LW source
+    tracing::info!("source = 0x{:08X?}", mem.read::<u32>(PhysAddr::new(0x1004)));
     mem.write::<u8>(PhysAddr::new(0x1235), 0x7F); // LB source (0x1235 = r8 + 1)
     mem.write::<u8>(PhysAddr::new(0x2002), 0xFF); // LBU source (r10 + 2)
 
@@ -74,7 +78,11 @@ fn test_pipeline_multiple_loads(setup_tracing: ()) {
         cpu.advance_cycle();
     }
 
-    assert_eq!(cpu.reg[8], 0x1234, "LW should load 0x1234 into r8");
+    assert_eq!(
+        cpu.reg[8],
+        KSEG0Addr::from_phys(0x1234).as_u32(),
+        "LW should load 0x1234 into r8"
+    );
     assert_eq!(cpu.reg[9], 0x7F, "LB should load 0x7F into r9");
     assert_eq!(cpu.reg[10], 0xFF, "LBU should load 0xFF into r10");
 }
@@ -115,7 +123,7 @@ fn basic_adder_program(setup_tracing: ()) {
     cpu.reg[9] = 42;
     cpu.reg[10] = 69;
 
-    cpu.reg[11] = PhysAddr::new(0x1000).as_u32();
+    cpu.reg[11] = KSEG0Addr::from_phys(0x1000).as_u32();
     let program = Program::new([
         Op::addu(8, 9, 10),
         Op::sw(8, 11, 0),
@@ -162,7 +170,7 @@ fn load_use_hazard(setup_tracing: ()) {
     let mut cpu = Cpu::default();
     let mut mem = Memory::default();
 
-    cpu.reg[9] = 0x1000;
+    cpu.reg[9] = KSEG0Addr::from_phys(0x1000).as_u32();
     cpu.reg[10] = 7;
 
     // Preload memory
@@ -194,7 +202,7 @@ fn basic_adder_program_2(setup_tracing: ()) {
     cpu.reg[9] = 42;
     cpu.reg[10] = 69;
 
-    cpu.reg[11] = PhysAddr::new(0x1000).as_u32();
+    cpu.reg[11] = KSEG0Addr::from_phys(0x1000).as_u32();
     let program = Program::new([
         Op::addu(8, 9, 10),
         Op::addi(8, 8, -32),
@@ -219,7 +227,7 @@ fn basic_adder_program_3(setup_tracing: ()) {
     cpu.reg[9] = 42;
     cpu.reg[10] = 69;
 
-    cpu.reg[11] = PhysAddr::new(0x1000).as_u32();
+    cpu.reg[11] = KSEG0Addr::from_phys(0x1000).as_u32();
     let program = Program::new([
         Op::addu(8, 9, 10),
         Op::addi(8, 8, 32),

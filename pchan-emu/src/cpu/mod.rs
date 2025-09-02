@@ -78,7 +78,7 @@ impl PipelineQueue {
             PrimaryOp::LBU => mem.read::<u8>(at).to_word_zeroed(),
             PrimaryOp::LH => mem.read::<u16>(at).to_word_signed(),
             PrimaryOp::LHU => mem.read::<u16>(at).to_word_zeroed(),
-            PrimaryOp::LW => mem.read::<u32>(at).to_word_signed(),
+            PrimaryOp::LW => mem.read::<u32>(at).to_word_zeroed(),
             _ => unreachable!("invalid header passed to load"),
         };
         MemOut { dest, value }
@@ -123,9 +123,10 @@ enum ExOut {
 
 type MemIn = ExOut;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(derive_more::Debug, Clone, Copy, PartialEq, Eq)]
 struct MemOut {
     dest: RegisterId,
+    #[debug("0x{value:08X}")]
     value: u32,
 }
 
@@ -214,7 +215,7 @@ impl Cpu {
             let ex_out = match ex_in {
                 IdOut::Load(load_args) => ExOut::Load {
                     header: load_args.header,
-                    rt_value: PhysAddr::new(
+                    rt_value: PhysAddr::map(
                         self.reg(load_args.rs)
                             .wrapping_add_signed(load_args.imm as i32),
                     ),
@@ -223,7 +224,7 @@ impl Cpu {
                 IdOut::Store(store) => ExOut::Store {
                     header: store.header,
                     rt_value: self.reg(store.rt),
-                    dest: PhysAddr::new(self.reg(store.rs).wrapping_add_signed(store.imm as i32)),
+                    dest: PhysAddr::map(self.reg(store.rs).wrapping_add_signed(store.imm as i32)),
                 },
                 // DONE: implement ALU args
                 IdOut::AluAdd(add) => {
@@ -288,7 +289,9 @@ impl Cpu {
                     dest,
                 } => {
                     // DONE: handle differnet load types
-                    Some(PipelineQueue::handle_load(mem, at, header, dest))
+                    let read = Some(PipelineQueue::handle_load(mem, at, header, dest));
+                    tracing::trace!(?read);
+                    read
                 }
 
                 MemIn::Store {
@@ -370,7 +373,7 @@ impl<T: AsRef<[Op]>> Display for Program<T> {
         self.0
             .as_ref()
             .into_iter()
-            .map(|op| write!(f, "{op}"))
+            .map(|op| write!(f, "\n{op}"))
             .fold(Ok(()), |acc, el| acc.or(el))
     }
 }
