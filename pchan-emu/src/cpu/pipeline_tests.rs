@@ -184,3 +184,53 @@ fn load_use_hazard(setup_tracing: ()) {
     assert_eq!(cpu.reg[8], 123);
     assert_eq!(cpu.reg[11], 130);
 }
+
+#[rstest]
+#[instrument]
+fn basic_adder_program_2(setup_tracing: ()) {
+    let mut cpu = Cpu::default();
+    let mut mem = Memory::default();
+
+    cpu.reg[9] = 42;
+    cpu.reg[10] = 69;
+
+    cpu.reg[11] = PhysAddr::new(0x1000).as_u32();
+    let program = Program::new([
+        Op::addu(8, 9, 10),
+        Op::addi(8, 8, -32),
+        Op::sw(8, 11, 0),
+        Op::lw(8, 11, 0),
+        Op::NOP,
+    ]);
+    mem.write_all(PhysAddr::new(cpu.pc), program);
+    for _ in 0..10 {
+        cpu.run_cycle(&mut mem);
+        cpu.advance_cycle();
+    }
+    assert_eq!(cpu.reg[8], 42 + 69 - 32)
+}
+
+#[rstest]
+#[instrument]
+fn basic_adder_program_3(setup_tracing: ()) {
+    let mut cpu = Cpu::default();
+    let mut mem = Memory::default();
+
+    cpu.reg[9] = 42;
+    cpu.reg[10] = 69;
+
+    cpu.reg[11] = PhysAddr::new(0x1000).as_u32();
+    let program = Program::new([
+        Op::addu(8, 9, 10),
+        Op::addi(8, 8, 32),
+        Op::sw(8, 11, 0),
+        Op::lw(8, 11, 0),
+        Op::NOP,
+    ]);
+    mem.write_all(PhysAddr::new(cpu.pc), program);
+    for _ in 0..10 {
+        cpu.run_cycle(&mut mem);
+        cpu.advance_cycle();
+    }
+    assert_eq!(cpu.reg[8], 42 + 69 + 32)
+}

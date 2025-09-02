@@ -1,3 +1,4 @@
+use crate::memory::ToWord;
 use std::fmt::Display;
 
 use crate::cpu::{
@@ -64,6 +65,72 @@ impl Display for AddOp {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct AddImmOp {
+    pub(crate) header: PrimaryOp,
+    pub(crate) rt: RegisterId,
+    pub(crate) rs: RegisterId,
+    pub(crate) imm: i16,
+}
+
+impl Display for AddImmOp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?} {} {} {}", self.header, self.rs, self.rt, self.imm)
+    }
+}
+
+impl const From<Op> for AddImmOp {
+    #[inline]
+    fn from(value: Op) -> Self {
+        AddImmOp {
+            header: value.primary(),
+            rs: value.bits(21..26) as usize,
+            rt: value.bits(16..21) as usize,
+            imm: value.bits(0..16) as i16,
+        }
+    }
+}
+
+impl const From<AddImmOp> for Op {
+    #[inline]
+    fn from(value: AddImmOp) -> Self {
+        let AddImmOp {
+            header,
+            rs,
+            rt,
+            imm,
+        } = value;
+        let i = ((header as u32) << 26)
+            | ((rs as u32) << 21)
+            | ((rt as u32) << 16)
+            | ((imm as u16) as u32);
+        Self(i)
+    }
+}
+
+impl Op {
+    #[inline]
+    pub(crate) const fn addi(rs: RegisterId, rt: RegisterId, imm: i16) -> Op {
+        AddImmOp {
+            rs,
+            rt,
+            imm,
+            header: PrimaryOp::ADDI,
+        }
+        .into()
+    }
+    #[inline]
+    pub(crate) const fn addiu(rs: RegisterId, rt: RegisterId, imm: i16) -> Op {
+        AddImmOp {
+            rs,
+            rt,
+            imm,
+            header: PrimaryOp::ADDIU,
+        }
+        .into()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use pchan_utils::setup_tracing;
@@ -75,5 +142,7 @@ mod tests {
     fn test_load_op_creation(setup_tracing: ()) {
         let op = Op::add(8, 9, 4);
         assert_eq!(op.to_string(), "ADD 8 9 4");
+        let op = Op::addi(8, 9, 64);
+        assert_eq!(op.to_string(), "ADDI 8 9 64");
     }
 }

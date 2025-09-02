@@ -1,10 +1,15 @@
 use std::fmt::Display;
 
-use tracing::{Instrument, instrument};
+use tracing::instrument;
 
 use crate::{
-    cpu::op::{Op, PrimaryOp, SecondaryOp, add::AddOp, load::LoadOp, store::StoreOp},
-    memory::{Address, MapAddress, MemRead, MemWrite, Memory, PhysAddr, ToWord},
+    cpu::op::{
+        Op, PrimaryOp, SecondaryOp,
+        add::{AddImmOp, AddOp},
+        load::LoadOp,
+        store::StoreOp,
+    },
+    memory::{Address, Memory, PhysAddr, ToWord},
 };
 
 pub(crate) mod op;
@@ -92,6 +97,7 @@ enum IdOut {
     Load(LoadOp),
     Store(StoreOp),
     AluAdd(AddOp),
+    AluImmAdd(AddImmOp),
 }
 
 type ExIn = IdOut;
@@ -178,6 +184,10 @@ impl Cpu {
                     let args: StoreOp = id_in.op.into();
                     self.pipe.id_out = Some(IdOut::Store(args));
                 }
+                PrimaryOp::ADDI | PrimaryOp::ADDIU => {
+                    let args: AddImmOp = id_in.op.into();
+                    self.pipe.id_out = Some(IdOut::AluImmAdd(args));
+                }
                 PrimaryOp::SPECIAL => match id_in.op.secondary() {
                     SecondaryOp::ADD | SecondaryOp::ADDU => {
                         let args: AddOp = id_in.op.into();
@@ -215,10 +225,14 @@ impl Cpu {
                     rt_value: self.reg(store.rt),
                     dest: PhysAddr::new(self.reg(store.rs).wrapping_add_signed(store.imm as i32)),
                 },
-                // TODO: implement ALU args
+                // DONE: implement ALU args
                 IdOut::AluAdd(add) => {
                     let out = self.reg(add.rs) + self.reg(add.rt);
                     ExOut::Alu { out, dest: add.rd }
+                }
+                IdOut::AluImmAdd(add) => {
+                    let out = self.reg(add.rs).wrapping_add_signed(add.imm as i32);
+                    ExOut::Alu { out, dest: add.rt }
                 }
             };
             self.pipe.ex_out = Some(ex_out);
@@ -336,7 +350,11 @@ impl Cpu {
 
 type RegisterId = usize;
 
+/// zero  Constant (always 0)
+const R0: RegisterId = 0;
+/// R29 (SP) - Full Decrementing Wasted Stack Pointer
 const SP: RegisterId = 29;
+/// R31 (RA) Return address (used so by JAL,BLTZAL,BGEZAL opcodes)
 const RA: RegisterId = 31;
 
 pub(crate) struct Program<T: AsRef<[Op]>>(T);

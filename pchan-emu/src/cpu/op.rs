@@ -7,7 +7,10 @@ use std::{fmt::Display, ops::Range, u8};
 use pchan_macros::OpCode;
 
 use crate::{
-    cpu::op::{add::AddOp, store::StoreOp},
+    cpu::op::{
+        add::{AddImmOp, AddOp},
+        store::StoreOp,
+    },
     memory::{MemRead, MemWrite},
 };
 
@@ -43,6 +46,10 @@ impl Display for Op {
             }
             PrimaryOp::SB | PrimaryOp::SH | PrimaryOp::SW => {
                 let args: StoreOp = (*self).into();
+                write!(f, "{}", args)
+            }
+            PrimaryOp::ADDI | PrimaryOp::ADDIU => {
+                let args: AddImmOp = (*self).into();
                 write!(f, "{}", args)
             }
             _ => write!(f, "0x{:08X}", self.0),
