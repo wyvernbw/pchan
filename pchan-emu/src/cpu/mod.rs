@@ -8,6 +8,7 @@ use crate::{
         add::{AddImmOp, AddOp},
         load::LoadOp,
         store::StoreOp,
+        sub::SubOp,
     },
     memory::{Address, Memory, PhysAddr, ToWord},
 };
@@ -98,6 +99,7 @@ enum IdOut {
     Store(StoreOp),
     AluAdd(AddOp),
     AluImmAdd(AddImmOp),
+    AluSub(SubOp),
 }
 
 type ExIn = IdOut;
@@ -194,6 +196,10 @@ impl Cpu {
                         let args: AddOp = id_in.op.into();
                         self.pipe.id_out = Some(IdOut::AluAdd(args));
                     }
+                    SecondaryOp::SUB | SecondaryOp::SUBU => {
+                        let args: SubOp = id_in.op.into();
+                        self.pipe.id_out = Some(IdOut::AluSub(args));
+                    }
                     other => todo!("{other:x?} not yet implemented"),
                 },
                 other => todo!("{other:x?} not yet implemented"),
@@ -234,6 +240,10 @@ impl Cpu {
                 IdOut::AluImmAdd(add) => {
                     let out = self.reg(add.rs).wrapping_add_signed(add.imm as i32);
                     ExOut::Alu { out, dest: add.rt }
+                }
+                IdOut::AluSub(sub) => {
+                    let out = self.reg(sub.rs) - self.reg(sub.rt);
+                    ExOut::Alu { out, dest: sub.rd }
                 }
             };
             self.pipe.ex_out = Some(ex_out);

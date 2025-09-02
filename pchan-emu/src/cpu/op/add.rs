@@ -1,4 +1,3 @@
-use crate::memory::ToWord;
 use std::fmt::Display;
 
 use crate::cpu::{
@@ -75,7 +74,7 @@ pub(crate) struct AddImmOp {
 
 impl Display for AddImmOp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?} {} {} {}", self.header, self.rs, self.rt, self.imm)
+        write!(f, "{:?} {} {} {}", self.header, self.rt, self.rs, self.imm)
     }
 }
 
@@ -110,7 +109,7 @@ impl const From<AddImmOp> for Op {
 
 impl Op {
     #[inline]
-    pub(crate) const fn addi(rs: RegisterId, rt: RegisterId, imm: i16) -> Op {
+    pub(crate) const fn addi(rt: RegisterId, rs: RegisterId, imm: i16) -> Op {
         AddImmOp {
             rs,
             rt,
@@ -120,7 +119,7 @@ impl Op {
         .into()
     }
     #[inline]
-    pub(crate) const fn addiu(rs: RegisterId, rt: RegisterId, imm: i16) -> Op {
+    pub(crate) const fn addiu(rt: RegisterId, rs: RegisterId, imm: i16) -> Op {
         AddImmOp {
             rs,
             rt,

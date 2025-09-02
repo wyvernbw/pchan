@@ -1,6 +1,7 @@
 pub(crate) mod add;
 pub(crate) mod load;
 pub(crate) mod store;
+pub(crate) mod sub;
 
 use std::{fmt::Display, ops::Range, u8};
 
@@ -10,6 +11,7 @@ use crate::{
     cpu::op::{
         add::{AddImmOp, AddOp},
         store::StoreOp,
+        sub::SubOp,
     },
     memory::{MemRead, MemWrite},
 };
@@ -36,6 +38,10 @@ impl Display for Op {
             PrimaryOp::SPECIAL => match secondary {
                 SecondaryOp::ADD | SecondaryOp::ADDU => {
                     let args: AddOp = (*self).into();
+                    write!(f, "{}", args)
+                }
+                SecondaryOp::SUB | SecondaryOp::SUBU => {
+                    let args: SubOp = (*self).into();
                     write!(f, "{}", args)
                 }
                 _ => write!(f, "0x{:08X}", self.0),

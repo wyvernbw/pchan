@@ -242,3 +242,27 @@ fn basic_adder_program_3(setup_tracing: ()) {
     }
     assert_eq!(cpu.reg[8], 42 + 69 + 32)
 }
+
+#[rstest]
+#[instrument]
+fn basic_arithmetic_1(setup_tracing: ()) {
+    let mut cpu = Cpu::default();
+    let mut mem = Memory::default();
+
+    let program = Program::new([
+        // load values into $r8 and $r9
+        Op::addi(8, 0, 12),
+        Op::addi(9, 0, 20),
+        // perform add into $r10 and sub into $r11
+        Op::addu(10, 8, 9),
+        Op::subu(11, 9, 8),
+        Op::NOP,
+    ]);
+    mem.write_all(PhysAddr::new(cpu.pc), program);
+    for _ in 0..7 {
+        cpu.run_cycle(&mut mem);
+        cpu.advance_cycle();
+    }
+    assert_eq!(cpu.reg(10), 12 + 20);
+    assert_eq!(cpu.reg(11), 20 - 12);
+}
