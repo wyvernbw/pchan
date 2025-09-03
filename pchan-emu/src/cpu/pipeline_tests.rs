@@ -1,5 +1,5 @@
 use super::*;
-use crate::memory::{KSEG0Addr, MemRead, PhysAddr};
+use crate::memory::{KSEG0Addr, PhysAddr};
 use pchan_utils::setup_tracing;
 use pretty_assertions::{assert_eq, assert_matches};
 use rstest::*;
@@ -265,4 +265,72 @@ fn basic_arithmetic_1(setup_tracing: ()) {
     }
     assert_eq!(cpu.reg(10), 12 + 20);
     assert_eq!(cpu.reg(11), 20 - 12);
+}
+
+#[rstest]
+#[instrument]
+fn basic_jump_1(setup_tracing: ()) {
+    let mut cpu = Cpu::default();
+    let mut mem = Memory::default();
+
+    let start_pc = cpu.pc;
+
+    // Build a small program:
+    // 1. Set $r8 = 42 (will be skipped)
+    // 2. Jump to label "target"
+    // 3. Set $r8 = 99 (skipped)
+    // 4. target: set $r9 = 77
+    let program = Program::new([
+        Op::addi(8, 0, 42),              // skipped by jump
+        Op::j(KSEG0Addr::from_phys(16)), // jump over next instruction
+        Op::NOP,
+        Op::addi(8, 0, 99), // skipped
+        Op::addi(9, 0, 77), // target
+        Op::NOP,
+    ]);
+
+    // Load program into memor4y
+    mem.write_all(PhysAddr::new(start_pc), program);
+
+    // Run enough cycles to execute all instructions
+    for _ in 0..12 {
+        cpu.run_cycle(&mut mem);
+        cpu.advance_cycle();
+    }
+
+    // $r8 should remain 42 (first instruction executed before jump)
+    assert_eq!(cpu.reg(8), 42);
+
+    // $r9 should be 77 (instruction after jump target executed)
+    assert_eq!(cpu.reg(9), 77);
+}
+
+#[rstest]
+#[instrument]
+fn basic_jump_hazard_1(setup_tracing: ()) {
+    let mut cpu = Cpu::default();
+    let mut mem = Memory::default();
+
+    let start_pc = cpu.pc;
+
+    let program = Program::new([
+        Op::addi(8, 0, 42),              // skipped by jump
+        Op::j(KSEG0Addr::from_phys(12)), // jump over next instruction
+        Op::addi(8, 0, 99),              // runs anyways
+        Op::addi(9, 0, 77),              // target
+        Op::NOP,
+    ]);
+
+    // Load program into memor4y
+    mem.write_all(PhysAddr::new(start_pc), program);
+
+    // Run enough cycles to execute all instructions
+    for _ in 0..12 {
+        cpu.run_cycle(&mut mem);
+        cpu.advance_cycle();
+    }
+
+    assert_eq!(cpu.reg(8), 99);
+
+    assert_eq!(cpu.reg(9), 77);
 }

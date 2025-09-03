@@ -174,9 +174,10 @@ impl ToWord for u32 {
     }
 }
 
-pub(crate) trait Address: TryInto<PhysAddr> + core::fmt::Debug + 'static + Copy {}
+#[rustfmt::skip]
+pub const trait Address: TryInto<PhysAddr> + core::fmt::Debug + 'static + Copy {}
 
-impl<T> Address for T where T: TryInto<PhysAddr> + core::fmt::Debug + 'static + Copy {}
+impl<T> const Address for T where T: TryInto<PhysAddr> + core::fmt::Debug + 'static + Copy {}
 
 impl Memory {
     #[instrument(err, skip(self))]
@@ -342,9 +343,21 @@ impl From<KSEG0Addr> for PhysAddr {
     }
 }
 
+impl const From<KSEG0Addr> for Addr {
+    fn from(value: KSEG0Addr) -> Self {
+        Addr(value.0)
+    }
+}
+
 impl From<KSEG1Addr> for PhysAddr {
     fn from(value: KSEG1Addr) -> Self {
         value.to_phys()
+    }
+}
+
+impl const From<KSEG1Addr> for Addr {
+    fn from(value: KSEG1Addr) -> Self {
+        Addr(value.0)
     }
 }
 

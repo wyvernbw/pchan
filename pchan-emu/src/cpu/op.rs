@@ -1,4 +1,5 @@
 pub(crate) mod add;
+pub(crate) mod jump;
 pub(crate) mod load;
 pub(crate) mod store;
 pub(crate) mod sub;
@@ -10,6 +11,7 @@ use pchan_macros::OpCode;
 use crate::{
     cpu::op::{
         add::{AddImmOp, AddOp},
+        jump::JOp,
         store::StoreOp,
         sub::SubOp,
     },
@@ -58,6 +60,10 @@ impl Display for Op {
                 let args: AddImmOp = (*self).into();
                 write!(f, "{}", args)
             }
+            PrimaryOp::J => match JOp::try_from(*self) {
+                Ok(jop) => write!(f, "{}", jop),
+                Err(err) => write!(f, "{{err}}: {}", err),
+            },
             _ => write!(f, "0x{:08X}", self.0),
         }
     }

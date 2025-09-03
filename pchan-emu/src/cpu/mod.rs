@@ -1,16 +1,17 @@
 use std::fmt::Display;
 
-use tracing::instrument;
+use tracing::{Instrument, instrument};
 
 use crate::{
     cpu::op::{
         Op, PrimaryOp, SecondaryOp,
         add::{AddImmOp, AddOp},
+        jump::JOp,
         load::LoadOp,
         store::StoreOp,
         sub::SubOp,
     },
-    memory::{Address, Memory, PhysAddr, ToWord},
+    memory::{Addr, Address, Memory, PhysAddr, ToWord},
 };
 
 pub(crate) mod op;
@@ -100,6 +101,7 @@ enum IdOut {
     AluAdd(AddOp),
     AluImmAdd(AddImmOp),
     AluSub(SubOp),
+    J(JOp),
 }
 
 type ExIn = IdOut;
@@ -108,18 +110,21 @@ type ExIn = IdOut;
 enum ExOut {
     Load {
         header: PrimaryOp,
-        rt_value: PhysAddr,
+        rt_value: Addr,
         dest: RegisterId,
     },
     Store {
         header: PrimaryOp,
         rt_value: u32,
-        dest: PhysAddr,
+        dest: Addr,
     },
     // pass through all the way to WB
     Alu {
         out: u32,
         dest: RegisterId,
+    },
+    Jump {
+        dest: Addr,
     },
 }
 
@@ -191,6 +196,9 @@ impl Cpu {
                     let args: AddImmOp = id_in.op.into();
                     self.pipe.id_out = Some(IdOut::AluImmAdd(args));
                 }
+                PrimaryOp::J => {
+                    self.pipe.id_out = Some(IdOut::J(id_in.op.try_into().unwrap()));
+                }
                 PrimaryOp::SPECIAL => match id_in.op.secondary() {
                     SecondaryOp::ADD | SecondaryOp::ADDU => {
                         let args: AddOp = id_in.op.into();
@@ -221,7 +229,7 @@ impl Cpu {
             let ex_out = match ex_in {
                 IdOut::Load(load_args) => ExOut::Load {
                     header: load_args.header,
-                    rt_value: PhysAddr::map(
+                    rt_value: Addr(
                         self.reg(load_args.rs)
                             .wrapping_add_signed(load_args.imm as i32),
                     ),
@@ -230,7 +238,7 @@ impl Cpu {
                 IdOut::Store(store) => ExOut::Store {
                     header: store.header,
                     rt_value: self.reg(store.rt),
-                    dest: PhysAddr::map(self.reg(store.rs).wrapping_add_signed(store.imm as i32)),
+                    dest: Addr(self.reg(store.rs).wrapping_add_signed(store.imm as i32)),
                 },
                 // DONE: implement ALU args
                 IdOut::AluAdd(add) => {
@@ -244,6 +252,11 @@ impl Cpu {
                 IdOut::AluSub(sub) => {
                     let out = self.reg(sub.rs) - self.reg(sub.rt);
                     ExOut::Alu { out, dest: sub.rd }
+                }
+                IdOut::J(jop) => {
+                    self.pipe.id_in = None;
+                    self.pipe.fetch_out = None;
+                    ExOut::Jump { dest: jop.dest }
                 }
             };
             self.pipe.ex_out = Some(ex_out);
@@ -282,7 +295,7 @@ impl Cpu {
     }
 
     #[instrument(skip_all)]
-    fn pipeline_mem(&mut self, mem: &mut Memory) {
+    fn pipeline_mem(&mut self, mem: &mut Memory) -> color_eyre::Result<()> {
         // flush `mem_out`
         if let Some(mem_out) = self.pipe.mem_out.take() {
             tracing::trace!(send = ?mem_out);
@@ -290,43 +303,65 @@ impl Cpu {
         }
 
         // move `mem_in` into `mem_out`
-        self.pipe.mem_out = self.pipe.mem_in.take().and_then(|mem_in| {
-            tracing::trace!(recv = ?mem_in);
-            match mem_in {
-                MemIn::Load {
-                    header,
-                    rt_value: at,
-                    dest,
-                } => {
-                    // DONE: handle differnet load types
-                    let read = Some(PipelineQueue::handle_load(mem, at, header, dest));
-                    tracing::trace!(?read);
-                    read
-                }
-
-                MemIn::Store {
-                    rt_value,
-                    dest,
-                    header,
-                } => {
-                    PipelineQueue::handle_store(mem, rt_value, dest, header);
-                    None
-                }
-
-                MemIn::Alu { out, dest } => {
-                    // immediate pass through
-                    self.pipe.wb_in = Some(MemOut { dest, value: out });
-                    None
-                }
+        let Some(mem_in) = self.pipe.mem_in.take() else {
+            return Ok(());
+        };
+        tracing::trace!(recv = ?mem_in);
+        self.pipe.mem_out = match mem_in {
+            MemIn::Load {
+                header,
+                rt_value: at,
+                dest,
+            } => {
+                // DONE: handle differnet load types
+                let at = at.try_into()?;
+                let read = Some(PipelineQueue::handle_load(mem, at, header, dest));
+                tracing::trace!(?read);
+                read
             }
-        });
+
+            MemIn::Store {
+                rt_value,
+                dest,
+                header,
+            } => {
+                PipelineQueue::handle_store(mem, rt_value, dest, header);
+                None
+            }
+
+            MemIn::Alu { out, dest } => {
+                // immediate pass through
+                self.pipe.wb_in = Some(MemOut { dest, value: out });
+                None
+            }
+
+            MemIn::Jump { dest } => {
+                // immediate pass through
+                self.pipe.wb_in = Some(MemOut {
+                    dest: PC,
+                    value: dest.0,
+                });
+                None
+            }
+        };
+        Ok(())
     }
 
     #[instrument(skip_all)]
     fn pipeline_wb(&mut self, mem: &mut Memory) {
         if let Some(wb_in) = self.pipe.wb_in.take() {
             tracing::trace!(recv = ?wb_in);
-            self.reg_write(wb_in.dest, wb_in.value);
+            match wb_in.dest {
+                PC => {
+                    self.pc = (self.pc & 0xF0000000) + wb_in.value;
+                }
+                dest @ 0..=31 => {
+                    self.reg_write(wb_in.dest, wb_in.value);
+                }
+                register => {
+                    tracing::error!("invalid register {register}");
+                }
+            }
         }
     }
 
@@ -334,7 +369,7 @@ impl Cpu {
         self.reg[dest] = value;
     }
 
-    #[instrument(fields(cycle = self.cycle), skip(mem, self))]
+    #[instrument(fields(cycle = self.cycle, pc = self.pc), skip(mem, self))]
     pub(crate) fn run_cycle(&mut self, mem: &mut Memory) -> Option<Interrupt> {
         // DONE: the rest of the owl
 
@@ -369,6 +404,7 @@ const R0: RegisterId = 0;
 const SP: RegisterId = 29;
 /// R31 (RA) Return address (used so by JAL,BLTZAL,BGEZAL opcodes)
 const RA: RegisterId = 31;
+const PC: RegisterId = 32;
 
 pub(crate) struct Program<T: AsRef<[Op]>>(T);
 
