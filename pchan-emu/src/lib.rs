@@ -1,4 +1,6 @@
 #![allow(incomplete_features)]
+#![feature(const_ops)]
+#![feature(try_blocks)]
 #![feature(impl_trait_in_assoc_type)]
 #![feature(const_from)]
 #![feature(const_trait_impl)]

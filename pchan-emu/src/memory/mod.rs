@@ -1,4 +1,4 @@
-use std::ops::Add;
+use std::ops::{Add, Mul};
 
 use thiserror::Error;
 use tracing::instrument;
@@ -49,7 +49,7 @@ pub enum MemWriteError {
     DerefErr(DerefError),
     #[error("partial write into buffer {0:?} (size: {1}) from buffer {2:?} (size:{3})")]
     MismatchedBuffers(*const u8, usize, *const u8, usize),
-    #[error("out of bounds write at address {0}")]
+    #[error("out of bounds write at address 0x{0:08X}")]
     OutOfBoundsWrite(u32),
 }
 
@@ -170,7 +170,7 @@ impl ToWord for u32 {
 
     #[inline]
     fn to_word_zeroed(&self) -> u32 {
-        *self as u32
+        *self
     }
 }
 
@@ -247,7 +247,10 @@ pub struct PhysAddr(pub u32);
 
 impl PhysAddr {
     pub const fn to_kseg0(self) -> KSEG0Addr {
-        KSEG0Addr(self.0 + 0xA000_0000u32)
+        KSEG0Addr(self.0 + 0x8000_0000u32)
+    }
+    pub const fn to_kseg1(self) -> KSEG1Addr {
+        KSEG1Addr(self.0 + 0xA000_0000u32)
     }
 }
 
@@ -303,11 +306,14 @@ impl Add<u32> for PhysAddr {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(derive_more::Debug, Clone, Copy, PartialEq, Eq, derive_more::Add)]
+#[debug("0x{:08X}", self.0)]
 pub struct KSEG0Addr(pub u32);
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(derive_more::Debug, Clone, Copy, PartialEq, Eq, derive_more::Add)]
+#[debug("0x{:08X}", self.0)]
 pub struct KSEG1Addr(pub u32);
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(derive_more::Debug, Clone, Copy, PartialEq, Eq)]
+#[debug("0x{:08X}", self.0)]
 pub struct Addr(pub u32);
 
 impl KSEG0Addr {
@@ -319,6 +325,14 @@ impl KSEG0Addr {
     }
     pub const fn as_u32(self) -> u32 {
         self.0
+    }
+}
+
+impl const Add<u32> for KSEG0Addr {
+    type Output = KSEG0Addr;
+
+    fn add(self, rhs: u32) -> Self::Output {
+        KSEG0Addr(self.0 + rhs)
     }
 }
 
@@ -361,6 +375,14 @@ impl const From<KSEG1Addr> for Addr {
     }
 }
 
+impl const Add<u32> for KSEG1Addr {
+    type Output = KSEG1Addr;
+
+    fn add(self, rhs: u32) -> Self::Output {
+        KSEG1Addr(self.0 + rhs)
+    }
+}
+
 impl TryFrom<Addr> for PhysAddr {
     type Error = PhysAddrWrongHeader;
 
@@ -372,6 +394,14 @@ impl TryFrom<Addr> for PhysAddr {
 impl From<PhysAddr> for usize {
     fn from(value: PhysAddr) -> Self {
         value.0 as usize
+    }
+}
+
+impl const Mul<u32> for Addr {
+    type Output = Self;
+
+    fn mul(self, rhs: u32) -> Self::Output {
+        Addr(self.0 * rhs)
     }
 }
 

@@ -33,12 +33,8 @@ impl Bootloader {
             .read(&mut bios)
             .map_err(BootError::BiosReadError)?;
 
-        for (offset, &byte) in bios[..n].iter().enumerate() {
-            let offset = offset as u32;
-            // load bios with KSEG0 for caching and better performance (i think)
-            // note that the cache is not implemented yet
-            mem.write(KSEG1Addr(0xBFC00000 + offset), byte);
-        }
+        mem.write_all(KSEG1Addr(0xBFC00000), bios[..n].iter().cloned());
+
         Ok(())
     }
 }

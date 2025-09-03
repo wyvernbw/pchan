@@ -1,17 +1,17 @@
 use std::fmt::Display;
 
-use tracing::{Instrument, instrument};
+use tracing::instrument;
 
 use crate::{
     cpu::op::{
         Op, PrimaryOp, SecondaryOp,
         add::{AddImmOp, AddOp},
-        jump::JOp,
+        jump::{JOp, JalOp, JrOp},
         load::LoadOp,
         store::StoreOp,
         sub::SubOp,
     },
-    memory::{Addr, Address, Memory, PhysAddr, ToWord},
+    memory::{Addr, Address, KSEG0Addr, Memory, PhysAddr, ToWord},
 };
 
 pub(crate) mod op;
@@ -37,6 +37,7 @@ pub struct Cpu {
 /// - ex: executes arithmetic operations and computes the `[rs+imm]` for load ops
 /// - mem: reads/writes to memory
 /// - wb: writes values to registers
+///
 /// each stage takes a cycle, however alus implement instruction forwarding effectively making them
 /// take 1 cycle instead.
 #[derive(Default, Debug)]
@@ -102,6 +103,8 @@ enum IdOut {
     AluImmAdd(AddImmOp),
     AluSub(SubOp),
     J(JOp),
+    Jal { op: JalOp, ret: Addr },
+    Jr(Addr),
 }
 
 type ExIn = IdOut;
@@ -123,8 +126,8 @@ enum ExOut {
         out: u32,
         dest: RegisterId,
     },
-    Jump {
-        dest: Addr,
+    JumpAndLink {
+        ret: Addr,
     },
 }
 
@@ -142,6 +145,20 @@ type WbOut = ();
 
 pub enum Interrupt {}
 
+#[derive(Debug, thiserror::Error)]
+pub enum Exception {
+    /// ## Memory Error
+    /// Misalignments
+    /// (and probably also KSEG access in User mode)
+    #[error("memory exception")]
+    MemoryError,
+    /// ## Bus Error
+    /// Unused Memory Regions (including Gaps in I/O Region)
+    /// (unless RAM/BIOS/Expansion mirrors are mapped to "unused" area)
+    #[error("bus exception")]
+    BusError,
+}
+
 impl Cpu {
     #[instrument(skip_all)]
     pub(crate) fn advance_cycle(&mut self) {
@@ -151,7 +168,7 @@ impl Cpu {
     /// fetches instruction at the program counter and passes it forward to the
     /// `id` stage. it then advances the program counter.
     #[instrument(skip_all)]
-    fn pipeline_fetch(&mut self, mem: &mut Memory) {
+    fn pipeline_fetch(&mut self, mem: &mut Memory) -> Result<(), Exception> {
         let op = mem.read::<Op>(PhysAddr::new(self.pc));
         self.pipe.fetch_in = Some(FetchOut { op });
 
@@ -166,10 +183,11 @@ impl Cpu {
         }
 
         self.pc += 4;
+        Ok(())
     }
 
     #[instrument(skip_all)]
-    fn pipeline_id(&mut self, mem: &mut Memory) {
+    fn pipeline_id(&mut self, mem: &mut Memory) -> Result<(), Exception> {
         // flush `id_out`
         if let Some(id_out) = self.pipe.id_out.take() {
             tracing::trace!(send = ?id_out);
@@ -181,7 +199,7 @@ impl Cpu {
             tracing::trace!(recv = %id_in.op);
             // handle NOP
             if id_in.op == Op::NOP {
-                return;
+                return Ok(());
             }
             match id_in.op.primary() {
                 PrimaryOp::LW | PrimaryOp::LB | PrimaryOp::LBU | PrimaryOp::LH | PrimaryOp::LHU => {
@@ -197,7 +215,15 @@ impl Cpu {
                     self.pipe.id_out = Some(IdOut::AluImmAdd(args));
                 }
                 PrimaryOp::J => {
-                    self.pipe.id_out = Some(IdOut::J(id_in.op.try_into().unwrap()));
+                    let jop = id_in.op.into();
+                    tracing::trace!(?jop);
+                    self.pipe.id_out = Some(IdOut::J(jop));
+                }
+                PrimaryOp::JAL => {
+                    self.pipe.id_out = Some(IdOut::Jal {
+                        op: JalOp::from(id_in.op),
+                        ret: KSEG0Addr::from_phys(self.pc).into(),
+                    });
                 }
                 PrimaryOp::SPECIAL => match id_in.op.secondary() {
                     SecondaryOp::ADD | SecondaryOp::ADDU => {
@@ -208,15 +234,21 @@ impl Cpu {
                         let args: SubOp = id_in.op.into();
                         self.pipe.id_out = Some(IdOut::AluSub(args));
                     }
+                    SecondaryOp::JR => {
+                        let args: JrOp = id_in.op.into();
+                        let args = args.to_jump(self);
+                        self.pipe.id_out = Some(IdOut::Jr(args.dest));
+                    }
                     other => todo!("{other:x?} not yet implemented"),
                 },
                 other => todo!("{other:x?} not yet implemented"),
             }
-        }
+        };
+        Ok(())
     }
 
     #[instrument(skip_all)]
-    fn pipeline_ex(&mut self, mem: &mut Memory) {
+    fn pipeline_ex(&mut self, mem: &mut Memory) -> Result<(), Exception> {
         // flush `ex_out`
         if let Some(ex_out) = self.pipe.ex_out.take() {
             tracing::trace!(send = ?ex_out);
@@ -227,40 +259,54 @@ impl Cpu {
         if let Some(ex_in) = self.pipe.ex_in.take() {
             tracing::trace!(recv = ?ex_in);
             let ex_out = match ex_in {
-                IdOut::Load(load_args) => ExOut::Load {
+                IdOut::Load(load_args) => Some(ExOut::Load {
                     header: load_args.header,
                     rt_value: Addr(
                         self.reg(load_args.rs)
                             .wrapping_add_signed(load_args.imm as i32),
                     ),
                     dest: load_args.rt,
-                },
-                IdOut::Store(store) => ExOut::Store {
+                }),
+                IdOut::Store(store) => Some(ExOut::Store {
                     header: store.header,
                     rt_value: self.reg(store.rt),
                     dest: Addr(self.reg(store.rs).wrapping_add_signed(store.imm as i32)),
-                },
+                }),
                 // DONE: implement ALU args
                 IdOut::AluAdd(add) => {
                     let out = self.reg(add.rs) + self.reg(add.rt);
-                    ExOut::Alu { out, dest: add.rd }
+                    Some(ExOut::Alu { out, dest: add.rd })
                 }
                 IdOut::AluImmAdd(add) => {
                     let out = self.reg(add.rs).wrapping_add_signed(add.imm as i32);
-                    ExOut::Alu { out, dest: add.rt }
+                    Some(ExOut::Alu { out, dest: add.rt })
                 }
                 IdOut::AluSub(sub) => {
                     let out = self.reg(sub.rs) - self.reg(sub.rt);
-                    ExOut::Alu { out, dest: sub.rd }
+                    Some(ExOut::Alu { out, dest: sub.rd })
                 }
                 IdOut::J(jop) => {
                     self.pipe.id_in = None;
                     self.pipe.fetch_out = None;
-                    ExOut::Jump { dest: jop.dest }
+                    self.control_jump_in_region(jop.dest)?;
+                    None
+                }
+                IdOut::Jal { op, ret } => {
+                    self.pipe.id_in = None;
+                    self.pipe.fetch_out = None;
+                    self.control_jump_in_region(op.dest)?;
+                    Some(ExOut::JumpAndLink { ret })
+                }
+                IdOut::Jr(dest) => {
+                    self.pipe.id_in = None;
+                    self.pipe.fetch_out = None;
+                    self.control_jump_absolute(dest)?;
+                    None
                 }
             };
-            self.pipe.ex_out = Some(ex_out);
-        }
+            self.pipe.ex_out = ex_out;
+        };
+        Ok(())
     }
 
     /// reads value from register, forwarding values if possible
@@ -295,7 +341,7 @@ impl Cpu {
     }
 
     #[instrument(skip_all)]
-    fn pipeline_mem(&mut self, mem: &mut Memory) -> color_eyre::Result<()> {
+    fn pipeline_mem(&mut self, mem: &mut Memory) -> Result<(), Exception> {
         // flush `mem_out`
         if let Some(mem_out) = self.pipe.mem_out.take() {
             tracing::trace!(send = ?mem_out);
@@ -314,7 +360,7 @@ impl Cpu {
                 dest,
             } => {
                 // DONE: handle differnet load types
-                let at = at.try_into()?;
+                let at = at.try_into().map_err(|_| Exception::MemoryError)?;
                 let read = Some(PipelineQueue::handle_load(mem, at, header, dest));
                 tracing::trace!(?read);
                 read
@@ -335,11 +381,11 @@ impl Cpu {
                 None
             }
 
-            MemIn::Jump { dest } => {
+            MemIn::JumpAndLink { ret } => {
                 // immediate pass through
                 self.pipe.wb_in = Some(MemOut {
-                    dest: PC,
-                    value: dest.0,
+                    dest: RA,
+                    value: ret.0,
                 });
                 None
             }
@@ -347,14 +393,32 @@ impl Cpu {
         Ok(())
     }
 
+    #[instrument(err, skip(self))]
+    fn control_jump_in_region(
+        &mut self,
+        target: impl Into<Addr> + core::fmt::Debug,
+    ) -> Result<(), Exception> {
+        let target: Addr = target.into();
+        self.pc = (self.pc & 0xF0000000) + (target.0);
+        Ok(())
+    }
+
+    #[instrument(err, skip(self))]
+    fn control_jump_absolute(
+        &mut self,
+        target: impl Into<Addr> + core::fmt::Debug,
+    ) -> Result<(), Exception> {
+        let target: Addr = target.into();
+        let target: PhysAddr = target.try_into().map_err(|_| Exception::MemoryError)?;
+        self.pc = target.0;
+        Ok(())
+    }
+
     #[instrument(skip_all)]
-    fn pipeline_wb(&mut self, mem: &mut Memory) {
+    fn pipeline_wb(&mut self, mem: &mut Memory) -> Result<(), Exception> {
         if let Some(wb_in) = self.pipe.wb_in.take() {
             tracing::trace!(recv = ?wb_in);
             match wb_in.dest {
-                PC => {
-                    self.pc = (self.pc & 0xF0000000) + wb_in.value;
-                }
                 dest @ 0..=31 => {
                     self.reg_write(wb_in.dest, wb_in.value);
                 }
@@ -362,7 +426,8 @@ impl Cpu {
                     tracing::error!("invalid register {register}");
                 }
             }
-        }
+        };
+        Ok(())
     }
 
     fn reg_write(&mut self, dest: RegisterId, value: u32) {
@@ -375,11 +440,17 @@ impl Cpu {
 
         // tracing::trace!(?self.cycle, "pre cycle: {:#?}", self.pipe);
 
-        self.pipeline_fetch(mem);
-        self.pipeline_id(mem);
-        self.pipeline_ex(mem);
-        self.pipeline_mem(mem);
-        self.pipeline_wb(mem);
+        let exception: Result<_, Exception> = try {
+            self.pipeline_fetch(mem)?;
+            self.pipeline_id(mem)?;
+            self.pipeline_ex(mem)?;
+            self.pipeline_mem(mem)?;
+            self.pipeline_wb(mem)?;
+        };
+        match exception {
+            Ok(()) => {}
+            Err(exception) => self.exception_handler(mem, exception),
+        };
 
         let reg = self
             .reg
@@ -394,6 +465,7 @@ impl Cpu {
 
         None
     }
+    pub(crate) fn exception_handler(&mut self, mem: &mut Memory, exception: Exception) {}
 }
 
 type RegisterId = usize;
@@ -418,9 +490,9 @@ impl<T: AsRef<[Op]>> Display for Program<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.0
             .as_ref()
-            .into_iter()
+            .iter()
             .map(|op| write!(f, "\n{op}"))
-            .fold(Ok(()), |acc, el| acc.or(el))
+            .try_fold((), |_, el| el)
     }
 }
 impl<T: AsRef<[Op]>> IntoIterator for Program<T> {

@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 color-eyre = "*"
-derive_more = { version = "2.0.1", features = ["debug"] }
+derive_more = { version = "2.0.1", features = ["add", "debug"] }
 pchan-macros = { workspace = true }
 pchan-utils = { workspace = true }
 thiserror = "2.0.16"

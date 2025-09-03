@@ -313,6 +313,8 @@ fn basic_jump_hazard_1(setup_tracing: ()) {
 
     let start_pc = cpu.pc;
 
+    tracing::info!(jump_address = ?KSEG0Addr::from_phys(12));
+
     let program = Program::new([
         Op::addi(8, 0, 42),              // skipped by jump
         Op::j(KSEG0Addr::from_phys(12)), // jump over next instruction
@@ -333,4 +335,48 @@ fn basic_jump_hazard_1(setup_tracing: ()) {
     assert_eq!(cpu.reg(8), 99);
 
     assert_eq!(cpu.reg(9), 77);
+}
+
+#[rstest]
+#[instrument]
+fn basic_jal_jr_hazard(setup_tracing: ()) {
+    let mut cpu = Cpu::default();
+    let mut mem = Memory::default();
+
+    let start_pc = cpu.pc;
+
+    let function_address = 0x0000_2000;
+    tracing::info!(
+        "virtual address of function is 0x{:08X}",
+        KSEG0Addr::from_phys(function_address).as_u32()
+    );
+    let program = Program::new([
+        Op::jal(KSEG0Addr::from_phys(function_address)), // PC 0: jump to function
+        Op::addi(8, 0, 1),                               // PC 4: delay slot of jal
+        Op::addi(9, 0, 1),                               // PC 8: skipped
+    ]);
+
+    // function
+    let function = Program::new([
+        Op::addi(8, 0, 42), // PC 24: set $8
+        Op::jr(RA),         // PC 28: return to $ra
+        Op::addi(9, 9, 99), // PC 32: delay slot of jr
+    ]);
+
+    // Load program into memory at start_pc
+    mem.write_all(PhysAddr::new(start_pc), program);
+    mem.write_all(KSEG0Addr::from_phys(function_address), function);
+
+    // Run enough cycles to execute all instructions
+    for _ in 0..9 {
+        cpu.run_cycle(&mut mem);
+        cpu.advance_cycle();
+    }
+
+    // After returning:
+    // $8 = 42 (from function)
+    // $9 = 99 (from delay slot of jr)
+    assert_eq!(cpu.reg(RA), KSEG0Addr::from_phys(8).as_u32());
+    assert_eq!(cpu.reg(8), 42);
+    assert_eq!(cpu.reg(9), 99);
 }

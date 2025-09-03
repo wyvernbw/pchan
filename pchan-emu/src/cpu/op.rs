@@ -4,14 +4,14 @@ pub(crate) mod load;
 pub(crate) mod store;
 pub(crate) mod sub;
 
-use std::{fmt::Display, ops::Range, u8};
+use std::{fmt::Display, ops::Range};
 
 use pchan_macros::OpCode;
 
 use crate::{
     cpu::op::{
         add::{AddImmOp, AddOp},
-        jump::JOp,
+        jump::{JOp, JalOp, JrOp},
         store::StoreOp,
         sub::SubOp,
     },
@@ -28,6 +28,8 @@ impl core::fmt::Debug for Op {
             .finish()
     }
 }
+
+impl Op {}
 
 impl Display for Op {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -46,6 +48,9 @@ impl Display for Op {
                     let args: SubOp = (*self).into();
                     write!(f, "{}", args)
                 }
+                SecondaryOp::JR => {
+                    write!(f, "{}", JrOp::from(*self))
+                }
                 _ => write!(f, "0x{:08X}", self.0),
             },
             PrimaryOp::LW | PrimaryOp::LB | PrimaryOp::LBU | PrimaryOp::LH | PrimaryOp::LHU => {
@@ -60,10 +65,8 @@ impl Display for Op {
                 let args: AddImmOp = (*self).into();
                 write!(f, "{}", args)
             }
-            PrimaryOp::J => match JOp::try_from(*self) {
-                Ok(jop) => write!(f, "{}", jop),
-                Err(err) => write!(f, "{{err}}: {}", err),
-            },
+            PrimaryOp::J => write!(f, "{}", JOp::from(*self)),
+            PrimaryOp::JAL => write!(f, "{}", JalOp::from(*self)),
             _ => write!(f, "0x{:08X}", self.0),
         }
     }
@@ -106,10 +109,29 @@ impl Op {
             ^ ((0xFFFFFFFFu32).unbounded_shl(range.end as u32));
         (self.0 & mask).unbounded_shr(range.start as u32)
     }
+    #[inline]
+    pub(crate) const fn set_bits(&self, range: Range<u8>, value: u32) -> Self {
+        let mask = (0xFFFFFFFFu32.unbounded_shl(range.start as u32))
+            ^ (0xFFFFFFFFu32.unbounded_shl(range.end as u32));
+
+        let cleared = self.0 & !mask;
+
+        let shifted = (value << range.start) & mask;
+
+        Self(cleared | shifted)
+    }
+
+    pub(crate) const fn with_primary(self, primary: PrimaryOp) -> Self {
+        Op((self.0 & 0x03FF_FFFF) | ((primary as u32) << 26))
+    }
+    pub(crate) const fn with_secondary(self, secondary: SecondaryOp) -> Self {
+        Op((self.0 & 0xFFFF_FFE0) | (secondary as u32))
+    }
 }
 
 #[repr(u8)]
 #[derive(OpCode, Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::upper_case_acronyms)]
 pub enum PrimaryOp {
     SPECIAL = 0x00,
     BCONDZ = 0x01,
@@ -164,6 +186,7 @@ pub enum PrimaryOp {
 
 #[repr(u8)]
 #[derive(OpCode, Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::upper_case_acronyms)]
 pub(crate) enum SecondaryOp {
     // Shift instructions
     SLL = 0x00,
