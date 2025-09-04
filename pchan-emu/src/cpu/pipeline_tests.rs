@@ -380,3 +380,40 @@ fn basic_jal_jr_hazard(setup_tracing: ()) {
     assert_eq!(cpu.reg(8), 42);
     assert_eq!(cpu.reg(9), 99);
 }
+
+#[rstest]
+#[instrument]
+fn basic_jalr_test(setup_tracing: ()) {
+    let mut cpu = Cpu::default();
+    let mut mem = Memory::default();
+
+    let start_pc = cpu.pc;
+
+    let function_address = 0x0000_2000;
+    tracing::info!(
+        "virtual address of function is 0x{:08X}",
+        KSEG0Addr::from_phys(function_address).as_u32()
+    );
+
+    let program = Program::new([
+        Op::addiu(10, 0, function_address as i16),
+        // jump to address in register 10 and write return address to register 11
+        Op::jalr(11, 10),
+        Op::addi(8, 0, 1), // runs anyways
+        Op::addi(9, 9, 1),
+    ]);
+
+    let function = Program::new([Op::addi(8, 0, 42), Op::jr(11), Op::addi(9, 0, 99)]);
+
+    mem.write_all(PhysAddr::new(start_pc), program);
+    mem.write_all(KSEG0Addr::from_phys(function_address), function);
+
+    for _ in 0..15 {
+        cpu.run_cycle(&mut mem);
+        cpu.advance_cycle();
+    }
+
+    assert_eq!(cpu.reg(10), function_address);
+    assert_eq!(cpu.reg(8), 42);
+    assert_eq!(cpu.reg(9), 99 + 1);
+}

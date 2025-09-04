@@ -131,6 +131,47 @@ impl JrOp {
     }
 }
 
+/// call rs,ret=rd | jalr (rd,)rs(,rd) | pc=rs, rd=$+8 ;see caution
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct JalrOp {
+    pub(crate) dest: RegisterId,
+    pub(crate) ret: RegisterId,
+}
+
+impl const From<Op> for JalrOp {
+    #[inline]
+    fn from(value: Op) -> Self {
+        JalrOp {
+            dest: value.bits(21..26) as usize,
+            ret: value.bits(11..16) as usize,
+        }
+    }
+}
+
+impl const From<JalrOp> for Op {
+    #[inline]
+    fn from(value: JalrOp) -> Self {
+        Op(0)
+            .with_primary(PrimaryOp::SPECIAL)
+            .with_secondary(SecondaryOp::JALR)
+            .set_bits(21..26, value.dest as u32)
+            .set_bits(11..16, value.ret as u32)
+    }
+}
+
+impl Op {
+    #[inline]
+    pub(crate) const fn jalr(rd: RegisterId, rs: RegisterId) -> Op {
+        JalrOp { dest: rs, ret: rd }.into()
+    }
+}
+
+impl Display for JalrOp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "JALR {} {}", self.ret, self.dest)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use pchan_utils::setup_tracing;
@@ -158,5 +199,11 @@ mod tests {
     fn create_jr(setup_tracing: ()) {
         let j = Op::jr(8);
         assert_eq!(j.to_string(), "JR 8");
+    }
+
+    #[rstest]
+    fn create_jalr(setup_tracing: ()) {
+        let jalr = Op::jalr(8, 9);
+        assert_eq!(jalr.to_string(), "JALR 8 9");
     }
 }

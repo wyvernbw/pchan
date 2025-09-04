@@ -11,7 +11,7 @@ use pchan_macros::OpCode;
 use crate::{
     cpu::op::{
         add::{AddImmOp, AddOp},
-        jump::{JOp, JalOp, JrOp},
+        jump::{JOp, JalOp, JalrOp, JrOp},
         store::StoreOp,
         sub::SubOp,
     },
@@ -50,6 +50,9 @@ impl Display for Op {
                 }
                 SecondaryOp::JR => {
                     write!(f, "{}", JrOp::from(*self))
+                }
+                SecondaryOp::JALR => {
+                    write!(f, "{}", JalrOp::from(*self))
                 }
                 _ => write!(f, "0x{:08X}", self.0),
             },

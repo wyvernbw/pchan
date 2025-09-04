@@ -6,7 +6,7 @@ use crate::{
     cpu::op::{
         Op, PrimaryOp, SecondaryOp,
         add::{AddImmOp, AddOp},
-        jump::{JOp, JalOp, JrOp},
+        jump::{JOp, JalOp, JalrOp, JrOp},
         load::LoadOp,
         store::StoreOp,
         sub::SubOp,
@@ -103,7 +103,11 @@ enum IdOut {
     AluImmAdd(AddImmOp),
     AluSub(SubOp),
     J(JOp),
-    Jal { op: JalOp, ret: Addr },
+    Jal {
+        op: JalOp,
+        ret: Addr,
+        ret_register: RegisterId,
+    },
     Jr(Addr),
 }
 
@@ -126,8 +130,9 @@ enum ExOut {
         out: u32,
         dest: RegisterId,
     },
-    JumpAndLink {
-        ret: Addr,
+    WriteAddress {
+        out: Addr,
+        dest: RegisterId,
     },
 }
 
@@ -223,6 +228,7 @@ impl Cpu {
                     self.pipe.id_out = Some(IdOut::Jal {
                         op: JalOp::from(id_in.op),
                         ret: KSEG0Addr::from_phys(self.pc).into(),
+                        ret_register: RA,
                     });
                 }
                 PrimaryOp::SPECIAL => match id_in.op.secondary() {
@@ -238,6 +244,20 @@ impl Cpu {
                         let args: JrOp = id_in.op.into();
                         let args = args.to_jump(self);
                         self.pipe.id_out = Some(IdOut::Jr(args.dest));
+                    }
+                    SecondaryOp::JALR => {
+                        // convert jalr to equivalent jal
+                        let jalr: JalrOp = id_in.op.into();
+                        let ret = KSEG0Addr::from_phys(self.pc).into();
+                        tracing::debug!(jalr_dest = self.reg(jalr.dest));
+                        let jal = JalOp {
+                            dest: Addr(self.reg(jalr.dest)),
+                        };
+                        self.pipe.id_out = Some(IdOut::Jal {
+                            op: jal,
+                            ret,
+                            ret_register: jalr.ret,
+                        })
                     }
                     other => todo!("{other:x?} not yet implemented"),
                 },
@@ -291,11 +311,18 @@ impl Cpu {
                     self.control_jump_in_region(jop.dest)?;
                     None
                 }
-                IdOut::Jal { op, ret } => {
+                IdOut::Jal {
+                    op,
+                    ret,
+                    ret_register,
+                } => {
                     self.pipe.id_in = None;
                     self.pipe.fetch_out = None;
                     self.control_jump_in_region(op.dest)?;
-                    Some(ExOut::JumpAndLink { ret })
+                    Some(ExOut::WriteAddress {
+                        out: ret,
+                        dest: ret_register,
+                    })
                 }
                 IdOut::Jr(dest) => {
                     self.pipe.id_in = None;
@@ -315,6 +342,13 @@ impl Cpu {
     }
 
     fn forward_register(&self, src: RegisterId) -> Option<u32> {
+        // poke ex
+        match self.pipe.ex_out {
+            Some(ExOut::Alu { out, dest }) if dest == src => {
+                return Some(out);
+            }
+            _ => {}
+        }
         // poke mem
         match self.pipe.mem_in {
             Some(MemIn::Alu { out, dest }) if dest == src => {
@@ -381,12 +415,9 @@ impl Cpu {
                 None
             }
 
-            MemIn::JumpAndLink { ret } => {
+            MemIn::WriteAddress { out, dest } => {
                 // immediate pass through
-                self.pipe.wb_in = Some(MemOut {
-                    dest: RA,
-                    value: ret.0,
-                });
+                self.pipe.wb_in = Some(MemOut { dest, value: out.0 });
                 None
             }
         };
@@ -465,7 +496,9 @@ impl Cpu {
 
         None
     }
-    pub(crate) fn exception_handler(&mut self, mem: &mut Memory, exception: Exception) {}
+    pub(crate) fn exception_handler(&mut self, mem: &mut Memory, exception: Exception) {
+        tracing::error!("encountered exception: {}", &exception);
+    }
 }
 
 type RegisterId = usize;
