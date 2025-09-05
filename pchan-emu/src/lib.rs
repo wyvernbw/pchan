@@ -15,7 +15,11 @@
 #![feature(portable_simd)]
 #![feature(iter_collect_into)]
 
-use crate::{bootloader::Bootloader, memory::Memory};
+use crate::{
+    bootloader::Bootloader,
+    cpu::{Cpu, JIT},
+    memory::Memory,
+};
 
 pub mod cranelift_bs {
     pub use cranelift::codegen::ir::*;
@@ -31,5 +35,18 @@ pub mod memory;
 #[derive(Default)]
 pub struct Emu {
     mem: Memory,
+    cpu: Cpu,
+    jit: JIT,
     boot: Bootloader,
+}
+
+#[cfg(test)]
+pub mod test_utils {
+    use super::*;
+    use rstest::fixture;
+
+    #[fixture]
+    pub fn emulator() -> Emu {
+        Emu::default()
+    }
 }

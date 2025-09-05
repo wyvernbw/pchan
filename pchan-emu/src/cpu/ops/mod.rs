@@ -170,33 +170,35 @@ pub(crate) enum SecondaryOp {
 }
 
 #[derive(Builder)]
-pub(crate) struct EmitParams<'a> {
-    fn_builder: &'a mut FunctionBuilder<'a>,
+pub(crate) struct EmitParams<'a, 'b> {
+    ptr_type: types::Type,
+    fn_builder: &'a mut FunctionBuilder<'b>,
     registers: &'a [Option<Value>; 32],
-    block: &'a Block,
+    block: Block,
 }
 
-impl<'a> EmitParams<'a> {
+impl<'a, 'b> EmitParams<'a, 'b> {
     fn cpu(&self) -> Value {
-        self.fn_builder.block_params(*self.block)[0]
+        self.fn_builder.block_params(self.block)[0]
     }
     fn memory(&self) -> Value {
-        self.fn_builder.block_params(*self.block)[1]
+        self.fn_builder.block_params(self.block)[1]
     }
     fn emit_get_register(&mut self, id: usize) -> Value {
         match self.registers[id] {
             Some(value) => value,
             None => JIT::emit_load_reg()
                 .builder(self.fn_builder)
-                .block(*self.block)
+                .block(self.block)
                 .idx(id)
                 .call(),
         }
     }
 }
 
+#[derive(Debug)]
 pub struct EmitSummary {
-    register_updates: Box<[(usize, Value)]>,
+    pub(crate) register_updates: Box<[(usize, Value)]>,
 }
 
 #[derive(Debug, Error)]
@@ -209,5 +211,5 @@ pub(crate) trait Op: Sized {
     type TryFromError = TryFromOpcodeErr;
     fn try_from_opcode(opcode: Opcode) -> Result<Self, Self::TryFromError>;
     fn is_block_boundary(&self) -> bool;
-    fn emit_ir(&self, state: EmitParams<'_>) -> Option<EmitSummary>;
+    fn emit_ir(&self, state: EmitParams<'_, '_>) -> Option<EmitSummary>;
 }

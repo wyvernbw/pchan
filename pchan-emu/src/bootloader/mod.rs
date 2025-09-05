@@ -37,7 +37,9 @@ impl Bootloader {
             .read(&mut bios)
             .map_err(BootError::BiosReadError)?;
 
-        mem.as_mut().write_all(&bios);
+        mem.as_mut()
+            .write_all(&bios)
+            .map_err(BootError::BiosReadError)?;
 
         Ok(())
     }

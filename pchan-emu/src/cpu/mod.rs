@@ -1,8 +1,9 @@
-use std::ptr;
+use std::{fmt::Display, ptr};
 
 use cranelift::codegen::ir;
+use tracing::instrument;
 
-use crate::{cranelift_bs::*, memory::Memory};
+use crate::{cpu::ops::EmitSummary, cranelift_bs::*, memory::Memory};
 
 #[cfg(test)]
 mod cranelift_tests;
@@ -11,8 +12,27 @@ mod ops;
 #[derive(Default)]
 #[repr(C)]
 pub(crate) struct Cpu {
-    gpr: [u32; 32],
-    pc: u32,
+    gpr: [u64; 32],
+    pc: u64,
+}
+
+impl Display for Cpu {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let gpr = self
+            .gpr
+            .iter()
+            .enumerate()
+            .filter(|(_, value)| **value != 0)
+            .map(|(idx, value)| format!("{idx}={value}"))
+            .intersperse(",".to_string())
+            .collect::<String>();
+        let gpr = if gpr.is_empty() {
+            "None".to_string()
+        } else {
+            gpr
+        };
+        write!(f, "cpu:gpr[{gpr}]")
+    }
 }
 
 type Reg = usize;
@@ -57,6 +77,7 @@ impl Default for JIT {
         let ptr = module.target_config().pointer_type();
         let mut sig = Signature::new(CallConv::SystemV);
         sig.params.push(AbiParam::new(ptr));
+        sig.params.push(AbiParam::new(ptr));
 
         Self {
             module,
@@ -84,7 +105,16 @@ impl JIT {
         self.basic_sig.clone()
     }
 
+    pub(crate) fn init_block(builder: &mut FunctionBuilder) -> Block {
+        let block = builder.create_block();
+        builder.append_block_params_for_function_params(block);
+        builder.switch_to_block(block);
+        builder.seal_block(block);
+        block
+    }
+
     #[builder]
+    #[instrument(skip(builder, block))]
     pub(crate) fn emit_load_reg(
         builder: &mut FunctionBuilder<'_>,
         block: Block,
@@ -92,48 +122,68 @@ impl JIT {
     ) -> Value {
         let block_state = builder.block_params(block)[0];
         let offset = core::mem::offset_of!(Cpu, gpr);
-        let offset = i32::try_from(offset + idx * size_of::<u32>()).expect("offset overflow");
+        let offset = i32::try_from(offset + idx * size_of::<u64>()).expect("offset overflow");
 
         builder
             .ins()
-            .load(types::I32, MemFlags::new(), block_state, offset)
+            .load(types::I64, MemFlags::new(), block_state, offset)
     }
 
     #[builder]
+    #[instrument(skip(builder, block))]
     pub(crate) fn emit_store_reg(
         builder: &mut FunctionBuilder<'_>,
         block: Block,
         idx: usize,
         value: Value,
     ) {
+        const GPR: usize = const { core::mem::offset_of!(Cpu, gpr) };
+        tracing::debug!(?GPR);
         let block_state = builder.block_params(block)[0];
-        let offset = core::mem::offset_of!(Cpu, gpr);
-        let offset = i32::try_from(offset + idx * size_of::<u32>()).expect("offset overflow");
+        let offset = i32::try_from(GPR + idx * size_of::<u64>()).expect("offset overflow");
+        tracing::debug!(?offset);
         builder
             .ins()
             .store(MemFlags::new(), value, block_state, offset);
+    }
+
+    #[builder]
+    #[instrument(skip(builder, block, summary), fields(registers=?summary.register_updates))]
+    pub(crate) fn emit_updates(
+        builder: &mut FunctionBuilder<'_>,
+        block: Block,
+        summary: &EmitSummary,
+    ) {
+        for (id, value) in summary.register_updates.iter() {
+            JIT::emit_store_reg()
+                .block(block)
+                .builder(builder)
+                .idx(*id)
+                .value(*value)
+                .call();
+        }
     }
 }
 
 #[derive(Debug)]
 #[repr(transparent)]
-pub(crate) struct BlockFn(fn(*const Cpu, *const Memory));
+pub(crate) struct BlockFn(fn(*mut Cpu, *mut [u8]));
 
-impl FnMut<(&Cpu, &Memory)> for BlockFn {
-    extern "rust-call" fn call_mut(&mut self, args: (&Cpu, &Memory)) -> Self::Output {
-        self.0(ptr::from_ref(args.0), ptr::from_ref(args.1))
+impl FnMut<(&mut Cpu, &mut Memory)> for BlockFn {
+    extern "rust-call" fn call_mut(&mut self, args: (&mut Cpu, &mut Memory)) -> Self::Output {
+        self.0(ptr::from_mut(args.0), ptr::from_mut(args.1.as_mut()))
     }
 }
 
-impl FnOnce<(&Cpu, &Memory)> for BlockFn {
+impl FnOnce<(&mut Cpu, &mut Memory)> for BlockFn {
     type Output = ();
-    extern "rust-call" fn call_once(mut self, args: (&Cpu, &Memory)) -> Self::Output {
+    extern "rust-call" fn call_once(mut self, args: (&mut Cpu, &mut Memory)) -> Self::Output {
         self.call_mut(args)
     }
 }
 
-impl Fn<(&Cpu, &Memory)> for BlockFn {
-    extern "rust-call" fn call(&self, args: (&Cpu, &Memory)) -> Self::Output {
-        self.0(ptr::from_ref(args.0), ptr::from_ref(args.1))
+impl Fn<(&mut Cpu, &mut Memory)> for BlockFn {
+    extern "rust-call" fn call(&self, args: (&mut Cpu, &mut Memory)) -> Self::Output {
+        self.0(ptr::from_mut(args.0), ptr::from_mut(args.1.as_mut()))
     }
 }
