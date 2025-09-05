@@ -1,3 +1,5 @@
+use std::backtrace::Backtrace;
+
 use rstest::*;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*, util::SubscriberInitExt};
 
@@ -8,11 +10,18 @@ pub fn setup_tracing() {
         .with(EnvFilter::from_default_env())
         .try_init();
     std::panic::set_hook(Box::new(|info| {
-        let location = info.location().map(|loc| loc.file()).unwrap_or_default();
+        let (file, line, column) = info
+            .location()
+            .map(|loc| (loc.file(), loc.line(), loc.column()))
+            .unwrap_or_default();
         tracing::error!(
-            src = location,
+            src.file = file,
+            src.line = line,
+            src.column = column,
             panic = %info.payload_as_str().unwrap_or_default()
         );
+        let bt = Backtrace::capture();
+        tracing::error!("backtrace: \n\n{}", bt);
         panic!();
     }));
 }

@@ -1,539 +1,240 @@
-use std::fmt::Display;
+use std::{mem::offset_of, ptr};
 
-use tracing::instrument;
+use cranelift::codegen::ir;
 
-use crate::{
-    cpu::op::{
-        Op, PrimaryOp, SecondaryOp,
-        add::{AddImmOp, AddOp},
-        jump::{JOp, JalOp, JalrOp, JrOp},
-        load::LoadOp,
-        store::StoreOp,
-        sub::SubOp,
-    },
-    memory::{Addr, Address, KSEG0Addr, Memory, PhysAddr, ToWord},
-};
+use crate::cranelift_bs::*;
 
-pub(crate) mod op;
-#[cfg(test)]
-pub mod pipeline_tests;
-
-/// # Cpu
-/// models the PSX cpu.
-#[derive(Default, Debug)]
-pub struct Cpu {
-    reg: [u32; 32],
+#[derive(Default)]
+#[repr(C)]
+pub(crate) struct Cpu {
+    gpr: [u32; 32],
     pc: u32,
-    cycle: usize,
-    pipe: PipelineQueue,
-    known: usize,
 }
 
-/// # PipelineQueue
-/// models the PSX cpu pipeline.
-/// the pipeline is divided in 5 stages:
-/// - fetch: reads an op from memory at `pc` (program counter)
-/// - id: decodes the op
-/// - ex: executes arithmetic operations and computes the `[rs+imm]` for load ops
-/// - mem: reads/writes to memory
-/// - wb: writes values to registers
-///
-/// each stage takes a cycle, however alus implement instruction forwarding effectively making them
-/// take 1 cycle instead.
-#[derive(Default, Debug)]
-struct PipelineQueue {
-    fetch_in: Option<FetchOut>,
-    fetch_out: Option<FetchOut>,
-    id_in: Option<IdIn>,
-    id_out: Option<IdOut>,
-    ex_in: Option<ExIn>,
-    ex_out: Option<ExOut>,
-    mem_in: Option<MemIn>,
-    mem_out: Option<MemOut>,
-    wb_in: Option<WbIn>,
+type Reg = usize;
+
+const RA: Reg = 31;
+
+pub(crate) struct JIT {
+    /// The function builder context, which is reused across multiple
+    /// FunctionBuilder instances.
+    fn_builder_ctx: FunctionBuilderContext,
+
+    /// The main Cranelift context, which holds the state for codegen. Cranelift
+    /// separates this from `Module` to allow for parallel compilation, with a
+    /// context per thread, though this isn't in the simple demo here.
+    ctx: codegen::Context,
+
+    /// The data description, which is to data objects what `ctx` is to functions.
+    data_description: DataDescription,
+
+    /// The module, with the jit backend, which manages the JIT'd
+    /// functions.
+    module: JITModule,
 }
 
-impl PipelineQueue {
-    #[instrument(skip(mem))]
-    pub(crate) fn handle_store(
-        mem: &mut Memory,
-        rt_value: u32,
-        dest: impl Address,
-        header: PrimaryOp,
+impl Default for JIT {
+    fn default() -> Self {
+        // Set up JIT
+        let mut flags = settings::builder();
+        flags.set("opt_level", "speed").unwrap();
+        let isa = cranelift::native::builder()
+            .unwrap()
+            .finish(settings::Flags::new(flags))
+            .unwrap();
+        let jit_builder = JITBuilder::with_isa(isa, default_libcall_names());
+        let module = JITModule::new(jit_builder);
+        let fn_builder_ctx = FunctionBuilderContext::new();
+        let ctx = module.make_context();
+        let data_description = DataDescription::new();
+
+        Self {
+            module,
+            fn_builder_ctx,
+            data_description,
+            ctx,
+        }
+    }
+}
+
+#[bon::bon]
+impl JIT {
+    #[inline]
+    pub(crate) fn pointer_type(&self) -> ir::Type {
+        self.module.target_config().pointer_type()
+    }
+
+    pub(crate) fn get_func(&self, id: FuncId) -> BlockFn {
+        let code_ptr = self.module.get_finalized_function(id);
+        unsafe { std::mem::transmute::<*const u8, BlockFn>(code_ptr) }
+    }
+
+    #[builder]
+    pub(crate) fn emit_load_reg(
+        builder: &mut FunctionBuilder<'_>,
+        block: Block,
+        idx: usize,
+    ) -> Value {
+        let block_state = builder.block_params(block)[0];
+        let offset = core::mem::offset_of!(Cpu, gpr);
+        let offset = i32::try_from(offset + idx * size_of::<u32>()).expect("offset overflow");
+
+        builder
+            .ins()
+            .load(types::I32, MemFlags::new(), block_state, offset)
+    }
+
+    #[builder]
+    pub(crate) fn emit_store_reg(
+        builder: &mut FunctionBuilder<'_>,
+        block: Block,
+        idx: usize,
+        value: Value,
     ) {
-        match header {
-            PrimaryOp::SB => mem.write(dest, (rt_value as u8).to_word_zeroed()),
-            PrimaryOp::SH => mem.write(dest, (rt_value as u16).to_word_zeroed()),
-            PrimaryOp::SW => mem.write(dest, rt_value),
-            _ => unreachable!(),
-        }
-    }
-
-    #[instrument(skip(mem))]
-    pub(crate) fn handle_load(
-        mem: &Memory,
-        at: PhysAddr,
-        header: PrimaryOp,
-        dest: RegisterId,
-    ) -> MemOut {
-        let value = match header {
-            PrimaryOp::LB => mem.read::<u8>(at).to_word_signed(),
-            PrimaryOp::LBU => mem.read::<u8>(at).to_word_zeroed(),
-            PrimaryOp::LH => mem.read::<u16>(at).to_word_signed(),
-            PrimaryOp::LHU => mem.read::<u16>(at).to_word_zeroed(),
-            PrimaryOp::LW => mem.read::<u32>(at).to_word_zeroed(),
-            _ => unreachable!("invalid header passed to load"),
-        };
-        MemOut { dest, value }
+        let block_state = builder.block_params(block)[0];
+        let offset = core::mem::offset_of!(Cpu, gpr);
+        let offset = i32::try_from(offset + idx * size_of::<u32>()).expect("offset overflow");
+        builder
+            .ins()
+            .store(MemFlags::new(), value, block_state, offset);
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct FetchOut {
-    op: Op,
+#[derive(Debug)]
+#[repr(transparent)]
+pub(crate) struct BlockFn(fn(*const Cpu));
+
+impl FnMut<(&Cpu,)> for BlockFn {
+    extern "rust-call" fn call_mut(&mut self, args: (&Cpu,)) -> Self::Output {
+        self.0(ptr::from_ref(args.0))
+    }
 }
 
-type IdIn = FetchOut;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum IdOut {
-    Load(LoadOp),
-    Store(StoreOp),
-    AluAdd(AddOp),
-    AluImmAdd(AddImmOp),
-    AluSub(SubOp),
-    J(JOp),
-    Jal {
-        op: JalOp,
-        ret: Addr,
-        ret_register: RegisterId,
-    },
-    Jr(Addr),
+impl FnOnce<(&Cpu,)> for BlockFn {
+    type Output = ();
+    extern "rust-call" fn call_once(mut self, args: (&Cpu,)) -> Self::Output {
+        self.call_mut(args)
+    }
 }
 
-type ExIn = IdOut;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ExOut {
-    Load {
-        header: PrimaryOp,
-        rt_value: Addr,
-        dest: RegisterId,
-    },
-    Store {
-        header: PrimaryOp,
-        rt_value: u32,
-        dest: Addr,
-    },
-    // pass through all the way to WB
-    Alu {
-        out: u32,
-        dest: RegisterId,
-    },
-    WriteAddress {
-        out: Addr,
-        dest: RegisterId,
-    },
+impl Fn<(&Cpu,)> for BlockFn {
+    extern "rust-call" fn call(&self, args: (&Cpu,)) -> Self::Output {
+        self.0(ptr::from_ref(args.0))
+    }
 }
 
-type MemIn = ExOut;
+#[cfg(test)]
+mod cranelift_tests {
+    use pchan_utils::setup_tracing;
+    use pretty_assertions::assert_eq;
+    use rstest::{fixture, rstest};
 
-#[derive(derive_more::Debug, Clone, Copy, PartialEq, Eq)]
-struct MemOut {
-    dest: RegisterId,
-    #[debug("0x{value:08X}")]
-    value: u32,
-}
+    use crate::cpu::{Cpu, JIT};
 
-type WbIn = MemOut;
-type WbOut = ();
-
-pub enum Interrupt {}
-
-#[derive(Debug, thiserror::Error)]
-pub enum Exception {
-    /// ## Memory Error
-    /// Misalignments
-    /// (and probably also KSEG access in User mode)
-    #[error("memory exception")]
-    MemoryError,
-    /// ## Bus Error
-    /// Unused Memory Regions (including Gaps in I/O Region)
-    /// (unless RAM/BIOS/Expansion mirrors are mapped to "unused" area)
-    #[error("bus exception")]
-    BusError,
-}
-
-impl Cpu {
-    #[instrument(skip_all)]
-    pub(crate) fn advance_cycle(&mut self) {
-        self.cycle += 1;
+    #[fixture]
+    fn cpu() -> Cpu {
+        Cpu::default()
+    }
+    #[fixture]
+    fn jit() -> JIT {
+        JIT::default()
     }
 
-    /// fetches instruction at the program counter and passes it forward to the
-    /// `id` stage. it then advances the program counter.
-    #[instrument(skip_all)]
-    fn pipeline_fetch(&mut self, mem: &mut Memory) -> Result<(), Exception> {
-        let op = mem.read::<Op>(PhysAddr::new(self.pc));
-        self.pipe.fetch_in = Some(FetchOut { op });
+    #[rstest]
+    fn basic_jit(setup_tracing: (), mut cpu: Cpu, mut jit: JIT) -> color_eyre::Result<()> {
+        use crate::cranelift_bs::*;
 
-        if let Some(out) = self.pipe.fetch_out.take() {
-            self.pipe.id_in = Some(out);
-            tracing::trace!(send = %out.op);
+        // Function signature: i32 fn()
+        let mut sig = Signature::new(CallConv::SystemV);
+        sig.returns.push(AbiParam::new(types::I32));
+
+        let func_id = jit
+            .module
+            .declare_function("const_42", Linkage::Export, &sig)?;
+        let mut func = Function::with_name_signature(UserFuncName::user(0, 0), sig);
+
+        // Build function: return 42
+        {
+            let mut builder = FunctionBuilder::new(&mut func, &mut jit.fn_builder_ctx);
+            let block = builder.create_block();
+            builder.switch_to_block(block);
+            builder.seal_block(block);
+            let value = builder.ins().iconst(types::I32, 42);
+            builder.ins().return_(&[value]);
+            builder.finalize();
         }
+        jit.ctx.func = func;
+        // Create function
+        jit.module.define_function(func_id, &mut jit.ctx)?;
+        jit.module.clear_context(&mut jit.ctx);
+        jit.module.finalize_definitions()?;
 
-        if let Some(fetch_in) = self.pipe.fetch_in.take() {
-            self.pipe.fetch_out = Some(fetch_in);
-            tracing::trace!(at = ?self.pc, loaded = %op);
-        }
-
-        self.pc += 4;
+        let code_ptr = jit.module.get_finalized_function(func_id);
+        let const_fn = unsafe { std::mem::transmute::<*const u8, fn() -> i32>(code_ptr) };
+        tracing::info!("Result: {}", const_fn()); // Prints: Result: 42
+        assert_eq!(const_fn(), 42);
         Ok(())
     }
 
-    #[instrument(skip_all)]
-    fn pipeline_id(&mut self, mem: &mut Memory) -> Result<(), Exception> {
-        // flush `id_out`
-        if let Some(id_out) = self.pipe.id_out.take() {
-            tracing::trace!(send = ?id_out);
-            self.pipe.ex_in = Some(id_out);
+    #[rstest]
+    fn basic_adder(setup_tracing: (), mut cpu: Cpu, mut jit: JIT) -> color_eyre::Result<()> {
+        use crate::cranelift_bs::*;
+
+        let ptr = jit.pointer_type();
+        let mut sig = Signature::new(CallConv::SystemV);
+        sig.params.push(AbiParam::new(ptr));
+
+        let func_id = jit
+            .module
+            .declare_function("adder", Linkage::Export, &sig)?;
+        let mut func = Function::with_name_signature(UserFuncName::user(0, 1), sig);
+
+        {
+            let mut builder = FunctionBuilder::new(&mut func, &mut jit.fn_builder_ctx);
+            let block = builder.create_block();
+            builder.append_block_params_for_function_params(block);
+            builder.switch_to_block(block);
+            builder.seal_block(block);
+
+            let a = JIT::emit_load_reg()
+                .builder(&mut builder)
+                .block(block)
+                .idx(9)
+                .call();
+            let b = JIT::emit_load_reg()
+                .builder(&mut builder)
+                .block(block)
+                .idx(10)
+                .call();
+
+            // x + y
+            let sum = builder.ins().iadd(a, b);
+            JIT::emit_store_reg()
+                .builder(&mut builder)
+                .block(block)
+                .idx(11)
+                .value(sum)
+                .call();
+            builder.ins().return_(&[]);
+
+            builder.finalize();
         }
 
-        // move `id_in` into `id_out`
-        if let Some(id_in) = self.pipe.id_in.take() {
-            tracing::trace!(recv = %id_in.op);
-            // handle NOP
-            if id_in.op == Op::NOP {
-                return Ok(());
-            }
-            match id_in.op.primary() {
-                PrimaryOp::LW | PrimaryOp::LB | PrimaryOp::LBU | PrimaryOp::LH | PrimaryOp::LHU => {
-                    let args = id_in.op.load_op();
-                    self.pipe.id_out = Some(IdOut::Load(args));
-                }
-                PrimaryOp::SB | PrimaryOp::SH | PrimaryOp::SW => {
-                    let args: StoreOp = id_in.op.into();
-                    self.pipe.id_out = Some(IdOut::Store(args));
-                }
-                PrimaryOp::ADDI | PrimaryOp::ADDIU => {
-                    let args: AddImmOp = id_in.op.into();
-                    self.pipe.id_out = Some(IdOut::AluImmAdd(args));
-                }
-                PrimaryOp::J => {
-                    let jop = id_in.op.into();
-                    tracing::trace!(?jop);
-                    self.pipe.id_out = Some(IdOut::J(jop));
-                }
-                PrimaryOp::JAL => {
-                    self.pipe.id_out = Some(IdOut::Jal {
-                        op: JalOp::from(id_in.op),
-                        ret: KSEG0Addr::from_phys(self.pc).into(),
-                        ret_register: RA,
-                    });
-                }
-                PrimaryOp::SPECIAL => match id_in.op.secondary() {
-                    SecondaryOp::ADD | SecondaryOp::ADDU => {
-                        let args: AddOp = id_in.op.into();
-                        self.pipe.id_out = Some(IdOut::AluAdd(args));
-                    }
-                    SecondaryOp::SUB | SecondaryOp::SUBU => {
-                        let args: SubOp = id_in.op.into();
-                        self.pipe.id_out = Some(IdOut::AluSub(args));
-                    }
-                    SecondaryOp::JR => {
-                        let args: JrOp = id_in.op.into();
-                        let args = args.to_jump(self);
-                        self.pipe.id_out = Some(IdOut::Jr(args.dest));
-                    }
-                    SecondaryOp::JALR => {
-                        // convert jalr to equivalent jal
-                        let jalr: JalrOp = id_in.op.into();
-                        let ret = KSEG0Addr::from_phys(self.pc).into();
-                        tracing::debug!(jalr_dest = self.reg(jalr.dest));
-                        let jal = JalOp {
-                            dest: Addr(self.reg(jalr.dest)),
-                        };
-                        self.pipe.id_out = Some(IdOut::Jal {
-                            op: jal,
-                            ret,
-                            ret_register: jalr.ret,
-                        })
-                    }
-                    other => todo!("{other:x?} not yet implemented"),
-                },
-                other => todo!("{other:x?} not yet implemented"),
-            }
-        };
+        jit.ctx.func = func;
+        jit.module.define_function(func_id, &mut jit.ctx)?;
+
+        jit.module.clear_context(&mut jit.ctx);
+        jit.module.finalize_definitions()?;
+
+        let adder = jit.get_func(func_id);
+
+        cpu.gpr[9] = 69;
+        cpu.gpr[10] = 42;
+
+        adder(&cpu);
+
+        assert_eq!(cpu.gpr[11], cpu.gpr[9] + cpu.gpr[10]);
+
         Ok(())
-    }
-
-    #[instrument(skip_all)]
-    fn pipeline_ex(&mut self, mem: &mut Memory) -> Result<(), Exception> {
-        // flush `ex_out`
-        if let Some(ex_out) = self.pipe.ex_out.take() {
-            tracing::trace!(send = ?ex_out);
-            self.pipe.mem_in = Some(ex_out);
-        }
-
-        // move `ex_in` into `ex_out`
-        if let Some(ex_in) = self.pipe.ex_in.take() {
-            tracing::trace!(recv = ?ex_in);
-            let ex_out = match ex_in {
-                IdOut::Load(load_args) => Some(ExOut::Load {
-                    header: load_args.header,
-                    rt_value: Addr(
-                        self.reg(load_args.rs)
-                            .wrapping_add_signed(load_args.imm as i32),
-                    ),
-                    dest: load_args.rt,
-                }),
-                IdOut::Store(store) => Some(ExOut::Store {
-                    header: store.header,
-                    rt_value: self.reg(store.rt),
-                    dest: Addr(self.reg(store.rs).wrapping_add_signed(store.imm as i32)),
-                }),
-                // DONE: implement ALU args
-                IdOut::AluAdd(add) => {
-                    let out = self.reg(add.rs) + self.reg(add.rt);
-                    Some(ExOut::Alu { out, dest: add.rd })
-                }
-                IdOut::AluImmAdd(add) => {
-                    let out = self.reg(add.rs).wrapping_add_signed(add.imm as i32);
-                    Some(ExOut::Alu { out, dest: add.rt })
-                }
-                IdOut::AluSub(sub) => {
-                    let out = self.reg(sub.rs) - self.reg(sub.rt);
-                    Some(ExOut::Alu { out, dest: sub.rd })
-                }
-                IdOut::J(jop) => {
-                    self.pipe.id_in = None;
-                    self.pipe.fetch_out = None;
-                    self.control_jump_in_region(jop.dest)?;
-                    None
-                }
-                IdOut::Jal {
-                    op,
-                    ret,
-                    ret_register,
-                } => {
-                    self.pipe.id_in = None;
-                    self.pipe.fetch_out = None;
-                    self.control_jump_in_region(op.dest)?;
-                    Some(ExOut::WriteAddress {
-                        out: ret,
-                        dest: ret_register,
-                    })
-                }
-                IdOut::Jr(dest) => {
-                    self.pipe.id_in = None;
-                    self.pipe.fetch_out = None;
-                    self.control_jump_absolute(dest)?;
-                    None
-                }
-            };
-            self.pipe.ex_out = ex_out;
-        };
-        Ok(())
-    }
-
-    /// reads value from register, forwarding values if possible
-    fn reg(&self, id: RegisterId) -> u32 {
-        self.forward_register(id).unwrap_or_else(|| self.reg[id])
-    }
-
-    fn forward_register(&self, src: RegisterId) -> Option<u32> {
-        // poke ex
-        match self.pipe.ex_out {
-            Some(ExOut::Alu { out, dest }) if dest == src => {
-                return Some(out);
-            }
-            _ => {}
-        }
-        // poke mem
-        match self.pipe.mem_in {
-            Some(MemIn::Alu { out, dest }) if dest == src => {
-                return Some(out);
-            }
-            _ => {}
-        };
-        match self.pipe.mem_out {
-            Some(MemOut { dest, value }) if dest == src => {
-                return Some(value);
-            }
-            _ => {}
-        };
-
-        // poke wb
-        match self.pipe.wb_in {
-            Some(WbIn { dest, value }) if dest == src => {
-                return Some(value);
-            }
-            _ => {}
-        };
-
-        None
-    }
-
-    #[instrument(skip_all)]
-    fn pipeline_mem(&mut self, mem: &mut Memory) -> Result<(), Exception> {
-        // flush `mem_out`
-        if let Some(mem_out) = self.pipe.mem_out.take() {
-            tracing::trace!(send = ?mem_out);
-            self.pipe.wb_in = Some(mem_out);
-        }
-
-        // move `mem_in` into `mem_out`
-        let Some(mem_in) = self.pipe.mem_in.take() else {
-            return Ok(());
-        };
-        tracing::trace!(recv = ?mem_in);
-        self.pipe.mem_out = match mem_in {
-            MemIn::Load {
-                header,
-                rt_value: at,
-                dest,
-            } => {
-                // DONE: handle differnet load types
-                let at = at.try_into().map_err(|_| Exception::MemoryError)?;
-                let read = Some(PipelineQueue::handle_load(mem, at, header, dest));
-                tracing::trace!(?read);
-                read
-            }
-
-            MemIn::Store {
-                rt_value,
-                dest,
-                header,
-            } => {
-                PipelineQueue::handle_store(mem, rt_value, dest, header);
-                None
-            }
-
-            MemIn::Alu { out, dest } => {
-                // immediate pass through
-                self.pipe.wb_in = Some(MemOut { dest, value: out });
-                None
-            }
-
-            MemIn::WriteAddress { out, dest } => {
-                // immediate pass through
-                self.pipe.wb_in = Some(MemOut { dest, value: out.0 });
-                None
-            }
-        };
-        Ok(())
-    }
-
-    #[instrument(err, skip(self))]
-    fn control_jump_in_region(
-        &mut self,
-        target: impl Into<Addr> + core::fmt::Debug,
-    ) -> Result<(), Exception> {
-        let target: Addr = target.into();
-        self.pc = (self.pc & 0xF0000000) + (target.0);
-        Ok(())
-    }
-
-    #[instrument(err, skip(self))]
-    fn control_jump_absolute(
-        &mut self,
-        target: impl Into<Addr> + core::fmt::Debug,
-    ) -> Result<(), Exception> {
-        let target: Addr = target.into();
-        let target: PhysAddr = target.try_into().map_err(|_| Exception::MemoryError)?;
-        self.pc = target.0;
-        Ok(())
-    }
-
-    #[instrument(skip_all)]
-    fn pipeline_wb(&mut self, mem: &mut Memory) -> Result<(), Exception> {
-        if let Some(wb_in) = self.pipe.wb_in.take() {
-            tracing::trace!(recv = ?wb_in);
-            match wb_in.dest {
-                dest @ 0..=31 => {
-                    self.reg_write(wb_in.dest, wb_in.value);
-                }
-                register => {
-                    tracing::error!("invalid register {register}");
-                }
-            }
-        };
-        Ok(())
-    }
-
-    fn reg_write(&mut self, dest: RegisterId, value: u32) {
-        self.reg[dest] = value;
-    }
-
-    #[instrument(fields(cycle = self.cycle, pc = self.pc), skip(mem, self))]
-    pub(crate) fn run_cycle(&mut self, mem: &mut Memory) -> Option<Interrupt> {
-        // DONE: the rest of the owl
-
-        // tracing::trace!(?self.cycle, "pre cycle: {:#?}", self.pipe);
-
-        let exception: Result<_, Exception> = try {
-            self.pipeline_fetch(mem)?;
-            self.pipeline_id(mem)?;
-            self.pipeline_ex(mem)?;
-            self.pipeline_mem(mem)?;
-            self.pipeline_wb(mem)?;
-        };
-        match exception {
-            Ok(()) => {}
-            Err(exception) => self.exception_handler(mem, exception),
-        };
-
-        let reg = self
-            .reg
-            .iter()
-            .enumerate()
-            .filter(|(_, x)| **x != 0)
-            .map(|(i, x)| format!("{i}:0x{x:08X}"))
-            .intersperse(" ".to_string())
-            .collect::<String>();
-        tracing::trace!(?reg);
-        println!();
-
-        None
-    }
-    pub(crate) fn exception_handler(&mut self, mem: &mut Memory, exception: Exception) {
-        tracing::error!("encountered exception: {}", &exception);
-    }
-}
-
-type RegisterId = usize;
-
-/// zero  Constant (always 0)
-const R0: RegisterId = 0;
-/// R29 (SP) - Full Decrementing Wasted Stack Pointer
-const SP: RegisterId = 29;
-/// R31 (RA) Return address (used so by JAL,BLTZAL,BGEZAL opcodes)
-const RA: RegisterId = 31;
-const PC: RegisterId = 32;
-
-pub(crate) struct Program<T: AsRef<[Op]>>(T);
-
-impl<T: AsRef<[Op]>> Program<T> {
-    const fn new(prog: T) -> Self {
-        Program(prog)
-    }
-}
-
-impl<T: AsRef<[Op]>> Display for Program<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0
-            .as_ref()
-            .iter()
-            .map(|op| write!(f, "\n{op}"))
-            .try_fold((), |_, el| el)
-    }
-}
-impl<T: AsRef<[Op]>> IntoIterator for Program<T> {
-    type Item = Op;
-
-    type IntoIter = impl Iterator<Item = Op>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.0.as_ref().to_vec().into_iter()
     }
 }

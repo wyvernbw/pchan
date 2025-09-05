@@ -1,4 +1,6 @@
 #![allow(incomplete_features)]
+#![feature(unboxed_closures)]
+#![feature(fn_traits)]
 #![feature(const_ops)]
 #![feature(try_blocks)]
 #![feature(impl_trait_in_assoc_type)]
@@ -11,31 +13,21 @@
 #![feature(portable_simd)]
 #![feature(iter_collect_into)]
 
-use std::error::Error;
+use crate::{bootloader::Bootloader, memory::Memory};
 
-use crate::{bootloader::Bootloader, cpu::Cpu, memory::Memory};
-
+pub mod cranelift_bs {
+    pub use cranelift::codegen::ir::*;
+    pub use cranelift::jit::*;
+    pub use cranelift::module::*;
+    pub use cranelift::prelude::isa::*;
+    pub use cranelift::prelude::*;
+}
 pub mod bootloader;
 pub mod cpu;
 pub mod memory;
 
 #[derive(Default)]
 pub struct Emu {
-    cpu: Cpu,
     mem: Memory,
     boot: Bootloader,
-}
-
-impl Emu {
-    fn run(mut self) -> Result<(), Box<dyn Error + 'static>> {
-        self.boot.load_bios(&mut self.mem)?;
-        loop {
-            let interrupt = self.cpu.run_cycle(&mut self.mem);
-            self.cpu.advance_cycle();
-            match interrupt {
-                None => {}
-                Some(_) => {}
-            }
-        }
-    }
 }
