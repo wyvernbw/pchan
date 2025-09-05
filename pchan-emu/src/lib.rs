@@ -1,4 +1,6 @@
 #![allow(incomplete_features)]
+#![feature(associated_type_defaults)]
+#![feature(trait_alias)]
 #![feature(unboxed_closures)]
 #![feature(fn_traits)]
 #![feature(const_ops)]
