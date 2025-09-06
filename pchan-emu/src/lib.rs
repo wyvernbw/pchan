@@ -94,6 +94,7 @@ impl Emu {
             clif_blocks.push(fn_builder.create_block()).unwrap();
         }
         let entry_block = fn_builder.create_block();
+        let find_block_span = tracing::info_span!("find_block").entered();
         let blocks = find_block(
             FindBlockParams::builder()
                 .pc(self.cpu.pc as u32)
@@ -104,6 +105,7 @@ impl Emu {
                 .current_cranelift_block(entry_block)
                 .build(),
         )?;
+        drop(find_block_span);
         let mut register_cache: [Option<Value>; _] = [None; 32];
 
         let mut topo = Topo::new(&blocks.cfg);
@@ -236,7 +238,6 @@ impl BasicBlock {
     }
 }
 
-#[instrument(skip_all)]
 fn find_block(params: FindBlockParams<'_>) -> color_eyre::Result<FindBlockSummary> {
     let FindBlockParams {
         pc,

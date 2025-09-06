@@ -14,3 +14,8 @@ tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 color-eyre = "0.6.5"
 
+[profile.bench]
+debug = true
+
+[profile.release]
+lto = "thin"
