@@ -3,6 +3,8 @@ use std::ops::{Add, Mul};
 use thiserror::Error;
 use tracing::instrument;
 
+use crate::cpu::ops;
+
 pub const fn kb(value: usize) -> usize {
     value * 1024
 }
@@ -304,6 +306,13 @@ impl MemRead for u32 {
     }
 }
 
+impl MemRead for ops::Opcode {
+    fn from_slice(buf: &[u8]) -> Result<Self, DerefError> {
+        let buf = buf.as_array().ok_or(DerefError)?;
+        Ok(ops::Opcode(u32::from_le_bytes(*buf)))
+    }
+}
+
 pub(crate) trait MemWrite<const N: usize = { size_of::<Self>() }>: Sized {
     fn to_bytes(&self) -> [u8; N];
     fn write(buf: &mut [u8], value: &Self) -> Result<(), MemWriteError>
@@ -346,6 +355,13 @@ impl MemWrite for u32 {
     #[inline]
     fn to_bytes(&self) -> [u8; 4] {
         self.to_le_bytes()
+    }
+}
+
+impl MemWrite for ops::Opcode {
+    #[inline]
+    fn to_bytes(&self) -> [u8; 4] {
+        self.0.to_le_bytes()
     }
 }
 

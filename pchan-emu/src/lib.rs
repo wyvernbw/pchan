@@ -20,14 +20,17 @@
 use std::{collections::HashSet, sync::Arc};
 
 use bon::{Builder, builder};
+use cranelift::prelude::{Signature, types};
 use petgraph::{prelude::*, visit::Topo};
 use rayon::iter::{IntoParallelRefIterator, ParallelBridge, ParallelIterator};
+use tailcall::tailcall;
+use tracing::instrument;
 
 use crate::{
     bootloader::Bootloader,
     cpu::{
         Cpu, JIT,
-        ops::{BoundaryType, DecodedOp, EmitParams, EmitSummary, Op, PrimeOp, lb::LB},
+        ops::{BoundaryType, DecodedOp, EmitParams, Op},
     },
     memory::{Memory, PhysAddr},
 };
@@ -52,78 +55,84 @@ pub struct Emu {
 }
 
 impl Emu {
-    fn run(&mut self) -> color_eyre::Result<()> {
-        use cranelift_bs::*;
-
+    fn load_bios(&mut self) -> color_eyre::Result<()> {
         self.boot.load_bios(&mut self.mem)?;
+        Ok(())
+    }
+    #[instrument(skip(self), fields(pc = %format!("0x{:08X}", self.cpu.pc)))]
+    fn advance_jit(&mut self) -> color_eyre::Result<()> {
+        use cranelift_bs::*;
 
         let sig = self.jit.create_signature();
         let ptr_type = self.jit.pointer_type();
 
-        loop {
-            // try cache first
-            if let Some(function) = self.jit.block_map.get(&self.cpu.pc) {
-                function(&mut self.cpu, &mut self.mem);
-                continue;
-            };
+        // try cache first
+        if let Some(function) = self.jit.block_map.get(&self.cpu.pc) {
+            function(&mut self.cpu, &mut self.mem);
+            return Ok(());
+        };
 
-            // collect blocks in function
-            let blocks = find_block(
-                FindBlockParams::builder()
-                    .pc(self.cpu.pc as u32)
-                    .mem(&self.mem)
-                    .depth(0)
-                    .max_depth(4)
-                    .build(),
-            )?;
-            let func_id = self.jit.module.declare_function(
-                &self.cpu.pc.to_string(),
-                Linkage::Hidden,
-                &sig,
-            )?;
-            let mut func = Function::with_name_signature(UserFuncName::user(0, 1), sig.clone());
-
-            let mut fn_builder = FunctionBuilder::new(&mut func, &mut self.jit.fn_builder_ctx);
-            let mut register_cache: [Option<Value>; _] = [None; 32];
-
-            let mut topo = Topo::new(&blocks.cfg);
-            while let Some(node) = topo.next(&blocks.cfg) {
-                let basic_block = &blocks.cfg[node];
-                let cranelift_block = JIT::init_block(&mut fn_builder);
-                for (idx, op) in basic_block.ops.iter().enumerate() {
-                    let summary = op.emit_ir(
-                        EmitParams::builder()
-                            .fn_builder(&mut fn_builder)
-                            .ptr_type(ptr_type)
-                            .registers(&register_cache)
-                            .block(cranelift_block)
-                            .pc(basic_block.address + idx as u32 * 4)
-                            .build(),
-                    );
-                    if let Some(summary) = summary {
-                        JIT::emit_updates()
-                            .builder(&mut fn_builder)
-                            .block(cranelift_block)
-                            .summary(&summary)
-                            .cache(&mut register_cache)
-                            .call();
-                    }
-                }
-            }
-
-            fn_builder.ins().return_(&[]);
-            fn_builder.finalize();
-
-            self.jit.ctx.func = func;
+        // collect blocks in function
+        let blocks = find_block(
+            FindBlockParams::builder()
+                .pc(self.cpu.pc as u32)
+                .mem(&self.mem)
+                .depth(0)
+                .max_depth(4)
+                .build(),
+        )?;
+        let func_id =
             self.jit
                 .module
-                .define_function(func_id, &mut self.jit.ctx)?;
+                .declare_function(&self.cpu.pc.to_string(), Linkage::Hidden, &sig)?;
+        let mut func = Function::with_name_signature(UserFuncName::user(0, 1), sig.clone());
 
-            self.jit.module.clear_context(&mut self.jit.ctx);
-            self.jit.module.finalize_definitions()?;
+        let mut fn_builder = FunctionBuilder::new(&mut func, &mut self.jit.fn_builder_ctx);
+        let mut register_cache: [Option<Value>; _] = [None; 32];
 
-            let function = self.jit.get_func(func_id);
-            function(&mut self.cpu, &mut self.mem);
+        let mut topo = Topo::new(&blocks.cfg);
+        while let Some(node) = topo.next(&blocks.cfg) {
+            let basic_block = &blocks.cfg[node];
+            let cranelift_block = JIT::init_block(&mut fn_builder);
+            for (idx, op) in basic_block.ops.iter().enumerate() {
+                let summary = op.emit_ir(
+                    EmitParams::builder()
+                        .fn_builder(&mut fn_builder)
+                        .ptr_type(ptr_type)
+                        .registers(&register_cache)
+                        .block(cranelift_block)
+                        .pc(basic_block.address + idx as u32 * 4)
+                        .build(),
+                );
+                if let Some(summary) = summary {
+                    JIT::emit_updates()
+                        .builder(&mut fn_builder)
+                        .block(cranelift_block)
+                        .summary(&summary)
+                        .cache(&mut register_cache)
+                        .call();
+                }
+            }
+        }
+
+        fn_builder.ins().return_(&[]);
+        fn_builder.finalize();
+
+        self.jit.ctx.func = func;
+        self.jit
+            .module
+            .define_function(func_id, &mut self.jit.ctx)?;
+
+        self.jit.module.clear_context(&mut self.jit.ctx);
+        self.jit.module.finalize_definitions()?;
+
+        let function = self.jit.get_func(func_id);
+        function(&mut self.cpu, &mut self.mem);
+        Ok(())
+    }
+    fn run(&mut self) -> color_eyre::Result<()> {
+        loop {
+            self.advance_jit()?;
         }
     }
 }
@@ -161,8 +170,9 @@ impl BasicBlock {
     }
 }
 
-fn find_block(
-    FindBlockParams {
+#[instrument(skip_all)]
+fn find_block(params: FindBlockParams<'_>) -> color_eyre::Result<FindBlockSummary> {
+    let FindBlockParams {
         pc,
         mem,
         depth,
@@ -170,11 +180,11 @@ fn find_block(
         mut cfg,
         current_node_index,
         mut mapped,
-    }: FindBlockParams,
-) -> color_eyre::Result<FindBlockSummary> {
+    } = params;
     if depth > max_depth {
         return Ok(FindBlockSummary { cfg });
     }
+    tracing::debug!("block reading at pc={}", pc);
     let op = mem.read::<u32>(PhysAddr(pc));
     let op = cpu::ops::Opcode(op);
     let op = DecodedOp::try_new(op)?;
@@ -193,7 +203,8 @@ fn find_block(
             cfg[current_node].ops.push(op);
             let next_node = cfg.add_node(BasicBlock::new(new_address));
             cfg.add_edge(current_node, next_node, offset);
-            become find_block(
+            tracing::debug!(offset, "jump in block");
+            find_block(
                 FindBlockParams::builder()
                     .pc(pc + offset)
                     .mem(mem)
@@ -203,10 +214,11 @@ fn find_block(
                     .current_node_index(next_node)
                     .mapped(mapped)
                     .build(),
-            );
+            )
         }
         Some(BoundaryType::BlockSplit { offsets }) => {
             cfg[current_node].ops.push(op);
+            tracing::debug!(?offsets, "split in block");
             let new_cfgs = offsets
                 .par_iter()
                 .flatten()
@@ -248,7 +260,7 @@ fn find_block(
         Some(BoundaryType::Function) => Ok(FindBlockSummary { cfg }),
         None => {
             cfg[current_node].ops.push(op);
-            become find_block(
+            find_block(
                 FindBlockParams::builder()
                     .pc(pc + 4)
                     .mem(mem)
@@ -258,7 +270,7 @@ fn find_block(
                     .current_node_index(current_node)
                     .mapped(mapped)
                     .build(),
-            );
+            )
         }
     }
 }

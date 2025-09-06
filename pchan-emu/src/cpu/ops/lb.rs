@@ -1,4 +1,4 @@
-use crate::cpu::ops::{BoundaryType, EmitSummary, Op, TryFromOpcodeErr};
+use crate::cpu::ops::{self, BoundaryType, EmitSummary, Op, TryFromOpcodeErr};
 use crate::cranelift_bs::*;
 
 use super::{Opcode, PrimeOp};
@@ -43,6 +43,14 @@ impl Op for LB {
     fn is_block_boundary(&self) -> Option<BoundaryType> {
         None
     }
+
+    fn into_opcode(self) -> ops::Opcode {
+        ops::Opcode::default()
+            .with_primary(PrimeOp::LB)
+            .set_bits(16..21, self.rt as u32)
+            .set_bits(21..26, self.rs as u32)
+            .set_bits(0..16, (self.imm as i32 as i16) as u32)
+    }
 }
 
 #[cfg(test)]
@@ -83,6 +91,7 @@ mod tests {
             ptr_type,
             fn_builder: &mut fn_builder,
             registers: &[None; 32],
+            pc: 0,
             block,
         };
         let summary = lb.emit_ir(params).unwrap();

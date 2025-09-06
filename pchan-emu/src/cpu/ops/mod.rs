@@ -1,5 +1,8 @@
 use crate::{
-    cpu::{JIT, ops::lb::LB},
+    cpu::{
+        JIT,
+        ops::{lb::LB, lbu::LBU},
+    },
     cranelift_bs::*,
 };
 use bon::Builder;
@@ -7,13 +10,15 @@ use enum_dispatch::enum_dispatch;
 use pchan_macros::OpCode;
 use std::ops::Range;
 use thiserror::Error;
+use tracing::instrument;
 
 pub mod decoded_op;
 pub mod lb;
+pub mod lbu;
 #[cfg(test)]
 pub mod op_decode_tests;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) struct Opcode(pub(crate) u32);
 
 impl core::fmt::Debug for Opcode {
@@ -22,6 +27,10 @@ impl core::fmt::Debug for Opcode {
             .field_with(|f| write!(f, "0x{:08X}", &self.0))
             .finish()
     }
+}
+
+pub(crate) const fn nop() -> Opcode {
+    Opcode::NOP
 }
 
 impl Opcode {
@@ -222,19 +231,63 @@ pub enum BoundaryType {
 #[enum_dispatch(DecodedOp)]
 pub(crate) trait Op: Sized {
     fn is_block_boundary(&self) -> Option<BoundaryType>;
+    fn into_opcode(self) -> crate::cpu::ops::Opcode;
     fn emit_ir(&self, state: EmitParams<'_, '_>) -> Option<EmitSummary>;
 }
 
-#[enum_dispatch]
+impl Op for () {
+    fn is_block_boundary(&self) -> Option<BoundaryType> {
+        None
+    }
+
+    fn into_opcode(self) -> crate::cpu::ops::Opcode {
+        Opcode::NOP
+    }
+
+    fn emit_ir(&self, state: EmitParams<'_, '_>) -> Option<EmitSummary> {
+        None
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
+pub struct HaltBlock;
+
+impl Op for HaltBlock {
+    fn is_block_boundary(&self) -> Option<BoundaryType> {
+        Some(BoundaryType::Function)
+    }
+
+    fn into_opcode(self) -> crate::cpu::ops::Opcode {
+        Opcode(69420)
+    }
+
+    fn emit_ir(&self, state: EmitParams<'_, '_>) -> Option<EmitSummary> {
+        None
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+#[enum_dispatch]
+#[allow(clippy::upper_case_acronyms)]
 pub(crate) enum DecodedOp {
+    NOP(()),
+    HaltBlock(HaltBlock),
     LB(LB),
+    LBU(LBU),
 }
 
 impl DecodedOp {
+    #[instrument(err)]
     pub(crate) fn try_new(opcode: Opcode) -> Result<Self, impl std::error::Error> {
+        if opcode.0 == 69420 {
+            return Ok(DecodedOp::HaltBlock(HaltBlock));
+        }
+        if opcode == Opcode::NOP {
+            return Ok(DecodedOp::NOP(()));
+        }
         match opcode.primary() {
             PrimeOp::LB => LB::try_from_opcode(opcode).map(Self::LB),
+            PrimeOp::LBU => LBU::try_from_opcode(opcode).map(Self::LBU),
             _ => Err(TryFromOpcodeErr::InvalidHeader),
         }
     }
