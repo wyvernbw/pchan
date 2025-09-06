@@ -18,6 +18,11 @@ pub mod lbu;
 #[cfg(test)]
 pub mod op_decode_tests;
 
+pub mod prelude {
+    pub use super::lb::*;
+    pub use super::lbu::*;
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) struct Opcode(pub(crate) u32);
 

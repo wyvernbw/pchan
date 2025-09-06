@@ -10,6 +10,10 @@ pub(crate) struct LB {
     imm: i16,
 }
 
+pub(crate) fn lb(rt: usize, rs: usize, imm: i16) -> ops::Opcode {
+    LB { rt, rs, imm }.into_opcode()
+}
+
 impl LB {
     pub(crate) fn try_from_opcode(opcode: Opcode) -> Result<Self, TryFromOpcodeErr> {
         let opcode = opcode.as_primary(PrimeOp::LB)?;
@@ -62,8 +66,9 @@ mod tests {
         Emu,
         cpu::{
             JIT,
-            ops::{EmitParams, Op, lb::LB},
+            ops::{self, EmitParams, Op, lb::LB},
         },
+        memory::KSEG0Addr,
         test_utils::emulator,
     };
 
@@ -125,6 +130,31 @@ mod tests {
 
         tracing::info!(%emulator.cpu);
         assert_eq!(emulator.cpu.gpr[9], 69);
+
+        Ok(())
+    }
+
+    #[rstest]
+    pub fn test_lb_sign_extension(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
+        use crate::cpu::ops::prelude::*;
+
+        emulator.mem.write(KSEG0Addr::from_phys(32), 0xFFu8);
+        emulator.mem.write(KSEG0Addr::from_phys(33), 0x7Fu8);
+        emulator.mem.write_all(
+            KSEG0Addr::from_phys(0),
+            [lb(8, 9, 0), lb(10, 9, 1), ops::Opcode(69420)],
+        );
+
+        emulator.cpu.gpr[9] = 32; // base register
+
+        // Run the block
+        emulator.advance_jit()?;
+
+        // 0xFF should be sign-extended to 0xFFFFFFFFFFFFFFFF
+        assert_eq!(emulator.cpu.gpr[8], 0xFFFFFFFFFFFFFFFF);
+
+        // 0x7F should be sign-extended to 0x7F
+        assert_eq!(emulator.cpu.gpr[10], 0x7F);
 
         Ok(())
     }
