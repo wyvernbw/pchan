@@ -6,7 +6,7 @@ use tracing::instrument;
 use crate::{
     cpu::ops::EmitSummary,
     cranelift_bs::*,
-    memory::{Memory, PhysAddr},
+    memory::Memory,
 };
 
 #[cfg(test)]
