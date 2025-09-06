@@ -1,7 +1,7 @@
 use crate::cpu::ops::{self, BoundaryType, EmitSummary, Op, TryFromOpcodeErr};
 use crate::cranelift_bs::*;
 
-use super::{Opcode, PrimeOp};
+use super::{OpCode, PrimeOp};
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct LB {
@@ -10,12 +10,12 @@ pub(crate) struct LB {
     imm: i16,
 }
 
-pub(crate) fn lb(rt: usize, rs: usize, imm: i16) -> ops::Opcode {
+pub(crate) fn lb(rt: usize, rs: usize, imm: i16) -> ops::OpCode {
     LB { rt, rs, imm }.into_opcode()
 }
 
 impl LB {
-    pub(crate) fn try_from_opcode(opcode: Opcode) -> Result<Self, TryFromOpcodeErr> {
+    pub(crate) fn try_from_opcode(opcode: OpCode) -> Result<Self, TryFromOpcodeErr> {
         let opcode = opcode.as_primary(PrimeOp::LB)?;
         Ok(LB {
             rt: opcode.bits(16..21) as usize,
@@ -48,8 +48,8 @@ impl Op for LB {
         None
     }
 
-    fn into_opcode(self) -> ops::Opcode {
-        ops::Opcode::default()
+    fn into_opcode(self) -> ops::OpCode {
+        ops::OpCode::default()
             .with_primary(PrimeOp::LB)
             .set_bits(16..21, self.rt as u32)
             .set_bits(21..26, self.rs as u32)
@@ -142,7 +142,7 @@ mod tests {
         emulator.mem.write(KSEG0Addr::from_phys(33), 0x7Fu8);
         emulator.mem.write_all(
             KSEG0Addr::from_phys(0),
-            [lb(8, 9, 0), lb(10, 9, 1), ops::Opcode(69420)],
+            [lb(8, 9, 0), lb(10, 9, 1), ops::OpCode(69420)],
         );
 
         emulator.cpu.gpr[9] = 32; // base register

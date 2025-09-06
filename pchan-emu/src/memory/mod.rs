@@ -306,10 +306,10 @@ impl MemRead for u32 {
     }
 }
 
-impl MemRead for ops::Opcode {
+impl MemRead for ops::OpCode {
     fn from_slice(buf: &[u8]) -> Result<Self, DerefError> {
         let buf = buf.as_array().ok_or(DerefError)?;
-        Ok(ops::Opcode(u32::from_le_bytes(*buf)))
+        Ok(ops::OpCode(u32::from_le_bytes(*buf)))
     }
 }
 
@@ -358,7 +358,7 @@ impl MemWrite for u32 {
     }
 }
 
-impl MemWrite for ops::Opcode {
+impl MemWrite for ops::OpCode {
     #[inline]
     fn to_bytes(&self) -> [u8; 4] {
         self.0.to_le_bytes()

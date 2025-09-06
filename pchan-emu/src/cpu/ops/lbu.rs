@@ -1,9 +1,10 @@
 use crate::cpu::ops::{self, BoundaryType, EmitSummary, Op, TryFromOpcodeErr};
 use crate::cranelift_bs::*;
 
-use super::{Opcode, PrimeOp};
+use super::PrimeOp;
 
 #[derive(Debug, Clone, Copy)]
+#[allow(clippy::upper_case_acronyms)]
 pub(crate) struct LBU {
     rt: usize,
     rs: usize,
@@ -11,12 +12,12 @@ pub(crate) struct LBU {
 }
 
 #[inline]
-pub(crate) fn lbu(rt: usize, rs: usize, imm: i16) -> ops::Opcode {
+pub(crate) fn lbu(rt: usize, rs: usize, imm: i16) -> ops::OpCode {
     LBU { rt, rs, imm }.into_opcode()
 }
 
 impl LBU {
-    pub(crate) fn try_from_opcode(opcode: ops::Opcode) -> Result<Self, TryFromOpcodeErr> {
+    pub(crate) fn try_from_opcode(opcode: ops::OpCode) -> Result<Self, TryFromOpcodeErr> {
         let opcode = opcode.as_primary(PrimeOp::LBU)?;
         Ok(LBU {
             rt: opcode.bits(16..21) as usize,
@@ -49,8 +50,8 @@ impl Op for LBU {
         None
     }
 
-    fn into_opcode(self) -> ops::Opcode {
-        ops::Opcode::default()
+    fn into_opcode(self) -> ops::OpCode {
+        ops::OpCode::default()
             .with_primary(PrimeOp::LBU)
             .set_bits(16..21, self.rt as u32)
             .set_bits(21..26, self.rs as u32)
@@ -74,9 +75,9 @@ mod tests {
     pub fn test_lbu(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
         emulator.mem.write_all(
             KSEG0Addr::from_phys(0),
-            [lbu(8, 9, 4), nop(), ops::Opcode(69420)],
+            [lbu(8, 9, 4), nop(), ops::OpCode(69420)],
         );
-        let op = emulator.mem.read::<ops::Opcode>(PhysAddr(0));
+        let op = emulator.mem.read::<ops::OpCode>(PhysAddr(0));
         tracing::debug!(decoded = ?DecodedOp::try_new(op));
         tracing::debug!("{:08X?}", &emulator.mem.as_ref()[..21]);
         emulator.cpu.gpr[9] = 16;

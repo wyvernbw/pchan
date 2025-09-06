@@ -1,23 +1,25 @@
 use crate::cpu::ops::{self, BoundaryType, EmitSummary, Op, TryFromOpcodeErr};
 use crate::cranelift_bs::*;
 
-use super::{OpCode, PrimeOp};
+use super::PrimeOp;
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct LH {
+#[allow(clippy::upper_case_acronyms)]
+pub(crate) struct LHU {
     rt: usize,
     rs: usize,
     imm: i16,
 }
 
-pub(crate) fn lh(rt: usize, rs: usize, imm: i16) -> ops::OpCode {
-    LH { rt, rs, imm }.into_opcode()
+#[inline]
+pub(crate) fn lhu(rt: usize, rs: usize, imm: i16) -> ops::OpCode {
+    LHU { rt, rs, imm }.into_opcode()
 }
 
-impl LH {
-    pub(crate) fn try_from_opcode(opcode: OpCode) -> Result<Self, TryFromOpcodeErr> {
-        let opcode = opcode.as_primary(PrimeOp::LH)?;
-        Ok(LH {
+impl LHU {
+    pub(crate) fn try_from_opcode(opcode: ops::OpCode) -> Result<Self, TryFromOpcodeErr> {
+        let opcode = opcode.as_primary(PrimeOp::LHU)?;
+        Ok(LHU {
             rt: opcode.bits(16..21) as usize,
             rs: opcode.bits(21..26) as usize,
             imm: opcode.bits(0..16) as i16,
@@ -25,7 +27,7 @@ impl LH {
     }
 }
 
-impl Op for LH {
+impl Op for LHU {
     fn emit_ir(&self, mut state: super::EmitParams<'_, '_>) -> Option<EmitSummary> {
         // get pointer to memory passed as argument to the function
         let mem_ptr = state.memory();
@@ -38,7 +40,7 @@ impl Op for LH {
             state
                 .fn_builder
                 .ins()
-                .sload16(types::I64, MemFlags::new(), mem_ptr, self.imm as i32);
+                .uload16(types::I64, MemFlags::new(), mem_ptr, self.imm as i32);
         Some(EmitSummary {
             register_updates: vec![(self.rt, rt)].into_boxed_slice(),
         })
@@ -50,7 +52,7 @@ impl Op for LH {
 
     fn into_opcode(self) -> ops::OpCode {
         ops::OpCode::default()
-            .with_primary(PrimeOp::LH)
+            .with_primary(PrimeOp::LHU)
             .set_bits(16..21, self.rt as u32)
             .set_bits(21..26, self.rs as u32)
             .set_bits(0..16, (self.imm as i32 as i16) as u32)
@@ -64,31 +66,31 @@ mod tests {
 
     use crate::{
         Emu,
-        cpu::ops::{self},
-        memory::KSEG0Addr,
+        cpu::ops::{self, DecodedOp},
+        memory::{KSEG0Addr, PhysAddr},
         test_utils::emulator,
     };
 
     #[rstest]
-    pub fn test_lb_sign_extension(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
+    pub fn test_lhu(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
         use crate::cpu::ops::prelude::*;
-
-        emulator.mem.write::<u16>(KSEG0Addr::from_phys(32), 0x8000); // -32768
-        emulator.mem.write::<u16>(KSEG0Addr::from_phys(34), 0x7FFF); // +32767
 
         emulator.mem.write_all(
             KSEG0Addr::from_phys(0),
-            [lh(8, 9, 0), lh(10, 9, 2), ops::OpCode(69420)],
+            [lhu(8, 9, 4), nop(), ops::OpCode(69420)],
         );
 
-        emulator.cpu.gpr[9] = 32; // base register
+        let op = emulator.mem.read::<ops::OpCode>(PhysAddr(0));
+        tracing::debug!(decoded = ?DecodedOp::try_new(op));
+        tracing::debug!("{:08X?}", &emulator.mem.as_ref()[..22]);
 
-        // Run the block
+        emulator.cpu.gpr[9] = 16;
+
+        emulator.mem.write::<u16>(KSEG0Addr::from_phys(20), 0xABCD);
+
         emulator.advance_jit()?;
 
-        assert_eq!(emulator.cpu.gpr[8], 0xFFFFFFFFFFFF8000);
-
-        assert_eq!(emulator.cpu.gpr[10], 0x7FFF);
+        assert_eq!(emulator.cpu.gpr[8], 0xABCDu64);
 
         Ok(())
     }

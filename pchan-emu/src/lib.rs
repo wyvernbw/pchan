@@ -1,3 +1,5 @@
+// allow for dev
+#![allow(dead_code)]
 #![allow(incomplete_features)]
 #![feature(iterator_try_collect)]
 #![feature(explicit_tail_calls)]
@@ -16,14 +18,14 @@
 #![feature(slice_as_array)]
 #![feature(portable_simd)]
 #![feature(iter_collect_into)]
+// allow unused variables in tests to supress the setup tracing warnings
+#![cfg_attr(test, allow(unused_variables))]
 
-use std::{collections::HashSet, sync::Arc};
+use std::collections::HashSet;
 
 use bon::{Builder, builder};
-use cranelift::prelude::{Signature, types};
 use petgraph::{prelude::*, visit::Topo};
-use rayon::iter::{IntoParallelRefIterator, ParallelBridge, ParallelIterator};
-use tailcall::tailcall;
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use tracing::instrument;
 
 use crate::{
@@ -186,7 +188,7 @@ fn find_block(params: FindBlockParams<'_>) -> color_eyre::Result<FindBlockSummar
     }
     tracing::debug!("block reading at pc={}", pc);
     let op = mem.read::<u32>(PhysAddr(pc));
-    let op = cpu::ops::Opcode(op);
+    let op = cpu::ops::OpCode(op);
     let op = DecodedOp::try_new(op)?;
 
     let current_node = current_node_index.unwrap_or_else(|| {

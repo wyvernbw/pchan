@@ -1,10 +1,4 @@
-use crate::{
-    cpu::{
-        JIT,
-        ops::{lb::LB, lbu::LBU, lh::LH},
-    },
-    cranelift_bs::*,
-};
+use crate::{cpu::JIT, cranelift_bs::*};
 use bon::Builder;
 use enum_dispatch::enum_dispatch;
 use pchan_macros::OpCode;
@@ -12,23 +6,27 @@ use std::ops::Range;
 use thiserror::Error;
 use tracing::instrument;
 
-pub mod decoded_op;
 pub mod lb;
 pub mod lbu;
 pub mod lh;
-#[cfg(test)]
-pub mod op_decode_tests;
+pub mod lhu;
+pub mod lw;
 
 pub(crate) mod prelude {
     pub(crate) use super::lb::*;
     pub(crate) use super::lbu::*;
     pub(crate) use super::lh::*;
+    pub(crate) use super::lhu::*;
+    pub(crate) use super::lw::*;
+    pub(crate) use super::nop;
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) struct Opcode(pub(crate) u32);
+use prelude::*;
 
-impl core::fmt::Debug for Opcode {
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct OpCode(pub(crate) u32);
+
+impl core::fmt::Debug for OpCode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_tuple("Op")
             .field_with(|f| write!(f, "0x{:08X}", &self.0))
@@ -36,12 +34,12 @@ impl core::fmt::Debug for Opcode {
     }
 }
 
-pub(crate) const fn nop() -> Opcode {
-    Opcode::NOP
+pub(crate) const fn nop() -> OpCode {
+    OpCode::NOP
 }
 
-impl Opcode {
-    pub(crate) const NOP: Opcode = Opcode(0x00000000);
+impl OpCode {
+    pub(crate) const NOP: OpCode = OpCode(0x00000000);
 
     #[inline]
     pub(crate) const fn primary(&self) -> PrimeOp {
@@ -72,10 +70,10 @@ impl Opcode {
     }
 
     pub(crate) const fn with_primary(self, primary: PrimeOp) -> Self {
-        Opcode((self.0 & 0x03FF_FFFF) | ((primary as u32) << 26))
+        OpCode((self.0 & 0x03FF_FFFF) | ((primary as u32) << 26))
     }
     pub(crate) const fn with_secondary(self, secondary: SecondaryOp) -> Self {
-        Opcode((self.0 & 0xFFFF_FFE0) | (secondary as u32))
+        OpCode((self.0 & 0xFFFF_FFE0) | (secondary as u32))
     }
     pub(crate) fn as_primary(self, primary: PrimeOp) -> Result<Self, TryFromOpcodeErr> {
         if self.primary() == primary {
@@ -238,7 +236,7 @@ pub enum BoundaryType {
 #[enum_dispatch(DecodedOp)]
 pub(crate) trait Op: Sized {
     fn is_block_boundary(&self) -> Option<BoundaryType>;
-    fn into_opcode(self) -> crate::cpu::ops::Opcode;
+    fn into_opcode(self) -> crate::cpu::ops::OpCode;
     fn emit_ir(&self, state: EmitParams<'_, '_>) -> Option<EmitSummary>;
 }
 
@@ -247,8 +245,8 @@ impl Op for () {
         None
     }
 
-    fn into_opcode(self) -> crate::cpu::ops::Opcode {
-        Opcode::NOP
+    fn into_opcode(self) -> crate::cpu::ops::OpCode {
+        OpCode::NOP
     }
 
     fn emit_ir(&self, state: EmitParams<'_, '_>) -> Option<EmitSummary> {
@@ -264,8 +262,8 @@ impl Op for HaltBlock {
         Some(BoundaryType::Function)
     }
 
-    fn into_opcode(self) -> crate::cpu::ops::Opcode {
-        Opcode(69420)
+    fn into_opcode(self) -> crate::cpu::ops::OpCode {
+        OpCode(69420)
     }
 
     fn emit_ir(&self, state: EmitParams<'_, '_>) -> Option<EmitSummary> {
@@ -282,18 +280,22 @@ pub(crate) enum DecodedOp {
     LB(LB),
     LBU(LBU),
     LH(LH),
+    LHU(LHU),
+    LW(LW),
 }
 
 impl DecodedOp {
     #[instrument(err)]
-    pub(crate) fn try_new(opcode: Opcode) -> Result<Self, impl std::error::Error> {
+    pub(crate) fn try_new(opcode: OpCode) -> Result<Self, impl std::error::Error> {
         if opcode.0 == 69420 {
             return Ok(DecodedOp::HaltBlock(HaltBlock));
         }
-        if opcode == Opcode::NOP {
+        if opcode == OpCode::NOP {
             return Ok(DecodedOp::NOP(()));
         }
         match opcode.primary() {
+            PrimeOp::LW => LW::try_from_opcode(opcode).map(Self::LW),
+            PrimeOp::LHU => LHU::try_from_opcode(opcode).map(Self::LHU),
             PrimeOp::LH => LH::try_from_opcode(opcode).map(Self::LH),
             PrimeOp::LB => LB::try_from_opcode(opcode).map(Self::LB),
             PrimeOp::LBU => LBU::try_from_opcode(opcode).map(Self::LBU),

@@ -4,20 +4,20 @@ use crate::cranelift_bs::*;
 use super::{OpCode, PrimeOp};
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct LH {
+pub(crate) struct LW {
     rt: usize,
     rs: usize,
     imm: i16,
 }
 
-pub(crate) fn lh(rt: usize, rs: usize, imm: i16) -> ops::OpCode {
-    LH { rt, rs, imm }.into_opcode()
+pub(crate) fn lw(rt: usize, rs: usize, imm: i16) -> ops::OpCode {
+    LW { rt, rs, imm }.into_opcode()
 }
 
-impl LH {
+impl LW {
     pub(crate) fn try_from_opcode(opcode: OpCode) -> Result<Self, TryFromOpcodeErr> {
-        let opcode = opcode.as_primary(PrimeOp::LH)?;
-        Ok(LH {
+        let opcode = opcode.as_primary(PrimeOp::LW)?;
+        Ok(LW {
             rt: opcode.bits(16..21) as usize,
             rs: opcode.bits(21..26) as usize,
             imm: opcode.bits(0..16) as i16,
@@ -25,7 +25,7 @@ impl LH {
     }
 }
 
-impl Op for LH {
+impl Op for LW {
     fn emit_ir(&self, mut state: super::EmitParams<'_, '_>) -> Option<EmitSummary> {
         // get pointer to memory passed as argument to the function
         let mem_ptr = state.memory();
@@ -34,11 +34,10 @@ impl Op for LH {
         let rs = state.emit_get_register(self.rs);
         let mem_ptr = state.fn_builder.ins().iadd(mem_ptr, rs);
 
-        let rt =
-            state
-                .fn_builder
-                .ins()
-                .sload16(types::I64, MemFlags::new(), mem_ptr, self.imm as i32);
+        let rt = state
+            .fn_builder
+            .ins()
+            .uload32(MemFlags::new(), mem_ptr, self.imm as i32);
         Some(EmitSummary {
             register_updates: vec![(self.rt, rt)].into_boxed_slice(),
         })
@@ -50,7 +49,7 @@ impl Op for LH {
 
     fn into_opcode(self) -> ops::OpCode {
         ops::OpCode::default()
-            .with_primary(PrimeOp::LH)
+            .with_primary(PrimeOp::LW)
             .set_bits(16..21, self.rt as u32)
             .set_bits(21..26, self.rs as u32)
             .set_bits(0..16, (self.imm as i32 as i16) as u32)
@@ -70,15 +69,16 @@ mod tests {
     };
 
     #[rstest]
-    pub fn test_lb_sign_extension(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
+    pub fn test_lw(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
         use crate::cpu::ops::prelude::*;
 
-        emulator.mem.write::<u16>(KSEG0Addr::from_phys(32), 0x8000); // -32768
-        emulator.mem.write::<u16>(KSEG0Addr::from_phys(34), 0x7FFF); // +32767
+        emulator
+            .mem
+            .write::<u32>(KSEG0Addr::from_phys(32), 0xDEAD_BEEF); // -32768
 
         emulator.mem.write_all(
             KSEG0Addr::from_phys(0),
-            [lh(8, 9, 0), lh(10, 9, 2), ops::OpCode(69420)],
+            [lw(8, 9, 0), nop(), ops::OpCode(69420)],
         );
 
         emulator.cpu.gpr[9] = 32; // base register
@@ -86,9 +86,7 @@ mod tests {
         // Run the block
         emulator.advance_jit()?;
 
-        assert_eq!(emulator.cpu.gpr[8], 0xFFFFFFFFFFFF8000);
-
-        assert_eq!(emulator.cpu.gpr[10], 0x7FFF);
+        assert_eq!(emulator.cpu.gpr[8], 0xDEAD_BEEF);
 
         Ok(())
     }
