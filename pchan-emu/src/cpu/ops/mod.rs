@@ -6,6 +6,7 @@ use std::ops::Range;
 use thiserror::Error;
 use tracing::instrument;
 
+pub mod addu;
 pub mod lb;
 pub mod lbu;
 pub mod lh;
@@ -16,6 +17,7 @@ pub mod sh;
 pub mod sw;
 
 pub(crate) mod prelude {
+    pub(crate) use super::addu::*;
     pub(crate) use super::lb::*;
     pub(crate) use super::lbu::*;
     pub(crate) use super::lh::*;
@@ -53,9 +55,9 @@ impl OpCode {
         PrimeOp::MAP[code as usize]
     }
     #[inline]
-    pub(crate) const fn secondary(&self) -> SecondaryOp {
+    pub(crate) const fn secondary(&self) -> SecOp {
         let code = self.0 & 0x3F;
-        SecondaryOp::MAP[code as usize]
+        SecOp::MAP[code as usize]
     }
     #[inline]
     pub(crate) const fn bits(&self, range: Range<u8>) -> u32 {
@@ -78,11 +80,18 @@ impl OpCode {
     pub(crate) const fn with_primary(self, primary: PrimeOp) -> Self {
         OpCode((self.0 & 0x03FF_FFFF) | ((primary as u32) << 26))
     }
-    pub(crate) const fn with_secondary(self, secondary: SecondaryOp) -> Self {
+    pub(crate) const fn with_secondary(self, secondary: SecOp) -> Self {
         OpCode((self.0 & 0xFFFF_FFE0) | (secondary as u32))
     }
     pub(crate) fn as_primary(self, primary: PrimeOp) -> Result<Self, TryFromOpcodeErr> {
         if self.primary() == primary {
+            Ok(self)
+        } else {
+            Err(TryFromOpcodeErr::InvalidHeader)
+        }
+    }
+    pub(crate) fn as_secondary(self, secondary: SecOp) -> Result<Self, TryFromOpcodeErr> {
+        if self.secondary() == secondary {
             Ok(self)
         } else {
             Err(TryFromOpcodeErr::InvalidHeader)
@@ -148,7 +157,7 @@ pub enum PrimeOp {
 #[repr(u8)]
 #[derive(OpCode, Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(clippy::upper_case_acronyms)]
-pub(crate) enum SecondaryOp {
+pub(crate) enum SecOp {
     // Shift instructions
     SLL = 0x00,
     SRL = 0x02,
@@ -221,9 +230,12 @@ impl<'a, 'b> EmitParams<'a, 'b> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Builder, Debug, Default)]
 pub struct EmitSummary {
+    #[builder(default)]
     pub(crate) register_updates: Box<[(usize, Value)]>,
+    #[builder(default)]
+    pub(crate) delayed_register_updates: Box<[(usize, Value)]>,
 }
 
 #[derive(Debug, Error)]
@@ -291,6 +303,7 @@ pub(crate) enum DecodedOp {
     SB(SB),
     SH(SH),
     SW(SW),
+    ADDU(ADDU),
 }
 
 impl DecodedOp {
@@ -303,6 +316,10 @@ impl DecodedOp {
             return Ok(DecodedOp::NOP(()));
         }
         match (opcode.primary(), opcode.secondary()) {
+            (PrimeOp::SPECIAL, SecOp::ADDU | SecOp::ADD) => {
+                // TODO: implement ADD separately from ADDU
+                ADDU::try_from_opcode(opcode).map(Self::ADDU)
+            }
             (PrimeOp::SW, _) => SW::try_from_opcode(opcode).map(Self::SW),
             (PrimeOp::SH, _) => SH::try_from_opcode(opcode).map(Self::SH),
             (PrimeOp::SB, _) => SB::try_from_opcode(opcode).map(Self::SB),

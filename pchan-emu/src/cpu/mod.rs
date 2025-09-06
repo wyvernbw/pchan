@@ -146,14 +146,14 @@ impl JIT {
     }
 
     #[builder]
-    #[instrument(skip(builder, block, summary), fields(registers=?summary.register_updates))]
+    #[instrument(skip(builder, block))]
     pub(crate) fn emit_updates(
         builder: &mut FunctionBuilder<'_>,
         block: Block,
-        summary: &EmitSummary,
+        updates: Box<[(usize, Value)]>,
         mut cache: Option<&mut [Option<Value>; 32]>,
     ) {
-        for (id, value) in summary.register_updates.iter() {
+        for (id, value) in updates.iter() {
             JIT::emit_store_reg()
                 .block(block)
                 .builder(builder)

@@ -107,16 +107,23 @@ impl Emu {
                         .pc(basic_block.address + idx as u32 * 4)
                         .build(),
                 );
-                if let Some(summary) = updates_queue.take() {
+                if let Some(delayed_register_updates) = updates_queue.take() {
                     JIT::emit_updates()
                         .builder(&mut fn_builder)
                         .block(cranelift_block)
-                        .summary(&summary)
                         .cache(&mut register_cache)
+                        .updates(delayed_register_updates)
                         .call();
                 }
+
                 if let Some(summary) = summary {
-                    updates_queue = Some(summary);
+                    updates_queue = Some(summary.delayed_register_updates);
+                    JIT::emit_updates()
+                        .builder(&mut fn_builder)
+                        .block(cranelift_block)
+                        .cache(&mut register_cache)
+                        .updates(summary.register_updates)
+                        .call();
                 }
             }
         }

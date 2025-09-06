@@ -41,9 +41,11 @@ impl Op for LHU {
                 .fn_builder
                 .ins()
                 .uload16(types::I64, MemFlags::new(), mem_ptr, self.imm as i32);
-        Some(EmitSummary {
-            register_updates: vec![(self.rt, rt)].into_boxed_slice(),
-        })
+        Some(
+            EmitSummary::builder()
+                .delayed_register_updates(vec![(self.rt, rt)].into_boxed_slice())
+                .build(),
+        )
     }
 
     fn is_block_boundary(&self) -> Option<BoundaryType> {

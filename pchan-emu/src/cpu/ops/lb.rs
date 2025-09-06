@@ -39,9 +39,11 @@ impl Op for LB {
                 .fn_builder
                 .ins()
                 .sload8(types::I64, MemFlags::new(), mem_ptr, self.imm as i32);
-        Some(EmitSummary {
-            register_updates: vec![(self.rt, rt)].into_boxed_slice(),
-        })
+        Some(
+            EmitSummary::builder()
+                .delayed_register_updates(vec![(self.rt, rt)].into_boxed_slice())
+                .build(),
+        )
     }
 
     fn is_block_boundary(&self) -> Option<BoundaryType> {
@@ -64,75 +66,10 @@ mod tests {
 
     use crate::{
         Emu,
-        cpu::{
-            JIT,
-            ops::{self, EmitParams, Op, lb::LB},
-        },
+        cpu::ops::{self},
         memory::KSEG0Addr,
         test_utils::emulator,
     };
-
-    #[rstest]
-    fn test_lb(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
-        use crate::cranelift_bs::*;
-
-        let sig = emulator.jit.create_signature();
-        let ptr_type = emulator.jit.pointer_type();
-
-        let func_id = emulator
-            .jit
-            .module
-            .declare_function("test_lb", Linkage::Hidden, &sig)?;
-        let mut func = Function::with_name_signature(UserFuncName::user(0, 1), sig);
-
-        let mut fn_builder = FunctionBuilder::new(&mut func, &mut emulator.jit.fn_builder_ctx);
-        let block = JIT::init_block(&mut fn_builder);
-        let lb = LB {
-            rs: 8,
-            rt: 9,
-            imm: 16,
-        };
-        let params = EmitParams {
-            ptr_type,
-            fn_builder: &mut fn_builder,
-            registers: &[None; 32],
-            pc: 0,
-            block,
-        };
-        let summary = lb.emit_ir(params).unwrap();
-        tracing::info!(?summary);
-        JIT::emit_updates()
-            .builder(&mut fn_builder)
-            .block(block)
-            .summary(&summary)
-            .call();
-        fn_builder.ins().return_(&[]);
-        fn_builder.finalize();
-
-        emulator.jit.ctx.func = func;
-        emulator
-            .jit
-            .module
-            .define_function(func_id, &mut emulator.jit.ctx)?;
-
-        emulator.jit.module.clear_context(&mut emulator.jit.ctx);
-        emulator.jit.module.finalize_definitions()?;
-
-        let test_lb = emulator.jit.get_func(func_id);
-
-        emulator.cpu.gpr[8] = 4; // address of element at index 4 in memory
-        emulator.mem.as_mut()[4 + 16] = 69;
-
-        tracing::info!(%emulator.cpu);
-        tracing::info!("v2(rs) = {}", emulator.cpu.gpr[8]);
-        tracing::info!("memory[4+16] = {}", emulator.mem.as_ref()[20]);
-        test_lb(&mut emulator.cpu, &mut emulator.mem);
-
-        tracing::info!(%emulator.cpu);
-        assert_eq!(emulator.cpu.gpr[9], 69);
-
-        Ok(())
-    }
 
     #[rstest]
     pub fn test_lb_sign_extension(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
