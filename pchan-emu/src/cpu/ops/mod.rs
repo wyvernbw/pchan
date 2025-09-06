@@ -14,6 +14,7 @@ pub mod lhu;
 pub mod lw;
 pub mod sb;
 pub mod sh;
+pub mod subu;
 pub mod sw;
 
 pub(crate) mod prelude {
@@ -26,6 +27,7 @@ pub(crate) mod prelude {
     pub(crate) use super::nop;
     pub(crate) use super::sb::*;
     pub(crate) use super::sh::*;
+    pub(crate) use super::subu::*;
     pub(crate) use super::sw::*;
 }
 
@@ -304,6 +306,7 @@ pub(crate) enum DecodedOp {
     SH(SH),
     SW(SW),
     ADDU(ADDU),
+    SUBU(SUBU),
 }
 
 impl DecodedOp {
@@ -316,6 +319,10 @@ impl DecodedOp {
             return Ok(DecodedOp::NOP(()));
         }
         match (opcode.primary(), opcode.secondary()) {
+            (PrimeOp::SPECIAL, SecOp::SUBU | SecOp::SUB) => {
+                // TODO: implement SUB separately from SUBU
+                SUBU::try_from_opcode(opcode).map(Self::SUBU)
+            }
             (PrimeOp::SPECIAL, SecOp::ADDU | SecOp::ADD) => {
                 // TODO: implement ADD separately from ADDU
                 ADDU::try_from_opcode(opcode).map(Self::ADDU)
