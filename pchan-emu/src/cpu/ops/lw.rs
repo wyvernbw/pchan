@@ -59,6 +59,7 @@ impl Op for LW {
 #[cfg(test)]
 mod tests {
     use pchan_utils::setup_tracing;
+    use pretty_assertions::assert_ne;
     use rstest::rstest;
 
     use crate::{
@@ -87,6 +88,57 @@ mod tests {
         emulator.advance_jit()?;
 
         assert_eq!(emulator.cpu.gpr[8], 0xDEAD_BEEF);
+
+        Ok(())
+    }
+
+    #[rstest]
+    pub fn load_delay_hazard_1(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
+        use crate::cpu::ops::prelude::*;
+
+        emulator
+            .mem
+            .write::<u32>(KSEG0Addr::from_phys(32), 0xDEAD_BEEF);
+
+        emulator.mem.write_all(
+            KSEG0Addr::from_phys(0),
+            [lw(8, 9, 0), sb(8, 10, 0), ops::OpCode(69420)],
+        );
+
+        emulator.cpu.gpr[9] = 32; // base register
+        emulator.cpu.gpr[10] = 36;
+
+        // Run the block
+        emulator.advance_jit()?;
+
+        assert_eq!(emulator.cpu.gpr[8], 0xDEAD_BEEF);
+        // 0xDEAD_BEEF wasnt loaded by the time the store happened
+        assert_eq!(emulator.mem.read::<u8>(KSEG0Addr::from_phys(36)), 0);
+
+        Ok(())
+    }
+
+    #[rstest]
+    pub fn load_delay_hazard_2(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
+        use crate::cpu::ops::prelude::*;
+
+        emulator
+            .mem
+            .write::<u32>(KSEG0Addr::from_phys(32), 0xDEAD_BEEF);
+
+        emulator.mem.write_all(
+            KSEG0Addr::from_phys(0),
+            [lw(8, 9, 0), nop(), sb(8, 10, 0), ops::OpCode(69420)],
+        );
+
+        emulator.cpu.gpr[9] = 32; // base register
+        emulator.cpu.gpr[10] = 36;
+
+        // Run the block
+        emulator.advance_jit()?;
+
+        assert_eq!(emulator.cpu.gpr[8], 0xDEAD_BEEF);
+        assert_ne!(emulator.mem.read::<u8>(KSEG0Addr::from_phys(36)), 0);
 
         Ok(())
     }

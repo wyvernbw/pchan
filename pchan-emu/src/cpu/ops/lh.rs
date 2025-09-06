@@ -70,7 +70,7 @@ mod tests {
     };
 
     #[rstest]
-    pub fn test_lb_sign_extension(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
+    pub fn test_lh_sign_extension(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
         use crate::cpu::ops::prelude::*;
 
         emulator.mem.write::<u16>(KSEG0Addr::from_phys(32), 0x8000); // -32768
@@ -78,7 +78,7 @@ mod tests {
 
         emulator.mem.write_all(
             KSEG0Addr::from_phys(0),
-            [lh(8, 9, 0), lh(10, 9, 2), ops::OpCode(69420)],
+            [lh(8, 9, 0), lh(10, 9, 2), nop(), ops::OpCode(69420)],
         );
 
         emulator.cpu.gpr[9] = 32; // base register

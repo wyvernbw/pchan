@@ -3,11 +3,7 @@ use std::{collections::HashMap, fmt::Display, ptr};
 use cranelift::codegen::ir;
 use tracing::instrument;
 
-use crate::{
-    cpu::ops::EmitSummary,
-    cranelift_bs::*,
-    memory::Memory,
-};
+use crate::{cpu::ops::EmitSummary, cranelift_bs::*, memory::Memory};
 
 #[cfg(test)]
 mod cranelift_tests;

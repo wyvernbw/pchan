@@ -142,7 +142,7 @@ mod tests {
         emulator.mem.write(KSEG0Addr::from_phys(33), 0x7Fu8);
         emulator.mem.write_all(
             KSEG0Addr::from_phys(0),
-            [lb(8, 9, 0), lb(10, 9, 1), ops::OpCode(69420)],
+            [lb(8, 9, 0), lb(10, 9, 1), nop(), ops::OpCode(69420)],
         );
 
         emulator.cpu.gpr[9] = 32; // base register
