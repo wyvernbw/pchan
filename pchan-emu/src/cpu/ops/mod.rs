@@ -6,6 +6,7 @@ use std::ops::Range;
 use thiserror::Error;
 use tracing::instrument;
 
+pub mod addiu;
 pub mod addu;
 pub mod lb;
 pub mod lbu;
@@ -18,6 +19,7 @@ pub mod subu;
 pub mod sw;
 
 pub(crate) mod prelude {
+    pub(crate) use super::addiu::*;
     pub(crate) use super::addu::*;
     pub(crate) use super::lb::*;
     pub(crate) use super::lbu::*;
@@ -306,6 +308,7 @@ pub(crate) enum DecodedOp {
     SH(SH),
     SW(SW),
     ADDU(ADDU),
+    ADDIU(ADDIU),
     SUBU(SUBU),
 }
 
@@ -319,6 +322,7 @@ impl DecodedOp {
             return Ok(DecodedOp::NOP(()));
         }
         match (opcode.primary(), opcode.secondary()) {
+            (PrimeOp::ADDIU | PrimeOp::ADDI, _) => ADDIU::try_from_opcode(opcode).map(Self::ADDIU),
             (PrimeOp::SPECIAL, SecOp::SUBU | SecOp::SUB) => {
                 // TODO: implement SUB separately from SUBU
                 SUBU::try_from_opcode(opcode).map(Self::SUBU)

@@ -118,6 +118,9 @@ impl JIT {
         block: Block,
         idx: usize,
     ) -> Value {
+        if idx == 0 {
+            return builder.ins().iconst(types::I64, 0);
+        }
         let block_state = builder.block_params(block)[0];
         let offset = core::mem::offset_of!(Cpu, gpr);
         let offset = i32::try_from(offset + idx * size_of::<u64>()).expect("offset overflow");
