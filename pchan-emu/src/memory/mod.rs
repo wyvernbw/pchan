@@ -3,6 +3,8 @@ use std::ops::{Add, Mul};
 use thiserror::Error;
 use tracing::instrument;
 
+use crate::cpu::ops;
+
 pub const fn kb(value: usize) -> usize {
     value * 1024
 }
@@ -13,232 +15,25 @@ pub fn buffer(size: usize) -> Box<[u8]> {
 
 const MEM_SIZE: usize = kb(2048) + kb(8192) + kb(1) + kb(8) + kb(8) + kb(2048) + kb(512) + 512;
 
+#[derive(derive_more::Debug)]
+#[debug("memory:{}", MEM_SIZE/1024)]
 pub struct Memory(Box<[u8]>);
+
+impl AsRef<[u8]> for Memory {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl AsMut<[u8]> for Memory {
+    fn as_mut(&mut self) -> &mut [u8] {
+        &mut self.0
+    }
+}
 
 impl Default for Memory {
     fn default() -> Self {
         Memory(buffer(MEM_SIZE))
-    }
-}
-
-// cost of dynamic dispatch doesnt matter since we are
-// on the cold path anyways
-type PrintableAddress = Box<dyn core::fmt::Debug>;
-
-#[derive(Error, Debug)]
-pub enum MemReadError {
-    #[error("read from unmapped address 0x{0:08X?}")]
-    UnmappedRead(PrintableAddress),
-    #[error(transparent)]
-    DerefErr(DerefError),
-    #[error("out of bounds read at address 0x{0:08X}")]
-    OutOfBoundsRead(u32),
-}
-
-impl MemReadError {
-    fn unmapped(addr: impl core::fmt::Debug + 'static) -> Self {
-        MemReadError::UnmappedRead(Box::new(addr) as Box<_>)
-    }
-}
-
-#[derive(Error, Debug)]
-pub enum MemWriteError {
-    #[error("write to unmapped address {0:?}")]
-    UnmappedWrite(PrintableAddress),
-    #[error(transparent)]
-    DerefErr(DerefError),
-    #[error("partial write into buffer {0:?} (size: {1}) from buffer {2:?} (size:{3})")]
-    MismatchedBuffers(*const u8, usize, *const u8, usize),
-    #[error("out of bounds write at address 0x{0:08X}")]
-    OutOfBoundsWrite(u32),
-}
-
-impl MemWriteError {
-    fn unmapped(addr: impl core::fmt::Debug + 'static) -> Self {
-        MemWriteError::UnmappedWrite(Box::new(addr) as Box<_>)
-    }
-}
-
-#[derive(Debug, Error)]
-#[error("error dereferencing slice")]
-pub struct DerefError;
-
-pub(crate) trait MemRead: Sized {
-    fn from_slice(buf: &[u8]) -> Result<Self, DerefError>;
-}
-
-impl MemRead for u8 {
-    #[inline]
-    fn from_slice(buf: &[u8]) -> Result<u8, DerefError> {
-        Ok(buf[0])
-    }
-}
-
-impl MemRead for u16 {
-    fn from_slice(buf: &[u8]) -> Result<u16, DerefError> {
-        let buf = buf.as_array().ok_or(DerefError)?;
-        Ok(u16::from_le_bytes(*buf))
-    }
-}
-
-impl MemRead for u32 {
-    fn from_slice(buf: &[u8]) -> Result<u32, DerefError> {
-        let buf = buf.as_array().ok_or(DerefError)?;
-        Ok(u32::from_le_bytes(*buf))
-    }
-}
-
-pub(crate) trait MemWrite<const N: usize = { size_of::<Self>() }>: Sized {
-    fn to_bytes(&self) -> [u8; N];
-    fn write(buf: &mut [u8], value: &Self) -> Result<(), MemWriteError>
-    where
-        [(); N]:,
-    {
-        let bytes = &value.to_bytes();
-        if bytes.len() != buf.len() {
-            return Err(MemWriteError::MismatchedBuffers(
-                buf.as_ptr(),
-                buf.len(),
-                bytes.as_ptr(),
-                bytes.len(),
-            ));
-        };
-        buf.copy_from_slice(bytes);
-        Ok(())
-    }
-}
-
-impl MemWrite for u8 {
-    #[inline]
-    fn to_bytes(&self) -> [u8; 1] {
-        [*self]
-    }
-    fn write(buf: &mut [u8], value: &Self) -> Result<(), MemWriteError> {
-        buf[0] = *value;
-        Ok(())
-    }
-}
-
-impl MemWrite for u16 {
-    #[inline]
-    fn to_bytes(&self) -> [u8; 2] {
-        self.to_le_bytes()
-    }
-}
-
-impl MemWrite for u32 {
-    #[inline]
-    fn to_bytes(&self) -> [u8; 4] {
-        self.to_le_bytes()
-    }
-}
-
-pub(crate) trait ToWord {
-    fn to_word_signed(&self) -> u32;
-    fn to_word_zeroed(&self) -> u32;
-}
-
-impl ToWord for u8 {
-    #[inline]
-    fn to_word_signed(&self) -> u32 {
-        *self as i8 as i32 as u32
-    }
-
-    #[inline]
-    fn to_word_zeroed(&self) -> u32 {
-        *self as u32
-    }
-}
-
-impl ToWord for u16 {
-    #[inline]
-    fn to_word_signed(&self) -> u32 {
-        *self as i16 as i32 as u32
-    }
-
-    #[inline]
-    fn to_word_zeroed(&self) -> u32 {
-        *self as u32
-    }
-}
-
-impl ToWord for u32 {
-    #[inline]
-    fn to_word_signed(&self) -> u32 {
-        *self as i32 as u32
-    }
-
-    #[inline]
-    fn to_word_zeroed(&self) -> u32 {
-        *self
-    }
-}
-
-#[rustfmt::skip]
-pub const trait Address: TryInto<PhysAddr> + core::fmt::Debug + 'static + Copy {}
-
-impl<T> const Address for T where T: TryInto<PhysAddr> + core::fmt::Debug + 'static + Copy {}
-
-impl Memory {
-    #[instrument(err, skip(self))]
-    pub(crate) fn try_read<T: MemRead>(&self, addr: impl Address) -> Result<T, MemReadError> {
-        let addr = addr.try_into().map_err(|_| MemReadError::unmapped(addr))?;
-        let addr = addr.as_usize();
-        let slice = self
-            .0
-            .get(addr..(addr + size_of::<T>()))
-            .ok_or(MemReadError::OutOfBoundsRead(addr as u32))?;
-        let value = T::from_slice(slice).map_err(MemReadError::DerefErr)?;
-        Ok(value)
-    }
-    pub(crate) fn read<T: MemRead>(&self, addr: impl Address) -> T {
-        self.try_read(addr).unwrap()
-    }
-    #[instrument(err, skip(self, value))]
-    pub(crate) fn try_write<T: MemWrite>(
-        &mut self,
-        addr: impl Address,
-        value: T,
-    ) -> Result<(), MemWriteError>
-    where
-        [(); size_of::<T>()]:,
-    {
-        let addr = addr.try_into().map_err(|_| MemWriteError::unmapped(addr))?;
-        let addr = addr.as_usize();
-        let slice = self
-            .0
-            .get_mut(addr..(addr + size_of::<T>()))
-            .ok_or(MemWriteError::OutOfBoundsWrite(addr as u32))?;
-        T::write(slice, &value)
-    }
-    pub(crate) fn write<T: MemWrite>(&mut self, addr: impl Address, value: T)
-    where
-        [(); size_of::<T>()]:,
-    {
-        self.try_write(addr, value).unwrap();
-    }
-    pub(crate) fn try_write_all<I, A, T>(&mut self, start: A, iter: I) -> Result<(), MemWriteError>
-    where
-        I: IntoIterator<Item = T>,
-        T: MemWrite,
-        A: Address + Add<u32, Output = A>,
-        [(); size_of::<T>()]:,
-    {
-        let offset = size_of::<I::Item>() as u32;
-        for (i, value) in iter.into_iter().enumerate() {
-            let i = i as u32;
-            self.try_write(start + i * offset, value)?;
-        }
-        Ok(())
-    }
-    pub(crate) fn write_all<I, A, T>(&mut self, start: A, iter: I)
-    where
-        I: IntoIterator<Item = T>,
-        T: MemWrite,
-        A: Address + Add<u32, Output = A>,
-        [(); size_of::<T>()]:,
-    {
-        self.try_write_all(start, iter).unwrap();
     }
 }
 
@@ -251,12 +46,6 @@ impl PhysAddr {
     }
     pub const fn to_kseg1(self) -> KSEG1Addr {
         KSEG1Addr(self.0 + 0xA000_0000u32)
-    }
-}
-
-impl MemWrite<{ size_of::<Self>() }> for PhysAddr {
-    fn to_bytes(&self) -> [u8; size_of::<Self>()] {
-        KSEG0Addr(self.0).to_phys().0.to_bytes()
     }
 }
 
@@ -333,12 +122,6 @@ impl const Add<u32> for KSEG0Addr {
 
     fn add(self, rhs: u32) -> Self::Output {
         KSEG0Addr(self.0 + rhs)
-    }
-}
-
-impl MemWrite<{ size_of::<Self>() }> for KSEG0Addr {
-    fn to_bytes(&self) -> [u8; size_of::<Self>()] {
-        self.0.to_le_bytes()
     }
 }
 
@@ -450,113 +233,267 @@ impl MapAddress for u32 {
     }
 }
 
-#[cfg(test)]
-mod memory_tests {
-    use super::*;
-    use pretty_assertions::assert_eq;
-    use pretty_assertions::assert_matches;
-    #[allow(unused_imports)]
-    use pretty_assertions::assert_ne;
-
-    #[test]
-    fn read_write_u8_kseg0() {
-        let mut mem = Memory::default();
-        let addr = 0x8000_1234.map();
-        mem.write(addr, 0xABu8);
-        assert_eq!(mem.read::<u8>(addr), 0xAB);
-    }
-
-    #[test]
-    fn read_write_u16_u32_kseg1() {
-        let mut mem = Memory::default();
-        let addr0 = 0x8000_1000.map();
-        let addr1 = 0xA000_1000.map();
-
-        mem.write(addr0, 0x1234u16);
-        assert_eq!(mem.read::<u16>(addr1), 0x1234);
-
-        mem.write(addr1, 0xDEADBEEFu32);
-        assert_eq!(mem.read::<u32>(addr0), 0xDEADBEEF);
-    }
-
-    #[test]
-    fn unmapped_address_returns_error() {
-        let mut mem = Memory::default();
-        use super::{MemReadError, MemWriteError};
-
-        assert_matches!(
-            mem.try_read::<u8>(Addr(0x0000_0000)),
-            Err(MemReadError::UnmappedRead(_))
-        );
-        assert_matches!(
-            mem.try_write(Addr(0x0000_0000), 0x12u8),
-            Err(MemWriteError::UnmappedWrite(_))
-        );
-    }
-
-    #[test]
-    fn out_of_bounds_read_write() {
-        let mut mem = Memory::default();
-        let phys_size = mem.0.len();
-        let base_kseg0 = 0x8000_0000; // start of KSEG0
-
-        // Pick an address near the end of RAM to trigger OutOfBounds
-        let addr = base_kseg0 + (phys_size as u32) - 1;
-        let addr = addr.map();
-
-        assert!(matches!(
-            mem.try_read::<u32>(addr),
-            Err(super::MemReadError::OutOfBoundsRead(_))
-        ));
-        assert!(matches!(
-            mem.try_write(addr, 0x1234u16),
-            Err(super::MemWriteError::OutOfBoundsWrite(_))
-        ));
+impl MapAddress for Addr {
+    fn map(self) -> PhysAddr {
+        self.0.map()
     }
 }
-#[cfg(test)]
-mod sign_extension_tests {
-    use super::*;
 
-    #[test]
-    fn test_u8_to_word() {
-        let a: u8 = 0x7F; // 127
-        let b: u8 = 0xFF; // 255 -> -1 as i8
+// cost of dynamic dispatch doesnt matter since we are
+// on the cold path anyways
+type PrintableAddress = Box<dyn core::fmt::Debug>;
 
-        // Signed extension
-        assert_eq!(a.to_word_signed(), 0x0000007F);
-        assert_eq!(b.to_word_signed(), 0xFFFFFFFF);
+#[derive(Error, Debug)]
+pub enum MemReadError {
+    #[error("read from unmapped address 0x{0:08X?}")]
+    UnmappedRead(PrintableAddress),
+    #[error(transparent)]
+    DerefErr(DerefError),
+    #[error("out of bounds read at address 0x{0:08X}")]
+    OutOfBoundsRead(u32),
+}
 
-        // Zero extension
-        assert_eq!(a.to_word_zeroed(), 0x0000007F);
-        assert_eq!(b.to_word_zeroed(), 0xFF);
+impl MemReadError {
+    fn unmapped(addr: impl core::fmt::Debug + 'static) -> Self {
+        MemReadError::UnmappedRead(Box::new(addr) as Box<_>)
+    }
+}
+
+#[derive(Error, Debug)]
+pub enum MemWriteError {
+    #[error("write to unmapped address {0:?}")]
+    UnmappedWrite(PrintableAddress),
+    #[error(transparent)]
+    DerefErr(DerefError),
+    #[error("partial write into buffer {0:?} (size: {1}) from buffer {2:?} (size:{3})")]
+    MismatchedBuffers(*const u8, usize, *const u8, usize),
+    #[error("out of bounds write at address 0x{0:08X}")]
+    OutOfBoundsWrite(u32),
+}
+
+impl MemWriteError {
+    fn unmapped(addr: impl core::fmt::Debug + 'static) -> Self {
+        MemWriteError::UnmappedWrite(Box::new(addr) as Box<_>)
+    }
+}
+
+#[derive(Debug, Error)]
+#[error("error dereferencing slice")]
+pub struct DerefError;
+
+pub trait MemRead: Sized {
+    fn from_slice(buf: &[u8]) -> Result<Self, DerefError>;
+}
+
+impl MemRead for u8 {
+    #[inline]
+    fn from_slice(buf: &[u8]) -> Result<u8, DerefError> {
+        Ok(buf[0])
+    }
+}
+
+impl MemRead for u16 {
+    fn from_slice(buf: &[u8]) -> Result<u16, DerefError> {
+        let buf = buf.as_array().ok_or(DerefError)?;
+        Ok(u16::from_le_bytes(*buf))
+    }
+}
+
+impl MemRead for u32 {
+    fn from_slice(buf: &[u8]) -> Result<u32, DerefError> {
+        let buf = buf.as_array().ok_or(DerefError)?;
+        Ok(u32::from_le_bytes(*buf))
+    }
+}
+
+impl MemRead for ops::OpCode {
+    fn from_slice(buf: &[u8]) -> Result<Self, DerefError> {
+        let buf = buf.as_array().ok_or(DerefError)?;
+        Ok(ops::OpCode(u32::from_le_bytes(*buf)))
+    }
+}
+
+pub trait MemWrite<const N: usize = { size_of::<Self>() }>: Sized {
+    fn to_bytes(&self) -> [u8; N];
+    fn write(buf: &mut [u8], value: &Self) -> Result<(), MemWriteError>
+    where
+        [(); N]:,
+    {
+        let bytes = &value.to_bytes();
+        if bytes.len() != buf.len() {
+            return Err(MemWriteError::MismatchedBuffers(
+                buf.as_ptr(),
+                buf.len(),
+                bytes.as_ptr(),
+                bytes.len(),
+            ));
+        };
+        buf.copy_from_slice(bytes);
+        Ok(())
+    }
+}
+
+impl MemWrite for u8 {
+    #[inline]
+    fn to_bytes(&self) -> [u8; 1] {
+        [*self]
+    }
+    fn write(buf: &mut [u8], value: &Self) -> Result<(), MemWriteError> {
+        buf[0] = *value;
+        Ok(())
+    }
+}
+
+impl MemWrite for u16 {
+    #[inline]
+    fn to_bytes(&self) -> [u8; 2] {
+        self.to_le_bytes()
+    }
+}
+
+impl MemWrite for u32 {
+    #[inline]
+    fn to_bytes(&self) -> [u8; 4] {
+        self.to_le_bytes()
+    }
+}
+
+impl MemWrite for ops::OpCode {
+    #[inline]
+    fn to_bytes(&self) -> [u8; 4] {
+        self.0.to_le_bytes()
+    }
+}
+
+pub trait ToWord {
+    fn to_word_signed(&self) -> u32;
+    fn to_word_zeroed(&self) -> u32;
+}
+
+impl ToWord for u8 {
+    #[inline]
+    fn to_word_signed(&self) -> u32 {
+        *self as i8 as i32 as u32
     }
 
-    #[test]
-    fn test_u16_to_word() {
-        let a: u16 = 0x7FFF; // 32767
-        let b: u16 = 0xFFFF; // 65535 -> -1 as i16
+    #[inline]
+    fn to_word_zeroed(&self) -> u32 {
+        *self as u32
+    }
+}
 
-        // Signed extension
-        assert_eq!(a.to_word_signed(), 0x00007FFF);
-        assert_eq!(b.to_word_signed(), 0xFFFFFFFF);
-
-        // Zero extension
-        assert_eq!(a.to_word_zeroed(), 0x00007FFF);
-        assert_eq!(b.to_word_zeroed(), 0x0000FFFF);
+impl ToWord for u16 {
+    #[inline]
+    fn to_word_signed(&self) -> u32 {
+        *self as i16 as i32 as u32
     }
 
-    #[test]
-    fn test_u32_to_word() {
-        let a: u32 = 0x12345678;
-        let b: u32 = 0xFFFFFFFF;
+    #[inline]
+    fn to_word_zeroed(&self) -> u32 {
+        *self as u32
+    }
+}
 
-        // Signed extension (no-op)
-        assert_eq!(a.to_word_signed(), 0x12345678);
-        assert_eq!(b.to_word_signed(), 0xFFFFFFFF);
+impl ToWord for u32 {
+    #[inline]
+    fn to_word_signed(&self) -> u32 {
+        *self as i32 as u32
+    }
 
-        // Zero extension (no-op)
-        assert_eq!(a.to_word_zeroed(), 0x12345678);
-        assert_eq!(b.to_word_zeroed(), 0xFFFFFFFF);
+    #[inline]
+    fn to_word_zeroed(&self) -> u32 {
+        *self
+    }
+}
+
+#[rustfmt::skip]
+pub const trait Address: TryInto<PhysAddr> + core::fmt::Debug + 'static + Copy {}
+
+impl<T> const Address for T where T: TryInto<PhysAddr> + core::fmt::Debug + 'static + Copy {}
+
+impl Memory {
+    #[instrument(err, skip(self))]
+    pub fn try_read<T: MemRead>(&self, addr: impl Address) -> Result<T, MemReadError> {
+        let addr = addr.try_into().map_err(|_| MemReadError::unmapped(addr))?;
+        let addr = addr.as_usize();
+        let slice = self
+            .0
+            .get(addr..(addr + size_of::<T>()))
+            .ok_or(MemReadError::OutOfBoundsRead(addr as u32))?;
+        let value = T::from_slice(slice).map_err(MemReadError::DerefErr)?;
+        Ok(value)
+    }
+    pub fn read<T: MemRead>(&self, addr: impl Address) -> T {
+        self.try_read(addr).unwrap()
+    }
+    #[instrument(err, skip(self, value))]
+    pub fn try_write<T: MemWrite>(
+        &mut self,
+        addr: impl Address,
+        value: T,
+    ) -> Result<(), MemWriteError>
+    where
+        [(); size_of::<T>()]:,
+    {
+        let addr = addr.try_into().map_err(|_| MemWriteError::unmapped(addr))?;
+        let addr = addr.as_usize();
+        let slice = self
+            .0
+            .get_mut(addr..(addr + size_of::<T>()))
+            .ok_or(MemWriteError::OutOfBoundsWrite(addr as u32))?;
+        T::write(slice, &value)
+    }
+    pub fn write<T: MemWrite>(&mut self, addr: impl Address, value: T)
+    where
+        [(); size_of::<T>()]:,
+    {
+        self.try_write(addr, value).unwrap();
+    }
+    pub fn try_write_all<I, A, T>(&mut self, start: A, iter: I) -> Result<(), MemWriteError>
+    where
+        I: IntoIterator<Item = T>,
+        T: MemWrite,
+        A: Address + Add<u32, Output = A>,
+        [(); size_of::<T>()]:,
+    {
+        let offset = size_of::<I::Item>() as u32;
+        for (i, value) in iter.into_iter().enumerate() {
+            let i = i as u32;
+            self.try_write(start + i * offset, value)?;
+        }
+        Ok(())
+    }
+    pub fn write_all<I, A, T>(&mut self, start: A, iter: I)
+    where
+        I: IntoIterator<Item = T>,
+        T: MemWrite,
+        A: Address + Add<u32, Output = A>,
+        [(); size_of::<T>()]:,
+    {
+        self.try_write_all(start, iter).unwrap();
+    }
+
+    pub fn try_write_array<T: MemWrite<N>, const N: usize>(
+        &mut self,
+        start: impl Address,
+        value: &[T],
+    ) -> Result<(), MemWriteError> {
+        let start = start
+            .try_into()
+            .map_err(|_| MemWriteError::unmapped(start))?;
+        let start = start.as_usize();
+        for (idx, v) in value.iter().enumerate() {
+            let start = start + idx * N;
+            let end = start + N;
+            T::write(&mut self.as_mut()[start..end], v)?;
+        }
+        Ok(())
+    }
+    pub fn write_array<T: MemWrite<N>, const N: usize>(
+        &mut self,
+        start: impl Address,
+        value: &[T],
+    ) {
+        self.try_write_array(start, value).unwrap()
     }
 }

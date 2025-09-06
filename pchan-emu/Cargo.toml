@@ -4,10 +4,17 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+bon = "3.7.2"
 color-eyre = "*"
+cranelift = { version = "0.123.2", features = ["jit", "module", "native"] }
+crossbeam = "0.8.4"
 derive_more = { version = "2.0.1", features = ["add", "debug"] }
+enum_dispatch = "0.3.13"
 pchan-macros = { workspace = true }
 pchan-utils = { workspace = true }
+petgraph = "0.8.2"
+rayon = "1.11.0"
+tailcall = "1.0.1"
 thiserror = "2.0.16"
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
@@ -18,3 +25,4 @@ test-log = {version = "0.2", default-features = false, features = ["trace"]}
 tracing-test = "0.1"
 rstest = "*"
 color-eyre = "*" 
+
