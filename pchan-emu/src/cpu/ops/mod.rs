@@ -1,7 +1,7 @@
 use crate::{
     cpu::{
         JIT,
-        ops::{lb::LB, lbu::LBU},
+        ops::{lb::LB, lbu::LBU, lh::LH},
     },
     cranelift_bs::*,
 };
@@ -15,12 +15,14 @@ use tracing::instrument;
 pub mod decoded_op;
 pub mod lb;
 pub mod lbu;
+pub mod lh;
 #[cfg(test)]
 pub mod op_decode_tests;
 
-pub mod prelude {
-    pub use super::lb::*;
-    pub use super::lbu::*;
+pub(crate) mod prelude {
+    pub(crate) use super::lb::*;
+    pub(crate) use super::lbu::*;
+    pub(crate) use super::lh::*;
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -279,6 +281,7 @@ pub(crate) enum DecodedOp {
     HaltBlock(HaltBlock),
     LB(LB),
     LBU(LBU),
+    LH(LH),
 }
 
 impl DecodedOp {
@@ -291,6 +294,7 @@ impl DecodedOp {
             return Ok(DecodedOp::NOP(()));
         }
         match opcode.primary() {
+            PrimeOp::LH => LH::try_from_opcode(opcode).map(Self::LH),
             PrimeOp::LB => LB::try_from_opcode(opcode).map(Self::LB),
             PrimeOp::LBU => LBU::try_from_opcode(opcode).map(Self::LBU),
             _ => Err(TryFromOpcodeErr::InvalidHeader),
