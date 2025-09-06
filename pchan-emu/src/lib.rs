@@ -2,6 +2,7 @@
 #![allow(dead_code)]
 #![allow(incomplete_features)]
 #![feature(iterator_try_collect)]
+#![feature(const_convert)]
 #![feature(explicit_tail_calls)]
 #![feature(associated_type_defaults)]
 #![feature(trait_alias)]
@@ -10,7 +11,6 @@
 #![feature(const_ops)]
 #![feature(try_blocks)]
 #![feature(impl_trait_in_assoc_type)]
-#![feature(const_from)]
 #![feature(const_trait_impl)]
 #![feature(debug_closure_helpers)]
 #![feature(iter_intersperse)]
@@ -21,7 +21,7 @@
 // allow unused variables in tests to supress the setup tracing warnings
 #![cfg_attr(test, allow(unused_variables))]
 
-use std::collections::HashSet;
+use std::{borrow::Cow, collections::HashSet};
 
 use bon::{Builder, builder};
 use cranelift::prelude::Block;
@@ -54,19 +54,19 @@ pub mod memory;
 
 #[derive(Default)]
 pub struct Emu {
-    mem: Memory,
-    cpu: Cpu,
-    jit: JIT,
-    boot: Bootloader,
+    pub mem: Memory,
+    pub cpu: Cpu,
+    pub jit: JIT,
+    pub boot: Bootloader,
 }
 
 impl Emu {
-    fn load_bios(&mut self) -> color_eyre::Result<()> {
+    pub fn load_bios(&mut self) -> color_eyre::Result<()> {
         self.boot.load_bios(&mut self.mem)?;
         Ok(())
     }
     #[instrument(skip(self), fields(pc = %format!("0x{:08X}", self.cpu.pc)))]
-    fn advance_jit(&mut self) -> color_eyre::Result<()> {
+    pub fn advance_jit(&mut self) -> color_eyre::Result<()> {
         use cranelift_bs::*;
         let initial_address = self.cpu.pc;
 
@@ -190,7 +190,7 @@ impl Emu {
 
         Ok(())
     }
-    fn run(&mut self) -> color_eyre::Result<()> {
+    pub fn run(&mut self) -> color_eyre::Result<()> {
         loop {
             self.advance_jit()?;
         }
@@ -212,7 +212,7 @@ struct FindBlockParams<'a> {
     cfg: Graph<BasicBlock, i32>,
     current_node_index: Option<NodeIndex<u32>>,
     #[builder(default)]
-    mapped: HashSet<u32>,
+    mapped: Cow<'a, HashSet<u32>>,
     cranelift_block_pool: &'a ArrayQueue<Block>,
     current_cranelift_block: Block,
 }
@@ -260,14 +260,14 @@ fn find_block(params: FindBlockParams<'_>) -> color_eyre::Result<FindBlockSummar
     tracing::debug!(?op, "block reading at pc={}", pc,);
 
     let current_node = current_node_index.unwrap_or_else(|| {
-        mapped.insert(pc);
+        mapped.to_mut().insert(pc);
         cfg.add_node(BasicBlock::new(pc, current_cranelift_block))
     });
 
     match op.is_block_boundary() {
         Some(BoundaryType::Block { offset }) => {
             let new_address = (pc & 0xFF00_0000).wrapping_add_signed(offset);
-            if !mapped.insert(new_address) {
+            if !mapped.to_mut().insert(new_address) {
                 return Ok(FindBlockSummary { cfg });
             };
             cfg[current_node].ops.push(op);
@@ -315,17 +315,16 @@ fn find_block(params: FindBlockParams<'_>) -> color_eyre::Result<FindBlockSummar
             tracing::debug!(offsets = ?[lhs, rhs], "split in block");
             let offsets = [lhs, rhs];
             let new_cfgs = offsets
-                .par_iter()
+                .iter()
                 .cloned()
                 .enumerate()
                 .map(|(idx, offset)| {
                     let new_address = (pc & 0xFF00_0000).wrapping_add_signed(offset);
 
                     // get independent state for each thread
-                    let mut mapped = mapped.clone();
                     let mut cfg = cfg.clone();
 
-                    if !mapped.insert(new_address) {
+                    if !mapped.to_mut().insert(new_address) {
                         return Ok(FindBlockSummary {
                             cfg: Graph::default(),
                         });
@@ -353,7 +352,7 @@ fn find_block(params: FindBlockParams<'_>) -> color_eyre::Result<FindBlockSummar
                             .cfg(cfg)
                             .max_depth(max_depth)
                             .current_node_index(next_node)
-                            .mapped(mapped.clone())
+                            .mapped(Cow::Borrowed(mapped.to_mut()))
                             .cranelift_block_pool(cranelift_block_pool)
                             .current_cranelift_block(next_block)
                             .build(),
@@ -408,9 +407,11 @@ fn merge_into<N: Clone, E: Clone>(dst: &mut Graph<N, E, Directed>, src: &Graph<N
         );
     }
 }
+
 #[cfg(test)]
 pub mod test_utils {
-    use super::*;
+
+    use crate::Emu;
     use rstest::fixture;
 
     #[fixture]

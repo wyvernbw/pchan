@@ -4,18 +4,18 @@ use crate::cranelift_bs::*;
 use super::{OpCode, PrimeOp};
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct LW {
+pub struct LW {
     rt: usize,
     rs: usize,
     imm: i16,
 }
 
-pub(crate) fn lw(rt: usize, rs: usize, imm: i16) -> ops::OpCode {
+pub fn lw(rt: usize, rs: usize, imm: i16) -> ops::OpCode {
     LW { rt, rs, imm }.into_opcode()
 }
 
 impl LW {
-    pub(crate) fn try_from_opcode(opcode: OpCode) -> Result<Self, TryFromOpcodeErr> {
+    pub fn try_from_opcode(opcode: OpCode) -> Result<Self, TryFromOpcodeErr> {
         let opcode = opcode.as_primary(PrimeOp::LW)?;
         Ok(LW {
             rt: opcode.bits(16..21) as usize,

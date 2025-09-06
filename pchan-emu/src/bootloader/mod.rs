@@ -29,7 +29,7 @@ pub enum BootError {
 }
 
 impl Bootloader {
-    pub(crate) fn load_bios(&self, mem: &mut Memory) -> Result<(), BootError> {
+    pub fn load_bios(&self, mem: &mut Memory) -> Result<(), BootError> {
         let mut bios_file =
             fs::File::open(&self.bios_path).map_err(BootError::BiosFileOpenError)?;
         let mut bios = buffer(kb(600));

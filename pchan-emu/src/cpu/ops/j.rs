@@ -6,12 +6,12 @@ use crate::cpu::ops::{
 
 #[derive(Debug, Clone, Copy)]
 #[allow(clippy::upper_case_acronyms)]
-pub(crate) struct J {
+pub struct J {
     imm: i32,
 }
 
 impl J {
-    pub(crate) fn try_from_opcode(opcode: OpCode) -> Result<Self, TryFromOpcodeErr> {
+    pub fn try_from_opcode(opcode: OpCode) -> Result<Self, TryFromOpcodeErr> {
         let opcode = opcode.as_primary(PrimeOp::J)?;
         Ok(J {
             imm: (opcode.bits(0..26) as i32) << 2,
@@ -55,7 +55,7 @@ impl Op for J {
 }
 
 #[inline]
-pub(crate) fn j(imm: i32) -> OpCode {
+pub fn j(imm: i32) -> OpCode {
     J { imm }.into_opcode()
 }
 

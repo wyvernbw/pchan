@@ -281,7 +281,7 @@ impl MemWriteError {
 #[error("error dereferencing slice")]
 pub struct DerefError;
 
-pub(crate) trait MemRead: Sized {
+pub trait MemRead: Sized {
     fn from_slice(buf: &[u8]) -> Result<Self, DerefError>;
 }
 
@@ -313,7 +313,7 @@ impl MemRead for ops::OpCode {
     }
 }
 
-pub(crate) trait MemWrite<const N: usize = { size_of::<Self>() }>: Sized {
+pub trait MemWrite<const N: usize = { size_of::<Self>() }>: Sized {
     fn to_bytes(&self) -> [u8; N];
     fn write(buf: &mut [u8], value: &Self) -> Result<(), MemWriteError>
     where
@@ -365,7 +365,7 @@ impl MemWrite for ops::OpCode {
     }
 }
 
-pub(crate) trait ToWord {
+pub trait ToWord {
     fn to_word_signed(&self) -> u32;
     fn to_word_zeroed(&self) -> u32;
 }
@@ -413,7 +413,7 @@ impl<T> const Address for T where T: TryInto<PhysAddr> + core::fmt::Debug + 'sta
 
 impl Memory {
     #[instrument(err, skip(self))]
-    pub(crate) fn try_read<T: MemRead>(&self, addr: impl Address) -> Result<T, MemReadError> {
+    pub fn try_read<T: MemRead>(&self, addr: impl Address) -> Result<T, MemReadError> {
         let addr = addr.try_into().map_err(|_| MemReadError::unmapped(addr))?;
         let addr = addr.as_usize();
         let slice = self
@@ -423,11 +423,11 @@ impl Memory {
         let value = T::from_slice(slice).map_err(MemReadError::DerefErr)?;
         Ok(value)
     }
-    pub(crate) fn read<T: MemRead>(&self, addr: impl Address) -> T {
+    pub fn read<T: MemRead>(&self, addr: impl Address) -> T {
         self.try_read(addr).unwrap()
     }
     #[instrument(err, skip(self, value))]
-    pub(crate) fn try_write<T: MemWrite>(
+    pub fn try_write<T: MemWrite>(
         &mut self,
         addr: impl Address,
         value: T,
@@ -443,13 +443,13 @@ impl Memory {
             .ok_or(MemWriteError::OutOfBoundsWrite(addr as u32))?;
         T::write(slice, &value)
     }
-    pub(crate) fn write<T: MemWrite>(&mut self, addr: impl Address, value: T)
+    pub fn write<T: MemWrite>(&mut self, addr: impl Address, value: T)
     where
         [(); size_of::<T>()]:,
     {
         self.try_write(addr, value).unwrap();
     }
-    pub(crate) fn try_write_all<I, A, T>(&mut self, start: A, iter: I) -> Result<(), MemWriteError>
+    pub fn try_write_all<I, A, T>(&mut self, start: A, iter: I) -> Result<(), MemWriteError>
     where
         I: IntoIterator<Item = T>,
         T: MemWrite,
@@ -463,7 +463,7 @@ impl Memory {
         }
         Ok(())
     }
-    pub(crate) fn write_all<I, A, T>(&mut self, start: A, iter: I)
+    pub fn write_all<I, A, T>(&mut self, start: A, iter: I)
     where
         I: IntoIterator<Item = T>,
         T: MemWrite,
@@ -471,5 +471,29 @@ impl Memory {
         [(); size_of::<T>()]:,
     {
         self.try_write_all(start, iter).unwrap();
+    }
+
+    pub fn try_write_array<T: MemWrite<N>, const N: usize>(
+        &mut self,
+        start: impl Address,
+        value: &[T],
+    ) -> Result<(), MemWriteError> {
+        let start = start
+            .try_into()
+            .map_err(|_| MemWriteError::unmapped(start))?;
+        let start = start.as_usize();
+        for (idx, v) in value.iter().enumerate() {
+            let start = start + idx * N;
+            let end = start + N;
+            T::write(&mut self.as_mut()[start..end], v)?;
+        }
+        Ok(())
+    }
+    pub fn write_array<T: MemWrite<N>, const N: usize>(
+        &mut self,
+        start: impl Address,
+        value: &[T],
+    ) {
+        self.try_write_array(start, value).unwrap()
     }
 }

@@ -4,14 +4,14 @@ use super::PrimeOp;
 
 #[derive(Debug, Clone, Copy)]
 #[allow(clippy::upper_case_acronyms)]
-pub(crate) struct ADDU {
+pub struct ADDU {
     rd: usize,
     rs: usize,
     rt: usize,
 }
 
 impl ADDU {
-    pub(crate) fn try_from_opcode(opcode: OpCode) -> Result<Self, TryFromOpcodeErr> {
+    pub fn try_from_opcode(opcode: OpCode) -> Result<Self, TryFromOpcodeErr> {
         let opcode = opcode.as_secondary(SecOp::ADDU)?;
         Ok(ADDU {
             rs: opcode.bits(21..26) as usize,
@@ -49,7 +49,7 @@ impl Op for ADDU {
 }
 
 #[inline]
-pub(crate) fn addu(rd: usize, rs: usize, rt: usize) -> OpCode {
+pub fn addu(rd: usize, rs: usize, rt: usize) -> OpCode {
     ADDU { rd, rs, rt }.into_opcode()
 }
 

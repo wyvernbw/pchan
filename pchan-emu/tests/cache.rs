@@ -1,9 +1,14 @@
 #![feature(duration_millis_float)]
 
+mod common;
+
+use pchan_emu::{Emu, cpu::ops::OpCode, memory::KSEG0Addr};
 use pchan_utils::setup_tracing;
 use pretty_assertions::assert_eq;
 use rstest::rstest;
 use std::time::Instant;
+
+use crate::common::emulator;
 
 #[rstest]
 fn block_compile_cache(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
@@ -19,10 +24,10 @@ fn block_compile_cache(setup_tracing: (), mut emulator: Emu) -> color_eyre::Resu
 
     emulator
         .mem
-        .write_all(KSEG0Addr::from_phys(emulator.cpu.pc as u32), program);
+        .write_array(KSEG0Addr::from_phys(emulator.cpu.pc as u32), &program);
     emulator
         .mem
-        .write_all(KSEG0Addr::from_phys(0x0000_2000), function);
+        .write_array(KSEG0Addr::from_phys(0x0000_2000), &function);
 
     let now = Instant::now();
     emulator.advance_jit()?;

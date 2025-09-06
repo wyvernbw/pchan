@@ -38,7 +38,7 @@ pub mod prelude {
 use prelude::*;
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) struct OpCode(pub(crate) u32);
+pub struct OpCode(pub u32);
 
 impl core::fmt::Debug for OpCode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -53,26 +53,26 @@ pub const fn nop() -> OpCode {
 }
 
 impl OpCode {
-    pub(crate) const NOP: OpCode = OpCode(0x00000000);
+    pub const NOP: OpCode = OpCode(0x00000000);
 
     #[inline]
-    pub(crate) const fn primary(&self) -> PrimeOp {
+    pub const fn primary(&self) -> PrimeOp {
         let code = self.0 >> 26;
         PrimeOp::MAP[code as usize]
     }
     #[inline]
-    pub(crate) const fn secondary(&self) -> SecOp {
+    pub const fn secondary(&self) -> SecOp {
         let code = self.0 & 0x3F;
         SecOp::MAP[code as usize]
     }
     #[inline]
-    pub(crate) const fn bits(&self, range: Range<u8>) -> u32 {
+    pub const fn bits(&self, range: Range<u8>) -> u32 {
         let mask = (0xFFFFFFFFu32.unbounded_shl(range.start as u32))
             ^ ((0xFFFFFFFFu32).unbounded_shl(range.end as u32));
         (self.0 & mask).unbounded_shr(range.start as u32)
     }
     #[inline]
-    pub(crate) const fn set_bits(&self, range: Range<u8>, value: u32) -> Self {
+    pub const fn set_bits(&self, range: Range<u8>, value: u32) -> Self {
         let mask = (0xFFFFFFFFu32.unbounded_shl(range.start as u32))
             ^ (0xFFFFFFFFu32.unbounded_shl(range.end as u32));
 
@@ -83,20 +83,20 @@ impl OpCode {
         Self(cleared | shifted)
     }
 
-    pub(crate) const fn with_primary(self, primary: PrimeOp) -> Self {
+    pub const fn with_primary(self, primary: PrimeOp) -> Self {
         OpCode((self.0 & 0x03FF_FFFF) | ((primary as u32) << 26))
     }
-    pub(crate) const fn with_secondary(self, secondary: SecOp) -> Self {
+    pub const fn with_secondary(self, secondary: SecOp) -> Self {
         OpCode((self.0 & 0xFFFF_FFE0) | (secondary as u32))
     }
-    pub(crate) fn as_primary(self, primary: PrimeOp) -> Result<Self, TryFromOpcodeErr> {
+    pub fn as_primary(self, primary: PrimeOp) -> Result<Self, TryFromOpcodeErr> {
         if self.primary() == primary {
             Ok(self)
         } else {
             Err(TryFromOpcodeErr::InvalidHeader)
         }
     }
-    pub(crate) fn as_secondary(self, secondary: SecOp) -> Result<Self, TryFromOpcodeErr> {
+    pub fn as_secondary(self, secondary: SecOp) -> Result<Self, TryFromOpcodeErr> {
         if self.secondary() == secondary {
             Ok(self)
         } else {
@@ -163,7 +163,7 @@ pub enum PrimeOp {
 #[repr(u8)]
 #[derive(OpCode, Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(clippy::upper_case_acronyms)]
-pub(crate) enum SecOp {
+pub enum SecOp {
     // Shift instructions
     SLL = 0x00,
     SRL = 0x02,
@@ -209,7 +209,7 @@ pub(crate) enum SecOp {
 }
 
 #[derive(Builder)]
-pub(crate) struct EmitParams<'a, 'b> {
+pub struct EmitParams<'a, 'b> {
     ptr_type: types::Type,
     fn_builder: &'a mut FunctionBuilder<'b>,
     registers: &'a [Option<Value>; 32],
@@ -240,10 +240,10 @@ impl<'a, 'b> EmitParams<'a, 'b> {
 #[derive(Builder, Debug, Default)]
 pub struct EmitSummary {
     #[builder(default)]
-    pub(crate) register_updates: Box<[(usize, Value)]>,
+    pub register_updates: Box<[(usize, Value)]>,
     #[builder(default)]
-    pub(crate) delayed_register_updates: Box<[(usize, Value)]>,
-    pub(crate) pc_update: Option<u32>,
+    pub delayed_register_updates: Box<[(usize, Value)]>,
+    pub pc_update: Option<u32>,
 }
 
 #[derive(Debug, Error)]
@@ -260,7 +260,7 @@ pub enum BoundaryType {
 }
 
 #[enum_dispatch(DecodedOp)]
-pub(crate) trait Op: Sized {
+pub trait Op: Sized {
     fn is_block_boundary(&self) -> Option<BoundaryType>;
     fn into_opcode(self) -> crate::cpu::ops::OpCode;
     fn emit_ir(&self, state: EmitParams) -> Option<EmitSummary>;
@@ -303,7 +303,7 @@ impl Op for HaltBlock {
 #[derive(Debug, Clone, Copy)]
 #[enum_dispatch]
 #[allow(clippy::upper_case_acronyms)]
-pub(crate) enum DecodedOp {
+pub enum DecodedOp {
     NOP(()),
     HaltBlock(HaltBlock),
     LB(LB),
@@ -322,7 +322,7 @@ pub(crate) enum DecodedOp {
 
 impl DecodedOp {
     #[instrument(err)]
-    pub(crate) fn try_new(opcode: OpCode) -> Result<Self, impl std::error::Error> {
+    pub fn try_new(opcode: OpCode) -> Result<Self, impl std::error::Error> {
         if opcode.0 == 69420 {
             return Ok(DecodedOp::HaltBlock(HaltBlock));
         }

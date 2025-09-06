@@ -5,19 +5,19 @@ use super::PrimeOp;
 
 #[derive(Debug, Clone, Copy)]
 #[allow(clippy::upper_case_acronyms)]
-pub(crate) struct LHU {
+pub struct LHU {
     rt: usize,
     rs: usize,
     imm: i16,
 }
 
 #[inline]
-pub(crate) fn lhu(rt: usize, rs: usize, imm: i16) -> ops::OpCode {
+pub fn lhu(rt: usize, rs: usize, imm: i16) -> ops::OpCode {
     LHU { rt, rs, imm }.into_opcode()
 }
 
 impl LHU {
-    pub(crate) fn try_from_opcode(opcode: ops::OpCode) -> Result<Self, TryFromOpcodeErr> {
+    pub fn try_from_opcode(opcode: ops::OpCode) -> Result<Self, TryFromOpcodeErr> {
         let opcode = opcode.as_primary(PrimeOp::LHU)?;
         Ok(LHU {
             rt: opcode.bits(16..21) as usize,

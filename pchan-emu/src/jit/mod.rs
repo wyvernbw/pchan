@@ -5,22 +5,22 @@ use tracing::instrument;
 
 use crate::{cpu::Cpu, cranelift_bs::*, memory::Memory};
 
-pub(crate) struct JIT {
+pub struct JIT {
     /// The function builder context, which is reused across multiple
     /// FunctionBuilder instances.
-    pub(crate) fn_builder_ctx: FunctionBuilderContext,
+    pub fn_builder_ctx: FunctionBuilderContext,
     /// The main Cranelift context, which holds the state for codegen. Cranelift
     /// separates this from `Module` to allow for parallel compilation, with a
     /// context per thread, though this isn't in the simple demo here.
-    pub(crate) ctx: codegen::Context,
+    pub ctx: codegen::Context,
     /// The data description, which is to data objects what `ctx` is to functions.
-    pub(crate) data_description: DataDescription,
+    pub data_description: DataDescription,
     /// The module, with the jit backend, which manages the JIT'd
     /// functions.
-    pub(crate) module: JITModule,
-    pub(crate) basic_sig: Signature,
-    pub(crate) block_map: HashMap<u64, BlockFn>,
-    pub(crate) func_idx: usize,
+    pub module: JITModule,
+    pub basic_sig: Signature,
+    pub block_map: HashMap<u64, BlockFn>,
+    pub func_idx: usize,
 }
 
 impl Default for JIT {
@@ -58,21 +58,21 @@ impl Default for JIT {
 #[bon::bon]
 impl JIT {
     #[inline]
-    pub(crate) fn pointer_type(&self) -> ir::Type {
+    pub fn pointer_type(&self) -> ir::Type {
         self.module.target_config().pointer_type()
     }
 
-    pub(crate) fn get_func(&self, id: FuncId) -> BlockFn {
+    pub fn get_func(&self, id: FuncId) -> BlockFn {
         let code_ptr = self.module.get_finalized_function(id);
         unsafe { std::mem::transmute::<*const u8, BlockFn>(code_ptr) }
     }
 
-    pub(crate) fn create_signature(&self) -> Signature {
+    pub fn create_signature(&self) -> Signature {
         self.basic_sig.clone()
     }
 
     #[inline]
-    pub(crate) fn create_function(&mut self) -> Function {
+    pub fn create_function(&mut self) -> Function {
         let func = Function::with_name_signature(
             UserFuncName::user(self.func_idx as u32, self.func_idx as u32),
             self.create_signature(),
@@ -81,7 +81,7 @@ impl JIT {
         func
     }
 
-    pub(crate) fn init_block(builder: &mut FunctionBuilder) -> Block {
+    pub fn init_block(builder: &mut FunctionBuilder) -> Block {
         let block = builder.create_block();
         builder.append_block_params_for_function_params(block);
         builder.switch_to_block(block);
@@ -91,7 +91,7 @@ impl JIT {
 
     #[builder]
     #[instrument(skip(builder, block))]
-    pub(crate) fn emit_load_reg(
+    pub fn emit_load_reg(
         builder: &mut FunctionBuilder<'_>,
         block: Block,
         idx: usize,
@@ -110,7 +110,7 @@ impl JIT {
 
     #[builder]
     #[instrument(skip(builder, block))]
-    pub(crate) fn emit_store_reg(
+    pub fn emit_store_reg(
         builder: &mut FunctionBuilder<'_>,
         block: Block,
         idx: usize,
@@ -128,7 +128,7 @@ impl JIT {
 
     #[builder]
     #[instrument(skip(builder, block, cache))]
-    pub(crate) fn emit_updates(
+    pub fn emit_updates(
         builder: &mut FunctionBuilder<'_>,
         block: Block,
         updates: &[(usize, Value)],
@@ -150,7 +150,7 @@ impl JIT {
 
 #[derive(Debug)]
 #[repr(transparent)]
-pub(crate) struct BlockFn(pub fn(*mut Cpu, *mut [u8]));
+pub struct BlockFn(pub fn(*mut Cpu, *mut [u8]));
 
 impl FnMut<(&mut Cpu, &mut Memory)> for BlockFn {
     extern "rust-call" fn call_mut(&mut self, args: (&mut Cpu, &mut Memory)) -> Self::Output {

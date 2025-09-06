@@ -6,9 +6,9 @@ pub mod ops;
 
 #[derive(Default)]
 #[repr(C)]
-pub(crate) struct Cpu {
-    pub(crate) gpr: [u64; 32],
-    pub(crate) pc: u64,
+pub struct Cpu {
+    pub gpr: [u64; 32],
+    pub pc: u64,
 }
 
 impl Display for Cpu {
