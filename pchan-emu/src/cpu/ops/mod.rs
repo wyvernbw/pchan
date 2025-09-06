@@ -13,6 +13,7 @@ pub mod lhu;
 pub mod lw;
 pub mod sb;
 pub mod sh;
+pub mod sw;
 
 pub(crate) mod prelude {
     pub(crate) use super::lb::*;
@@ -23,6 +24,7 @@ pub(crate) mod prelude {
     pub(crate) use super::nop;
     pub(crate) use super::sb::*;
     pub(crate) use super::sh::*;
+    pub(crate) use super::sw::*;
 }
 
 use prelude::*;
@@ -288,6 +290,7 @@ pub(crate) enum DecodedOp {
     LW(LW),
     SB(SB),
     SH(SH),
+    SW(SW),
 }
 
 impl DecodedOp {
@@ -299,14 +302,15 @@ impl DecodedOp {
         if opcode == OpCode::NOP {
             return Ok(DecodedOp::NOP(()));
         }
-        match opcode.primary() {
-            PrimeOp::SH => SH::try_from_opcode(opcode).map(Self::SH),
-            PrimeOp::SB => SB::try_from_opcode(opcode).map(Self::SB),
-            PrimeOp::LW => LW::try_from_opcode(opcode).map(Self::LW),
-            PrimeOp::LHU => LHU::try_from_opcode(opcode).map(Self::LHU),
-            PrimeOp::LH => LH::try_from_opcode(opcode).map(Self::LH),
-            PrimeOp::LB => LB::try_from_opcode(opcode).map(Self::LB),
-            PrimeOp::LBU => LBU::try_from_opcode(opcode).map(Self::LBU),
+        match (opcode.primary(), opcode.secondary()) {
+            (PrimeOp::SW, _) => SW::try_from_opcode(opcode).map(Self::SW),
+            (PrimeOp::SH, _) => SH::try_from_opcode(opcode).map(Self::SH),
+            (PrimeOp::SB, _) => SB::try_from_opcode(opcode).map(Self::SB),
+            (PrimeOp::LW, _) => LW::try_from_opcode(opcode).map(Self::LW),
+            (PrimeOp::LHU, _) => LHU::try_from_opcode(opcode).map(Self::LHU),
+            (PrimeOp::LH, _) => LH::try_from_opcode(opcode).map(Self::LH),
+            (PrimeOp::LB, _) => LB::try_from_opcode(opcode).map(Self::LB),
+            (PrimeOp::LBU, _) => LBU::try_from_opcode(opcode).map(Self::LBU),
             _ => Err(TryFromOpcodeErr::InvalidHeader),
         }
     }
