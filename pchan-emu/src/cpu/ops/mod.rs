@@ -19,20 +19,20 @@ pub mod sh;
 pub mod subu;
 pub mod sw;
 
-pub(crate) mod prelude {
-    pub(crate) use super::addiu::*;
-    pub(crate) use super::addu::*;
-    pub(crate) use super::j::*;
-    pub(crate) use super::lb::*;
-    pub(crate) use super::lbu::*;
-    pub(crate) use super::lh::*;
-    pub(crate) use super::lhu::*;
-    pub(crate) use super::lw::*;
-    pub(crate) use super::nop;
-    pub(crate) use super::sb::*;
-    pub(crate) use super::sh::*;
-    pub(crate) use super::subu::*;
-    pub(crate) use super::sw::*;
+pub mod prelude {
+    pub use super::addiu::*;
+    pub use super::addu::*;
+    pub use super::j::*;
+    pub use super::lb::*;
+    pub use super::lbu::*;
+    pub use super::lh::*;
+    pub use super::lhu::*;
+    pub use super::lw::*;
+    pub use super::nop;
+    pub use super::sb::*;
+    pub use super::sh::*;
+    pub use super::subu::*;
+    pub use super::sw::*;
 }
 
 use prelude::*;
@@ -48,7 +48,7 @@ impl core::fmt::Debug for OpCode {
     }
 }
 
-pub(crate) const fn nop() -> OpCode {
+pub const fn nop() -> OpCode {
     OpCode::NOP
 }
 

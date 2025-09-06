@@ -20,6 +20,7 @@ pub(crate) struct JIT {
     pub(crate) module: JITModule,
     pub(crate) basic_sig: Signature,
     pub(crate) block_map: HashMap<u64, BlockFn>,
+    pub(crate) func_idx: usize,
 }
 
 impl Default for JIT {
@@ -49,6 +50,7 @@ impl Default for JIT {
             ctx,
             basic_sig: sig,
             block_map: HashMap::default(),
+            func_idx: 1,
         }
     }
 }
@@ -67,6 +69,16 @@ impl JIT {
 
     pub(crate) fn create_signature(&self) -> Signature {
         self.basic_sig.clone()
+    }
+
+    #[inline]
+    pub(crate) fn create_function(&mut self) -> Function {
+        let func = Function::with_name_signature(
+            UserFuncName::user(self.func_idx as u32, self.func_idx as u32),
+            self.create_signature(),
+        );
+        self.func_idx += 1;
+        func
     }
 
     pub(crate) fn init_block(builder: &mut FunctionBuilder) -> Block {

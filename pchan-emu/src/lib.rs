@@ -68,23 +68,24 @@ impl Emu {
     #[instrument(skip(self), fields(pc = %format!("0x{:08X}", self.cpu.pc)))]
     fn advance_jit(&mut self) -> color_eyre::Result<()> {
         use cranelift_bs::*;
+        let initial_address = self.cpu.pc;
 
         let sig = self.jit.create_signature();
         let ptr_type = self.jit.pointer_type();
 
         // try cache first
         if let Some(function) = self.jit.block_map.get(&self.cpu.pc) {
-            tracing::info!("using cached function: 0x{:08X?}", function.0 as usize);
+            tracing::trace!("using cached function: 0x{:08X?}", function.0 as usize);
             function(&mut self.cpu, &mut self.mem);
             return Ok(());
         };
 
-        let func_id =
-            self.jit
-                .module
-                .declare_function(&self.cpu.pc.to_string(), Linkage::Hidden, &sig)?;
-        let mut func = Function::with_name_signature(UserFuncName::user(0, 1), sig.clone());
-
+        let func_id = self.jit.module.declare_function(
+            &format!("pc_0x{:08X}", initial_address),
+            Linkage::Hidden,
+            &sig,
+        )?;
+        let mut func = self.jit.create_function();
         let mut fn_builder = FunctionBuilder::new(&mut func, &mut self.jit.fn_builder_ctx);
 
         // collect blocks in function
@@ -184,6 +185,9 @@ impl Emu {
 
         let function = self.jit.get_func(func_id);
         function(&mut self.cpu, &mut self.mem);
+
+        self.jit.block_map.insert(initial_address, function);
+
         Ok(())
     }
     fn run(&mut self) -> color_eyre::Result<()> {
@@ -414,6 +418,3 @@ pub mod test_utils {
         Emu::default()
     }
 }
-
-#[cfg(test)]
-mod emu_tests;
