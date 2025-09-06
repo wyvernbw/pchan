@@ -1,4 +1,4 @@
-use crate::{cpu::JIT, cranelift_bs::*};
+use crate::{BasicBlock, cranelift_bs::*, jit::JIT};
 use bon::Builder;
 use enum_dispatch::enum_dispatch;
 use pchan_macros::OpCode;
@@ -8,6 +8,7 @@ use tracing::instrument;
 
 pub mod addiu;
 pub mod addu;
+pub mod j;
 pub mod lb;
 pub mod lbu;
 pub mod lh;
@@ -21,6 +22,7 @@ pub mod sw;
 pub(crate) mod prelude {
     pub(crate) use super::addiu::*;
     pub(crate) use super::addu::*;
+    pub(crate) use super::j::*;
     pub(crate) use super::lb::*;
     pub(crate) use super::lbu::*;
     pub(crate) use super::lh::*;
@@ -213,6 +215,7 @@ pub(crate) struct EmitParams<'a, 'b> {
     registers: &'a [Option<Value>; 32],
     block: Block,
     pc: u32,
+    next_blocks: &'a [Option<Block>; 2],
 }
 
 impl<'a, 'b> EmitParams<'a, 'b> {
@@ -240,6 +243,7 @@ pub struct EmitSummary {
     pub(crate) register_updates: Box<[(usize, Value)]>,
     #[builder(default)]
     pub(crate) delayed_register_updates: Box<[(usize, Value)]>,
+    pub(crate) pc_update: Option<u32>,
 }
 
 #[derive(Debug, Error)]
@@ -250,8 +254,8 @@ pub enum TryFromOpcodeErr {
 
 #[derive(Debug)]
 pub enum BoundaryType {
-    Block { offset: u32 },
-    BlockSplit { offsets: [Option<u32>; 4] },
+    Block { offset: i32 },
+    BlockSplit { lhs: i32, rhs: i32 },
     Function,
 }
 
@@ -259,7 +263,10 @@ pub enum BoundaryType {
 pub(crate) trait Op: Sized {
     fn is_block_boundary(&self) -> Option<BoundaryType>;
     fn into_opcode(self) -> crate::cpu::ops::OpCode;
-    fn emit_ir(&self, state: EmitParams<'_, '_>) -> Option<EmitSummary>;
+    fn emit_ir(&self, state: EmitParams) -> Option<EmitSummary>;
+    fn post_emit_ir(&self, state: EmitParams) -> Option<EmitSummary> {
+        None
+    }
 }
 
 impl Op for () {
@@ -271,7 +278,7 @@ impl Op for () {
         OpCode::NOP
     }
 
-    fn emit_ir(&self, state: EmitParams<'_, '_>) -> Option<EmitSummary> {
+    fn emit_ir(&self, state: EmitParams) -> Option<EmitSummary> {
         None
     }
 }
@@ -288,7 +295,7 @@ impl Op for HaltBlock {
         OpCode(69420)
     }
 
-    fn emit_ir(&self, state: EmitParams<'_, '_>) -> Option<EmitSummary> {
+    fn emit_ir(&self, state: EmitParams) -> Option<EmitSummary> {
         None
     }
 }
@@ -310,6 +317,7 @@ pub(crate) enum DecodedOp {
     ADDU(ADDU),
     ADDIU(ADDIU),
     SUBU(SUBU),
+    J(J),
 }
 
 impl DecodedOp {
@@ -322,6 +330,7 @@ impl DecodedOp {
             return Ok(DecodedOp::NOP(()));
         }
         match (opcode.primary(), opcode.secondary()) {
+            (PrimeOp::J, _) => J::try_from_opcode(opcode).map(Self::J),
             (PrimeOp::ADDIU | PrimeOp::ADDI, _) => ADDIU::try_from_opcode(opcode).map(Self::ADDIU),
             (PrimeOp::SPECIAL, SecOp::SUBU | SecOp::SUB) => {
                 // TODO: implement SUB separately from SUBU

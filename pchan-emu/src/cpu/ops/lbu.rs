@@ -28,7 +28,7 @@ impl LBU {
 }
 
 impl Op for LBU {
-    fn emit_ir(&self, mut state: super::EmitParams<'_, '_>) -> Option<EmitSummary> {
+    fn emit_ir(&self, mut state: super::EmitParams) -> Option<EmitSummary> {
         // get pointer to memory passed as argument to the function
         let mem_ptr = state.memory();
 

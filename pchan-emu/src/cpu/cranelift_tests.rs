@@ -1,13 +1,8 @@
 use pchan_utils::setup_tracing;
 use pretty_assertions::assert_eq;
-use rstest::{fixture, rstest};
+use rstest::rstest;
 
-use crate::{
-    Emu,
-    cpu::{Cpu, JIT},
-    memory::Memory,
-    test_utils::emulator,
-};
+use crate::{Emu, jit::JIT, test_utils::emulator};
 
 #[rstest]
 fn basic_jit(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {

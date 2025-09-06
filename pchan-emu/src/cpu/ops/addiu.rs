@@ -34,7 +34,7 @@ impl Op for ADDIU {
             .set_bits(0..16, (self.imm as i32 as i16) as u32)
     }
 
-    fn emit_ir(&self, mut state: EmitParams<'_, '_>) -> Option<EmitSummary> {
+    fn emit_ir(&self, mut state: EmitParams) -> Option<EmitSummary> {
         use crate::cranelift_bs::*;
         let rs = state.emit_get_register(self.rs);
         let rt = state.fn_builder.ins().iadd_imm(rs, self.imm as i64);

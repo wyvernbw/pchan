@@ -35,7 +35,7 @@ impl Op for SUBU {
             .set_bits(11..16, self.rd as u32)
     }
 
-    fn emit_ir(&self, mut state: EmitParams<'_, '_>) -> Option<EmitSummary> {
+    fn emit_ir(&self, mut state: EmitParams) -> Option<EmitSummary> {
         use crate::cranelift_bs::*;
         let rs = state.emit_get_register(self.rs);
         let rt = state.emit_get_register(self.rt);
