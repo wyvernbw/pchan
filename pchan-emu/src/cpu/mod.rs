@@ -1,19 +1,23 @@
-use std::{fmt::Display, ptr};
+use std::{collections::HashMap, fmt::Display, ptr};
 
 use cranelift::codegen::ir;
 use tracing::instrument;
 
-use crate::{cpu::ops::EmitSummary, cranelift_bs::*, memory::Memory};
+use crate::{
+    cpu::ops::EmitSummary,
+    cranelift_bs::*,
+    memory::{Memory, PhysAddr},
+};
 
 #[cfg(test)]
 mod cranelift_tests;
-mod ops;
+pub mod ops;
 
 #[derive(Default)]
 #[repr(C)]
 pub(crate) struct Cpu {
-    gpr: [u64; 32],
-    pc: u64,
+    pub(crate) gpr: [u64; 32],
+    pub(crate) pc: u64,
 }
 
 impl Display for Cpu {
@@ -42,21 +46,18 @@ const RA: Reg = 31;
 pub(crate) struct JIT {
     /// The function builder context, which is reused across multiple
     /// FunctionBuilder instances.
-    fn_builder_ctx: FunctionBuilderContext,
-
+    pub(crate) fn_builder_ctx: FunctionBuilderContext,
     /// The main Cranelift context, which holds the state for codegen. Cranelift
     /// separates this from `Module` to allow for parallel compilation, with a
     /// context per thread, though this isn't in the simple demo here.
-    ctx: codegen::Context,
-
+    pub(crate) ctx: codegen::Context,
     /// The data description, which is to data objects what `ctx` is to functions.
-    data_description: DataDescription,
-
+    pub(crate) data_description: DataDescription,
     /// The module, with the jit backend, which manages the JIT'd
     /// functions.
-    module: JITModule,
-
-    basic_sig: Signature,
+    pub(crate) module: JITModule,
+    pub(crate) basic_sig: Signature,
+    pub(crate) block_map: HashMap<u64, BlockFn>,
 }
 
 impl Default for JIT {
@@ -85,6 +86,7 @@ impl Default for JIT {
             data_description,
             ctx,
             basic_sig: sig,
+            block_map: HashMap::default(),
         }
     }
 }
@@ -153,6 +155,7 @@ impl JIT {
         builder: &mut FunctionBuilder<'_>,
         block: Block,
         summary: &EmitSummary,
+        mut cache: Option<&mut [Option<Value>; 32]>,
     ) {
         for (id, value) in summary.register_updates.iter() {
             JIT::emit_store_reg()
@@ -161,6 +164,9 @@ impl JIT {
                 .idx(*id)
                 .value(*value)
                 .call();
+            if let Some(cache) = cache.as_deref_mut() {
+                cache[*id] = Some(*value);
+            }
         }
     }
 }

@@ -1,4 +1,6 @@
 #![allow(incomplete_features)]
+#![feature(iterator_try_collect)]
+#![feature(explicit_tail_calls)]
 #![feature(associated_type_defaults)]
 #![feature(trait_alias)]
 #![feature(unboxed_closures)]
@@ -15,10 +17,19 @@
 #![feature(portable_simd)]
 #![feature(iter_collect_into)]
 
+use std::{collections::HashSet, sync::Arc};
+
+use bon::{Builder, builder};
+use petgraph::{prelude::*, visit::Topo};
+use rayon::iter::{IntoParallelRefIterator, ParallelBridge, ParallelIterator};
+
 use crate::{
     bootloader::Bootloader,
-    cpu::{Cpu, JIT},
-    memory::Memory,
+    cpu::{
+        Cpu, JIT,
+        ops::{BoundaryType, DecodedOp, EmitParams, EmitSummary, Op, PrimeOp, lb::LB},
+    },
+    memory::{Memory, PhysAddr},
 };
 
 pub mod cranelift_bs {
@@ -40,6 +51,241 @@ pub struct Emu {
     boot: Bootloader,
 }
 
+impl Emu {
+    fn run(&mut self) -> color_eyre::Result<()> {
+        use cranelift_bs::*;
+
+        self.boot.load_bios(&mut self.mem)?;
+
+        let sig = self.jit.create_signature();
+        let ptr_type = self.jit.pointer_type();
+
+        loop {
+            // try cache first
+            if let Some(function) = self.jit.block_map.get(&self.cpu.pc) {
+                function(&mut self.cpu, &mut self.mem);
+                continue;
+            };
+
+            // collect blocks in function
+            let blocks = find_block(
+                FindBlockParams::builder()
+                    .pc(self.cpu.pc as u32)
+                    .mem(&self.mem)
+                    .depth(0)
+                    .max_depth(4)
+                    .build(),
+            )?;
+            let func_id = self.jit.module.declare_function(
+                &self.cpu.pc.to_string(),
+                Linkage::Hidden,
+                &sig,
+            )?;
+            let mut func = Function::with_name_signature(UserFuncName::user(0, 1), sig.clone());
+
+            let mut fn_builder = FunctionBuilder::new(&mut func, &mut self.jit.fn_builder_ctx);
+            let mut register_cache: [Option<Value>; _] = [None; 32];
+
+            let mut topo = Topo::new(&blocks.cfg);
+            while let Some(node) = topo.next(&blocks.cfg) {
+                let basic_block = &blocks.cfg[node];
+                let cranelift_block = JIT::init_block(&mut fn_builder);
+                for (idx, op) in basic_block.ops.iter().enumerate() {
+                    let summary = op.emit_ir(
+                        EmitParams::builder()
+                            .fn_builder(&mut fn_builder)
+                            .ptr_type(ptr_type)
+                            .registers(&register_cache)
+                            .block(cranelift_block)
+                            .pc(basic_block.address + idx as u32 * 4)
+                            .build(),
+                    );
+                    if let Some(summary) = summary {
+                        JIT::emit_updates()
+                            .builder(&mut fn_builder)
+                            .block(cranelift_block)
+                            .summary(&summary)
+                            .cache(&mut register_cache)
+                            .call();
+                    }
+                }
+            }
+
+            fn_builder.ins().return_(&[]);
+            fn_builder.finalize();
+
+            self.jit.ctx.func = func;
+            self.jit
+                .module
+                .define_function(func_id, &mut self.jit.ctx)?;
+
+            self.jit.module.clear_context(&mut self.jit.ctx);
+            self.jit.module.finalize_definitions()?;
+
+            let function = self.jit.get_func(func_id);
+            function(&mut self.cpu, &mut self.mem);
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct FindBlockSummary {
+    cfg: Graph<BasicBlock, u32>,
+}
+
+#[derive(Builder, Debug, Clone)]
+struct FindBlockParams<'a> {
+    pc: u32,
+    mem: &'a Memory,
+    depth: usize,
+    max_depth: usize,
+    #[builder(default)]
+    cfg: Graph<BasicBlock, u32>,
+    current_node_index: Option<NodeIndex<u32>>,
+    #[builder(default)]
+    mapped: HashSet<u32>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct BasicBlock {
+    ops: Vec<DecodedOp>,
+    address: u32,
+}
+
+impl BasicBlock {
+    fn new(address: u32) -> Self {
+        Self {
+            address,
+            ..Default::default()
+        }
+    }
+}
+
+fn find_block(
+    FindBlockParams {
+        pc,
+        mem,
+        depth,
+        max_depth,
+        mut cfg,
+        current_node_index,
+        mut mapped,
+    }: FindBlockParams,
+) -> color_eyre::Result<FindBlockSummary> {
+    if depth > max_depth {
+        return Ok(FindBlockSummary { cfg });
+    }
+    let op = mem.read::<u32>(PhysAddr(pc));
+    let op = cpu::ops::Opcode(op);
+    let op = DecodedOp::try_new(op)?;
+
+    let current_node = current_node_index.unwrap_or_else(|| {
+        mapped.insert(pc);
+        cfg.add_node(BasicBlock::new(pc))
+    });
+
+    match op.is_block_boundary() {
+        Some(BoundaryType::Block { offset }) => {
+            let new_address = pc + offset;
+            if !mapped.insert(new_address) {
+                return Ok(FindBlockSummary { cfg });
+            };
+            cfg[current_node].ops.push(op);
+            let next_node = cfg.add_node(BasicBlock::new(new_address));
+            cfg.add_edge(current_node, next_node, offset);
+            become find_block(
+                FindBlockParams::builder()
+                    .pc(pc + offset)
+                    .mem(mem)
+                    .depth(depth + 1)
+                    .cfg(cfg)
+                    .max_depth(max_depth)
+                    .current_node_index(next_node)
+                    .mapped(mapped)
+                    .build(),
+            );
+        }
+        Some(BoundaryType::BlockSplit { offsets }) => {
+            cfg[current_node].ops.push(op);
+            let new_cfgs = offsets
+                .par_iter()
+                .flatten()
+                .cloned()
+                .map(|offset| {
+                    let new_address = pc + offset;
+
+                    let mut mapped = mapped.clone();
+                    let mut cfg = cfg.clone();
+
+                    if !mapped.insert(new_address) {
+                        return Ok(FindBlockSummary {
+                            cfg: Graph::default(),
+                        });
+                    };
+
+                    let next_node = cfg.add_node(BasicBlock::new(new_address));
+                    cfg.add_edge(current_node, next_node, offset);
+
+                    find_block(
+                        FindBlockParams::builder()
+                            .pc(pc + offset)
+                            .mem(mem)
+                            .depth(depth + 1)
+                            // clone makes it easier to parallelize later
+                            .cfg(cfg)
+                            .max_depth(max_depth)
+                            .current_node_index(next_node)
+                            .mapped(mapped.clone())
+                            .build(),
+                    )
+                })
+                .collect::<color_eyre::Result<Box<[_]>>>()?;
+            for FindBlockSummary { cfg: subgraph } in new_cfgs.iter() {
+                merge_into(&mut cfg, subgraph);
+            }
+            Ok(FindBlockSummary { cfg })
+        }
+        Some(BoundaryType::Function) => Ok(FindBlockSummary { cfg }),
+        None => {
+            cfg[current_node].ops.push(op);
+            become find_block(
+                FindBlockParams::builder()
+                    .pc(pc + 4)
+                    .mem(mem)
+                    .depth(depth)
+                    .cfg(cfg)
+                    .max_depth(max_depth)
+                    .current_node_index(current_node)
+                    .mapped(mapped)
+                    .build(),
+            );
+        }
+    }
+}
+
+/// Merge `src` into `dst` in-place. Ignores old node indices completely.
+fn merge_into<N: Clone, E: Clone>(dst: &mut Graph<N, E, Directed>, src: &Graph<N, E, Directed>) {
+    // Map old nodes -> new NodeIndex in dst
+    let mut new_indices = Vec::with_capacity(src.node_count());
+
+    // Add all nodes from src into dst
+    for node in src.node_indices() {
+        let weight = src[node].clone();
+        let new_node = dst.add_node(weight);
+        new_indices.push(new_node);
+    }
+
+    // Add all edges from src into dst, using new node indices
+    for edge in src.edge_indices() {
+        let (src_idx, dst_idx) = src.edge_endpoints(edge).unwrap();
+        let weight = src.edge_weight(edge).unwrap().clone();
+        dst.add_edge(
+            new_indices[src_idx.index()],
+            new_indices[dst_idx.index()],
+            weight,
+        );
+    }
+}
 #[cfg(test)]
 pub mod test_utils {
     use super::*;

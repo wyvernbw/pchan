@@ -1,10 +1,14 @@
-use crate::{cpu::JIT, cranelift_bs::*};
+use crate::{
+    cpu::{JIT, ops::lb::LB},
+    cranelift_bs::*,
+};
 use bon::Builder;
-use cranelift::codegen::bitset::ScalarBitSet;
+use enum_dispatch::enum_dispatch;
 use pchan_macros::OpCode;
 use std::ops::Range;
 use thiserror::Error;
 
+pub mod decoded_op;
 pub mod lb;
 #[cfg(test)]
 pub mod op_decode_tests;
@@ -24,9 +28,9 @@ impl Opcode {
     pub(crate) const NOP: Opcode = Opcode(0x00000000);
 
     #[inline]
-    pub(crate) const fn primary(&self) -> PrimaryOp {
+    pub(crate) const fn primary(&self) -> PrimeOp {
         let code = self.0 >> 26;
-        PrimaryOp::MAP[code as usize]
+        PrimeOp::MAP[code as usize]
     }
     #[inline]
     pub(crate) const fn secondary(&self) -> SecondaryOp {
@@ -51,13 +55,13 @@ impl Opcode {
         Self(cleared | shifted)
     }
 
-    pub(crate) const fn with_primary(self, primary: PrimaryOp) -> Self {
+    pub(crate) const fn with_primary(self, primary: PrimeOp) -> Self {
         Opcode((self.0 & 0x03FF_FFFF) | ((primary as u32) << 26))
     }
     pub(crate) const fn with_secondary(self, secondary: SecondaryOp) -> Self {
         Opcode((self.0 & 0xFFFF_FFE0) | (secondary as u32))
     }
-    pub(crate) fn as_primary(self, primary: PrimaryOp) -> Result<Self, TryFromOpcodeErr> {
+    pub(crate) fn as_primary(self, primary: PrimeOp) -> Result<Self, TryFromOpcodeErr> {
         if self.primary() == primary {
             Ok(self)
         } else {
@@ -69,7 +73,7 @@ impl Opcode {
 #[repr(u8)]
 #[derive(OpCode, Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(clippy::upper_case_acronyms)]
-pub enum PrimaryOp {
+pub enum PrimeOp {
     SPECIAL = 0x00,
     BCONDZ = 0x01,
     J = 0x02,
@@ -175,6 +179,7 @@ pub(crate) struct EmitParams<'a, 'b> {
     fn_builder: &'a mut FunctionBuilder<'b>,
     registers: &'a [Option<Value>; 32],
     block: Block,
+    pc: u32,
 }
 
 impl<'a, 'b> EmitParams<'a, 'b> {
@@ -207,9 +212,30 @@ pub enum TryFromOpcodeErr {
     InvalidHeader,
 }
 
+#[derive(Debug)]
+pub enum BoundaryType {
+    Block { offset: u32 },
+    BlockSplit { offsets: [Option<u32>; 4] },
+    Function,
+}
+
+#[enum_dispatch(DecodedOp)]
 pub(crate) trait Op: Sized {
-    type TryFromError = TryFromOpcodeErr;
-    fn try_from_opcode(opcode: Opcode) -> Result<Self, Self::TryFromError>;
-    fn is_block_boundary(&self) -> bool;
+    fn is_block_boundary(&self) -> Option<BoundaryType>;
     fn emit_ir(&self, state: EmitParams<'_, '_>) -> Option<EmitSummary>;
+}
+
+#[enum_dispatch]
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum DecodedOp {
+    LB(LB),
+}
+
+impl DecodedOp {
+    pub(crate) fn try_new(opcode: Opcode) -> Result<Self, impl std::error::Error> {
+        match opcode.primary() {
+            PrimeOp::LB => LB::try_from_opcode(opcode).map(Self::LB),
+            _ => Err(TryFromOpcodeErr::InvalidHeader),
+        }
+    }
 }
