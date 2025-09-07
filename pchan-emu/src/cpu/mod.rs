@@ -36,7 +36,7 @@ type Reg = usize;
 
 const RA: Reg = 31;
 
-pub const REG_STR: &[&'static str] = &array![
+pub const REG_STR: &[&str] = &array![
      0 => "zero",
      1 => "at",
      2 => "v0",

@@ -3,14 +3,7 @@ use std::{collections::HashMap, ptr};
 use cranelift::codegen::ir;
 use tracing::instrument;
 
-use crate::{
-    cpu::{
-        Cpu,
-        ops::{DecodedOp, EmitParams, Op},
-    },
-    cranelift_bs::*,
-    memory::Memory,
-};
+use crate::{cpu::Cpu, cranelift_bs::*, memory::Memory};
 
 pub struct JIT {
     /// The function builder context, which is reused across multiple
@@ -79,7 +72,10 @@ impl JIT {
     }
 
     #[inline]
-    pub fn create_function(&mut self, address: u64) -> Result<(FuncId, Function), ModuleError> {
+    pub fn create_function(
+        &mut self,
+        address: u64,
+    ) -> Result<(FuncId, Function), Box<ModuleError>> {
         let sig = self.create_signature();
         let func_id = self.module.declare_function(
             &format!("pc_0x{:08X}", address),
@@ -109,7 +105,11 @@ impl JIT {
         }
     }
 
-    pub fn finish_function(&mut self, func_id: FuncId, func: Function) -> ModuleResult<()> {
+    pub fn finish_function(
+        &mut self,
+        func_id: FuncId,
+        func: Function,
+    ) -> Result<(), Box<ModuleError>> {
         self.ctx.func = func;
         self.module.define_function(func_id, &mut self.ctx)?;
 

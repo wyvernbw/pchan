@@ -86,7 +86,7 @@ mod tests {
         emulator.cpu.gpr[8] = 32; // base register
         emulator.cpu.gpr[9] = u32::MAX as u64;
 
-        emulator.advance_jit()?;
+        emulator.step_jit()?;
 
         assert_eq!(emulator.mem.read::<u32>(KSEG0Addr::from_phys(32)), u32::MAX);
 

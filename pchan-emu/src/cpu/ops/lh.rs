@@ -99,7 +99,7 @@ mod tests {
         emulator.cpu.gpr[9] = 32; // base register
 
         // Run the block
-        emulator.advance_jit()?;
+        emulator.step_jit()?;
 
         assert_eq!(emulator.cpu.gpr[8], 0xFFFFFFFFFFFF8000);
 

@@ -1,4 +1,5 @@
 #![feature(duration_millis_float)]
+#![allow(unused_variables)]
 
 mod common;
 
@@ -30,7 +31,7 @@ fn block_compile_cache(setup_tracing: (), mut emulator: Emu) -> color_eyre::Resu
         .write_array(KSEG0Addr::from_phys(0x0000_2000), &function);
 
     let now = Instant::now();
-    emulator.advance_jit()?;
+    emulator.step_jit()?;
     let cold_elapsed = now.elapsed().as_millis_f64();
 
     assert_eq!(emulator.cpu.gpr[9], 69);
@@ -41,7 +42,7 @@ fn block_compile_cache(setup_tracing: (), mut emulator: Emu) -> color_eyre::Resu
     let mut average = 0.0;
     for _ in 0..100 {
         let now = Instant::now();
-        emulator.advance_jit()?;
+        emulator.step_jit()?;
         average += now.elapsed().as_millis_f64();
     }
     average /= 100.0;
@@ -74,7 +75,7 @@ fn register_cache_test(setup_tracing: (), mut emulator: Emu) -> color_eyre::Resu
         .mem
         .write_array(KSEG0Addr::from_phys(emulator.cpu.pc as u32), &program);
 
-    let summary = emulator.advance_jit_summarize::<JitSummary>()?;
+    let summary = emulator.step_jit_summarize::<JitSummary>()?;
     let op_count = summary.function.unwrap().dfg.num_insts();
 
     assert!(op_count <= 7 + 2 + 1 + 1);

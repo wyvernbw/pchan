@@ -103,7 +103,7 @@ mod tests {
 
         emulator.mem.write::<u16>(KSEG0Addr::from_phys(20), 0xABCD);
 
-        emulator.advance_jit()?;
+        emulator.step_jit()?;
 
         assert_eq!(emulator.cpu.gpr[8], 0xABCDu64);
 

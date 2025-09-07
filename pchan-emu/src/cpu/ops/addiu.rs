@@ -2,7 +2,7 @@ use std::fmt::Display;
 
 use crate::cpu::{
     REG_STR,
-    ops::{BoundaryType, EmitParams, EmitSummary, Op, OpCode, SecOp, TryFromOpcodeErr},
+    ops::{BoundaryType, EmitParams, EmitSummary, Op, OpCode, TryFromOpcodeErr},
 };
 
 use super::PrimeOp;
@@ -51,6 +51,14 @@ impl Op for ADDIU {
 
     fn emit_ir(&self, mut state: EmitParams) -> Option<EmitSummary> {
         use crate::cranelift_bs::*;
+        if self.rs == 0 {
+            let rt = state.fn_builder.ins().iconst(types::I64, self.imm as i64);
+            return Some(
+                EmitSummary::builder()
+                    .register_updates(vec![(self.rt, rt)].into())
+                    .build(),
+            );
+        }
         let rs = state.emit_get_register(self.rs);
         let rt = state.fn_builder.ins().iadd_imm(rs, self.imm as i64);
         Some(
@@ -82,7 +90,7 @@ mod tests {
             .mem
             .write_all(KSEG0Addr::from_phys(emulator.cpu.pc as u32), program);
         emulator.cpu.gpr[8] = 32;
-        emulator.advance_jit()?;
+        emulator.step_jit()?;
         assert_eq!(emulator.cpu.gpr[9], emulator.cpu.gpr[8] - 16);
         assert_eq!(emulator.cpu.gpr[10], 8);
         Ok(())

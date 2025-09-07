@@ -85,7 +85,7 @@ mod tests {
             .write_all(KSEG0Addr::from_phys(emulator.cpu.pc as u32), program);
         emulator.cpu.gpr[8] = 32;
         emulator.cpu.gpr[9] = 64;
-        emulator.advance_jit()?;
+        emulator.step_jit()?;
         assert_eq!(
             emulator.cpu.gpr[10],
             emulator.cpu.gpr[8] + emulator.cpu.gpr[9]
@@ -101,7 +101,7 @@ mod tests {
             .write_all(KSEG0Addr::from_phys(emulator.cpu.pc as u32), program);
         emulator.cpu.gpr[8] = u32::MAX as u64;
         emulator.cpu.gpr[9] = 1;
-        emulator.advance_jit()?;
+        emulator.step_jit()?;
         assert_eq!(
             emulator.cpu.gpr[10],
             emulator.cpu.gpr[8] + emulator.cpu.gpr[9]

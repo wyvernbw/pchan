@@ -54,7 +54,7 @@ pub fn derive_opcode(stream: TokenStream) -> TokenStream {
                         .meta
                         .require_list()
                         .and_then(|meta| meta.parse_args::<Ident>())
-                        .map(|ident| ident.to_string() == "default")
+                        .map(|ident| ident == "default")
                         .unwrap_or(false)
             })
             .count()

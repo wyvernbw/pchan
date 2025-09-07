@@ -100,7 +100,7 @@ mod tests {
         emulator.cpu.gpr[9] = 32; // base register
 
         // Run the block
-        emulator.advance_jit()?;
+        emulator.step_jit()?;
 
         assert_eq!(emulator.cpu.gpr[8], 0xDEAD_BEEF);
 
@@ -124,7 +124,7 @@ mod tests {
         emulator.cpu.gpr[10] = 36;
 
         // Run the block
-        emulator.advance_jit()?;
+        emulator.step_jit()?;
 
         assert_eq!(emulator.cpu.gpr[8], 0xDEAD_BEEF);
         // 0xDEAD_BEEF wasnt loaded by the time the store happened
@@ -150,7 +150,7 @@ mod tests {
         emulator.cpu.gpr[10] = 36;
 
         // Run the block
-        emulator.advance_jit()?;
+        emulator.step_jit()?;
 
         assert_eq!(emulator.cpu.gpr[8], 0xDEAD_BEEF);
         assert_ne!(emulator.mem.read::<u8>(KSEG0Addr::from_phys(36)), 0);

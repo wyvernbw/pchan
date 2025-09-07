@@ -27,7 +27,7 @@ use std::{borrow::Cow, collections::HashSet};
 use bon::{Builder, bon, builder};
 use crossbeam::queue::ArrayQueue;
 use petgraph::{prelude::*, visit::Topo};
-use tracing::instrument;
+use tracing::{Level, Span, instrument, span};
 
 use crate::{
     bootloader::Bootloader,
@@ -41,6 +41,7 @@ use crate::{
 
 pub mod cranelift_bs {
     pub use cranelift::codegen::ir::*;
+    #[allow(ambiguous_glob_reexports)]
     pub use cranelift::jit::*;
     pub use cranelift::module::*;
     pub use cranelift::prelude::isa::*;
@@ -100,11 +101,12 @@ impl Emu {
         }
         clif_blocks
     }
-    pub fn advance_jit(&mut self) -> color_eyre::Result<()> {
-        self.advance_jit_summarize()
+    pub fn step_jit(&mut self) -> color_eyre::Result<()> {
+        self.step_jit_summarize()
     }
-    #[instrument(skip(self), fields(pc = %format!("0x{:08X}", self.cpu.pc)))]
-    pub fn advance_jit_summarize<T: SummarizeJit>(&mut self) -> color_eyre::Result<T> {
+    pub fn step_jit_summarize<T: SummarizeJit>(&mut self) -> color_eyre::Result<T> {
+        let _span =
+            span!(Level::INFO, "step_jit", pc = %format!("0x{:04X}", self.cpu.pc)).entered();
         let initial_address = self.cpu.pc;
 
         let ptr_type = self.jit.pointer_type();
@@ -135,10 +137,13 @@ impl Emu {
         )?;
 
         let mut topo = Topo::new(&blocks.cfg);
+        drop(_span);
 
         while let Some(node) = topo.next(&blocks.cfg) {
             let basic_block = &blocks.cfg[node];
             let cranelift_block = basic_block.clif_block;
+            let _span =
+                span!(Level::INFO, "step_jit", pc = %format!("0x{:04X}", self.cpu.pc)).entered();
             Self::emit_block()
                 .fn_builder(&mut fn_builder)
                 .basic_block(basic_block)
@@ -163,6 +168,7 @@ impl Emu {
         fn_builder.finalize();
     }
     #[builder]
+    #[instrument(name = "emit", skip_all, fields(block=%format!("{:02}", cranelift_block.index())))]
     pub fn emit_block(
         fn_builder: &mut FunctionBuilder<'_>,
         basic_block: &BasicBlock,
@@ -174,12 +180,11 @@ impl Emu {
         fn_builder.seal_block(cranelift_block);
         fn_builder.append_block_param(cranelift_block, ptr_type);
         fn_builder.append_block_param(cranelift_block, ptr_type);
-        tracing::info!(block = ?cranelift_block, ops.len = basic_block.ops.len());
         let mut updates_queue: Option<Box<[_]>> = None;
         let mut register_cache: [Option<Value>; _] = [None; 32];
 
         for (idx, op) in basic_block.ops.iter().enumerate() {
-            tracing::info!(block = ?cranelift_block, "emitting ir for {:?}", op);
+            tracing::info!(op = %op);
             if op.is_block_boundary().is_some() {
                 Self::emit_block_boundary()
                     .op(op)
@@ -219,11 +224,6 @@ impl Emu {
             if let Some(summary) = summary {
                 flush_updates(Some(&summary.register_updates));
                 updates_queue = Some(summary.delayed_register_updates);
-                if let Some(pc) = summary.pc_update {
-                    cpu.pc = pc as u64;
-                    let updates = updates_queue.take();
-                    flush_updates(updates.as_deref());
-                }
             }
 
             op.post_emit_ir(
@@ -294,11 +294,12 @@ impl Emu {
             && let Some(pc) = summary.pc_update
         {
             cpu.pc = pc as u64;
+            tracing::info!(cpu.pc);
         }
     }
     pub fn run(&mut self) -> color_eyre::Result<()> {
         loop {
-            self.advance_jit()?;
+            self.step_jit()?;
         }
     }
 }

@@ -97,7 +97,7 @@ mod tests {
         tracing::debug!("{:08X?}", &emulator.mem.as_ref()[..21]);
         emulator.cpu.gpr[9] = 16;
         emulator.mem.as_mut()[20] = 69;
-        emulator.advance_jit()?;
+        emulator.step_jit()?;
         assert_eq!(emulator.cpu.gpr[8], emulator.mem.as_ref()[20] as u64);
         Ok(())
     }

@@ -56,8 +56,6 @@ impl Op for J {
                 .build(),
         )
     }
-
-    fn post_emit_ir(&self, state: EmitParams) {}
 }
 
 #[inline]
@@ -92,7 +90,7 @@ mod tests {
             .mem
             .write_all(KSEG0Addr::from_phys(0x0000_2000), function);
 
-        emulator.advance_jit()?;
+        emulator.step_jit()?;
         assert_eq!(emulator.cpu.gpr[9], 69);
 
         Ok(())
@@ -116,7 +114,7 @@ mod tests {
             .mem
             .write_all(KSEG0Addr::from_phys(0x0000_2000), function);
 
-        emulator.advance_jit()?;
+        emulator.step_jit()?;
         assert_eq!(emulator.cpu.gpr[9], 69);
         assert_eq!(emulator.cpu.gpr[10], 32);
 
