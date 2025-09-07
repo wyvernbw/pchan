@@ -2,7 +2,7 @@
 
 mod common;
 
-use pchan_emu::{Emu, cpu::ops::OpCode, memory::KSEG0Addr};
+use pchan_emu::{Emu, JitSummary, cpu::ops::OpCode, memory::KSEG0Addr};
 use pchan_utils::setup_tracing;
 use pretty_assertions::assert_eq;
 use rstest::rstest;
@@ -51,6 +51,33 @@ fn block_compile_cache(setup_tracing: (), mut emulator: Emu) -> color_eyre::Resu
 
     tracing::info!("cold run: {}ms", cold_elapsed);
     tracing::info!("hot run average across 100 runs: {}ms", average);
+
+    Ok(())
+}
+
+#[rstest]
+fn register_cache_test(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
+    use pchan_emu::cpu::ops::prelude::*;
+
+    let program = [
+        addiu(9, 0, 69), // 1x iconst.i64 + 1x iadd_imm + 1x store = 3 ops
+        addiu(8, 9, 69), // 1x iadd_imm + 1x store = 2 ops
+        addiu(8, 9, 69), // 1x iadd_imm = 1 op
+        addiu(8, 9, 69), // ...
+        addiu(8, 9, 69),
+        addiu(8, 9, 69),
+        addiu(8, 9, 69), // +1 return
+        OpCode(69420),
+    ];
+
+    emulator
+        .mem
+        .write_array(KSEG0Addr::from_phys(emulator.cpu.pc as u32), &program);
+
+    let summary = emulator.advance_jit_summarize::<JitSummary>()?;
+    let op_count = summary.function.unwrap().dfg.num_insts();
+
+    assert!(op_count <= 7 + 2 + 1 + 1);
 
     Ok(())
 }

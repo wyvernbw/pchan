@@ -3,7 +3,7 @@ use std::backtrace::Backtrace;
 use rstest::*;
 use tracing_subscriber::{
     EnvFilter,
-    fmt::{self, format::FmtSpan},
+    fmt::{self},
     prelude::*,
     util::SubscriberInitExt,
 };
@@ -12,9 +12,7 @@ use tracing_subscriber::{
 pub fn setup_tracing() {
     _ = tracing_subscriber::registry()
         .with(
-            fmt::layer()
-                .with_ansi(true)
-                .with_span_events(FmtSpan::CLOSE),
+            fmt::layer().with_ansi(true), // .with_span_events(FmtSpan::CLOSE),
         )
         .with(EnvFilter::from_default_env())
         .try_init();

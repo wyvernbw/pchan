@@ -149,6 +149,9 @@ impl JIT {
         idx: usize,
         value: Value,
     ) {
+        if idx == 0 {
+            return;
+        }
         const GPR: usize = const { core::mem::offset_of!(Cpu, gpr) };
         tracing::debug!(?GPR);
         let block_state = builder.block_params(block)[0];
@@ -157,6 +160,20 @@ impl JIT {
         builder
             .ins()
             .store(MemFlags::new(), value, block_state, offset);
+    }
+
+    #[builder]
+    #[instrument(skip_all)]
+    pub fn apply_cache_updates(
+        updates: Option<&[(usize, Value)]>,
+        cache: &mut [Option<Value>; 32],
+    ) {
+        let Some(updates) = updates else {
+            return;
+        };
+        for (id, value) in updates.iter() {
+            cache[*id] = Some(*value);
+        }
     }
 
     #[builder]
@@ -177,7 +194,7 @@ impl JIT {
                 .idx(*id)
                 .value(*value)
                 .call();
-            if let Some(cache) = cache.as_deref_mut() {
+            if let Some(cache) = cache.take() {
                 cache[*id] = Some(*value);
             }
         }

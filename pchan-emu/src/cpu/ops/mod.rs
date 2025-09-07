@@ -212,7 +212,7 @@ pub enum SecOp {
 pub struct EmitParams<'a, 'b> {
     ptr_type: types::Type,
     fn_builder: &'a mut FunctionBuilder<'b>,
-    registers: &'a [Option<Value>; 32],
+    registers: &'a mut [Option<Value>; 32],
     block: Block,
     pc: u32,
     next_blocks: &'a [Option<Block>; 2],
@@ -228,11 +228,15 @@ impl<'a, 'b> EmitParams<'a, 'b> {
     fn emit_get_register(&mut self, id: usize) -> Value {
         match self.registers[id] {
             Some(value) => value,
-            None => JIT::emit_load_reg()
-                .builder(self.fn_builder)
-                .block(self.block)
-                .idx(id)
-                .call(),
+            None => {
+                let value = JIT::emit_load_reg()
+                    .builder(self.fn_builder)
+                    .block(self.block)
+                    .idx(id)
+                    .call();
+                self.registers[id] = Some(value);
+                value
+            }
         }
     }
 }

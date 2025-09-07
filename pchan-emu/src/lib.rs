@@ -59,7 +59,33 @@ pub struct Emu {
     pub boot: Bootloader,
 }
 
-use cranelift::prelude::*;
+use cranelift::{codegen::ir::Function, prelude::*};
+
+#[derive(Debug, Builder, Clone)]
+pub struct JitSummary {
+    pub function: Option<Function>,
+}
+
+#[derive(Debug, Builder, Clone)]
+pub struct SummarizeDeps<'a> {
+    function: Option<&'a Function>,
+}
+
+pub trait SummarizeJit {
+    fn summarize(deps: SummarizeDeps) -> Self;
+}
+
+impl SummarizeJit for () {
+    fn summarize(_: SummarizeDeps) -> Self {}
+}
+
+impl SummarizeJit for JitSummary {
+    fn summarize(deps: SummarizeDeps) -> Self {
+        Self::builder()
+            .maybe_function(deps.function.cloned())
+            .build()
+    }
+}
 
 #[bon]
 impl Emu {
@@ -74,8 +100,11 @@ impl Emu {
         }
         clif_blocks
     }
-    #[instrument(skip(self), fields(pc = %format!("0x{:08X}", self.cpu.pc)))]
     pub fn advance_jit(&mut self) -> color_eyre::Result<()> {
+        self.advance_jit_summarize()
+    }
+    #[instrument(skip(self), fields(pc = %format!("0x{:08X}", self.cpu.pc)))]
+    pub fn advance_jit_summarize<T: SummarizeJit>(&mut self) -> color_eyre::Result<T> {
         let initial_address = self.cpu.pc;
 
         let ptr_type = self.jit.pointer_type();
@@ -85,7 +114,7 @@ impl Emu {
             .jit
             .use_cached_function(initial_address, &mut self.cpu, &mut self.mem);
         if cached {
-            return Ok(());
+            return Ok(T::summarize(SummarizeDeps::builder().build()));
         }
 
         let (func_id, mut func) = self.jit.create_function(initial_address)?;
@@ -120,13 +149,14 @@ impl Emu {
         }
 
         Self::close_function(fn_builder);
+        let summary = T::summarize(SummarizeDeps::builder().function(&func).build());
         self.jit.finish_function(func_id, func)?;
 
         let function = self.jit.get_func(func_id);
         function(&mut self.cpu, &mut self.mem);
         self.jit.block_map.insert(initial_address, function);
 
-        Ok(())
+        Ok(summary)
     }
     pub fn close_function(mut fn_builder: FunctionBuilder) {
         fn_builder.ins().return_(&[]);
@@ -150,11 +180,25 @@ impl Emu {
 
         for (idx, op) in basic_block.ops.iter().enumerate() {
             tracing::info!(block = ?cranelift_block, "emitting ir for {:?}", op);
+            if op.is_block_boundary().is_some() {
+                Self::emit_block_boundary()
+                    .op(op)
+                    .register_cache(register_cache)
+                    .fn_builder(fn_builder)
+                    .maybe_updates_queue(updates_queue.as_deref())
+                    .cranelift_block(cranelift_block)
+                    .basic_block(basic_block)
+                    .cpu(cpu)
+                    .ptr_type(ptr_type)
+                    .idx(idx)
+                    .call();
+                return;
+            }
             let summary = op.emit_ir(
                 EmitParams::builder()
                     .fn_builder(fn_builder)
                     .ptr_type(ptr_type)
-                    .registers(&register_cache)
+                    .registers(&mut register_cache)
                     .block(cranelift_block)
                     .pc(basic_block.address + idx as u32 * 4)
                     .next_blocks(&basic_block.next_block)
@@ -162,11 +206,9 @@ impl Emu {
             );
 
             let mut flush_updates = |updates| {
-                JIT::emit_updates()
-                    .builder(fn_builder)
-                    .block(cranelift_block)
-                    .cache(&mut register_cache)
+                JIT::apply_cache_updates()
                     .maybe_updates(updates)
+                    .cache(&mut register_cache)
                     .call();
             };
 
@@ -187,12 +229,70 @@ impl Emu {
                 EmitParams::builder()
                     .fn_builder(fn_builder)
                     .ptr_type(ptr_type)
-                    .registers(&register_cache)
+                    .registers(&mut register_cache)
                     .block(cranelift_block)
                     .pc(basic_block.address + idx as u32 * 4)
                     .next_blocks(&basic_block.next_block)
                     .build(),
             );
+        }
+
+        let updates = register_cache
+            .into_iter()
+            .enumerate()
+            .flat_map(|(idx, value)| Some(idx).zip(value))
+            .collect::<Vec<_>>();
+
+        JIT::emit_updates()
+            .builder(fn_builder)
+            .block(cranelift_block)
+            .cache(&mut register_cache)
+            .updates(&updates)
+            .call();
+    }
+
+    #[builder]
+    pub fn emit_block_boundary(
+        op: &DecodedOp,
+        mut updates_queue: Option<&[(usize, Value)]>,
+        mut register_cache: [Option<Value>; 32],
+        fn_builder: &mut FunctionBuilder<'_>,
+        cranelift_block: Block,
+        basic_block: &BasicBlock,
+        cpu: &mut Cpu,
+        ptr_type: types::Type,
+        idx: usize,
+    ) {
+        let updates = updates_queue.take();
+        JIT::apply_cache_updates()
+            .maybe_updates(updates)
+            .cache(&mut register_cache)
+            .call();
+        let updates = register_cache
+            .into_iter()
+            .enumerate()
+            .flat_map(|(idx, value)| Some(idx).zip(value))
+            .collect::<Vec<_>>();
+        JIT::emit_updates()
+            .builder(fn_builder)
+            .block(cranelift_block)
+            .cache(&mut register_cache)
+            .updates(&updates)
+            .call();
+        let summary = op.emit_ir(
+            EmitParams::builder()
+                .fn_builder(fn_builder)
+                .ptr_type(ptr_type)
+                .registers(&mut register_cache)
+                .block(cranelift_block)
+                .pc(basic_block.address + idx as u32 * 4)
+                .next_blocks(&basic_block.next_block)
+                .build(),
+        );
+        if let Some(summary) = summary
+            && let Some(pc) = summary.pc_update
+        {
+            cpu.pc = pc as u64;
         }
     }
     pub fn run(&mut self) -> color_eyre::Result<()> {
@@ -242,7 +342,6 @@ impl BasicBlock {
 }
 
 fn find_block(params: FindBlockParams<'_>) -> color_eyre::Result<FindBlockSummary> {
-    let _find_block_span = tracing::info_span!("find_block").entered();
     fn find_block_impl(params: FindBlockParams) -> color_eyre::Result<FindBlockSummary> {
         let FindBlockParams {
             pc,
@@ -294,7 +393,7 @@ fn find_block(params: FindBlockParams<'_>) -> color_eyre::Result<FindBlockSummar
                 cfg.add_edge(current_node, next_node, offset);
                 cfg[current_node].next_block[0] = Some(next_block);
                 cfg[next_node].ops.push(op);
-                tracing::debug!(offset, "jump in block");
+                // tracing::debug!(offset, "jump in block");
 
                 find_block(
                     FindBlockParams::builder()

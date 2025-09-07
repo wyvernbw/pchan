@@ -31,17 +31,9 @@ impl Op for J {
     }
 
     fn emit_ir(&self, state: EmitParams) -> Option<EmitSummary> {
-        Some(
-            EmitSummary::builder()
-                .pc_update((state.pc & 0xF0000000).wrapping_add_signed(self.imm))
-                .build(),
-        )
-    }
-
-    fn post_emit_ir(&self, state: EmitParams) {
         let Some(next_block) = state.next_blocks[0] else {
             tracing::error!("jump has no next blocks");
-            return;
+            return None;
         };
         let params = state.fn_builder.block_params(state.block);
         let params = params
@@ -50,7 +42,14 @@ impl Op for J {
             .map(BlockArg::Value)
             .collect::<Box<[_]>>();
         state.fn_builder.ins().jump(next_block, &params);
+        Some(
+            EmitSummary::builder()
+                .pc_update((state.pc & 0xF0000000).wrapping_add_signed(self.imm))
+                .build(),
+        )
     }
+
+    fn post_emit_ir(&self, state: EmitParams) {}
 }
 
 #[inline]
