@@ -264,9 +264,7 @@ pub trait Op: Sized {
     fn is_block_boundary(&self) -> Option<BoundaryType>;
     fn into_opcode(self) -> crate::cpu::ops::OpCode;
     fn emit_ir(&self, state: EmitParams) -> Option<EmitSummary>;
-    fn post_emit_ir(&self, state: EmitParams) -> Option<EmitSummary> {
-        None
-    }
+    fn post_emit_ir(&self, state: EmitParams) {}
 }
 
 impl Op for () {

@@ -3,7 +3,14 @@ use std::{collections::HashMap, ptr};
 use cranelift::codegen::ir;
 use tracing::instrument;
 
-use crate::{cpu::Cpu, cranelift_bs::*, memory::Memory};
+use crate::{
+    cpu::{
+        Cpu,
+        ops::{DecodedOp, EmitParams, Op},
+    },
+    cranelift_bs::*,
+    memory::Memory,
+};
 
 pub struct JIT {
     /// The function builder context, which is reused across multiple
@@ -72,13 +79,43 @@ impl JIT {
     }
 
     #[inline]
-    pub fn create_function(&mut self) -> Function {
+    pub fn create_function(&mut self, address: u64) -> Result<(FuncId, Function), ModuleError> {
+        let sig = self.create_signature();
+        let func_id = self.module.declare_function(
+            &format!("pc_0x{:08X}", address),
+            Linkage::Hidden,
+            &sig,
+        )?;
         let func = Function::with_name_signature(
             UserFuncName::user(self.func_idx as u32, self.func_idx as u32),
             self.create_signature(),
         );
         self.func_idx += 1;
-        func
+        Ok((func_id, func))
+    }
+
+    #[inline]
+    pub fn create_fn_builder<'a>(&'a mut self, func: &'a mut Function) -> FunctionBuilder<'a> {
+        FunctionBuilder::new(func, &mut self.fn_builder_ctx)
+    }
+
+    pub fn use_cached_function(&self, address: u64, cpu: &mut Cpu, mem: &mut Memory) -> bool {
+        if let Some(function) = self.block_map.get(&address) {
+            tracing::trace!("using cached function: 0x{:08X?}", function.0 as usize);
+            function(cpu, mem);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn finish_function(&mut self, func_id: FuncId, func: Function) -> ModuleResult<()> {
+        self.ctx.func = func;
+        self.module.define_function(func_id, &mut self.ctx)?;
+
+        self.module.clear_context(&mut self.ctx);
+        self.module.finalize_definitions()?;
+        Ok(())
     }
 
     pub fn init_block(builder: &mut FunctionBuilder) -> Block {
@@ -91,11 +128,7 @@ impl JIT {
 
     #[builder]
     #[instrument(skip(builder, block))]
-    pub fn emit_load_reg(
-        builder: &mut FunctionBuilder<'_>,
-        block: Block,
-        idx: usize,
-    ) -> Value {
+    pub fn emit_load_reg(builder: &mut FunctionBuilder<'_>, block: Block, idx: usize) -> Value {
         if idx == 0 {
             return builder.ins().iconst(types::I64, 0);
         }
@@ -131,9 +164,12 @@ impl JIT {
     pub fn emit_updates(
         builder: &mut FunctionBuilder<'_>,
         block: Block,
-        updates: &[(usize, Value)],
+        updates: Option<&[(usize, Value)]>,
         mut cache: Option<&mut [Option<Value>; 32]>,
     ) {
+        let Some(updates) = updates else {
+            return;
+        };
         for (id, value) in updates.iter() {
             JIT::emit_store_reg()
                 .block(block)
