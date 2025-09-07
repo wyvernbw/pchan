@@ -1,4 +1,9 @@
-use crate::cpu::ops::{BoundaryType, EmitParams, EmitSummary, Op, OpCode, SecOp, TryFromOpcodeErr};
+use std::fmt::Display;
+
+use crate::cpu::{
+    REG_STR,
+    ops::{BoundaryType, EmitParams, EmitSummary, Op, OpCode, SecOp, TryFromOpcodeErr},
+};
 
 use super::PrimeOp;
 
@@ -18,6 +23,16 @@ impl SUBU {
             rt: opcode.bits(16..21) as usize,
             rd: opcode.bits(11..16) as usize,
         })
+    }
+}
+
+impl Display for SUBU {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "subu ${} ${} ${}",
+            REG_STR[self.rd], REG_STR[self.rs], REG_STR[self.rt]
+        )
     }
 }
 

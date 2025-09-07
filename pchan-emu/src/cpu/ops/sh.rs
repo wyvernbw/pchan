@@ -1,3 +1,6 @@
+use std::fmt::Display;
+
+use crate::cpu::REG_STR;
 use crate::cpu::ops::{self, BoundaryType, EmitSummary, Op, TryFromOpcodeErr};
 use crate::cranelift_bs::*;
 
@@ -22,6 +25,16 @@ impl SH {
             rs: opcode.bits(21..26) as usize,
             imm: opcode.bits(0..16) as i16,
         })
+    }
+}
+
+impl Display for SH {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "sh ${} ${} {}",
+            REG_STR[self.rt], REG_STR[self.rs], self.imm
+        )
     }
 }
 

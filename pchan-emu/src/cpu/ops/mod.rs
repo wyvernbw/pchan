@@ -1,8 +1,8 @@
-use crate::{BasicBlock, cranelift_bs::*, jit::JIT};
+use crate::{cranelift_bs::*, jit::JIT};
 use bon::Builder;
 use enum_dispatch::enum_dispatch;
 use pchan_macros::OpCode;
-use std::ops::Range;
+use std::{fmt::Display, ops::Range};
 use thiserror::Error;
 use tracing::instrument;
 
@@ -264,14 +264,17 @@ pub enum BoundaryType {
 }
 
 #[enum_dispatch(DecodedOp)]
-pub trait Op: Sized {
+pub trait Op: Sized + Display {
     fn is_block_boundary(&self) -> Option<BoundaryType>;
     fn into_opcode(self) -> crate::cpu::ops::OpCode;
     fn emit_ir(&self, state: EmitParams) -> Option<EmitSummary>;
     fn post_emit_ir(&self, state: EmitParams) {}
 }
 
-impl Op for () {
+#[derive(Debug, Clone, Copy)]
+pub struct NOP;
+
+impl Op for NOP {
     fn is_block_boundary(&self) -> Option<BoundaryType> {
         None
     }
@@ -285,8 +288,20 @@ impl Op for () {
     }
 }
 
+impl Display for NOP {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "nop")
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct HaltBlock;
+
+impl Display for HaltBlock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "haltblock")
+    }
+}
 
 impl Op for HaltBlock {
     fn is_block_boundary(&self) -> Option<BoundaryType> {
@@ -302,34 +317,51 @@ impl Op for HaltBlock {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, strum::Display)]
 #[enum_dispatch]
 #[allow(clippy::upper_case_acronyms)]
 pub enum DecodedOp {
-    NOP(()),
+    #[strum(transparent)]
+    NOP(NOP),
+    #[strum(transparent)]
     HaltBlock(HaltBlock),
+    #[strum(transparent)]
     LB(LB),
+    #[strum(transparent)]
     LBU(LBU),
+    #[strum(transparent)]
     LH(LH),
+    #[strum(transparent)]
     LHU(LHU),
+    #[strum(transparent)]
     LW(LW),
+    #[strum(transparent)]
     SB(SB),
+    #[strum(transparent)]
     SH(SH),
+    #[strum(transparent)]
     SW(SW),
+    #[strum(transparent)]
     ADDU(ADDU),
+    #[strum(transparent)]
     ADDIU(ADDIU),
+    #[strum(transparent)]
     SUBU(SUBU),
+    #[strum(transparent)]
     J(J),
 }
 
 impl DecodedOp {
+    pub fn new(opcode: OpCode) -> Self {
+        Self::try_new(opcode).unwrap()
+    }
     #[instrument(err)]
     pub fn try_new(opcode: OpCode) -> Result<Self, impl std::error::Error> {
         if opcode.0 == 69420 {
             return Ok(DecodedOp::HaltBlock(HaltBlock));
         }
         if opcode == OpCode::NOP {
-            return Ok(DecodedOp::NOP(()));
+            return Ok(DecodedOp::NOP(NOP));
         }
         match (opcode.primary(), opcode.secondary()) {
             (PrimeOp::J, _) => J::try_from_opcode(opcode).map(Self::J),
@@ -352,5 +384,33 @@ impl DecodedOp {
             (PrimeOp::LBU, _) => LBU::try_from_opcode(opcode).map(Self::LBU),
             _ => Err(TryFromOpcodeErr::InvalidHeader),
         }
+    }
+}
+
+#[cfg(test)]
+mod decode_display_tests {
+    use pchan_utils::setup_tracing;
+    use pretty_assertions::assert_eq;
+    use rstest::rstest;
+
+    use crate::cpu::ops::DecodedOp;
+    use crate::cpu::ops::prelude::*;
+
+    #[rstest]
+    #[case::nop(DecodedOp::new(nop()), "nop")]
+    #[case::lb(DecodedOp::new(lb(8, 9, 4)), "lb $t0 $t1 4")]
+    #[case::lbu(DecodedOp::new(lbu(8, 9, 4)), "lbu $t0 $t1 4")]
+    #[case::lh(DecodedOp::new(lh(8, 9, 4)), "lh $t0 $t1 4")]
+    #[case::lhu(DecodedOp::new(lhu(8, 9, 4)), "lhu $t0 $t1 4")]
+    #[case::lw(DecodedOp::new(lw(8, 9, 4)), "lw $t0 $t1 4")]
+    #[case::sb(DecodedOp::new(sb(8, 9, 4)), "sb $t0 $t1 4")]
+    #[case::sh(DecodedOp::new(sh(8, 9, 4)), "sh $t0 $t1 4")]
+    #[case::sw(DecodedOp::new(sw(8, 9, 4)), "sw $t0 $t1 4")]
+    #[case::addu(DecodedOp::new(addu(8, 9, 10)), "addu $t0 $t1 $t2")]
+    #[case::addiu(DecodedOp::new(addiu(8, 9, 123)), "addiu $t0 $t1 123")]
+    #[case::subu(DecodedOp::new(subu(8, 9, 10)), "subu $t0 $t1 $t2")]
+    #[case::j(DecodedOp::new(j(0x0040_0000)), "j 0x00400000")]
+    fn test_display(setup_tracing: (), #[case] op: DecodedOp, #[case] expected: &str) {
+        assert_eq!(op.to_string(), expected);
     }
 }

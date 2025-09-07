@@ -106,6 +106,3 @@ pub fn derive_opcode(stream: TokenStream) -> TokenStream {
 pub fn opcode(_attr: TokenStream, item: TokenStream) -> TokenStream {
     item
 }
-
-#[test]
-fn test_macro() {}

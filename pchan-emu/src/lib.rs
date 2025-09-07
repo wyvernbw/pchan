@@ -194,6 +194,7 @@ impl Emu {
                     .call();
                 return;
             }
+
             let summary = op.emit_ir(
                 EmitParams::builder()
                     .fn_builder(fn_builder)

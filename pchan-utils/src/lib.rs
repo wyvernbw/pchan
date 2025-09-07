@@ -32,3 +32,10 @@ pub fn setup_tracing() {
         panic!();
     }));
 }
+
+#[macro_export]
+macro_rules! array {
+    ($($idx:literal => $val:expr),+ $(,)?) => (
+        [$( $val ),+]
+    );
+}
