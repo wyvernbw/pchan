@@ -32,7 +32,7 @@ impl Default for JIT {
     fn default() -> Self {
         // Set up JIT
         let mut flags = settings::builder();
-        flags.set("opt_level", "speed").unwrap();
+        flags.set("opt_level", "none").unwrap();
         let isa = cranelift::native::builder()
             .unwrap()
             .finish(settings::Flags::new(flags))
