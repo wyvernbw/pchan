@@ -17,7 +17,7 @@ fn block_compile_cache(setup_tracing: (), mut emulator: Emu) -> color_eyre::Resu
 
     let program = [
         addiu(8, 0, 32),
-        j(KSEG0Addr::from_phys(0x0000_2000).as_u32() as i32),
+        j(KSEG0Addr::from_phys(0x0000_2000).as_u32()),
         addiu(10, 0, 32),
     ];
 

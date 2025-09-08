@@ -1,22 +1,25 @@
 use std::fmt::Display;
 
-use cranelift::{codegen::ir::BlockArg, prelude::InstBuilder};
+use cranelift::{
+    codegen::ir::BlockArg,
+    prelude::{FunctionBuilder, InstBuilder},
+};
 
 use crate::cpu::ops::{
-    BoundaryType, EmitParams, EmitSummary, Op, OpCode, PrimeOp, TryFromOpcodeErr,
+    BoundaryType, EmitParams, EmitSummary, MipsOffset, Op, OpCode, PrimeOp, TryFromOpcodeErr,
 };
 
 #[derive(Debug, Clone, Copy)]
 #[allow(clippy::upper_case_acronyms)]
 pub struct J {
-    imm: i32,
+    pub imm: u32,
 }
 
 impl J {
     pub fn try_from_opcode(opcode: OpCode) -> Result<Self, TryFromOpcodeErr> {
         let opcode = opcode.as_primary(PrimeOp::J)?;
         Ok(J {
-            imm: (opcode.bits(0..26) as i32) << 2,
+            imm: opcode.bits(0..26) << 2,
         })
     }
 }
@@ -29,37 +32,37 @@ impl Display for J {
 
 impl Op for J {
     fn is_block_boundary(&self) -> Option<BoundaryType> {
-        Some(BoundaryType::Block { offset: self.imm })
+        Some(BoundaryType::Block {
+            offset: MipsOffset::RegionJump(self.imm),
+        })
     }
 
     fn into_opcode(self) -> OpCode {
         OpCode::default()
             .with_primary(PrimeOp::J)
-            .set_bits(0..26, (self.imm >> 2) as u32)
+            .set_bits(0..26, self.imm >> 2)
     }
 
-    fn emit_ir(&self, state: EmitParams) -> Option<EmitSummary> {
-        let Some(next_block) = state.next_blocks[0] else {
-            tracing::error!("jump has no next blocks");
-            return None;
-        };
-        let params = state.fn_builder.block_params(state.block);
+    fn emit_ir(&self, state: EmitParams, fn_builder: &mut FunctionBuilder) -> Option<EmitSummary> {
+        let next_block = state.next_at(0);
+
+        let params = fn_builder.block_params(state.block().clif_block);
         let params = params
             .iter()
             .cloned()
             .map(BlockArg::Value)
             .collect::<Box<[_]>>();
-        state.fn_builder.ins().jump(next_block, &params);
+        fn_builder.ins().jump(next_block.clif_block, &params);
         Some(
             EmitSummary::builder()
-                .pc_update((state.pc & 0xF0000000).wrapping_add_signed(self.imm))
+                .pc_update(MipsOffset::RegionJump(self.imm).calculate_address(state.pc))
                 .build(),
         )
     }
 }
 
 #[inline]
-pub fn j(imm: i32) -> OpCode {
+pub fn j(imm: u32) -> OpCode {
     J { imm }.into_opcode()
 }
 
@@ -77,7 +80,7 @@ mod tests {
 
         let program = [
             addiu(8, 0, 32),
-            j(KSEG0Addr::from_phys(0x0000_2000).as_u32() as i32),
+            j(KSEG0Addr::from_phys(0x0000_2000).as_u32()),
             nop(),
         ];
 
@@ -101,7 +104,7 @@ mod tests {
 
         let program = [
             addiu(8, 0, 32),
-            j(KSEG0Addr::from_phys(0x0000_2000).as_u32() as i32),
+            j(KSEG0Addr::from_phys(0x0000_2000).as_u32()),
             addiu(10, 0, 32),
         ];
 

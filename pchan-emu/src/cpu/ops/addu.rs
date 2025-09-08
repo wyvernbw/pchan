@@ -1,5 +1,7 @@
 use std::fmt::Display;
 
+use cranelift::prelude::FunctionBuilder;
+
 use crate::cpu::{
     REG_STR,
     ops::{BoundaryType, EmitParams, EmitSummary, Op, OpCode, SecOp, TryFromOpcodeErr},
@@ -50,11 +52,15 @@ impl Op for ADDU {
             .set_bits(11..16, self.rd as u32)
     }
 
-    fn emit_ir(&self, mut state: EmitParams) -> Option<EmitSummary> {
+    fn emit_ir(
+        &self,
+        mut state: EmitParams,
+        fn_builder: &mut FunctionBuilder,
+    ) -> Option<EmitSummary> {
         use crate::cranelift_bs::*;
-        let rs = state.emit_get_register(self.rs);
-        let rt = state.emit_get_register(self.rt);
-        let rd = state.fn_builder.ins().iadd(rs, rt);
+        let rs = state.emit_get_register(fn_builder, self.rs);
+        let rt = state.emit_get_register(fn_builder, self.rt);
+        let rd = fn_builder.ins().iadd(rs, rt);
         Some(
             EmitSummary::builder()
                 .register_updates(vec![(self.rd, rd)].into())

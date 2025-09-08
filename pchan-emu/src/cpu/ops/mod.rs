@@ -1,13 +1,15 @@
-use crate::{cranelift_bs::*, jit::JIT};
+use crate::{BasicBlock, cranelift_bs::*, jit::JIT};
 use bon::Builder;
 use enum_dispatch::enum_dispatch;
 use pchan_macros::OpCode;
+use petgraph::prelude::*;
 use std::{fmt::Display, ops::Range};
 use thiserror::Error;
 use tracing::instrument;
 
 pub mod addiu;
 pub mod addu;
+pub mod beq;
 pub mod j;
 pub mod lb;
 pub mod lbu;
@@ -22,6 +24,7 @@ pub mod sw;
 pub mod prelude {
     pub use super::addiu::*;
     pub use super::addu::*;
+    pub use super::beq::*;
     pub use super::j::*;
     pub use super::lb::*;
     pub use super::lbu::*;
@@ -209,29 +212,42 @@ pub enum SecOp {
 }
 
 #[derive(Builder)]
-pub struct EmitParams<'a, 'b> {
+pub struct EmitParams<'a> {
     ptr_type: types::Type,
-    fn_builder: &'a mut FunctionBuilder<'b>,
     registers: &'a mut [Option<Value>; 32],
-    block: Block,
+    node: NodeIndex,
     pc: u32,
-    next_blocks: &'a [Option<Block>; 2],
+    cfg: &'a Graph<BasicBlock, ()>,
 }
 
-impl<'a, 'b> EmitParams<'a, 'b> {
-    fn cpu(&self) -> Value {
-        self.fn_builder.block_params(self.block)[0]
+impl<'a> EmitParams<'a> {
+    fn block(&self) -> &BasicBlock {
+        &self.cfg[self.node]
     }
-    fn memory(&self) -> Value {
-        self.fn_builder.block_params(self.block)[1]
+    fn next_at(&self, idx: usize) -> &BasicBlock {
+        let idx = self
+            .cfg
+            .neighbors_directed(self.node, Direction::Outgoing)
+            .nth(idx)
+            .unwrap();
+        &self.cfg[idx]
     }
-    fn emit_get_register(&mut self, id: usize) -> Value {
+    fn cpu(&self, fn_builder: &mut FunctionBuilder) -> Value {
+        let block = self.block().clif_block;
+        fn_builder.block_params(block)[0]
+    }
+    fn memory(&self, fn_builder: &mut FunctionBuilder) -> Value {
+        let block = self.cfg[self.node].clif_block;
+        fn_builder.block_params(block)[1]
+    }
+    fn emit_get_register(&mut self, fn_builder: &mut FunctionBuilder, id: usize) -> Value {
+        let block = self.block().clif_block;
         match self.registers[id] {
             Some(value) => value,
             None => {
                 let value = JIT::emit_load_reg()
-                    .builder(self.fn_builder)
-                    .block(self.block)
+                    .builder(fn_builder)
+                    .block(block)
                     .idx(id)
                     .call();
                 self.registers[id] = Some(value);
@@ -256,10 +272,25 @@ pub enum TryFromOpcodeErr {
     InvalidHeader,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum MipsOffset {
+    RegionJump(u32),
+    Relative(i32),
+}
+
+impl MipsOffset {
+    pub fn calculate_address(self, base: u32) -> u32 {
+        match self {
+            MipsOffset::RegionJump(addr) => (base & 0xFF00_0000) + addr,
+            MipsOffset::Relative(offset) => base.wrapping_add_signed(offset),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum BoundaryType {
-    Block { offset: i32 },
-    BlockSplit { lhs: i32, rhs: i32 },
+    Block { offset: MipsOffset },
+    BlockSplit { lhs: MipsOffset, rhs: MipsOffset },
     Function,
 }
 
@@ -267,10 +298,7 @@ pub enum BoundaryType {
 pub trait Op: Sized + Display {
     fn is_block_boundary(&self) -> Option<BoundaryType>;
     fn into_opcode(self) -> crate::cpu::ops::OpCode;
-    fn emit_ir(&self, state: EmitParams) -> Option<EmitSummary>;
-    fn post_emit_ir(&self, state: EmitParams) {
-        _ = state;
-    }
+    fn emit_ir(&self, state: EmitParams, fn_builder: &mut FunctionBuilder) -> Option<EmitSummary>;
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -285,7 +313,11 @@ impl Op for NOP {
         OpCode::NOP
     }
 
-    fn emit_ir(&self, _state: EmitParams) -> Option<EmitSummary> {
+    fn emit_ir(
+        &self,
+        _state: EmitParams,
+        _fn_builder: &mut FunctionBuilder,
+    ) -> Option<EmitSummary> {
         None
     }
 }
@@ -314,7 +346,8 @@ impl Op for HaltBlock {
         OpCode(69420)
     }
 
-    fn emit_ir(&self, _state: EmitParams) -> Option<EmitSummary> {
+    fn emit_ir(&self, _state: EmitParams, fn_builder: &mut FunctionBuilder) -> Option<EmitSummary> {
+        fn_builder.ins().return_(&[]);
         None
     }
 }
@@ -351,6 +384,8 @@ pub enum DecodedOp {
     SUBU(SUBU),
     #[strum(transparent)]
     J(J),
+    #[strum(transparent)]
+    BEQ(BEQ),
 }
 
 impl DecodedOp {
@@ -366,6 +401,7 @@ impl DecodedOp {
             return Ok(DecodedOp::NOP(NOP));
         }
         match (opcode.primary(), opcode.secondary()) {
+            (PrimeOp::BEQ, _) => BEQ::try_from_opcode(opcode).map(Self::BEQ),
             (PrimeOp::J, _) => J::try_from_opcode(opcode).map(Self::J),
             (PrimeOp::ADDIU | PrimeOp::ADDI, _) => ADDIU::try_from_opcode(opcode).map(Self::ADDIU),
             (PrimeOp::SPECIAL, SecOp::SUBU | SecOp::SUB) => {
@@ -412,6 +448,7 @@ mod decode_display_tests {
     #[case::addiu(DecodedOp::new(addiu(8, 9, 123)), "addiu $t0 $t1 123")]
     #[case::subu(DecodedOp::new(subu(8, 9, 10)), "subu $t0 $t1 $t2")]
     #[case::j(DecodedOp::new(j(0x0040_0000)), "j 0x00400000")]
+    #[case::beq(DecodedOp::new(beq(8, 9, 16)), "beq $t0 $t1 0x00000010")]
     fn test_display(setup_tracing: (), #[case] op: DecodedOp, #[case] expected: &str) {
         assert_eq!(op.to_string(), expected);
     }

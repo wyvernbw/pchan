@@ -4,7 +4,7 @@ use crate::cpu::REG_STR;
 use crate::cpu::ops::{self, BoundaryType, EmitSummary, Op, TryFromOpcodeErr};
 use crate::cranelift_bs::*;
 
-use super::PrimeOp;
+use super::{EmitParams, PrimeOp};
 
 #[derive(Debug, Clone, Copy)]
 #[allow(clippy::upper_case_acronyms)]
@@ -41,19 +41,21 @@ impl Display for LHU {
 }
 
 impl Op for LHU {
-    fn emit_ir(&self, mut state: super::EmitParams) -> Option<EmitSummary> {
+    fn emit_ir(
+        &self,
+        mut state: EmitParams,
+        fn_builder: &mut FunctionBuilder,
+    ) -> Option<EmitSummary> {
         // get pointer to memory passed as argument to the function
-        let mem_ptr = state.memory();
+        let mem_ptr = state.memory(fn_builder);
 
         // get cached register if possible, otherwise load it in
-        let rs = state.emit_get_register(self.rs);
-        let mem_ptr = state.fn_builder.ins().iadd(mem_ptr, rs);
+        let rs = state.emit_get_register(fn_builder, self.rs);
+        let mem_ptr = fn_builder.ins().iadd(mem_ptr, rs);
 
-        let rt =
-            state
-                .fn_builder
-                .ins()
-                .uload16(types::I64, MemFlags::new(), mem_ptr, self.imm as i32);
+        let rt = fn_builder
+            .ins()
+            .uload16(types::I64, MemFlags::new(), mem_ptr, self.imm as i32);
         Some(
             EmitSummary::builder()
                 .delayed_register_updates(vec![(self.rt, rt)].into_boxed_slice())

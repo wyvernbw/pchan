@@ -1,9 +1,14 @@
 use std::{collections::HashMap, ptr};
 
+use color_eyre::owo_colors::OwoColorize;
 use cranelift::codegen::ir;
-use tracing::instrument;
+use tracing::{Level, instrument};
 
-use crate::{cpu::Cpu, cranelift_bs::*, memory::Memory};
+use crate::{
+    cpu::{Cpu, REG_STR},
+    cranelift_bs::*,
+    memory::Memory,
+};
 
 pub struct JIT {
     /// The function builder context, which is reused across multiple
@@ -97,7 +102,6 @@ impl JIT {
 
     pub fn use_cached_function(&self, address: u64, cpu: &mut Cpu, mem: &mut Memory) -> bool {
         if let Some(function) = self.block_map.get(&address) {
-            tracing::trace!("using cached function: 0x{:08X?}", function.0 as usize);
             function(cpu, mem);
             true
         } else {
@@ -142,7 +146,7 @@ impl JIT {
     }
 
     #[builder]
-    #[instrument(skip(builder, block))]
+    #[instrument(skip(builder, block), fields(reg=REG_STR[idx], value))]
     pub fn emit_store_reg(
         builder: &mut FunctionBuilder<'_>,
         block: Block,
@@ -153,10 +157,9 @@ impl JIT {
             return;
         }
         const GPR: usize = const { core::mem::offset_of!(Cpu, gpr) };
-        tracing::debug!(?GPR);
         let block_state = builder.block_params(block)[0];
         let offset = i32::try_from(GPR + idx * size_of::<u64>()).expect("offset overflow");
-        tracing::debug!(?offset);
+        tracing::trace!("stored");
         builder
             .ins()
             .store(MemFlags::new(), value, block_state, offset);
@@ -174,10 +177,24 @@ impl JIT {
         for (id, value) in updates.iter() {
             cache[*id] = Some(*value);
         }
+        tracing::debug!("applied cache");
     }
 
     #[builder]
-    #[instrument(skip(builder, block, cache))]
+    #[instrument(
+        level = Level::DEBUG,
+        skip(builder, block, cache, updates),
+        fields(
+            updates = {
+                updates.map(|updates|
+                    updates.iter().map(|(idx, value)| {
+                        format!("${}={:?}", REG_STR[*idx], value)
+                    })
+                    .intersperse(" ".to_string()).collect::<String>()
+                )
+            }
+        )
+    )]
     pub fn emit_updates(
         builder: &mut FunctionBuilder<'_>,
         block: Block,
@@ -198,6 +215,7 @@ impl JIT {
                 cache[*id] = Some(*value);
             }
         }
+        tracing::debug!("done");
     }
 }
 
