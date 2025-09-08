@@ -3,7 +3,7 @@ use bon::Builder;
 use enum_dispatch::enum_dispatch;
 use pchan_macros::OpCode;
 use petgraph::prelude::*;
-use std::{fmt::Display, ops::Range};
+use std::{collections::HashMap, fmt::Display, ops::Range};
 use thiserror::Error;
 use tracing::instrument;
 
@@ -218,6 +218,7 @@ pub struct EmitParams<'a> {
     node: NodeIndex,
     pc: u32,
     cfg: &'a Graph<BasicBlock, ()>,
+    deps_map: &'a HashMap<Block, Vec<usize>>,
 }
 
 impl<'a> EmitParams<'a> {
@@ -231,6 +232,33 @@ impl<'a> EmitParams<'a> {
             .nth(idx)
             .unwrap();
         &self.cfg[idx]
+    }
+    fn emulator_params(&self, fn_builder: &mut FunctionBuilder) -> Vec<BlockArg> {
+        vec![
+            BlockArg::Value(self.cpu(fn_builder)),
+            BlockArg::Value(self.memory(fn_builder)),
+        ]
+    }
+    #[instrument(skip(fn_builder, self))]
+    fn out_params(&self, to: Block, fn_builder: &mut FunctionBuilder) -> Vec<BlockArg> {
+        let next_block_deps: Option<&[usize]> = self.deps_map.get(&to).map(|vec| vec.as_slice());
+        let mut args = self.emulator_params(fn_builder);
+        if let Some(next_block_deps) = next_block_deps {
+            let iter = next_block_deps
+                .iter()
+                .flat_map(|&register| self.registers[register])
+                .map(BlockArg::Value);
+            args.extend(iter);
+        } else {
+            args.extend(
+                self.registers
+                    .iter()
+                    .flatten()
+                    .cloned()
+                    .map(BlockArg::Value),
+            );
+        }
+        args
     }
     fn cpu(&self, fn_builder: &mut FunctionBuilder) -> Value {
         let block = self.block().clif_block;

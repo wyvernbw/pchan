@@ -1,6 +1,7 @@
 // allow for dev
 #![allow(dead_code)]
 #![allow(incomplete_features)]
+#![feature(hash_map_macro)]
 #![feature(iter_map_windows)]
 #![feature(iterator_try_collect)]
 #![feature(const_convert)]
@@ -30,13 +31,17 @@ use std::{
 use bon::{Builder, bon, builder};
 use color_eyre::eyre::eyre;
 use crossbeam::queue::ArrayQueue;
-use petgraph::{algo::is_cyclic_directed, prelude::*, visit::Topo};
-use tracing::{Level, Span, debug_span, info_span, instrument, span, trace_span};
+use petgraph::{
+    algo::is_cyclic_directed,
+    prelude::*,
+    visit::{DfsEvent, Topo, depth_first_search},
+};
+use tracing::{Level, Span, debug_span, enabled, info_span, instrument, span, trace_span};
 
 use crate::{
     bootloader::Bootloader,
     cpu::{
-        Cpu,
+        Cpu, REG_STR,
         ops::{BoundaryType, DecodedOp, EmitParams, MipsOffset, Op},
     },
     jit::JIT,
@@ -89,6 +94,21 @@ impl SummarizeJit for JitSummary {
         Self::builder()
             .maybe_function(deps.function.cloned())
             .build()
+    }
+}
+
+pub struct EmitBlockSummary {
+    registers: Vec<usize>,
+}
+
+impl EmitBlockSummary {
+    fn new(registers: &[Option<Value>]) -> Self {
+        let registers = registers
+            .iter()
+            .enumerate()
+            .flat_map(|(idx, value)| value.map(|_| idx))
+            .collect();
+        Self { registers }
     }
 }
 
@@ -161,6 +181,11 @@ impl Emu {
         };
 
         let mut dfs = Dfs::new(&blocks.cfg, entry_idx);
+        let mut deps_map = hash_map! {
+            entry_block => Vec::new()
+        };
+        let mut prev_registers: Option<Vec<usize>> = None;
+        let mut register_cache = [None; 32];
         while let Some(node) = dfs.next(&blocks.cfg) {
             let basic_block = &blocks.cfg[node];
             let cranelift_block = basic_block.clif_block;
@@ -171,14 +196,39 @@ impl Emu {
                 ops.len = basic_block.ops.len()
             )
             .entered();
-            Self::emit_block()
+            tracing::debug!("=== compling {:?} === ", cranelift_block);
+
+            let prev_reg = prev_registers.clone().unwrap_or_default();
+            let deps = deps_map
+                .entry(blocks.cfg[node].clif_block)
+                .or_insert(prev_reg)
+                .clone();
+
+            if enabled!(Level::INFO) {
+                tracing::debug!("deps: {{");
+                for (block, deps) in deps_map.iter() {
+                    let deps = deps
+                        .iter()
+                        .map(|&reg| format!("${}", REG_STR[reg]))
+                        .collect::<Vec<_>>();
+                    tracing::debug!("    {:?} => {:?}", block, deps);
+                }
+                tracing::debug!("}}");
+            }
+
+            let summary = Self::emit_block()
                 .fn_builder(&mut fn_builder)
                 .cranelift_block(cranelift_block)
                 .cpu(&mut self.cpu)
                 .ptr_type(ptr_type)
                 .node(node)
                 .cfg(&blocks.cfg)
+                .deps(&deps)
+                .register_cache(&mut register_cache)
+                .deps_map(&deps_map)
                 .call();
+
+            prev_registers = Some(summary.registers);
         }
 
         let _span = info_span!("jit_comp", pc = initial_address).entered();
@@ -189,6 +239,7 @@ impl Emu {
         self.jit.finish_function(func_id, func)?;
 
         let function = self.jit.get_func(func_id);
+        tracing::info!("compiled function: {:?}", function.0);
         function(&mut self.cpu, &mut self.mem);
         self.jit.block_map.insert(initial_address, function);
 
@@ -206,26 +257,26 @@ impl Emu {
         ptr_type: types::Type,
         cfg: &Graph<BasicBlock, ()>,
         node: NodeIndex,
+        register_cache: &mut [Option<Value>; 32],
+        deps: &[usize],
+        deps_map: &HashMap<Block, Vec<usize>>,
         cpu: &mut Cpu,
-    ) {
+    ) -> EmitBlockSummary {
         // fn_builder.seal_block(cranelift_block);
         fn_builder.switch_to_block(cranelift_block);
         fn_builder.append_block_param(cranelift_block, ptr_type);
         fn_builder.append_block_param(cranelift_block, ptr_type);
+        for reg in deps {
+            register_cache[*reg] = Some(fn_builder.append_block_param(cranelift_block, ptr_type));
+        }
         let mut updates_queue: Option<Box<[_]>> = None;
-        let mut register_cache: [Option<Value>; _] = [None; 32];
         let basic_block = &cfg[node];
 
-        if basic_block.ops.is_empty() {
-            tracing::debug!("empty block");
-            fn_builder.ins().return_(&[]);
-        }
-
-        let mut count = 0;
         for (idx, op) in basic_block.ops.iter().enumerate() {
             // tracing::info!(op = %op);
             if op.is_block_boundary().is_some() {
                 tracing::debug!("block boundary");
+                let summary = EmitBlockSummary::new(register_cache);
                 Self::emit_block_boundary()
                     .op(op)
                     .register_cache(register_cache)
@@ -236,17 +287,18 @@ impl Emu {
                     .idx(idx)
                     .node(node)
                     .cfg(cfg)
+                    .deps_map(deps_map)
                     .call();
-                return;
+                return summary;
             }
-
             let summary = op.emit_ir(
                 EmitParams::builder()
                     .ptr_type(ptr_type)
-                    .registers(&mut register_cache)
+                    .registers(register_cache)
                     .pc(basic_block.address + idx as u32 * 4)
                     .node(node)
                     .cfg(cfg)
+                    .deps_map(deps_map)
                     .build(),
                 fn_builder,
             );
@@ -254,7 +306,7 @@ impl Emu {
             let mut flush_updates = |updates| {
                 JIT::apply_cache_updates()
                     .maybe_updates(updates)
-                    .cache(&mut register_cache)
+                    .cache(register_cache)
                     .call();
             };
 
@@ -265,38 +317,37 @@ impl Emu {
                 flush_updates(Some(&summary.register_updates));
                 updates_queue = Some(summary.delayed_register_updates);
             }
-
-            count = idx;
         }
 
         let updates = register_cache
-            .into_iter()
+            .iter()
             .enumerate()
-            .flat_map(|(idx, value)| Some(idx).zip(value))
+            .flat_map(|(idx, &value)| Some(idx).zip(value))
             .collect::<Vec<_>>();
 
         JIT::emit_updates()
             .builder(fn_builder)
             .block(cranelift_block)
-            .cache(&mut register_cache)
+            .cache(register_cache)
             .updates(&updates)
             .call();
 
         fn_builder.ins().return_(&[]);
 
-        tracing::info!("{:?} compiled {} instructions", cranelift_block, count);
+        EmitBlockSummary::new(register_cache)
     }
 
     #[builder]
     pub fn emit_block_boundary(
         op: &DecodedOp,
         mut updates_queue: Option<&[(usize, Value)]>,
-        mut register_cache: [Option<Value>; 32],
+        register_cache: &mut [Option<Value>; 32],
         fn_builder: &mut FunctionBuilder<'_>,
         cpu: &mut Cpu,
         ptr_type: types::Type,
         node: NodeIndex,
         cfg: &Graph<BasicBlock, ()>,
+        deps_map: &HashMap<Block, Vec<usize>>,
         idx: usize,
     ) {
         let updates = updates_queue.take();
@@ -304,27 +355,30 @@ impl Emu {
 
         JIT::apply_cache_updates()
             .maybe_updates(updates)
-            .cache(&mut register_cache)
+            .cache(register_cache)
             .call();
 
         let updates = register_cache
-            .into_iter()
+            .iter()
             .enumerate()
-            .flat_map(|(idx, value)| Some(idx).zip(value))
+            .flat_map(|(idx, &value)| Some(idx).zip(value))
             .collect::<Vec<_>>();
-        JIT::emit_updates()
-            .builder(fn_builder)
-            .block(basic_block.clif_block)
-            .cache(&mut register_cache)
-            .updates(&updates)
-            .call();
+        if matches!(op.is_block_boundary(), Some(BoundaryType::Function)) {
+            JIT::emit_updates()
+                .builder(fn_builder)
+                .block(basic_block.clif_block)
+                .cache(register_cache)
+                .updates(&updates)
+                .call();
+        }
         let summary = op.emit_ir(
             EmitParams::builder()
                 .ptr_type(ptr_type)
-                .registers(&mut register_cache)
+                .registers(register_cache)
                 .pc(basic_block.address + idx as u32 * 4)
                 .node(node)
                 .cfg(cfg)
+                .deps_map(deps_map)
                 .build(),
             fn_builder,
         );
@@ -334,7 +388,7 @@ impl Emu {
             cpu.pc = pc as u64;
             tracing::info!(cpu.pc);
         }
-        tracing::info!("{:?} compiled {} instructions", basic_block.clif_block, idx);
+        tracing::debug!("{:?} compiled {} instructions", basic_block.clif_block, idx);
     }
     pub fn run(&mut self) -> color_eyre::Result<()> {
         loop {
@@ -470,6 +524,7 @@ fn walk_fn(params: WalkFnParams<'_>) -> color_eyre::Result<WalkFnSummary> {
         pc: initial_pc,
         from_jump: true,
     }];
+    stack.reserve(cfg.node_count());
 
     while let Some(state) = stack.pop() {
         let _span = span!(Level::INFO, "walk_fn", pc = %format!("0x{:04X}", state.pc), node = ?state.current_node.index()).entered();

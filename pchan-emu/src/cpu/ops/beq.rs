@@ -68,32 +68,30 @@ impl Op for BEQ {
     ) -> Option<EmitSummary> {
         use crate::cranelift_bs::*;
 
-        let params = fn_builder.block_params(state.block().clif_block);
-        let params = params
-            .iter()
-            .cloned()
-            .map(BlockArg::Value)
-            .collect::<Box<[_]>>();
-
         let rs = state.emit_get_register(fn_builder, self.rs);
         let rt = state.emit_get_register(fn_builder, self.rt);
 
         let then_block = state.next_at(0);
         let else_block = state.next_at(1);
 
+        let then_params = state.out_params(then_block.clif_block, fn_builder);
+        let else_params = state.out_params(else_block.clif_block, fn_builder);
+
         let cond = fn_builder.ins().icmp(IntCC::Equal, rs, rt);
         tracing::debug!(
-            then = ?then_block.clif_block,
-            else = ?else_block.clif_block,
-            "branch to"
+            "branch: then={:?}({} deps) else={:?}({} deps)",
+            then_block.clif_block,
+            then_params.len(),
+            else_block.clif_block,
+            else_params.len()
         );
 
         fn_builder.ins().brif(
             cond,
             then_block.clif_block,
-            &params,
+            &then_params,
             else_block.clif_block,
-            &params,
+            &else_params,
         );
         None
     }

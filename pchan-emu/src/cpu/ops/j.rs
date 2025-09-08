@@ -46,12 +46,12 @@ impl Op for J {
     fn emit_ir(&self, state: EmitParams, fn_builder: &mut FunctionBuilder) -> Option<EmitSummary> {
         let next_block = state.next_at(0);
 
-        let params = fn_builder.block_params(state.block().clif_block);
-        let params = params
-            .iter()
-            .cloned()
-            .map(BlockArg::Value)
-            .collect::<Box<[_]>>();
+        let params = state.out_params(next_block.clif_block, fn_builder);
+        tracing::debug!(
+            "jumping to {:?} with {} dependencies",
+            next_block.clif_block,
+            params.len()
+        );
         fn_builder.ins().jump(next_block.clif_block, &params);
         Some(
             EmitSummary::builder()
