@@ -69,7 +69,10 @@ pub struct Emu {
     pub boot: Bootloader,
 }
 
-use cranelift::{codegen::ir::Function, prelude::*};
+use cranelift::{
+    codegen::{FinalizedMachExceptionHandler, ir::Function},
+    prelude::*,
+};
 
 #[derive(Debug, Builder, Clone)]
 pub struct JitSummary {
@@ -185,51 +188,82 @@ impl Emu {
             entry_block => Vec::new()
         };
         let mut prev_registers: Option<Vec<usize>> = None;
-        let mut register_cache = [None; 32];
-        while let Some(node) = dfs.next(&blocks.cfg) {
-            let basic_block = &blocks.cfg[node];
-            let cranelift_block = basic_block.clif_block;
-            let _span = info_span!(
-                "jit_comp",
-                node = node.index(),
-                b = ?cranelift_block,
-                ops.len = basic_block.ops.len()
-            )
-            .entered();
-            tracing::debug!("=== compling {:?} === ", cranelift_block);
+        let mut cache_map = hash_map! {
+            entry_idx => [None; 32]
+        };
+        let mut prev_register_cache = entry_idx;
 
-            let prev_reg = prev_registers.clone().unwrap_or_default();
-            let deps = deps_map
-                .entry(blocks.cfg[node].clif_block)
-                .or_insert(prev_reg)
-                .clone();
-
-            if enabled!(Level::INFO) {
-                tracing::debug!("deps: {{");
-                for (block, deps) in deps_map.iter() {
-                    let deps = deps
-                        .iter()
-                        .map(|&reg| format!("${}", REG_STR[reg]))
-                        .collect::<Vec<_>>();
-                    tracing::debug!("    {:?} => {:?}", block, deps);
-                }
-                tracing::debug!("}}");
+        depth_first_search(&blocks.cfg, Some(entry_idx), |event| match event {
+            DfsEvent::TreeEdge(a, b) => {
+                prev_register_cache = a;
             }
+            DfsEvent::BackEdge(a, b) => {
+                prev_register_cache = b;
+            }
+            DfsEvent::Discover(node, _) => {
+                let basic_block = &blocks.cfg[node];
+                let cranelift_block = basic_block.clif_block;
+                let _span = info_span!(
+                    "jit_comp",
+                    node = node.index(),
+                    b = ?cranelift_block,
+                    ops.len = basic_block.ops.len()
+                )
+                .entered();
+                tracing::debug!("=== compling {:?} === ", cranelift_block);
 
-            let summary = Self::emit_block()
-                .fn_builder(&mut fn_builder)
-                .cranelift_block(cranelift_block)
-                .cpu(&mut self.cpu)
-                .ptr_type(ptr_type)
-                .node(node)
-                .cfg(&blocks.cfg)
-                .deps(&deps)
-                .register_cache(&mut register_cache)
-                .deps_map(&deps_map)
-                .call();
+                let prev_register_cache = cache_map.get(&prev_register_cache).unwrap();
+                let mut reg_cache = *cache_map.get(&node).unwrap_or(prev_register_cache);
+                tracing::debug!(
+                    "beginning with {} values in cache",
+                    reg_cache.iter().flatten().count()
+                );
 
-            prev_registers = Some(summary.registers);
-        }
+                // TODO: combine in a single cache struct
+                let prev_reg = prev_register_cache
+                    .iter()
+                    .enumerate()
+                    .flat_map(|(i, value)| value.map(|_| i))
+                    .collect();
+                let deps = deps_map
+                    .entry(blocks.cfg[node].clif_block)
+                    .or_insert(prev_reg)
+                    .clone();
+
+                if enabled!(Level::INFO) {
+                    tracing::debug!("deps: {{");
+                    for (block, deps) in deps_map.iter() {
+                        let deps = deps
+                            .iter()
+                            .map(|&reg| format!("${}", REG_STR[reg]))
+                            .collect::<Vec<_>>();
+                        tracing::debug!("    {:?} => {:?}", block, deps);
+                    }
+                    tracing::debug!("}}");
+                }
+
+                let summary = Self::emit_block()
+                    .fn_builder(&mut fn_builder)
+                    .cranelift_block(cranelift_block)
+                    .cpu(&mut self.cpu)
+                    .ptr_type(ptr_type)
+                    .node(node)
+                    .cfg(&blocks.cfg)
+                    .deps(&deps)
+                    .register_cache(&mut reg_cache)
+                    .deps_map(&deps_map)
+                    .call();
+
+                tracing::debug!(
+                    "ended with {} values in cache",
+                    reg_cache.iter().flatten().count()
+                );
+                cache_map.insert(node, reg_cache);
+                prev_registers = Some(summary.registers);
+                // prev_register_cache = node;
+            }
+            _ => {}
+        });
 
         let _span = info_span!("jit_comp", pc = initial_address).entered();
         fn_builder.seal_all_blocks();
@@ -527,7 +561,7 @@ fn walk_fn(params: WalkFnParams<'_>) -> color_eyre::Result<WalkFnSummary> {
     stack.reserve(cfg.node_count());
 
     while let Some(state) = stack.pop() {
-        let _span = span!(Level::INFO, "walk_fn", pc = %format!("0x{:04X}", state.pc), node = ?state.current_node.index()).entered();
+        let _span = span!(Level::INFO, "walk_fn", pc = %format!("0x{:04X}", state.pc), node = ?state.current_node.index(), stack = stack.len()).entered();
 
         if state.from_jump {
             tracing::debug!(
@@ -581,19 +615,19 @@ fn walk_fn(params: WalkFnParams<'_>) -> color_eyre::Result<WalkFnSummary> {
                 let next_block = recv_block()?;
 
                 // create next node
-                let next_node = splice_block_if_possible(
-                    mapped.to_mut(),
-                    &mut cfg,
-                    new_address,
-                    &state,
-                    recv_block,
-                    op,
-                )?;
+                // let next_node = splice_block_if_possible(
+                //     mapped.to_mut(),
+                //     &mut cfg,
+                //     new_address,
+                //     &state,
+                //     recv_block,
+                //     op,
+                // )?;
 
-                if next_node.is_some() {
-                    tracing::debug!("quick link {:?} -> {:?}", state.current_node, next_node);
-                    continue;
-                }
+                // if next_node.is_some() {
+                //     tracing::debug!("quick link {:?} -> {:?}", state.current_node, next_node);
+                //     continue;
+                // }
 
                 let next_node = cfg.add_node(BasicBlock::new(new_address, next_block));
                 cfg.add_edge(state.current_node, next_node, ());
@@ -617,7 +651,7 @@ fn walk_fn(params: WalkFnParams<'_>) -> color_eyre::Result<WalkFnSummary> {
                 let op = DecodedOp::try_new(op)?;
 
                 tracing::debug!(offsets = ?[lhs, rhs], "potential split in block");
-                let offsets = [lhs, rhs];
+                let offsets = [rhs, lhs];
                 for offset in offsets.into_iter() {
                     let new_address = offset.calculate_address(state.pc);
 
@@ -629,19 +663,19 @@ fn walk_fn(params: WalkFnParams<'_>) -> color_eyre::Result<WalkFnSummary> {
                     let next_block = recv_block()?;
 
                     // create the next node
-                    let next_node = splice_block_if_possible(
-                        mapped.to_mut(),
-                        &mut cfg,
-                        new_address,
-                        &state,
-                        recv_block,
-                        op,
-                    )?;
+                    // let next_node = splice_block_if_possible(
+                    //     mapped.to_mut(),
+                    //     &mut cfg,
+                    //     new_address,
+                    //     &state,
+                    //     recv_block,
+                    //     op,
+                    // )?;
 
-                    if next_node.is_some() {
-                        tracing::debug!("quick link {:?} -> {:?}", state.current_node, next_node);
-                        continue;
-                    }
+                    // if next_node.is_some() {
+                    //     tracing::debug!("quick link {:?} -> {:?}", state.current_node, next_node);
+                    //     continue;
+                    // }
 
                     let next_node = cfg.add_node(BasicBlock::new(new_address, next_block));
                     cfg.add_edge(state.current_node, next_node, ());

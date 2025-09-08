@@ -241,6 +241,7 @@ impl<'a> EmitParams<'a> {
     }
     #[instrument(skip(fn_builder, self))]
     fn out_params(&self, to: Block, fn_builder: &mut FunctionBuilder) -> Vec<BlockArg> {
+        tracing::trace!("{:#?}", self.deps_map);
         let next_block_deps: Option<&[usize]> = self.deps_map.get(&to).map(|vec| vec.as_slice());
         let mut args = self.emulator_params(fn_builder);
         if let Some(next_block_deps) = next_block_deps {

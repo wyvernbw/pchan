@@ -51,20 +51,20 @@ fn block_compile_cache(setup_tracing: (), mut emulator: Emu) -> color_eyre::Resu
     let slice = &emulator.mem.as_ref()[0x0000_2000..(0x000_2000 + 4)];
     assert_eq!(slice, &[0, 1, 2, 3]);
 
-    let mut average = 0.0;
+    let mut average = 0;
     for _ in 0..100 {
         init(&mut emulator);
         let now = Instant::now();
         emulator.step_jit()?;
-        average += now.elapsed().as_millis_f64();
+        average += now.elapsed().as_nanos();
     }
-    average /= 100.0;
+    let average = (average as f64) / 100.0;
 
     let slice = &emulator.mem.as_ref()[0x0000_2000..(0x000_2000 + 4)];
     assert_eq!(slice, &[0, 1, 2, 3]);
 
     tracing::info!("cold run: {}ms", cold_elapsed);
-    tracing::info!("hot run average across 100 runs: {}ms", average);
+    tracing::info!("hot run average across 100 runs: {}ns", average);
 
     Ok(())
 }

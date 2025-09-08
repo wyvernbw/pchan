@@ -135,4 +135,55 @@ mod tests {
 
         Ok(())
     }
+    #[rstest]
+    fn beq_taken(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
+        use crate::cpu::ops::prelude::*;
+
+        let func = [
+            addiu(8, 0, 5),   // $t0 = 5
+            addiu(9, 0, 5),   // $t1 = 5
+            beq(8, 9, 8),     // $t0 == $t1, branch taken
+            addiu(10, 0, 42), // skipped
+            sb(10, 0, 0x40),  // skipped
+            addiu(11, 0, 99), // executed after branch target
+            sb(11, 0, 0x41),  // store 99 at memory[0x41]
+            OpCode(69420),    // halt
+        ];
+
+        emulator
+            .mem
+            .write_all(KSEG0Addr::from_phys(emulator.cpu.pc as u32), func);
+
+        emulator.step_jit()?;
+
+        let slice = &emulator.mem.as_ref()[0x41..0x42];
+        assert_eq!(slice, &[99]);
+
+        Ok(())
+    }
+
+    #[rstest]
+    fn beq_not_taken(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
+        use crate::cpu::ops::prelude::*;
+
+        let func = [
+            addiu(8, 0, 1),   // $t0 = 1
+            addiu(9, 0, 2),   // $t1 = 2
+            beq(8, 9, 8),     // $t0 != $t1, branch not taken
+            addiu(10, 0, 42), // executed because branch not taken
+            sb(10, 0, 0x30),  // store 42 at memory[0x30]
+            OpCode(69420),    // halt
+        ];
+
+        emulator
+            .mem
+            .write_all(KSEG0Addr::from_phys(emulator.cpu.pc as u32), func);
+
+        emulator.step_jit()?;
+
+        let slice = &emulator.mem.as_ref()[0x30..0x31];
+        assert_eq!(slice, &[42]);
+
+        Ok(())
+    }
 }
