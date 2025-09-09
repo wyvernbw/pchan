@@ -22,6 +22,7 @@ pub mod subu;
 pub mod sw;
 
 pub mod prelude {
+    pub use super::OpCode;
     pub use super::addiu::*;
     pub use super::addu::*;
     pub use super::beq::*;

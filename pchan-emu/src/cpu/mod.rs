@@ -6,9 +6,18 @@ use pchan_utils::array;
 mod cranelift_tests;
 pub mod ops;
 
-#[derive(Default)]
+#[derive(Default, derive_more::Debug)]
 #[repr(C)]
 pub struct Cpu {
+    #[debug("{}",
+        gpr
+            .iter()
+            .enumerate()
+            .filter(|(_, x)| x != &&0)
+            .map(|(i, x)| format!("${}={}", REG_STR[i], x))
+            .intersperse(" ".to_string())
+            .collect::<String>()
+    )]
     pub gpr: [u64; 32],
     pub pc: u64,
 }
@@ -29,6 +38,12 @@ impl Display for Cpu {
             gpr
         };
         write!(f, "cpu:gpr[{gpr}]")
+    }
+}
+
+impl Cpu {
+    pub fn clear_registers(&mut self) {
+        self.gpr = [0u64; 32];
     }
 }
 

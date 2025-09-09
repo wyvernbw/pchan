@@ -102,7 +102,7 @@ fn basic_adder(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
     emulator.cpu.gpr[10] = 42;
 
     tracing::info!(%emulator.cpu);
-    adder(&mut emulator.cpu, &mut emulator.mem);
+    adder(&mut emulator.cpu, &mut emulator.mem, true);
     tracing::info!(%emulator.cpu);
     assert_eq!(
         emulator.cpu.gpr[11],

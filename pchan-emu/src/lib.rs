@@ -23,13 +23,9 @@
 // allow unused variables in tests to supress the setup tracing warnings
 #![cfg_attr(test, allow(unused_variables))]
 
-use std::{
-    borrow::Cow,
-    collections::{HashMap, HashSet},
-};
+use std::{borrow::Cow, collections::HashMap};
 
 use bon::{Builder, bon, builder};
-use color_eyre::eyre::eyre;
 use crossbeam::queue::ArrayQueue;
 use petgraph::{
     algo::is_cyclic_directed,
@@ -61,8 +57,9 @@ pub mod cpu;
 pub mod jit;
 pub mod memory;
 
-#[derive(Default)]
+#[derive(Default, derive_more::Debug)]
 pub struct Emu {
+    #[debug(skip)]
     pub mem: Memory,
     pub cpu: Cpu,
     pub jit: JIT,
@@ -97,20 +94,7 @@ impl SummarizeJit for JitSummary {
     }
 }
 
-pub struct EmitBlockSummary {
-    registers: Vec<usize>,
-}
-
-impl EmitBlockSummary {
-    fn new(registers: &[Option<Value>]) -> Self {
-        let registers = registers
-            .iter()
-            .enumerate()
-            .flat_map(|(idx, value)| value.map(|_| idx))
-            .collect();
-        Self { registers }
-    }
-}
+pub struct EmitBlockSummary;
 
 #[bon]
 impl Emu {
@@ -144,7 +128,7 @@ impl Emu {
         }
 
         // collect blocks in function
-        let mut cfg = Graph::default();
+        let mut cfg = Graph::with_capacity(20, 64);
         let entry_idx = cfg.add_node(BasicBlock::new(self.cpu.pc as u32));
         let mut blocks = walk_fn(
             WalkFnParams::builder()
@@ -155,7 +139,7 @@ impl Emu {
                 .build(),
         )?;
 
-        tracing::info!(cfg.cycle = is_cyclic_directed(&blocks.cfg));
+        tracing::trace!(cfg.cycle = is_cyclic_directed(&blocks.cfg));
 
         let mut dfs = Dfs::new(&blocks.cfg, entry_idx);
 
@@ -194,19 +178,18 @@ impl Emu {
         let entry_block = blocks.cfg[entry_idx].clif_block();
 
         let mut deps_map = hash_map! {
-            entry_block => Vec::new()
+            entry_block => Vec::with_capacity(blocks.cfg.node_count())
         };
-        let mut prev_registers: Option<Vec<usize>> = None;
         let mut cache_map = hash_map! {
             entry_idx => [None; 32]
         };
         let mut prev_register_cache = entry_idx;
 
         depth_first_search(&blocks.cfg, Some(entry_idx), |event| match event {
-            DfsEvent::TreeEdge(a, b) => {
+            DfsEvent::TreeEdge(a, _) => {
                 prev_register_cache = a;
             }
-            DfsEvent::BackEdge(a, b) => {
+            DfsEvent::BackEdge(_, b) => {
                 prev_register_cache = b;
             }
             DfsEvent::Discover(node, _) => {
@@ -219,11 +202,11 @@ impl Emu {
                     ops.len = basic_block.ops.len()
                 )
                 .entered();
-                tracing::debug!("=== compling {:?} === ", cranelift_block);
+                tracing::trace!("=== compling {:?} === ", cranelift_block);
 
                 let prev_register_cache = cache_map.get(&prev_register_cache).unwrap();
                 let mut reg_cache = *cache_map.get(&node).unwrap_or(prev_register_cache);
-                tracing::debug!(
+                tracing::trace!(
                     "beginning with {} values in cache",
                     reg_cache.iter().flatten().count()
                 );
@@ -239,19 +222,19 @@ impl Emu {
                     .or_insert(prev_reg)
                     .clone();
 
-                if enabled!(Level::INFO) {
-                    tracing::debug!("deps: {{");
+                if enabled!(Level::TRACE) {
+                    tracing::trace!("deps: {{");
                     for (block, deps) in deps_map.iter() {
                         let deps = deps
                             .iter()
                             .map(|&reg| format!("${}", REG_STR[reg]))
                             .collect::<Vec<_>>();
-                        tracing::debug!("    {:?} => {:?}", block, deps);
+                        tracing::trace!("    {:?} => {:?}", block, deps);
                     }
-                    tracing::debug!("}}");
+                    tracing::trace!("}}");
                 }
 
-                let summary = Self::emit_block()
+                let _ = Self::emit_block()
                     .fn_builder(&mut fn_builder)
                     .cranelift_block(cranelift_block)
                     .cpu(&mut self.cpu)
@@ -263,12 +246,11 @@ impl Emu {
                     .deps_map(&deps_map)
                     .call();
 
-                tracing::debug!(
+                tracing::trace!(
                     "ended with {} values in cache",
                     reg_cache.iter().flatten().count()
                 );
                 cache_map.insert(node, reg_cache);
-                prev_registers = Some(summary.registers);
                 // prev_register_cache = node;
             }
             _ => {}
@@ -283,13 +265,13 @@ impl Emu {
 
         let function = self.jit.get_func(func_id);
         tracing::info!("compiled function: {:?}", function.0);
-        function(&mut self.cpu, &mut self.mem);
+        function(&mut self.cpu, &mut self.mem, true);
         self.jit.block_map.insert(initial_address, function);
 
         Ok(summary)
     }
     pub fn close_function(fn_builder: FunctionBuilder) {
-        tracing::debug!("closing function");
+        tracing::trace!("closing function");
         fn_builder.finalize();
     }
     #[builder]
@@ -318,8 +300,8 @@ impl Emu {
         for (idx, op) in basic_block.ops.iter().enumerate() {
             // tracing::info!(op = %op);
             if op.is_block_boundary().is_some() {
-                tracing::debug!("block boundary");
-                let summary = EmitBlockSummary::new(register_cache);
+                tracing::trace!("block boundary");
+                let summary = EmitBlockSummary;
                 Self::emit_block_boundary()
                     .op(op)
                     .register_cache(register_cache)
@@ -362,22 +344,15 @@ impl Emu {
             }
         }
 
-        let updates = register_cache
-            .iter()
-            .enumerate()
-            .flat_map(|(idx, &value)| Some(idx).zip(value))
-            .collect::<Vec<_>>();
-
         JIT::emit_updates()
             .builder(fn_builder)
             .block(cranelift_block)
             .cache(register_cache)
-            .updates(&updates)
             .call();
 
         fn_builder.ins().return_(&[]);
 
-        EmitBlockSummary::new(register_cache)
+        EmitBlockSummary
     }
 
     #[builder]
@@ -400,18 +375,11 @@ impl Emu {
             .maybe_updates(updates)
             .cache(register_cache)
             .call();
-
-        let updates = register_cache
-            .iter()
-            .enumerate()
-            .flat_map(|(idx, &value)| Some(idx).zip(value))
-            .collect::<Vec<_>>();
         if matches!(op.is_block_boundary(), Some(BoundaryType::Function)) {
             JIT::emit_updates()
                 .builder(fn_builder)
                 .block(basic_block.clif_block())
                 .cache(register_cache)
-                .updates(&updates)
                 .call();
         }
         let summary = op.emit_ir(
@@ -429,7 +397,7 @@ impl Emu {
             && let Some(pc) = summary.pc_update
         {
             cpu.pc = pc as u64;
-            tracing::info!(cpu.pc);
+            tracing::debug!(cpu.pc);
         }
         tracing::debug!("{:?} compiled {} instructions", basic_block.clif_block, idx);
     }
@@ -468,7 +436,7 @@ impl BasicBlock {
         Self {
             address,
             clif_block: None,
-            ops: Vec::default(),
+            ops: Vec::with_capacity(32),
         }
     }
     fn set_block(self, clif_block: Block) -> Self {
@@ -518,13 +486,13 @@ fn walk_fn(params: WalkFnParams<'_>) -> color_eyre::Result<WalkFnSummary> {
         let _span = span!(Level::DEBUG, "walk_fn", pc = %format!("0x{:04X}", state.pc), node = ?state.current_node.index(), stack = stack.len()).entered();
 
         if state.from_jump {
-            tracing::debug!("=== block({:?}) ===", state.current_node);
+            tracing::trace!("=== block({:?}) ===", state.current_node);
         }
 
         let op = mem.read::<u32>(PhysAddr(state.pc));
         let op = cpu::ops::OpCode(op);
         let op = DecodedOp::try_new(op)?;
-        tracing::debug!(pc = state.pc, op = format!("{op}"), "read at");
+        tracing::trace!(pc = state.pc, op = format!("{op}"), "read at");
 
         match op.is_block_boundary() {
             Some(BoundaryType::Function) => {
@@ -573,7 +541,7 @@ fn walk_fn(params: WalkFnParams<'_>) -> color_eyre::Result<WalkFnSummary> {
                 cfg[next_node].ops.push(op);
                 mapped.to_mut().insert(new_address, next_node);
 
-                tracing::debug!("cfg.link {:?} -> {:?}", state.current_node, next_node);
+                tracing::trace!("cfg.link {:?} -> {:?}", state.current_node, next_node);
                 // tracing::debug!(offset, "jump in block");
                 stack.push(State {
                     current_node: next_node,
@@ -589,7 +557,7 @@ fn walk_fn(params: WalkFnParams<'_>) -> color_eyre::Result<WalkFnSummary> {
                 let op = cpu::ops::OpCode(op);
                 let op = DecodedOp::try_new(op)?;
 
-                tracing::debug!(offsets = ?[lhs, rhs], "potential split in block");
+                tracing::trace!(offsets = ?[lhs, rhs], "potential split in block");
                 let offsets = [rhs, lhs];
                 for offset in offsets.into_iter() {
                     let new_address = offset.calculate_address(state.pc);
@@ -619,7 +587,7 @@ fn walk_fn(params: WalkFnParams<'_>) -> color_eyre::Result<WalkFnSummary> {
                     cfg[next_node].ops.push(op);
                     mapped.to_mut().insert(new_address, next_node);
 
-                    tracing::debug!(
+                    tracing::trace!(
                         ?offset,
                         "cfg.link {:?} -> {:?}",
                         state.current_node,

@@ -59,6 +59,7 @@ fn block_compile_cache(setup_tracing: (), mut emulator: Emu) -> color_eyre::Resu
 
     tracing::info!("cold run: {}ms", cold_elapsed);
     tracing::info!("hot run average across 100 runs: {}ms", average);
+    tracing::info!("cache usage: {:?}", emulator.jit.cache_usage());
 
     Ok(())
 }

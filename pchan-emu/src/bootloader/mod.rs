@@ -8,6 +8,7 @@ use thiserror::Error;
 
 use crate::memory::{Memory, buffer, kb};
 
+#[derive(derive_more::Debug)]
 pub struct Bootloader {
     bios_path: PathBuf,
 }
