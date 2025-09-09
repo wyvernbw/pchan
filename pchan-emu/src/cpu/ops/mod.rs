@@ -262,15 +262,15 @@ impl<'a> EmitParams<'a> {
         args
     }
     fn cpu(&self, fn_builder: &mut FunctionBuilder) -> Value {
-        let block = self.block().clif_block;
+        let block = self.block().clif_block();
         fn_builder.block_params(block)[0]
     }
     fn memory(&self, fn_builder: &mut FunctionBuilder) -> Value {
-        let block = self.cfg[self.node].clif_block;
+        let block = self.cfg[self.node].clif_block();
         fn_builder.block_params(block)[1]
     }
     fn emit_get_register(&mut self, fn_builder: &mut FunctionBuilder, id: usize) -> Value {
-        let block = self.block().clif_block;
+        let block = self.block().clif_block();
         match self.registers[id] {
             Some(value) => value,
             None => {
@@ -325,6 +325,9 @@ pub enum BoundaryType {
 
 #[enum_dispatch(DecodedOp)]
 pub trait Op: Sized + Display {
+    fn invalidates_cache_at(&self) -> Option<u64> {
+        None
+    }
     fn is_block_boundary(&self) -> Option<BoundaryType>;
     fn into_opcode(self) -> crate::cpu::ops::OpCode;
     fn emit_ir(&self, state: EmitParams, fn_builder: &mut FunctionBuilder) -> Option<EmitSummary>;

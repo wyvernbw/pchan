@@ -9,14 +9,19 @@ pub const fn kb(value: usize) -> usize {
     value * 1024
 }
 
+pub const fn from_kb(value: usize) -> usize {
+    value / 1024
+}
+
 pub fn buffer(size: usize) -> Box<[u8]> {
     vec![0u8; size].into_boxed_slice()
 }
 
 const MEM_SIZE: usize = kb(2048) + kb(8192) + kb(1) + kb(8) + kb(8) + kb(2048) + kb(512) + 512;
+const MEM_KB: usize = from_kb(MEM_SIZE) + 1;
 
 #[derive(derive_more::Debug)]
-#[debug("memory:{}", MEM_SIZE/1024)]
+#[debug("memory:{}kb", MEM_SIZE/1024)]
 pub struct Memory(Box<[u8]>);
 
 impl AsRef<[u8]> for Memory {

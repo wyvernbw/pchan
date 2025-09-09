@@ -1,6 +1,8 @@
-use std::{collections::HashMap, ptr};
+use std::{
+    collections::{HashMap, HashSet},
+    ptr,
+};
 
-use color_eyre::owo_colors::OwoColorize;
 use cranelift::codegen::ir;
 use tracing::{Level, instrument};
 
@@ -24,8 +26,34 @@ pub struct JIT {
     /// functions.
     pub module: JITModule,
     pub basic_sig: Signature,
-    pub block_map: HashMap<u64, BlockFn>,
+    pub block_map: BlockMap,
+    pub dirty_pages: HashSet<BlockPage>,
     pub func_idx: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Hash)]
+pub struct BlockPage(u64);
+
+impl BlockPage {
+    const SHIFT: u64 = 8;
+
+    pub fn new(address: u64) -> Self {
+        Self(address >> Self::SHIFT)
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct BlockMap(HashMap<BlockPage, HashMap<u64, BlockFn>>);
+
+impl BlockMap {
+    pub fn insert(&mut self, address: u64, func: BlockFn) -> Option<BlockFn> {
+        let page = BlockPage::new(address);
+        self.0.entry(page).or_default().insert(address, func)
+    }
+    pub fn get(&self, address: u64) -> Option<&BlockFn> {
+        let page = BlockPage::new(address);
+        self.0.get(&page).and_then(|map| map.get(&address))
+    }
 }
 
 impl Default for JIT {
@@ -54,8 +82,9 @@ impl Default for JIT {
             data_description,
             ctx,
             basic_sig: sig,
-            block_map: HashMap::default(),
+            block_map: BlockMap::default(),
             func_idx: 1,
+            dirty_pages: HashSet::default(),
         }
     }
 }
@@ -100,8 +129,18 @@ impl JIT {
         FunctionBuilder::new(func, &mut self.fn_builder_ctx)
     }
 
+    pub fn apply_dirty_pages(&mut self, address: u64) {
+        let page = BlockPage::new(address);
+        if self.dirty_pages.remove(&page)
+            && let Some(page) = self.block_map.0.get_mut(&page)
+        {
+            page.clear();
+        }
+    }
+
     pub fn use_cached_function(&self, address: u64, cpu: &mut Cpu, mem: &mut Memory) -> bool {
-        if let Some(function) = self.block_map.get(&address) {
+        if let Some(function) = self.block_map.get(address) {
+            tracing::trace!("invoking cached function {function:?}");
             function(cpu, mem);
             true
         } else {
@@ -219,7 +258,7 @@ impl JIT {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 #[repr(transparent)]
 pub struct BlockFn(pub fn(*mut Cpu, *mut [u8]));
 

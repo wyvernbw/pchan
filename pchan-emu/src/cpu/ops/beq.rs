@@ -74,8 +74,8 @@ impl Op for BEQ {
         let then_block = state.next_at(0);
         let else_block = state.next_at(1);
 
-        let then_params = state.out_params(then_block.clif_block, fn_builder);
-        let else_params = state.out_params(else_block.clif_block, fn_builder);
+        let then_params = state.out_params(then_block.clif_block(), fn_builder);
+        let else_params = state.out_params(else_block.clif_block(), fn_builder);
 
         let cond = fn_builder.ins().icmp(IntCC::Equal, rs, rt);
         tracing::debug!(
@@ -88,9 +88,9 @@ impl Op for BEQ {
 
         fn_builder.ins().brif(
             cond,
-            then_block.clif_block,
+            then_block.clif_block(),
             &then_params,
-            else_block.clif_block,
+            else_block.clif_block(),
             &else_params,
         );
         None

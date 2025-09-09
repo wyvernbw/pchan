@@ -34,17 +34,17 @@ use crossbeam::queue::ArrayQueue;
 use petgraph::{
     algo::is_cyclic_directed,
     prelude::*,
-    visit::{DfsEvent, Topo, depth_first_search},
+    visit::{DfsEvent, depth_first_search},
 };
-use tracing::{Level, Span, debug_span, enabled, info_span, instrument, span, trace_span};
+use tracing::{Level, enabled, info_span, instrument, span, trace_span};
 
 use crate::{
     bootloader::Bootloader,
     cpu::{
         Cpu, REG_STR,
-        ops::{BoundaryType, DecodedOp, EmitParams, MipsOffset, Op},
+        ops::{BoundaryType, DecodedOp, EmitParams, Op},
     },
-    jit::JIT,
+    jit::{BlockPage, JIT},
     memory::{Memory, PhysAddr},
 };
 
@@ -69,10 +69,7 @@ pub struct Emu {
     pub boot: Bootloader,
 }
 
-use cranelift::{
-    codegen::{FinalizedMachExceptionHandler, ir::Function},
-    prelude::*,
-};
+use cranelift::{codegen::ir::Function, prelude::*};
 
 #[derive(Debug, Builder, Clone)]
 pub struct JitSummary {
@@ -136,6 +133,8 @@ impl Emu {
 
         let ptr_type = self.jit.pointer_type();
 
+        self.jit.apply_dirty_pages(initial_address);
+
         // try cache first
         let cached = self
             .jit
@@ -144,35 +143,44 @@ impl Emu {
             return Ok(T::summarize(SummarizeDeps::builder().build()));
         }
 
-        let (func_id, mut func) = self.jit.create_function(initial_address)?;
-        let mut fn_builder = self.jit.create_fn_builder(&mut func);
-
         // collect blocks in function
-        let entry_block = fn_builder.create_block();
-        let block_queue = Self::create_block_queue(&mut fn_builder);
         let mut cfg = Graph::default();
-        let entry_idx = cfg.add_node(BasicBlock::new(self.cpu.pc as u32, entry_block));
-        let blocks = walk_fn(
+        let entry_idx = cfg.add_node(BasicBlock::new(self.cpu.pc as u32));
+        let mut blocks = walk_fn(
             WalkFnParams::builder()
                 .pc(self.cpu.pc as u32)
                 .mem(&self.mem)
                 .cfg(cfg)
                 .current_node_index(entry_idx)
-                .cranelift_block_pool(&block_queue)
-                .current_cranelift_block(entry_block)
                 .build(),
         )?;
+
         tracing::info!(cfg.cycle = is_cyclic_directed(&blocks.cfg));
 
         let mut dfs = Dfs::new(&blocks.cfg, entry_idx);
 
-        if tracing::enabled!(Level::TRACE) {
-            let _span = trace_span!("trace_cfg").entered();
-            while let Some(node) = dfs.next(&blocks.cfg) {
+        for node in blocks.cfg.node_indices() {
+            for op in blocks.cfg[node].ops.iter() {
+                if let Some(address) = op.invalidates_cache_at() {
+                    let page = BlockPage::new(address);
+                    self.jit.dirty_pages.insert(page);
+                }
+            }
+        }
+
+        let (func_id, mut func) = self.jit.create_function(initial_address)?;
+        let mut fn_builder = self.jit.create_fn_builder(&mut func);
+
+        while let Some(node) = dfs.next(&blocks.cfg) {
+            blocks.cfg[node].clif_block = Some(fn_builder.create_block());
+
+            if tracing::enabled!(Level::TRACE) {
+                let _span = trace_span!("trace_cfg").entered();
                 tracing::trace!(cfg.node = ?blocks.cfg[node].clif_block);
                 for op in blocks.cfg[node].ops.iter() {
                     tracing::trace!("    {op}");
                 }
+
                 tracing::trace!(
                     to = ?&blocks.cfg
                         .neighbors_directed(node, Direction::Outgoing)
@@ -180,10 +188,11 @@ impl Emu {
                         .collect::<Vec<_>>(),
                     "    branch"
                 );
-            }
-        };
+            };
+        }
 
-        let mut dfs = Dfs::new(&blocks.cfg, entry_idx);
+        let entry_block = blocks.cfg[entry_idx].clif_block();
+
         let mut deps_map = hash_map! {
             entry_block => Vec::new()
         };
@@ -202,7 +211,7 @@ impl Emu {
             }
             DfsEvent::Discover(node, _) => {
                 let basic_block = &blocks.cfg[node];
-                let cranelift_block = basic_block.clif_block;
+                let cranelift_block = basic_block.clif_block();
                 let _span = info_span!(
                     "jit_comp",
                     node = node.index(),
@@ -226,7 +235,7 @@ impl Emu {
                     .flat_map(|(i, value)| value.map(|_| i))
                     .collect();
                 let deps = deps_map
-                    .entry(blocks.cfg[node].clif_block)
+                    .entry(blocks.cfg[node].clif_block())
                     .or_insert(prev_reg)
                     .clone();
 
@@ -400,7 +409,7 @@ impl Emu {
         if matches!(op.is_block_boundary(), Some(BoundaryType::Function)) {
             JIT::emit_updates()
                 .builder(fn_builder)
-                .block(basic_block.clif_block)
+                .block(basic_block.clif_block())
                 .cache(register_cache)
                 .updates(&updates)
                 .call();
@@ -445,24 +454,32 @@ struct WalkFnParams<'a> {
     current_node_index: Option<NodeIndex<u32>>,
     #[builder(default)]
     mapped: Cow<'a, HashMap<u32, NodeIndex>>,
-    cranelift_block_pool: &'a ArrayQueue<Block>,
-    current_cranelift_block: Block,
 }
 
 #[derive(Debug, Clone)]
 pub struct BasicBlock {
     ops: Vec<DecodedOp>,
     address: u32,
-    clif_block: Block,
+    clif_block: Option<Block>,
 }
 
 impl BasicBlock {
-    fn new(address: u32, clif_block: Block) -> Self {
+    fn new(address: u32) -> Self {
         Self {
             address,
-            clif_block,
+            clif_block: None,
             ops: Vec::default(),
         }
+    }
+    fn set_block(self, clif_block: Block) -> Self {
+        Self {
+            clif_block: Some(clif_block),
+            ..self
+        }
+    }
+    fn clif_block(&self) -> Block {
+        self.clif_block
+            .expect("basic block has no attached cranelift block!")
     }
 }
 
@@ -471,79 +488,16 @@ fn find_first_value(than: u32, mapped: &HashMap<u32, NodeIndex>) -> Option<u32> 
 }
 
 fn walk_fn(params: WalkFnParams<'_>) -> color_eyre::Result<WalkFnSummary> {
-    fn splice_block_if_possible(
-        mapped: &mut HashMap<u32, NodeIndex>,
-        cfg: &mut Graph<BasicBlock, ()>,
-        new_address: u32,
-        state: &State,
-        recv_block: impl Fn() -> Result<Block, color_eyre::eyre::Error>,
-        op: DecodedOp,
-    ) -> color_eyre::Result<Option<NodeIndex>> {
-        if let Some(first_before_new) = find_first_value(new_address, mapped) {
-            let before_next = mapped[&first_before_new];
-            let block_before_next = &cfg[before_next];
-            let space = block_before_next.address
-                ..(block_before_next.address + block_before_next.ops.len() as u32 * 4);
-
-            if space.contains(&new_address) {
-                tracing::debug!(node = before_next.index(), "found splice");
-                // splice block
-                let splice_idx = new_address - block_before_next.address;
-                let splice_idx = splice_idx >> 2;
-                let splice_idx = splice_idx as usize;
-
-                let next_1 = before_next;
-                let next_2 = cfg.add_node(BasicBlock::new(new_address, recv_block()?));
-
-                tracing::debug!("splitting ops...");
-                cfg[next_2].ops = cfg[next_1].ops.split_off(splice_idx);
-                cfg[next_2].ops.push(op);
-                tracing::debug!("done splitting");
-                tracing::debug!("inserting jump instr from {:?} to {:?}...", next_1, next_2);
-                cfg[next_1]
-                    .ops
-                    .push(DecodedOp::J(crate::cpu::ops::j::J { imm: new_address }));
-                cfg[next_1].ops.push(DecodedOp::NOP(crate::cpu::ops::NOP));
-                for node in [next_1, next_2] {
-                    tracing::debug!("{:?} ops after split", node);
-                    for op in cfg[node].ops.iter() {
-                        tracing::debug!("    {op}");
-                    }
-                }
-
-                let edges = cfg
-                    .edges_directed(next_1, Direction::Outgoing)
-                    .map(|e| e.id())
-                    .collect::<Vec<_>>();
-                for edge in edges {
-                    let (_, to) = cfg.edge_endpoints(edge).unwrap();
-                    cfg.remove_edge(edge);
-                    cfg.add_edge(next_2, to, ());
-                }
-                cfg.add_edge(next_1, next_2, ());
-                cfg.add_edge(state.current_node, next_2, ());
-
-                mapped.insert(first_before_new, next_1);
-                mapped.insert(new_address, next_2);
-
-                return Ok(Some(next_2));
-            }
-        };
-        Ok(None)
-    }
-
     let WalkFnParams {
         pc: initial_pc,
         mem,
         mut cfg,
         current_node_index,
         mut mapped,
-        cranelift_block_pool,
-        current_cranelift_block,
     } = params;
 
-    let entry_node = current_node_index
-        .unwrap_or_else(|| cfg.add_node(BasicBlock::new(initial_pc, current_cranelift_block)));
+    let entry_node =
+        current_node_index.unwrap_or_else(|| cfg.add_node(BasicBlock::new(initial_pc)));
 
     mapped.to_mut().insert(initial_pc, entry_node);
 
@@ -558,31 +512,19 @@ fn walk_fn(params: WalkFnParams<'_>) -> color_eyre::Result<WalkFnSummary> {
         pc: initial_pc,
         from_jump: true,
     }];
-    stack.reserve(cfg.node_count());
+    stack.reserve(256);
 
     while let Some(state) = stack.pop() {
-        let _span = span!(Level::INFO, "walk_fn", pc = %format!("0x{:04X}", state.pc), node = ?state.current_node.index(), stack = stack.len()).entered();
+        let _span = span!(Level::DEBUG, "walk_fn", pc = %format!("0x{:04X}", state.pc), node = ?state.current_node.index(), stack = stack.len()).entered();
 
         if state.from_jump {
-            tracing::debug!(
-                "=== block({:?}, {:?}) ===",
-                cfg[state.current_node].clif_block,
-                state.current_node
-            );
+            tracing::debug!("=== block({:?}) ===", state.current_node);
         }
 
         let op = mem.read::<u32>(PhysAddr(state.pc));
         let op = cpu::ops::OpCode(op);
         let op = DecodedOp::try_new(op)?;
         tracing::debug!(pc = state.pc, op = format!("{op}"), "read at");
-
-        let recv_block = || {
-            let Some(next_block) = cranelift_block_pool.pop() else {
-                tracing::warn!("queue ran out of blocks, consider increasing max queue size");
-                return Err(eyre!("queue capacity exceeded"));
-            };
-            Ok(next_block)
-        };
 
         match op.is_block_boundary() {
             Some(BoundaryType::Function) => {
@@ -611,9 +553,6 @@ fn walk_fn(params: WalkFnParams<'_>) -> color_eyre::Result<WalkFnSummary> {
                 let op = cpu::ops::OpCode(op);
                 let op = DecodedOp::try_new(op)?;
 
-                // get block from pool
-                let next_block = recv_block()?;
-
                 // create next node
                 // let next_node = splice_block_if_possible(
                 //     mapped.to_mut(),
@@ -629,7 +568,7 @@ fn walk_fn(params: WalkFnParams<'_>) -> color_eyre::Result<WalkFnSummary> {
                 //     continue;
                 // }
 
-                let next_node = cfg.add_node(BasicBlock::new(new_address, next_block));
+                let next_node = cfg.add_node(BasicBlock::new(new_address));
                 cfg.add_edge(state.current_node, next_node, ());
                 cfg[next_node].ops.push(op);
                 mapped.to_mut().insert(new_address, next_node);
@@ -660,8 +599,6 @@ fn walk_fn(params: WalkFnParams<'_>) -> color_eyre::Result<WalkFnSummary> {
                         continue;
                     }
 
-                    let next_block = recv_block()?;
-
                     // create the next node
                     // let next_node = splice_block_if_possible(
                     //     mapped.to_mut(),
@@ -677,7 +614,7 @@ fn walk_fn(params: WalkFnParams<'_>) -> color_eyre::Result<WalkFnSummary> {
                     //     continue;
                     // }
 
-                    let next_node = cfg.add_node(BasicBlock::new(new_address, next_block));
+                    let next_node = cfg.add_node(BasicBlock::new(new_address));
                     cfg.add_edge(state.current_node, next_node, ());
                     cfg[next_node].ops.push(op);
                     mapped.to_mut().insert(new_address, next_node);

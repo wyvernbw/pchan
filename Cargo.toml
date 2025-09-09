@@ -3,6 +3,13 @@ name = "pchan"
 version = "0.1.0"
 edition = "2024"
 
+[dependencies]
+pchan-macros = { workspace = true }
+pchan-utils = { workspace = true }
+pchan-emu = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
 [workspace]
 resolver = "3"
 members = ["pchan-emu", "pchan-macros", "pchan-utils"]
@@ -10,6 +17,7 @@ members = ["pchan-emu", "pchan-macros", "pchan-utils"]
 [workspace.dependencies]
 pchan-macros = { path = "./pchan-macros"}
 pchan-utils = { path = "./pchan-utils"}
+pchan-emu = { path = "./pchan-emu" }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 color-eyre = "0.6.5"
