@@ -23,7 +23,7 @@
 // allow unused variables in tests to supress the setup tracing warnings
 #![cfg_attr(test, allow(unused_variables))]
 
-use std::{borrow::Cow, collections::HashMap};
+use std::{borrow::Cow, collections::HashMap, mem::offset_of};
 
 use bon::{Builder, bon, builder};
 use crossbeam::queue::ArrayQueue;
@@ -300,7 +300,7 @@ impl Emu {
         for (idx, op) in basic_block.ops.iter().enumerate() {
             // tracing::info!(op = %op);
             if op.is_block_boundary().is_some() {
-                tracing::trace!("block boundary");
+                tracing::trace!(%op, "block boundary");
                 let summary = EmitBlockSummary;
                 Self::emit_block_boundary()
                     .op(op)
@@ -349,6 +349,17 @@ impl Emu {
             .block(cranelift_block)
             .cache(register_cache)
             .call();
+        let cpu_value = fn_builder.block_params(basic_block.clif_block())[0];
+        let pc_value = fn_builder.ins().iconst(
+            types::I64,
+            basic_block.address as i64 + (basic_block.ops.len().saturating_sub(1)) as i64 * 4,
+        );
+        fn_builder.ins().store(
+            MemFlags::new(),
+            pc_value,
+            cpu_value,
+            offset_of!(Cpu, pc) as i32,
+        );
 
         fn_builder.ins().return_(&[]);
 
@@ -376,12 +387,24 @@ impl Emu {
             .cache(register_cache)
             .call();
         if matches!(op.is_block_boundary(), Some(BoundaryType::Function)) {
+            tracing::info!(%op, "function boundary");
             JIT::emit_updates()
                 .builder(fn_builder)
                 .block(basic_block.clif_block())
                 .cache(register_cache)
                 .call();
+            let cpu_value = fn_builder.block_params(basic_block.clif_block())[0];
+            let pc_value = fn_builder
+                .ins()
+                .iconst(types::I64, basic_block.address as i64 + idx as i64 * 4);
+            fn_builder.ins().store(
+                MemFlags::new(),
+                pc_value,
+                cpu_value,
+                offset_of!(Cpu, pc) as i32,
+            );
         }
+        {}
         let summary = op.emit_ir(
             EmitParams::builder()
                 .ptr_type(ptr_type)

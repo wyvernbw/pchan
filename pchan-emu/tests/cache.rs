@@ -75,7 +75,7 @@ fn register_cache_test(setup_tracing: (), mut emulator: Emu) -> color_eyre::Resu
         addiu(8, 9, 69), // ...
         addiu(8, 9, 69),
         addiu(8, 9, 69),
-        addiu(8, 9, 69), // +1 return
+        addiu(8, 9, 69), // +1 return +1 store pc
         OpCode(69420),
     ];
 
@@ -86,7 +86,7 @@ fn register_cache_test(setup_tracing: (), mut emulator: Emu) -> color_eyre::Resu
     let summary = emulator.step_jit_summarize::<JitSummary>()?;
     let op_count = summary.function.unwrap().dfg.num_insts();
 
-    assert!(op_count <= 7 + 2 + 1 + 1);
+    assert!(op_count <= 7 + 2 + 1 + 1 + 1);
 
     Ok(())
 }

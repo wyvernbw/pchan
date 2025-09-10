@@ -103,7 +103,7 @@ mod tests {
     use pretty_assertions::assert_eq;
     use rstest::rstest;
 
-    use crate::{Emu, cpu::ops::OpCode, memory::KSEG0Addr, test_utils::emulator};
+    use crate::{Emu, JitSummary, cpu::ops::OpCode, memory::KSEG0Addr, test_utils::emulator};
 
     #[rstest]
     fn beq_basic_loop(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
@@ -114,7 +114,7 @@ mod tests {
             addiu(10, 0, 4),          // ;  4 $t2 = 4
             addiu(9, 8, 0x0000_2000), // ;  8 calculate address $t1 = $t0 + 0x0000_2000
             sb(8, 9, 0),              // ; 12 store $i at $t1
-            beq(8, 10, 16),           // ; 16 if $t0=$t2(4) jump by 16 to reach 36
+            beq(8, 10, 16),           // ; 16 if $t0=$t2(4) jump by 16+8 to reach 40
             nop(),                    // ; 20
             addiu(8, 8, 1),           // ; 24 $t0 = $t0 + 1
             nop(),                    // ; 28
@@ -128,10 +128,14 @@ mod tests {
             .mem
             .write_all(KSEG0Addr::from_phys(emulator.cpu.pc as u32), func);
 
-        emulator.step_jit()?;
+        let summary = emulator.step_jit_summarize::<JitSummary>()?;
+        if let Some(func) = summary.function {
+            tracing::info!(%func);
+        }
 
         let slice = &emulator.mem.as_ref()[0x0000_2000..(0x000_2000 + 4)];
         assert_eq!(slice, &[0, 1, 2, 3]);
+        assert_eq!(emulator.cpu.pc, 44);
 
         Ok(())
     }
