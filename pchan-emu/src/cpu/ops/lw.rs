@@ -1,5 +1,7 @@
 use std::fmt::Display;
 
+use color_eyre::owo_colors::OwoColorize;
+
 use crate::cpu::REG_STR;
 use crate::cpu::ops::{self, BoundaryType, EmitSummary, Op, TryFromOpcodeErr};
 use crate::cranelift_bs::*;
@@ -51,6 +53,7 @@ impl Op for LW {
 
         // get cached register if possible, otherwise load it in
         let rs = state.emit_get_register(fn_builder, self.rs);
+        let rs = fn_builder.ins().band_imm(rs, 0x1FFF_FFFF);
         let mem_ptr = fn_builder.ins().iadd(mem_ptr, rs);
 
         let rt = fn_builder

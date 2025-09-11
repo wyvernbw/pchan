@@ -310,6 +310,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9996dd9c20929c03360fe0c4edf3594c0cbb94525bdbfa04b6bb639ec14573c7"
 dependencies = [
  "cranelift-codegen",
+ "hashbrown",
  "log",
  "smallvec",
  "target-lexicon",
@@ -350,6 +351,7 @@ dependencies = [
  "anyhow",
  "cranelift-codegen",
  "cranelift-control",
+ "hashbrown",
 ]
 
 [[package]]
