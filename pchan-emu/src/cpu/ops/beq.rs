@@ -23,8 +23,10 @@ pub fn beq(rs: usize, rt: usize, dest: i32) -> OpCode {
     BEQ { rs, rt, imm: dest }.into_opcode()
 }
 
-impl BEQ {
-    pub fn try_from_opcode(opcode: OpCode) -> Result<Self, TryFromOpcodeErr> {
+impl TryFrom<OpCode> for BEQ {
+    type Error = TryFromOpcodeErr;
+
+    fn try_from(opcode: OpCode) -> Result<Self, TryFromOpcodeErr> {
         let opcode = opcode.as_primary(PrimeOp::BEQ)?;
         Ok(BEQ {
             rs: (opcode.bits(21..26)) as usize,
@@ -103,7 +105,7 @@ mod tests {
     use pretty_assertions::assert_eq;
     use rstest::rstest;
 
-    use crate::{Emu, JitSummary, cpu::ops::OpCode, memory::KSEG0Addr, test_utils::emulator};
+    use crate::{Emu, JitSummary, memory::KSEG0Addr, test_utils::emulator};
 
     #[rstest]
     fn beq_basic_loop(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {

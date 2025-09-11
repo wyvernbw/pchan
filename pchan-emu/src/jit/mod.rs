@@ -49,6 +49,7 @@ impl BlockPage {
     }
 }
 
+/// TODO: make it store a module function ref as well
 #[derive(Debug, Clone, Default)]
 pub struct BlockMap(HashMap<BlockPage, HashMap<u64, BlockFn>>);
 

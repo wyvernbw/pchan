@@ -17,8 +17,10 @@ pub struct ADDIU {
     imm: i16,
 }
 
-impl ADDIU {
-    pub fn try_from_opcode(opcode: OpCode) -> Result<Self, TryFromOpcodeErr> {
+impl TryFrom<OpCode> for ADDIU {
+    type Error = TryFromOpcodeErr;
+
+    fn try_from(opcode: OpCode) -> Result<Self, TryFromOpcodeErr> {
         let opcode = opcode.as_primary(PrimeOp::ADDIU)?;
         Ok(ADDIU {
             rt: opcode.bits(16..21) as usize,

@@ -15,8 +15,10 @@ pub struct J {
     pub imm: u32,
 }
 
-impl J {
-    pub fn try_from_opcode(opcode: OpCode) -> Result<Self, TryFromOpcodeErr> {
+impl TryFrom<OpCode> for J {
+    type Error = TryFromOpcodeErr;
+
+    fn try_from(opcode: OpCode) -> Result<Self, TryFromOpcodeErr> {
         let opcode = opcode.as_primary(PrimeOp::J)?;
         Ok(J {
             imm: opcode.bits(0..26) << 2,

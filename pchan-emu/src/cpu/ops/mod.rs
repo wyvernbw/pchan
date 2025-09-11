@@ -18,6 +18,7 @@ pub mod lhu;
 pub mod lw;
 pub mod sb;
 pub mod sh;
+pub mod slt;
 pub mod subu;
 pub mod sw;
 
@@ -35,8 +36,10 @@ pub mod prelude {
     pub use super::nop;
     pub use super::sb::*;
     pub use super::sh::*;
+    pub use super::slt::*;
     pub use super::subu::*;
     pub use super::sw::*;
+    pub use super::{BoundaryType, EmitParams, EmitSummary, Op, PrimeOp, SecOp, TryFromOpcodeErr};
 }
 
 use prelude::*;
@@ -325,7 +328,7 @@ pub enum BoundaryType {
 }
 
 #[enum_dispatch(DecodedOp)]
-pub trait Op: Sized + Display {
+pub trait Op: Sized + Display + TryFrom<OpCode> {
     fn invalidates_cache_at(&self) -> Option<u64> {
         None
     }
@@ -352,6 +355,17 @@ impl Op for NOP {
         _fn_builder: &mut FunctionBuilder,
     ) -> Option<EmitSummary> {
         None
+    }
+}
+
+impl TryFrom<OpCode> for NOP {
+    type Error = String;
+
+    fn try_from(value: OpCode) -> Result<Self, Self::Error> {
+        if value.0 == 0 {
+            return Ok(NOP);
+        }
+        return Err("Not nop".to_string());
     }
 }
 
@@ -382,6 +396,17 @@ impl Op for HaltBlock {
     fn emit_ir(&self, _state: EmitParams, fn_builder: &mut FunctionBuilder) -> Option<EmitSummary> {
         fn_builder.ins().return_(&[]);
         None
+    }
+}
+
+impl TryFrom<OpCode> for HaltBlock {
+    type Error = String;
+
+    fn try_from(value: OpCode) -> Result<Self, Self::Error> {
+        if value.0 == 69420 {
+            return Ok(HaltBlock);
+        }
+        return Err("not halt".to_string());
     }
 }
 
@@ -419,14 +444,15 @@ pub enum DecodedOp {
     J(J),
     #[strum(transparent)]
     BEQ(BEQ),
+    #[strum(transparent)]
+    SLT(SLT),
 }
 
-impl DecodedOp {
-    pub fn new(opcode: OpCode) -> Self {
-        Self::try_new(opcode).unwrap()
-    }
+impl TryFrom<OpCode> for DecodedOp {
+    type Error = impl std::error::Error;
+
     #[instrument(err)]
-    pub fn try_new(opcode: OpCode) -> Result<Self, impl std::error::Error> {
+    fn try_from(opcode: OpCode) -> Result<Self, Self::Error> {
         if opcode.0 == 69420 {
             return Ok(DecodedOp::HaltBlock(HaltBlock));
         }
@@ -434,27 +460,34 @@ impl DecodedOp {
             return Ok(DecodedOp::NOP(NOP));
         }
         match (opcode.primary(), opcode.secondary()) {
-            (PrimeOp::BEQ, _) => BEQ::try_from_opcode(opcode).map(Self::BEQ),
-            (PrimeOp::J, _) => J::try_from_opcode(opcode).map(Self::J),
-            (PrimeOp::ADDIU | PrimeOp::ADDI, _) => ADDIU::try_from_opcode(opcode).map(Self::ADDIU),
+            (PrimeOp::SPECIAL, SecOp::SLT) => SLT::try_from(opcode).map(Self::SLT),
+            (PrimeOp::BEQ, _) => BEQ::try_from(opcode).map(Self::BEQ),
+            (PrimeOp::J, _) => J::try_from(opcode).map(Self::J),
+            (PrimeOp::ADDIU | PrimeOp::ADDI, _) => ADDIU::try_from(opcode).map(Self::ADDIU),
             (PrimeOp::SPECIAL, SecOp::SUBU | SecOp::SUB) => {
                 // TODO: implement SUB separately from SUBU
-                SUBU::try_from_opcode(opcode).map(Self::SUBU)
+                SUBU::try_from(opcode).map(Self::SUBU)
             }
             (PrimeOp::SPECIAL, SecOp::ADDU | SecOp::ADD) => {
                 // TODO: implement ADD separately from ADDU
-                ADDU::try_from_opcode(opcode).map(Self::ADDU)
+                ADDU::try_from(opcode).map(Self::ADDU)
             }
-            (PrimeOp::SW, _) => SW::try_from_opcode(opcode).map(Self::SW),
-            (PrimeOp::SH, _) => SH::try_from_opcode(opcode).map(Self::SH),
-            (PrimeOp::SB, _) => SB::try_from_opcode(opcode).map(Self::SB),
-            (PrimeOp::LW, _) => LW::try_from_opcode(opcode).map(Self::LW),
-            (PrimeOp::LHU, _) => LHU::try_from_opcode(opcode).map(Self::LHU),
-            (PrimeOp::LH, _) => LH::try_from_opcode(opcode).map(Self::LH),
-            (PrimeOp::LB, _) => LB::try_from_opcode(opcode).map(Self::LB),
-            (PrimeOp::LBU, _) => LBU::try_from_opcode(opcode).map(Self::LBU),
+            (PrimeOp::SW, _) => SW::try_from(opcode).map(Self::SW),
+            (PrimeOp::SH, _) => SH::try_from(opcode).map(Self::SH),
+            (PrimeOp::SB, _) => SB::try_from(opcode).map(Self::SB),
+            (PrimeOp::LW, _) => LW::try_from(opcode).map(Self::LW),
+            (PrimeOp::LHU, _) => LHU::try_from(opcode).map(Self::LHU),
+            (PrimeOp::LH, _) => LH::try_from(opcode).map(Self::LH),
+            (PrimeOp::LB, _) => LB::try_from(opcode).map(Self::LB),
+            (PrimeOp::LBU, _) => LBU::try_from(opcode).map(Self::LBU),
             _ => Err(TryFromOpcodeErr::InvalidHeader),
         }
+    }
+}
+
+impl DecodedOp {
+    pub fn new(opcode: OpCode) -> Self {
+        Self::try_from(opcode).unwrap()
     }
 }
 
@@ -482,6 +515,7 @@ mod decode_display_tests {
     #[case::subu(DecodedOp::new(subu(8, 9, 10)), "subu $t0 $t1 $t2")]
     #[case::j(DecodedOp::new(j(0x0040_0000)), "j 0x00400000")]
     #[case::beq(DecodedOp::new(beq(8, 9, 16)), "beq $t0 $t1 0x00000010")]
+    #[case::beq(DecodedOp::new(slt(8, 9, 10)), "slt $t0 $t1 $t2")]
     fn test_display(setup_tracing: (), #[case] op: DecodedOp, #[case] expected: &str) {
         assert_eq!(op.to_string(), expected);
     }

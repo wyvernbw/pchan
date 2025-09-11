@@ -17,8 +17,10 @@ pub fn sw(rt: usize, rs: usize, imm: i16) -> ops::OpCode {
     SW { rt, rs, imm }.into_opcode()
 }
 
-impl SW {
-    pub fn try_from_opcode(opcode: OpCode) -> Result<Self, TryFromOpcodeErr> {
+impl TryFrom<OpCode> for SW {
+    type Error = TryFromOpcodeErr;
+
+    fn try_from(opcode: OpCode) -> Result<Self, TryFromOpcodeErr> {
         let opcode = opcode.as_primary(PrimeOp::SW)?;
         Ok(SW {
             rt: opcode.bits(16..21) as usize,

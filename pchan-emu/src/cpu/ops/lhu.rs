@@ -1,7 +1,7 @@
 use std::fmt::Display;
 
 use crate::cpu::REG_STR;
-use crate::cpu::ops::{self, BoundaryType, EmitSummary, Op, TryFromOpcodeErr};
+use crate::cpu::ops::{self, BoundaryType, EmitSummary, Op, OpCode, TryFromOpcodeErr};
 use crate::cranelift_bs::*;
 
 use super::{EmitParams, PrimeOp};
@@ -19,8 +19,10 @@ pub fn lhu(rt: usize, rs: usize, imm: i16) -> ops::OpCode {
     LHU { rt, rs, imm }.into_opcode()
 }
 
-impl LHU {
-    pub fn try_from_opcode(opcode: ops::OpCode) -> Result<Self, TryFromOpcodeErr> {
+impl TryFrom<OpCode> for LHU {
+    type Error = TryFromOpcodeErr;
+
+    fn try_from(opcode: ops::OpCode) -> Result<Self, TryFromOpcodeErr> {
         let opcode = opcode.as_primary(PrimeOp::LHU)?;
         Ok(LHU {
             rt: opcode.bits(16..21) as usize,
@@ -98,7 +100,7 @@ mod tests {
         );
 
         let op = emulator.mem.read::<ops::OpCode>(PhysAddr(0));
-        tracing::debug!(decoded = ?DecodedOp::try_new(op));
+        tracing::debug!(decoded = ?DecodedOp::try_from(op));
         tracing::debug!("{:08X?}", &emulator.mem.as_ref()[..22]);
 
         emulator.cpu.gpr[9] = 16;

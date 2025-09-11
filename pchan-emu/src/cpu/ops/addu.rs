@@ -17,8 +17,9 @@ pub struct ADDU {
     rt: usize,
 }
 
-impl ADDU {
-    pub fn try_from_opcode(opcode: OpCode) -> Result<Self, TryFromOpcodeErr> {
+impl TryFrom<OpCode> for ADDU {
+    type Error = TryFromOpcodeErr;
+    fn try_from(opcode: OpCode) -> Result<Self, TryFromOpcodeErr> {
         let opcode = opcode.as_secondary(SecOp::ADDU)?;
         Ok(ADDU {
             rs: opcode.bits(21..26) as usize,

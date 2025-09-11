@@ -514,7 +514,7 @@ fn walk_fn(params: WalkFnParams<'_>) -> color_eyre::Result<WalkFnSummary> {
 
         let op = mem.read::<u32>(PhysAddr(state.pc));
         let op = cpu::ops::OpCode(op);
-        let op = DecodedOp::try_new(op)?;
+        let op = DecodedOp::try_from(op)?;
         tracing::trace!(pc = state.pc, op = format!("{op}"), "read at");
 
         match op.is_block_boundary() {
@@ -542,7 +542,7 @@ fn walk_fn(params: WalkFnParams<'_>) -> color_eyre::Result<WalkFnSummary> {
                 // execute instruction after branch
                 let op = mem.read::<u32>(PhysAddr(state.pc + 4));
                 let op = cpu::ops::OpCode(op);
-                let op = DecodedOp::try_new(op)?;
+                let op = DecodedOp::try_from(op)?;
 
                 // create next node
                 // let next_node = splice_block_if_possible(
@@ -578,7 +578,7 @@ fn walk_fn(params: WalkFnParams<'_>) -> color_eyre::Result<WalkFnSummary> {
                 // execute instruction after branch
                 let op = mem.read::<u32>(PhysAddr(state.pc + 4));
                 let op = cpu::ops::OpCode(op);
-                let op = DecodedOp::try_new(op)?;
+                let op = DecodedOp::try_from(op)?;
 
                 tracing::trace!(offsets = ?[lhs, rhs], "potential split in block");
                 let offsets = [rhs, lhs];
