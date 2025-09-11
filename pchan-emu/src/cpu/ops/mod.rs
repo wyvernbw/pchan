@@ -11,20 +11,25 @@ use tracing::instrument;
 pub mod addiu;
 pub mod addu;
 pub mod and;
+pub mod nor;
 pub mod or;
 pub mod slt;
 pub mod slti;
 pub mod sltiu;
 pub mod sltu;
+pub mod xor;
+
 // jumps
 pub mod beq;
 pub mod j;
+
 // loads
 pub mod lb;
 pub mod lbu;
 pub mod lh;
 pub mod lhu;
 pub mod lw;
+
 // stores
 pub mod sb;
 pub mod sh;
@@ -44,6 +49,7 @@ pub mod prelude {
     pub use super::lhu::*;
     pub use super::lw::*;
     pub use super::nop;
+    pub use super::nor::*;
     pub use super::or::*;
     pub use super::sb::*;
     pub use super::sh::*;
@@ -53,6 +59,7 @@ pub mod prelude {
     pub use super::sltu::*;
     pub use super::subu::*;
     pub use super::sw::*;
+    pub use super::xor::*;
     pub use super::{BoundaryType, EmitParams, EmitSummary, Op, PrimeOp, SecOp, TryFromOpcodeErr};
 }
 
@@ -472,6 +479,10 @@ pub enum DecodedOp {
     AND(AND),
     #[strum(transparent)]
     OR(OR),
+    #[strum(transparent)]
+    XOR(XOR),
+    #[strum(transparent)]
+    NOR(NOR),
 }
 
 impl TryFrom<OpCode> for DecodedOp {
@@ -486,6 +497,8 @@ impl TryFrom<OpCode> for DecodedOp {
             return Ok(DecodedOp::NOP(NOP));
         }
         match (opcode.primary(), opcode.secondary()) {
+            (PrimeOp::SPECIAL, SecOp::NOR) => NOR::try_from(opcode).map(Self::NOR),
+            (PrimeOp::SPECIAL, SecOp::XOR) => XOR::try_from(opcode).map(Self::XOR),
             (PrimeOp::SPECIAL, SecOp::OR) => OR::try_from(opcode).map(Self::OR),
             (PrimeOp::SPECIAL, SecOp::AND) => AND::try_from(opcode).map(Self::AND),
             (PrimeOp::SLTIU, _) => SLTIU::try_from(opcode).map(Self::SLTIU),
@@ -552,6 +565,8 @@ mod decode_display_tests {
     #[case::sltiu(DecodedOp::new(sltiu(8, 9, 32)), "sltiu $t0 $t1 32")]
     #[case::and(DecodedOp::new(and(8, 9, 10)), "and $t0 $t1 $t2")]
     #[case::or(DecodedOp::new(or(8, 9, 10)), "or $t0 $t1 $t2")]
+    #[case::xor(DecodedOp::new(xor(8, 9, 10)), "xor $t0 $t1 $t2")]
+    #[case::xor(DecodedOp::new(nor(8, 9, 10)), "nor $t0 $t1 $t2")]
     fn test_display(setup_tracing: (), #[case] op: DecodedOp, #[case] expected: &str) {
         assert_eq!(op.to_string(), expected);
     }
