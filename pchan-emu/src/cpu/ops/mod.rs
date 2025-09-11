@@ -9,6 +9,7 @@ use tracing::instrument;
 
 pub mod addiu;
 pub mod addu;
+pub mod and;
 pub mod beq;
 pub mod j;
 pub mod lb;
@@ -20,6 +21,7 @@ pub mod sb;
 pub mod sh;
 pub mod slt;
 pub mod slti;
+pub mod sltiu;
 pub mod sltu;
 pub mod subu;
 pub mod sw;
@@ -28,6 +30,7 @@ pub mod prelude {
     pub use super::OpCode;
     pub use super::addiu::*;
     pub use super::addu::*;
+    pub use super::and::*;
     pub use super::beq::*;
     pub use super::j::*;
     pub use super::lb::*;
@@ -40,6 +43,7 @@ pub mod prelude {
     pub use super::sh::*;
     pub use super::slt::*;
     pub use super::slti::*;
+    pub use super::sltiu::*;
     pub use super::sltu::*;
     pub use super::subu::*;
     pub use super::sw::*;
@@ -412,7 +416,7 @@ impl TryFrom<OpCode> for HaltBlock {
         if value.0 == 69420 {
             return Ok(HaltBlock);
         }
-        return Err("not halt".to_string());
+        Err("not halt".to_string())
     }
 }
 
@@ -456,6 +460,10 @@ pub enum DecodedOp {
     SLTU(SLTU),
     #[strum(transparent)]
     SLTI(SLTI),
+    #[strum(transparent)]
+    SLTIU(SLTIU),
+    #[strum(transparent)]
+    AND(AND),
 }
 
 impl TryFrom<OpCode> for DecodedOp {
@@ -470,6 +478,8 @@ impl TryFrom<OpCode> for DecodedOp {
             return Ok(DecodedOp::NOP(NOP));
         }
         match (opcode.primary(), opcode.secondary()) {
+            (PrimeOp::SPECIAL, SecOp::AND) => AND::try_from(opcode).map(Self::AND),
+            (PrimeOp::SLTIU, _) => SLTIU::try_from(opcode).map(Self::SLTIU),
             (PrimeOp::SLTI, _) => SLTI::try_from(opcode).map(Self::SLTI),
             (PrimeOp::SPECIAL, SecOp::SLTU) => SLTU::try_from(opcode).map(Self::SLTU),
             (PrimeOp::SPECIAL, SecOp::SLT) => SLT::try_from(opcode).map(Self::SLT),
@@ -530,6 +540,8 @@ mod decode_display_tests {
     #[case::slt(DecodedOp::new(slt(8, 9, 10)), "slt $t0 $t1 $t2")]
     #[case::sltu(DecodedOp::new(sltu(8, 9, 10)), "sltu $t0 $t1 $t2")]
     #[case::slti(DecodedOp::new(slti(8, 9, 32)), "slti $t0 $t1 32")]
+    #[case::sltiu(DecodedOp::new(sltiu(8, 9, 32)), "sltiu $t0 $t1 32")]
+    #[case::and(DecodedOp::new(and(8, 9, 10)), "and $t0 $t1 $t2")]
     fn test_display(setup_tracing: (), #[case] op: DecodedOp, #[case] expected: &str) {
         assert_eq!(op.to_string(), expected);
     }
