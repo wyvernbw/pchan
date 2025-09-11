@@ -19,6 +19,7 @@ pub mod lw;
 pub mod sb;
 pub mod sh;
 pub mod slt;
+pub mod sltu;
 pub mod subu;
 pub mod sw;
 
@@ -37,6 +38,7 @@ pub mod prelude {
     pub use super::sb::*;
     pub use super::sh::*;
     pub use super::slt::*;
+    pub use super::sltu::*;
     pub use super::subu::*;
     pub use super::sw::*;
     pub use super::{BoundaryType, EmitParams, EmitSummary, Op, PrimeOp, SecOp, TryFromOpcodeErr};
@@ -303,6 +305,8 @@ pub struct EmitSummary {
 pub enum TryFromOpcodeErr {
     #[error("invalid header")]
     InvalidHeader,
+    #[error("unknown instruction")]
+    UnknownInstruction,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -446,6 +450,8 @@ pub enum DecodedOp {
     BEQ(BEQ),
     #[strum(transparent)]
     SLT(SLT),
+    #[strum(transparent)]
+    SLTU(SLTU),
 }
 
 impl TryFrom<OpCode> for DecodedOp {
@@ -460,6 +466,7 @@ impl TryFrom<OpCode> for DecodedOp {
             return Ok(DecodedOp::NOP(NOP));
         }
         match (opcode.primary(), opcode.secondary()) {
+            (PrimeOp::SPECIAL, SecOp::SLTU) => SLTU::try_from(opcode).map(Self::SLTU),
             (PrimeOp::SPECIAL, SecOp::SLT) => SLT::try_from(opcode).map(Self::SLT),
             (PrimeOp::BEQ, _) => BEQ::try_from(opcode).map(Self::BEQ),
             (PrimeOp::J, _) => J::try_from(opcode).map(Self::J),
@@ -480,7 +487,7 @@ impl TryFrom<OpCode> for DecodedOp {
             (PrimeOp::LH, _) => LH::try_from(opcode).map(Self::LH),
             (PrimeOp::LB, _) => LB::try_from(opcode).map(Self::LB),
             (PrimeOp::LBU, _) => LBU::try_from(opcode).map(Self::LBU),
-            _ => Err(TryFromOpcodeErr::InvalidHeader),
+            _ => Err(TryFromOpcodeErr::UnknownInstruction),
         }
     }
 }
@@ -515,7 +522,8 @@ mod decode_display_tests {
     #[case::subu(DecodedOp::new(subu(8, 9, 10)), "subu $t0 $t1 $t2")]
     #[case::j(DecodedOp::new(j(0x0040_0000)), "j 0x00400000")]
     #[case::beq(DecodedOp::new(beq(8, 9, 16)), "beq $t0 $t1 0x00000010")]
-    #[case::beq(DecodedOp::new(slt(8, 9, 10)), "slt $t0 $t1 $t2")]
+    #[case::slt(DecodedOp::new(slt(8, 9, 10)), "slt $t0 $t1 $t2")]
+    #[case::sltu(DecodedOp::new(sltu(8, 9, 10)), "sltu $t0 $t1 $t2")]
     fn test_display(setup_tracing: (), #[case] op: DecodedOp, #[case] expected: &str) {
         assert_eq!(op.to_string(), expected);
     }
