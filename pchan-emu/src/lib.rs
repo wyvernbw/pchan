@@ -38,9 +38,9 @@ use crate::{
     bootloader::Bootloader,
     cpu::{
         Cpu, REG_STR,
-        ops::{BoundaryType, CachedValue, DecodedOp, EmitParams, Op},
+        ops::{BoundaryType, CachedValue, DecodedOp, EmitParams, EmitSummary, Op},
     },
-    jit::{BlockPage, JIT},
+    jit::{BlockPage, CacheUpdates, CacheUpdatesRegisters, JIT},
     memory::{Memory, PhysAddr},
 };
 
@@ -66,7 +66,10 @@ pub struct Emu {
     pub boot: Bootloader,
 }
 
-use cranelift::{codegen::ir::Function, prelude::*};
+use cranelift::{
+    codegen::{bitset::ScalarBitSet, ir::Function},
+    prelude::*,
+};
 
 #[derive(Debug, Builder, Clone)]
 pub struct JitSummary {
@@ -95,6 +98,46 @@ impl SummarizeJit for JitSummary {
 }
 
 pub struct EmitBlockSummary;
+
+#[derive(Default, Clone, Debug)]
+struct EntryCache {
+    registers: [Option<CachedValue>; 32],
+    const_one: Option<Value>,
+    const_zero_i64: Option<Value>,
+    hi: Option<CachedValue>,
+    lo: Option<CachedValue>,
+    hilo: Option<CachedValue>,
+}
+
+#[derive(Default, Clone, Debug)]
+struct CacheDependency {
+    registers: ScalarBitSet<u32>,
+    hi: bool,
+    lo: bool,
+}
+
+impl CacheDependency {
+    fn new() -> Self {
+        CacheDependency {
+            registers: ScalarBitSet::default(),
+            hi: false,
+            lo: false,
+        }
+    }
+    fn from_cache_entry(entry: &EntryCache) -> Self {
+        let mut set = ScalarBitSet::default();
+        for (idx, value) in entry.registers.iter().enumerate() {
+            if value.is_some() {
+                set.insert(idx as u8);
+            }
+        }
+        CacheDependency {
+            registers: set,
+            hi: entry.hi.is_some() || entry.hilo.is_some(),
+            lo: entry.lo.is_some() || entry.hilo.is_some(),
+        }
+    }
+}
 
 #[bon]
 impl Emu {
@@ -178,10 +221,11 @@ impl Emu {
         let entry_block = blocks.cfg[entry_idx].clif_block();
 
         let mut deps_map = hash_map! {
-            entry_block => Vec::with_capacity(blocks.cfg.node_count())
+            entry_block => CacheDependency::new()
         };
+
         let mut cache_map = hash_map! {
-            entry_idx => [None; 32]
+            entry_idx => EntryCache::default()
         };
         let mut prev_register_cache = entry_idx;
 
@@ -205,29 +249,24 @@ impl Emu {
                 tracing::trace!("=== compling {:?} === ", cranelift_block);
 
                 let prev_register_cache = cache_map.get(&prev_register_cache).unwrap();
-                let mut reg_cache = *cache_map.get(&node).unwrap_or(prev_register_cache);
+                let mut reg_cache = cache_map.get(&node).unwrap_or(prev_register_cache).clone();
                 tracing::trace!(
                     "beginning with {} values in cache",
-                    reg_cache.iter().flatten().count()
+                    reg_cache.registers.iter().flatten().count()
                 );
 
-                // TODO: combine in a single cache struct
-                let prev_reg = prev_register_cache
-                    .iter()
-                    .enumerate()
-                    .flat_map(|(i, value)| value.map(|_| i))
-                    .collect();
                 let deps = deps_map
                     .entry(blocks.cfg[node].clif_block())
-                    .or_insert(prev_reg)
+                    .or_insert(CacheDependency::from_cache_entry(prev_register_cache))
                     .clone();
 
                 if enabled!(Level::TRACE) {
                     tracing::trace!("deps: {{");
                     for (block, deps) in deps_map.iter() {
                         let deps = deps
+                            .registers
                             .iter()
-                            .map(|&reg| format!("${}", REG_STR[reg]))
+                            .map(|reg| format!("${}", REG_STR[reg as usize]))
                             .collect::<Vec<_>>();
                         tracing::trace!("    {:?} => {:?}", block, deps);
                     }
@@ -248,7 +287,7 @@ impl Emu {
 
                 tracing::trace!(
                     "ended with {} values in cache",
-                    reg_cache.iter().flatten().count()
+                    reg_cache.registers.iter().flatten().count()
                 );
                 cache_map.insert(node, reg_cache);
                 // prev_register_cache = node;
@@ -282,22 +321,23 @@ impl Emu {
         ptr_type: types::Type,
         cfg: &Graph<BasicBlock, ()>,
         node: NodeIndex,
-        register_cache: &mut [Option<CachedValue>; 32],
-        deps: &[usize],
-        deps_map: &HashMap<Block, Vec<usize>>,
+        register_cache: &mut EntryCache,
+        deps: &CacheDependency,
+        deps_map: &HashMap<Block, CacheDependency>,
         cpu: &mut Cpu,
     ) -> EmitBlockSummary {
         // fn_builder.seal_block(cranelift_block);
         fn_builder.switch_to_block(cranelift_block);
         fn_builder.append_block_param(cranelift_block, ptr_type);
         fn_builder.append_block_param(cranelift_block, ptr_type);
-        for reg in deps {
-            register_cache[*reg] = Some(CachedValue {
+        for reg in deps.registers.iter() {
+            let reg = reg as usize;
+            register_cache.registers[reg] = Some(CachedValue {
                 value: fn_builder.append_block_param(cranelift_block, types::I32),
                 dirty: false,
             });
         }
-        let mut updates_queue: Option<Vec<(usize, CachedValue)>> = None;
+        let mut summary_queue: Option<EmitSummary> = None;
         let basic_block = &cfg[node];
 
         for (idx, op) in basic_block.ops.iter().enumerate() {
@@ -309,7 +349,7 @@ impl Emu {
                     .op(op)
                     .register_cache(register_cache)
                     .fn_builder(fn_builder)
-                    .maybe_updates_queue(updates_queue.as_deref())
+                    .maybe_summary_queue(summary_queue.as_ref())
                     .cpu(cpu)
                     .ptr_type(ptr_type)
                     .idx(idx)
@@ -322,7 +362,7 @@ impl Emu {
             let summary = op.emit_ir(
                 EmitParams::builder()
                     .ptr_type(ptr_type)
-                    .registers(register_cache)
+                    .cache(register_cache)
                     .pc(basic_block.address + idx as u32 * 4)
                     .node(node)
                     .cfg(cfg)
@@ -331,19 +371,23 @@ impl Emu {
                 fn_builder,
             );
 
-            let mut flush_updates = |updates| {
+            if let Some(summary) = summary_queue.take() {
+                // flush_updates();
                 JIT::apply_cache_updates()
-                    .maybe_updates(updates)
+                    .updates(CacheUpdates::new(&summary, CacheUpdatesRegisters::Delayed))
                     .cache(register_cache)
                     .call();
-            };
-
-            let updates = updates_queue.take();
-            flush_updates(updates.as_deref());
+            }
 
             if let Some(summary) = summary {
-                flush_updates(Some(&summary.register_updates));
-                updates_queue = Some(summary.delayed_register_updates);
+                JIT::apply_cache_updates()
+                    .updates(CacheUpdates::new(
+                        &summary,
+                        CacheUpdatesRegisters::Immediate,
+                    ))
+                    .cache(register_cache)
+                    .call();
+                summary_queue = Some(summary);
             }
         }
 
@@ -373,23 +417,24 @@ impl Emu {
     #[builder]
     pub fn emit_block_boundary(
         op: &DecodedOp,
-        mut updates_queue: Option<&[(usize, CachedValue)]>,
-        register_cache: &mut [Option<CachedValue>; 32],
+        mut summary_queue: Option<&EmitSummary>,
+        register_cache: &mut EntryCache,
         fn_builder: &mut FunctionBuilder<'_>,
         cpu: &mut Cpu,
         ptr_type: types::Type,
         node: NodeIndex,
         cfg: &Graph<BasicBlock, ()>,
-        deps_map: &HashMap<Block, Vec<usize>>,
+        deps_map: &HashMap<Block, CacheDependency>,
         idx: usize,
     ) {
-        let updates = updates_queue.take();
         let basic_block = &cfg[node];
 
-        JIT::apply_cache_updates()
-            .maybe_updates(updates)
-            .cache(register_cache)
-            .call();
+        if let Some(summary) = summary_queue.take() {
+            JIT::apply_cache_updates()
+                .updates(CacheUpdates::new(summary, CacheUpdatesRegisters::Delayed))
+                .cache(register_cache)
+                .call();
+        }
         if matches!(op.is_block_boundary(), Some(BoundaryType::Function)) {
             tracing::info!(%op, "function boundary");
             JIT::emit_updates()
@@ -413,7 +458,7 @@ impl Emu {
         let summary = op.emit_ir(
             EmitParams::builder()
                 .ptr_type(ptr_type)
-                .registers(register_cache)
+                .cache(register_cache)
                 .pc(basic_block.address + idx as u32 * 4)
                 .node(node)
                 .cfg(cfg)

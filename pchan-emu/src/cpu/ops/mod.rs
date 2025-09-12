@@ -1,4 +1,4 @@
-use crate::{BasicBlock, cranelift_bs::*, jit::JIT};
+use crate::{BasicBlock, CacheDependency, EntryCache, cranelift_bs::*, jit::JIT};
 use bon::Builder;
 use enum_dispatch::enum_dispatch;
 use pchan_macros::OpCode;
@@ -13,6 +13,7 @@ pub mod addu;
 pub mod and;
 pub mod andi;
 pub mod lui;
+pub mod mult;
 pub mod nor;
 pub mod or;
 pub mod ori;
@@ -60,6 +61,7 @@ pub mod prelude {
     pub use super::lhu::*;
     pub use super::lui::*;
     pub use super::lw::*;
+    pub use super::mult::*;
     pub use super::nop;
     pub use super::nor::*;
     pub use super::or::*;
@@ -265,12 +267,11 @@ pub struct CachedValue {
 #[derive(Builder)]
 pub struct EmitParams<'a> {
     ptr_type: types::Type,
-    registers: &'a mut [Option<CachedValue>; 32],
-    const_one: Option<Value>,
+    cache: &'a mut EntryCache,
     node: NodeIndex,
     pc: u32,
     cfg: &'a Graph<BasicBlock, ()>,
-    deps_map: &'a HashMap<Block, Vec<usize>>,
+    deps_map: &'a HashMap<Block, CacheDependency>,
 }
 
 impl<'a> EmitParams<'a> {
@@ -294,18 +295,19 @@ impl<'a> EmitParams<'a> {
     #[instrument(skip(fn_builder, self))]
     fn out_params(&self, to: Block, fn_builder: &mut FunctionBuilder) -> Vec<BlockArg> {
         tracing::trace!("{:#?}", self.deps_map);
-        let next_block_deps: Option<&[usize]> = self.deps_map.get(&to).map(|vec| vec.as_slice());
+        let next_block_deps: Option<_> = self.deps_map.get(&to).map(|dep| dep.registers);
         let mut args = self.emulator_params(fn_builder);
         if let Some(next_block_deps) = next_block_deps {
             let iter = next_block_deps
                 .iter()
-                .flat_map(|&register| self.registers[register])
+                .flat_map(|register| self.cache.registers[register as usize])
                 .map(|value| value.value)
                 .map(BlockArg::Value);
             args.extend(iter);
         } else {
             args.extend(
-                self.registers
+                self.cache
+                    .registers
                     .iter()
                     .flatten()
                     .cloned()
@@ -324,21 +326,59 @@ impl<'a> EmitParams<'a> {
         fn_builder.block_params(block)[1]
     }
     fn emit_get_one(&mut self, fn_builder: &mut FunctionBuilder) -> Value {
-        match self.const_one {
+        match self.cache.const_one {
             Some(one) => one,
             None => {
                 let one = fn_builder.ins().iconst(types::I32, 1);
-                self.const_one = Some(one);
+                self.cache.const_one = Some(one);
                 one
+            }
+        }
+    }
+    fn emit_get_zero_i64(&mut self, fn_builder: &mut FunctionBuilder) -> Value {
+        match self.cache.const_zero_i64 {
+            Some(zero) => zero,
+            None => {
+                let zero = fn_builder.ins().iconst(types::I64, 0);
+                self.cache.const_zero_i64 = Some(zero);
+                zero
             }
         }
     }
     fn emit_get_zero(&mut self, fn_builder: &mut FunctionBuilder) -> Value {
         self.emit_get_register(fn_builder, 0)
     }
+    fn emit_get_hi(&mut self, fn_builder: &mut FunctionBuilder) -> Value {
+        let block = self.block().clif_block();
+        match self.cache.hi {
+            Some(hi) => hi.value,
+            None => {
+                let hi = JIT::emit_load_hi().builder(fn_builder).block(block).call();
+                self.cache.hi = Some(CachedValue {
+                    dirty: false,
+                    value: hi,
+                });
+                hi
+            }
+        }
+    }
+    fn emit_get_lo(&mut self, fn_builder: &mut FunctionBuilder) -> Value {
+        let block = self.block().clif_block();
+        match self.cache.lo {
+            Some(lo) => lo.value,
+            None => {
+                let lo = JIT::emit_load_lo().builder(fn_builder).block(block).call();
+                self.cache.lo = Some(CachedValue {
+                    dirty: false,
+                    value: lo,
+                });
+                lo
+            }
+        }
+    }
     fn emit_get_register(&mut self, fn_builder: &mut FunctionBuilder, id: usize) -> Value {
         let block = self.block().clif_block();
-        match self.registers[id] {
+        match self.cache.registers[id] {
             Some(value) => value.value,
             None => {
                 let value = JIT::emit_load_reg()
@@ -346,7 +386,7 @@ impl<'a> EmitParams<'a> {
                     .block(block)
                     .idx(id)
                     .call();
-                self.registers[id] = Some(CachedValue {
+                self.cache.registers[id] = Some(CachedValue {
                     dirty: false,
                     value,
                 });
@@ -363,6 +403,21 @@ pub struct EmitSummary {
     #[builder(field = Vec::with_capacity(32))]
     pub delayed_register_updates: Vec<(usize, CachedValue)>,
     pub pc_update: Option<u32>,
+    #[builder(with = |value: Value| CachedValue {
+        dirty: true,
+        value
+    })]
+    pub hi: Option<CachedValue>,
+    #[builder(with = |value: Value| CachedValue {
+        dirty: true,
+        value
+    })]
+    pub lo: Option<CachedValue>,
+    #[builder(with = |value: Value| CachedValue {
+        dirty: true,
+        value
+    })]
+    pub hilo: Option<CachedValue>,
 }
 
 impl<S: emit_summary_builder::State> EmitSummaryBuilder<S> {
@@ -455,7 +510,7 @@ impl TryFrom<OpCode> for NOP {
         if value.0 == 0 {
             return Ok(NOP);
         }
-        return Err("Not nop".to_string());
+        Err("Not nop".to_string())
     }
 }
 
@@ -570,6 +625,8 @@ pub enum DecodedOp {
     SRA(SRA),
     #[strum(transparent)]
     LUI(LUI),
+    #[strum(transparent)]
+    MULT(MULT),
 }
 
 impl TryFrom<OpCode> for DecodedOp {
@@ -584,6 +641,7 @@ impl TryFrom<OpCode> for DecodedOp {
             return Ok(DecodedOp::NOP(NOP));
         }
         match (opcode.primary(), opcode.secondary()) {
+            (PrimeOp::SPECIAL, SecOp::MULT) => MULT::try_from(opcode).map(Self::MULT),
             (PrimeOp::LUI, _) => LUI::try_from(opcode).map(Self::LUI),
             (PrimeOp::SPECIAL, SecOp::SRA) => SRA::try_from(opcode).map(Self::SRA),
             (PrimeOp::SPECIAL, SecOp::SRL) => SRL::try_from(opcode).map(Self::SRL),
@@ -674,6 +732,7 @@ mod decode_display_tests {
     #[case::srl(DecodedOp::new(srl(8, 9, 4)), "srl $t0 $t1 4")]
     #[case::sra(DecodedOp::new(sra(8, 9, 4)), "sra $t0 $t1 4")]
     #[case::lui(DecodedOp::new(lui(8, 32)), "lui $t0 32")]
+    #[case::mult(DecodedOp::new(mult(8, 9)), "mult $t0 $t1")]
     fn test_display(setup_tracing: (), #[case] op: DecodedOp, #[case] expected: &str) {
         assert_eq!(op.to_string(), expected);
     }

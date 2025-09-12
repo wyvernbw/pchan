@@ -7,7 +7,11 @@ use cranelift::codegen::ir;
 use tracing::{Instrument, Level, instrument};
 
 use crate::{
-    cpu::{Cpu, REG_STR, ops::CachedValue},
+    EntryCache,
+    cpu::{
+        Cpu, REG_STR,
+        ops::{CachedValue, EmitSummary},
+    },
     cranelift_bs::*,
     memory::Memory,
 };
@@ -93,6 +97,37 @@ impl Default for JIT {
             block_map: BlockMap::default(),
             func_idx: 1,
             dirty_pages: HashSet::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct CacheUpdates<'a> {
+    registers: Option<&'a [(usize, CachedValue)]>,
+    hi: &'a Option<CachedValue>,
+    lo: &'a Option<CachedValue>,
+    hilo: &'a Option<CachedValue>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum CacheUpdatesRegisters {
+    Immediate,
+    Delayed,
+}
+
+impl<'a> CacheUpdates<'a> {
+    pub fn new(
+        emit_summary: &'a EmitSummary,
+        registers: CacheUpdatesRegisters,
+    ) -> CacheUpdates<'a> {
+        CacheUpdates {
+            registers: match registers {
+                CacheUpdatesRegisters::Immediate => Some(&emit_summary.register_updates),
+                CacheUpdatesRegisters::Delayed => Some(&emit_summary.delayed_register_updates),
+            },
+            hi: &emit_summary.hi,
+            lo: &emit_summary.lo,
+            hilo: &emit_summary.hilo,
         }
     }
 }
@@ -202,6 +237,28 @@ impl JIT {
     }
 
     #[builder]
+    #[instrument(skip(builder, block))]
+    pub fn emit_load_hi(builder: &mut FunctionBuilder<'_>, block: Block) -> Value {
+        let block_state = builder.block_params(block)[0];
+        const HI: usize = core::mem::offset_of!(Cpu, hilo);
+
+        builder
+            .ins()
+            .load(types::I32, MemFlags::new(), block_state, HI as i32)
+    }
+
+    #[builder]
+    #[instrument(skip(builder, block))]
+    pub fn emit_load_lo(builder: &mut FunctionBuilder<'_>, block: Block) -> Value {
+        let block_state = builder.block_params(block)[0];
+        const LO: usize = core::mem::offset_of!(Cpu, hilo) + size_of::<u32>();
+
+        builder
+            .ins()
+            .load(types::I32, MemFlags::new(), block_state, LO as i32)
+    }
+
+    #[builder]
     #[instrument(skip(builder, block), fields(reg=REG_STR[idx], value))]
     pub fn emit_store_reg(
         builder: &mut FunctionBuilder<'_>,
@@ -221,17 +278,55 @@ impl JIT {
             .store(MemFlags::new(), value, block_state, offset);
     }
 
+    #[instrument(skip(builder, block))]
+    pub fn emit_store_hi(builder: &mut FunctionBuilder<'_>, block: Block, value: Value) {
+        const HI: usize = const { core::mem::offset_of!(Cpu, hilo) };
+        let block_state = builder.block_params(block)[0];
+        tracing::trace!("stored");
+        builder
+            .ins()
+            .store(MemFlags::new(), value, block_state, HI as i32);
+    }
+
+    #[instrument(skip(builder, block))]
+    pub fn emit_store_lo(builder: &mut FunctionBuilder<'_>, block: Block, value: Value) {
+        const LO: usize = const { core::mem::offset_of!(Cpu, hilo) + size_of::<u32>() };
+        let block_state = builder.block_params(block)[0];
+        tracing::trace!("stored");
+        builder
+            .ins()
+            .store(MemFlags::new(), value, block_state, LO as i32);
+    }
+
+    #[instrument(skip(builder, block))]
+    pub fn emit_store_hilo(builder: &mut FunctionBuilder<'_>, block: Block, value: Value) {
+        debug_assert_eq!(
+            builder.func.dfg.value_type(value),
+            types::I64,
+            "expected an i64 value!"
+        );
+        JIT::emit_store_hi(builder, block, value);
+    }
+
     #[builder]
     #[instrument(skip_all)]
-    pub fn apply_cache_updates(
-        updates: Option<&[(usize, CachedValue)]>,
-        cache: &mut [Option<CachedValue>; 32],
-    ) {
-        let Some(updates) = updates else {
-            return;
-        };
-        for (id, value) in updates.iter() {
-            cache[*id] = Some(*value);
+    pub fn apply_cache_updates<'a, 'b>(updates: CacheUpdates<'a>, cache: &'b mut EntryCache) {
+        if let Some(registers) = updates.registers {
+            for (id, value) in registers.iter() {
+                cache.registers[*id] = Some(*value);
+            }
+        }
+        // DONE: apply updates to hi and lo
+        if let Some(hilo) = updates.hilo
+            && hilo.dirty
+        {
+            cache.hilo = Some(*hilo);
+        }
+        if let Some(hi) = updates.hi {
+            cache.hi = Some(*hi);
+        }
+        if let Some(lo) = updates.lo {
+            cache.lo = Some(*lo);
         }
         tracing::trace!("applied cache");
     }
@@ -244,12 +339,13 @@ impl JIT {
     pub fn emit_updates(
         builder: &mut FunctionBuilder<'_>,
         block: Block,
-        cache: Option<&mut [Option<CachedValue>; 32]>,
+        cache: Option<&mut EntryCache>,
     ) {
         let Some(cache) = cache else {
             return;
         };
         cache
+            .registers
             .iter()
             .enumerate()
             // skip $zero
@@ -264,6 +360,23 @@ impl JIT {
                     .value(value.value)
                     .call();
             });
+        // DONE: emit store hi and lo
+        if let Some(hilo) = cache.hilo
+            && hilo.dirty
+        {
+            JIT::emit_store_hilo(builder, block, hilo.value);
+        } else {
+            if let Some(hi) = cache.hi
+                && hi.dirty
+            {
+                JIT::emit_store_hi(builder, block, hi.value);
+            }
+            if let Some(lo) = cache.lo
+                && lo.dirty
+            {
+                JIT::emit_store_lo(builder, block, lo.value);
+            }
+        }
         tracing::trace!("done");
     }
 

@@ -20,6 +20,7 @@ pub struct Cpu {
     )]
     pub gpr: [u32; 32],
     pub pc: u32,
+    pub hilo: u64,
 }
 
 impl Display for Cpu {
