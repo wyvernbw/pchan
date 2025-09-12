@@ -11,6 +11,7 @@ use tracing::instrument;
 pub mod addiu;
 pub mod addu;
 pub mod and;
+pub mod andi;
 pub mod nor;
 pub mod or;
 pub mod slt;
@@ -41,6 +42,7 @@ pub mod prelude {
     pub use super::addiu::*;
     pub use super::addu::*;
     pub use super::and::*;
+    pub use super::andi::*;
     pub use super::beq::*;
     pub use super::j::*;
     pub use super::lb::*;
@@ -483,6 +485,8 @@ pub enum DecodedOp {
     XOR(XOR),
     #[strum(transparent)]
     NOR(NOR),
+    #[strum(transparent)]
+    ANDI(ANDI),
 }
 
 impl TryFrom<OpCode> for DecodedOp {
@@ -497,6 +501,7 @@ impl TryFrom<OpCode> for DecodedOp {
             return Ok(DecodedOp::NOP(NOP));
         }
         match (opcode.primary(), opcode.secondary()) {
+            (PrimeOp::ANDI, _) => ANDI::try_from(opcode).map(Self::ANDI),
             (PrimeOp::SPECIAL, SecOp::NOR) => NOR::try_from(opcode).map(Self::NOR),
             (PrimeOp::SPECIAL, SecOp::XOR) => XOR::try_from(opcode).map(Self::XOR),
             (PrimeOp::SPECIAL, SecOp::OR) => OR::try_from(opcode).map(Self::OR),
@@ -566,7 +571,8 @@ mod decode_display_tests {
     #[case::and(DecodedOp::new(and(8, 9, 10)), "and $t0 $t1 $t2")]
     #[case::or(DecodedOp::new(or(8, 9, 10)), "or $t0 $t1 $t2")]
     #[case::xor(DecodedOp::new(xor(8, 9, 10)), "xor $t0 $t1 $t2")]
-    #[case::xor(DecodedOp::new(nor(8, 9, 10)), "nor $t0 $t1 $t2")]
+    #[case::nor(DecodedOp::new(nor(8, 9, 10)), "nor $t0 $t1 $t2")]
+    #[case::andi(DecodedOp::new(andi(8, 9, 4)), "andi $t0 $t1 4")]
     fn test_display(setup_tracing: (), #[case] op: DecodedOp, #[case] expected: &str) {
         assert_eq!(op.to_string(), expected);
     }
