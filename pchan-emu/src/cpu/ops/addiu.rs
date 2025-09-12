@@ -59,19 +59,33 @@ impl Op for ADDIU {
         fn_builder: &mut FunctionBuilder,
     ) -> Option<EmitSummary> {
         use crate::cranelift_bs::*;
+
+        // case 1: 0 + x = x
+        // => 1 iconst instruction
         if self.rs == 0 {
             let rt = fn_builder.ins().iconst(types::I64, self.imm as i64);
             return Some(
                 EmitSummary::builder()
-                    .register_updates(vec![(self.rt, rt)].into())
+                    .register_updates([(self.rt, rt)])
                     .build(),
             );
         }
+
+        // x + 0 = x
+        // => 1 iconst instruction or 0 instructions if rs is cached
         let rs = state.emit_get_register(fn_builder, self.rs);
+        if self.imm == 0 {
+            return Some(
+                EmitSummary::builder()
+                    .register_updates([(self.rt, rs)])
+                    .build(),
+            );
+        }
+
         let rt = fn_builder.ins().iadd_imm(rs, self.imm as i64);
         Some(
             EmitSummary::builder()
-                .register_updates(vec![(self.rt, rt)].into())
+                .register_updates([(self.rt, rt)])
                 .build(),
         )
     }
@@ -88,7 +102,8 @@ mod tests {
     use pretty_assertions::assert_eq;
     use rstest::rstest;
 
-    use crate::{Emu, cpu::ops::OpCode, memory::KSEG0Addr, test_utils::emulator};
+    use crate::cpu::ops::prelude::*;
+    use crate::{Emu, memory::KSEG0Addr, test_utils::emulator};
 
     #[rstest]
     fn addiu_1(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
@@ -101,6 +116,35 @@ mod tests {
         emulator.step_jit()?;
         assert_eq!(emulator.cpu.gpr[9], emulator.cpu.gpr[8] - 16);
         assert_eq!(emulator.cpu.gpr[10], 8);
+        Ok(())
+    }
+    #[rstest]
+    fn addiu_2_shortpath(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
+        use crate::JitSummary;
+
+        emulator
+            .mem
+            .write_array(KSEG0Addr::from_phys(0), &[addiu(10, 0, 32), OpCode(69420)]);
+        let summary = emulator.step_jit_summarize::<JitSummary>()?;
+        tracing::info!(?summary.function);
+        assert_eq!(emulator.cpu.gpr[10], 32);
+        let op_count = summary.function.unwrap().dfg.num_insts();
+        assert!(op_count <= 5);
+        Ok(())
+    }
+    #[rstest]
+    fn addiu_3_shortpath(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
+        use crate::JitSummary;
+
+        emulator.mem.write_array(
+            KSEG0Addr::from_phys(0),
+            &[addiu(8, 0, 21), addiu(10, 8, 0), OpCode(69420)],
+        );
+        let summary = emulator.step_jit_summarize::<JitSummary>()?;
+        tracing::info!(?summary.function);
+        assert_eq!(emulator.cpu.gpr[10], 21);
+        let op_count = summary.function.unwrap().dfg.num_insts();
+        assert!(op_count <= 7);
         Ok(())
     }
 }

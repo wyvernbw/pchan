@@ -38,7 +38,7 @@ use crate::{
     bootloader::Bootloader,
     cpu::{
         Cpu, REG_STR,
-        ops::{BoundaryType, DecodedOp, EmitParams, Op},
+        ops::{BoundaryType, CachedValue, DecodedOp, EmitParams, Op},
     },
     jit::{BlockPage, JIT},
     memory::{Memory, PhysAddr},
@@ -282,7 +282,7 @@ impl Emu {
         ptr_type: types::Type,
         cfg: &Graph<BasicBlock, ()>,
         node: NodeIndex,
-        register_cache: &mut [Option<Value>; 32],
+        register_cache: &mut [Option<CachedValue>; 32],
         deps: &[usize],
         deps_map: &HashMap<Block, Vec<usize>>,
         cpu: &mut Cpu,
@@ -292,9 +292,12 @@ impl Emu {
         fn_builder.append_block_param(cranelift_block, ptr_type);
         fn_builder.append_block_param(cranelift_block, ptr_type);
         for reg in deps {
-            register_cache[*reg] = Some(fn_builder.append_block_param(cranelift_block, ptr_type));
+            register_cache[*reg] = Some(CachedValue {
+                value: fn_builder.append_block_param(cranelift_block, ptr_type),
+                dirty: false,
+            });
         }
-        let mut updates_queue: Option<Box<[_]>> = None;
+        let mut updates_queue: Option<Vec<(usize, CachedValue)>> = None;
         let basic_block = &cfg[node];
 
         for (idx, op) in basic_block.ops.iter().enumerate() {
@@ -369,8 +372,8 @@ impl Emu {
     #[builder]
     pub fn emit_block_boundary(
         op: &DecodedOp,
-        mut updates_queue: Option<&[(usize, Value)]>,
-        register_cache: &mut [Option<Value>; 32],
+        mut updates_queue: Option<&[(usize, CachedValue)]>,
+        register_cache: &mut [Option<CachedValue>; 32],
         fn_builder: &mut FunctionBuilder<'_>,
         cpu: &mut Cpu,
         ptr_type: types::Type,

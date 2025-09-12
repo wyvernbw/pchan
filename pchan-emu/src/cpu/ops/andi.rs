@@ -59,11 +59,14 @@ impl Op for ANDI {
         fn_builder: &mut FunctionBuilder,
     ) -> Option<EmitSummary> {
         use crate::cranelift_bs::*;
-        if self.rs == 0 {
-            let rt = fn_builder.ins().iconst(types::I64, 0);
+        // shortcuts:
+        // - case 1: x & 0 = 0
+        // - case 2: 0 & x = 0
+        if self.rs == 0 || self.imm == 0 {
+            let rt = state.emit_get_zero(fn_builder);
             return Some(
                 EmitSummary::builder()
-                    .register_updates(vec![(self.rt, rt)].into())
+                    .register_updates([(self.rt, rt)])
                     .build(),
             );
         }
@@ -71,7 +74,7 @@ impl Op for ANDI {
         let rt = fn_builder.ins().band_imm(rs, self.imm as i64);
         Some(
             EmitSummary::builder()
-                .register_updates(vec![(self.rt, rt)].into())
+                .register_updates([(self.rt, rt)])
                 .build(),
         )
     }

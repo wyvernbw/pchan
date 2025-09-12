@@ -57,13 +57,24 @@ impl Op for NOR {
         fn_builder: &mut FunctionBuilder,
     ) -> Option<EmitSummary> {
         use crate::cranelift_bs::*;
-        let rs = state.emit_get_register(fn_builder, self.rs);
-        let rt = state.emit_get_register(fn_builder, self.rt);
-        let rd = fn_builder.ins().bor(rt, rs);
-        let rd = fn_builder.ins().bnot(rd);
+        let or_result = {
+            // case 1: x | 0 = x
+            if self.rs == 0 {
+                state.emit_get_register(fn_builder, self.rt)
+            // case 2: 0 | x = x
+            } else if self.rt == 0 {
+                state.emit_get_register(fn_builder, self.rs)
+            // case 3: x | y = z
+            } else {
+                let rs = state.emit_get_register(fn_builder, self.rs);
+                let rt = state.emit_get_register(fn_builder, self.rt);
+                fn_builder.ins().bor(rt, rs)
+            }
+        };
+        let rd = fn_builder.ins().bnot(or_result);
         Some(
             EmitSummary::builder()
-                .register_updates(vec![(self.rd, rd)].into())
+                .register_updates([(self.rd, rd)])
                 .build(),
         )
     }

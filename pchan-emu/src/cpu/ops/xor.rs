@@ -57,12 +57,27 @@ impl Op for XOR {
         fn_builder: &mut FunctionBuilder,
     ) -> Option<EmitSummary> {
         use crate::cranelift_bs::*;
+        if self.rs == 0 {
+            let rt = state.emit_get_register(fn_builder, self.rt);
+            return Some(
+                EmitSummary::builder()
+                    .register_updates([(self.rd, rt)])
+                    .build(),
+            );
+        } else if self.rt == 0 {
+            let rs = state.emit_get_register(fn_builder, self.rs);
+            return Some(
+                EmitSummary::builder()
+                    .register_updates([(self.rd, rs)])
+                    .build(),
+            );
+        }
         let rs = state.emit_get_register(fn_builder, self.rs);
         let rt = state.emit_get_register(fn_builder, self.rt);
         let rd = fn_builder.ins().bxor(rs, rt);
         Some(
             EmitSummary::builder()
-                .register_updates(vec![(self.rd, rd)].into())
+                .register_updates([(self.rd, rd)])
                 .build(),
         )
     }

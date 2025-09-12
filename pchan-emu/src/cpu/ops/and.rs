@@ -57,12 +57,23 @@ impl Op for AND {
         fn_builder: &mut FunctionBuilder,
     ) -> Option<EmitSummary> {
         use crate::cranelift_bs::*;
+        // shortcuts:
+        // - case 1: x & 0 = 0
+        // - case 2: 0 & x = 0
+        if self.rs == 0 || self.rt == 0 {
+            let zero = state.emit_get_zero(fn_builder);
+            return Some(
+                EmitSummary::builder()
+                    .register_updates([(self.rd, zero)])
+                    .build(),
+            );
+        }
         let rs = state.emit_get_register(fn_builder, self.rs);
         let rt = state.emit_get_register(fn_builder, self.rt);
         let rd = fn_builder.ins().band(rs, rt);
         Some(
             EmitSummary::builder()
-                .register_updates(vec![(self.rd, rd)].into())
+                .register_updates([(self.rd, rd)])
                 .build(),
         )
     }

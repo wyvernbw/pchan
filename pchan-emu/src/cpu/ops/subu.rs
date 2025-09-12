@@ -65,7 +65,7 @@ impl Op for SUBU {
         let rd = fn_builder.ins().isub(rs, rt);
         Some(
             EmitSummary::builder()
-                .register_updates(vec![(self.rd, rd)].into())
+                .register_updates([(self.rd, rd)])
                 .build(),
         )
     }

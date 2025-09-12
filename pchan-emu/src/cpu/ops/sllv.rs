@@ -57,10 +57,10 @@ impl Op for SLLV {
     ) -> Option<EmitSummary> {
         // optimize 0 << x = 0
         if self.rt == 0 {
-            let rd = fn_builder.ins().iconst(types::I64, 0);
+            let rd = state.emit_get_zero(fn_builder);
             return Some(
                 EmitSummary::builder()
-                    .register_updates(vec![(self.rd, rd)].into())
+                    .register_updates([(self.rd, rd)])
                     .build(),
             );
         }
@@ -69,7 +69,7 @@ impl Op for SLLV {
         if self.rs == 0 {
             return Some(
                 EmitSummary::builder()
-                    .register_updates(vec![(self.rd, rt)].into())
+                    .register_updates([(self.rd, rt)])
                     .build(),
             );
         }
@@ -77,7 +77,7 @@ impl Op for SLLV {
         let rd = fn_builder.ins().ishl(rt, rs);
         Some(
             EmitSummary::builder()
-                .register_updates(vec![(self.rd, rd)].into())
+                .register_updates([(self.rd, rd)])
                 .build(),
         )
     }

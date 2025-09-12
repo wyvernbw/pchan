@@ -59,19 +59,28 @@ impl Op for XORI {
         fn_builder: &mut FunctionBuilder,
     ) -> Option<EmitSummary> {
         use crate::cranelift_bs::*;
+
         if self.rs == 0 {
             let rt = fn_builder.ins().iconst(types::I64, self.imm as i64);
             return Some(
                 EmitSummary::builder()
-                    .register_updates(vec![(self.rt, rt)].into())
+                    .register_updates([(self.rt, rt)])
+                    .build(),
+            );
+        } else if self.imm == 0 {
+            let rs = state.emit_get_register(fn_builder, self.rs);
+            return Some(
+                EmitSummary::builder()
+                    .register_updates([(self.rt, rs)])
                     .build(),
             );
         }
+
         let rs = state.emit_get_register(fn_builder, self.rs);
         let rt = fn_builder.ins().bxor_imm(rs, self.imm as i64);
         Some(
             EmitSummary::builder()
-                .register_updates(vec![(self.rt, rt)].into())
+                .register_updates([(self.rt, rt)])
                 .build(),
         )
     }

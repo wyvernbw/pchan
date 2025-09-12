@@ -57,12 +57,22 @@ impl Op for OR {
         fn_builder: &mut FunctionBuilder,
     ) -> Option<EmitSummary> {
         use crate::cranelift_bs::*;
-        let rs = state.emit_get_register(fn_builder, self.rs);
-        let rt = state.emit_get_register(fn_builder, self.rt);
-        let rd = fn_builder.ins().bor(rs, rt);
+        let rd = if self.rs == 0 {
+            // case 1: x | 0 = x
+            state.emit_get_register(fn_builder, self.rt)
+        } else if self.rt == 0 {
+            // case 2: 0 | x = x
+            state.emit_get_register(fn_builder, self.rs)
+        } else {
+            // case 3: x | y = z
+            let rs = state.emit_get_register(fn_builder, self.rs);
+            let rt = state.emit_get_register(fn_builder, self.rt);
+
+            fn_builder.ins().bor(rs, rt)
+        };
         Some(
             EmitSummary::builder()
-                .register_updates(vec![(self.rd, rd)].into())
+                .register_updates([(self.rd, rd)])
                 .build(),
         )
     }

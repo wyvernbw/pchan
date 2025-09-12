@@ -244,10 +244,17 @@ pub enum SecOp {
     ILLEGAL,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct CachedValue {
+    pub dirty: bool,
+    pub value: Value,
+}
+
 #[derive(Builder)]
 pub struct EmitParams<'a> {
     ptr_type: types::Type,
-    registers: &'a mut [Option<Value>; 32],
+    registers: &'a mut [Option<CachedValue>; 32],
+    const_one: Option<Value>,
     node: NodeIndex,
     pc: u32,
     cfg: &'a Graph<BasicBlock, ()>,
@@ -281,6 +288,7 @@ impl<'a> EmitParams<'a> {
             let iter = next_block_deps
                 .iter()
                 .flat_map(|&register| self.registers[register])
+                .map(|value| value.value)
                 .map(BlockArg::Value);
             args.extend(iter);
         } else {
@@ -289,6 +297,7 @@ impl<'a> EmitParams<'a> {
                     .iter()
                     .flatten()
                     .cloned()
+                    .map(|value| value.value)
                     .map(BlockArg::Value),
             );
         }
@@ -302,17 +311,33 @@ impl<'a> EmitParams<'a> {
         let block = self.cfg[self.node].clif_block();
         fn_builder.block_params(block)[1]
     }
+    fn emit_get_one(&mut self, fn_builder: &mut FunctionBuilder) -> Value {
+        match self.const_one {
+            Some(one) => one,
+            None => {
+                let one = fn_builder.ins().iconst(types::I64, 1);
+                self.const_one = Some(one);
+                one
+            }
+        }
+    }
+    fn emit_get_zero(&mut self, fn_builder: &mut FunctionBuilder) -> Value {
+        self.emit_get_register(fn_builder, 0)
+    }
     fn emit_get_register(&mut self, fn_builder: &mut FunctionBuilder, id: usize) -> Value {
         let block = self.block().clif_block();
         match self.registers[id] {
-            Some(value) => value,
+            Some(value) => value.value,
             None => {
                 let value = JIT::emit_load_reg()
                     .builder(fn_builder)
                     .block(block)
                     .idx(id)
                     .call();
-                self.registers[id] = Some(value);
+                self.registers[id] = Some(CachedValue {
+                    dirty: false,
+                    value,
+                });
                 value
             }
         }
@@ -321,11 +346,33 @@ impl<'a> EmitParams<'a> {
 
 #[derive(Builder, Debug, Default)]
 pub struct EmitSummary {
-    #[builder(default)]
-    pub register_updates: Box<[(usize, Value)]>,
-    #[builder(default)]
-    pub delayed_register_updates: Box<[(usize, Value)]>,
+    #[builder(field = Vec::with_capacity(32))]
+    pub register_updates: Vec<(usize, CachedValue)>,
+    #[builder(field = Vec::with_capacity(32))]
+    pub delayed_register_updates: Vec<(usize, CachedValue)>,
     pub pc_update: Option<u32>,
+}
+
+impl<S: emit_summary_builder::State> EmitSummaryBuilder<S> {
+    pub fn register_updates(mut self, values: impl IntoIterator<Item = (usize, Value)>) -> Self {
+        self.register_updates.extend(
+            values
+                .into_iter()
+                .map(|(reg, value)| (reg, CachedValue { dirty: true, value })),
+        );
+        self
+    }
+    pub fn delayed_register_updates(
+        mut self,
+        values: impl IntoIterator<Item = (usize, Value)>,
+    ) -> Self {
+        self.delayed_register_updates.extend(
+            values
+                .into_iter()
+                .map(|(reg, value)| (reg, CachedValue { dirty: true, value })),
+        );
+        self
+    }
 }
 
 #[derive(Debug, Error)]

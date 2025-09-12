@@ -7,7 +7,7 @@ use cranelift::codegen::ir;
 use tracing::{Instrument, Level, instrument};
 
 use crate::{
-    cpu::{Cpu, REG_STR},
+    cpu::{Cpu, REG_STR, ops::CachedValue},
     cranelift_bs::*,
     memory::Memory,
 };
@@ -224,8 +224,8 @@ impl JIT {
     #[builder]
     #[instrument(skip_all)]
     pub fn apply_cache_updates(
-        updates: Option<&[(usize, Value)]>,
-        cache: &mut [Option<Value>; 32],
+        updates: Option<&[(usize, CachedValue)]>,
+        cache: &mut [Option<CachedValue>; 32],
     ) {
         let Some(updates) = updates else {
             return;
@@ -244,7 +244,7 @@ impl JIT {
     pub fn emit_updates(
         builder: &mut FunctionBuilder<'_>,
         block: Block,
-        cache: Option<&mut [Option<Value>; 32]>,
+        cache: Option<&mut [Option<CachedValue>; 32]>,
     ) {
         let Some(cache) = cache else {
             return;
@@ -252,13 +252,16 @@ impl JIT {
         cache
             .iter()
             .enumerate()
+            // skip $zero
+            .skip(1)
             .flat_map(|(idx, value)| value.map(|value| (idx, value)))
+            .filter(|(_, value)| value.dirty)
             .for_each(|(id, value)| {
                 JIT::emit_store_reg()
                     .block(block)
                     .builder(builder)
                     .idx(id)
-                    .value(value)
+                    .value(value.value)
                     .call();
             });
         tracing::trace!("done");

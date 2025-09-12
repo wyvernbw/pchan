@@ -59,13 +59,31 @@ impl Op for SLTIU {
     ) -> Option<EmitSummary> {
         use crate::cranelift_bs::*;
 
+        // x < 0u64 (u64::MIN) = false
+        if self.imm == 0 {
+            return Some(
+                EmitSummary::builder()
+                    .register_updates([(self.rt, state.emit_get_zero(fn_builder))])
+                    .build(),
+            );
+        }
+
+        // 0u64 < x = true
+        if self.rs == 0 {
+            return Some(
+                EmitSummary::builder()
+                    .register_updates([(self.rt, state.emit_get_one(fn_builder))])
+                    .build(),
+            );
+        }
+
         let rs = state.emit_get_register(fn_builder, self.rs);
         let rt = fn_builder
             .ins()
             .icmp_imm(IntCC::UnsignedLessThan, rs, self.imm as i64);
         Some(
             EmitSummary::builder()
-                .register_updates(vec![(self.rt, rt)].into_boxed_slice())
+                .register_updates([(self.rt, rt)])
                 .build(),
         )
     }
@@ -74,6 +92,7 @@ impl Op for SLTIU {
 #[cfg(test)]
 mod tests {
     use pchan_utils::setup_tracing;
+    use pretty_assertions::assert_eq;
     use rstest::rstest;
 
     use crate::JitSummary;
@@ -91,6 +110,40 @@ mod tests {
         tracing::info!(?summary.function);
         assert_eq!(emulator.cpu.gpr[9], 0);
 
+        Ok(())
+    }
+
+    /// $t0 < 0 = false
+    #[rstest]
+    fn sltiu_2_shortpath(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
+        use crate::JitSummary;
+
+        emulator
+            .mem
+            .write_array(KSEG0Addr::from_phys(0), &[sltiu(10, 8, 0), OpCode(69420)]);
+        emulator.cpu.gpr[8] = 32;
+        let summary = emulator.step_jit_summarize::<JitSummary>()?;
+        tracing::info!(?summary.function);
+        assert_eq!(emulator.cpu.gpr[10], 0);
+        let op_count = summary.function.unwrap().dfg.num_insts();
+        assert!(op_count <= 5);
+        Ok(())
+    }
+
+    /// $zero < 8 = true
+    #[rstest]
+    fn sltiu_3_shortpath(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
+        use crate::JitSummary;
+
+        emulator
+            .mem
+            .write_array(KSEG0Addr::from_phys(0), &[sltiu(10, 0, 8), OpCode(69420)]);
+        emulator.cpu.gpr[8] = 32;
+        let summary = emulator.step_jit_summarize::<JitSummary>()?;
+        tracing::info!(?summary.function);
+        assert_eq!(emulator.cpu.gpr[10], 1);
+        let op_count = summary.function.unwrap().dfg.num_insts();
+        assert!(op_count <= 5);
         Ok(())
     }
 }
