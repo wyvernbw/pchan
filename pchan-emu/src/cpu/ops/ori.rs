@@ -11,18 +11,18 @@ use super::PrimeOp;
 
 #[derive(Debug, Clone, Copy)]
 #[allow(clippy::upper_case_acronyms)]
-pub struct ANDI {
+pub struct ORI {
     rs: usize,
     rt: usize,
     imm: i16,
 }
 
-impl TryFrom<OpCode> for ANDI {
+impl TryFrom<OpCode> for ORI {
     type Error = TryFromOpcodeErr;
 
     fn try_from(opcode: OpCode) -> Result<Self, TryFromOpcodeErr> {
-        let opcode = opcode.as_primary(PrimeOp::ANDI)?;
-        Ok(ANDI {
+        let opcode = opcode.as_primary(PrimeOp::ORI)?;
+        Ok(ORI {
             rt: opcode.bits(16..21) as usize,
             rs: opcode.bits(21..26) as usize,
             imm: opcode.bits(0..16) as i16,
@@ -30,24 +30,24 @@ impl TryFrom<OpCode> for ANDI {
     }
 }
 
-impl Display for ANDI {
+impl Display for ORI {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "andi ${} ${} {}",
+            "ori ${} ${} {}",
             REG_STR[self.rt], REG_STR[self.rs], self.imm
         )
     }
 }
 
-impl Op for ANDI {
+impl Op for ORI {
     fn is_block_boundary(&self) -> Option<BoundaryType> {
         None
     }
 
     fn into_opcode(self) -> OpCode {
         OpCode::default()
-            .with_primary(PrimeOp::ANDI)
+            .with_primary(PrimeOp::ORI)
             .set_bits(21..26, self.rs as u32)
             .set_bits(16..21, self.rt as u32)
             .set_bits(0..16, (self.imm as i32 as i16) as u32)
@@ -60,7 +60,7 @@ impl Op for ANDI {
     ) -> Option<EmitSummary> {
         use crate::cranelift_bs::*;
         if self.rs == 0 {
-            let rt = fn_builder.ins().iconst(types::I64, 0);
+            let rt = fn_builder.ins().iconst(types::I64, self.imm as i64);
             return Some(
                 EmitSummary::builder()
                     .register_updates(vec![(self.rt, rt)].into())
@@ -68,7 +68,7 @@ impl Op for ANDI {
             );
         }
         let rs = state.emit_get_register(fn_builder, self.rs);
-        let rt = fn_builder.ins().band_imm(rs, self.imm as i64);
+        let rt = fn_builder.ins().bor_imm(rs, self.imm as i64);
         Some(
             EmitSummary::builder()
                 .register_updates(vec![(self.rt, rt)].into())
@@ -78,8 +78,8 @@ impl Op for ANDI {
 }
 
 #[inline]
-pub fn andi(rt: usize, rs: usize, imm: i16) -> OpCode {
-    ANDI { rt, rs, imm }.into_opcode()
+pub fn ori(rt: usize, rs: usize, imm: i16) -> OpCode {
+    ORI { rt, rs, imm }.into_opcode()
 }
 
 #[cfg(test)]
@@ -93,11 +93,11 @@ mod tests {
 
     #[rstest]
     #[case(1, 1, 1)]
-    #[case(1, 0, 0)]
-    #[case(0, 1, 0)]
+    #[case(1, 0, 1)]
+    #[case(0, 1, 1)]
     #[case(0, 0, 0)]
-    #[case(0b00110101, 0b0000111, 0b00000101)]
-    fn andi_1(
+    #[case(0b00110101, 0b0000111, 0b00110111)]
+    fn ori_1(
         setup_tracing: (),
         mut emulator: Emu,
         #[case] a: i16,
@@ -108,7 +108,7 @@ mod tests {
 
         emulator.mem.write_array(
             KSEG0Addr::from_phys(0),
-            &[addiu(8, 0, a), andi(10, 8, b), OpCode(69420)],
+            &[addiu(8, 0, a), ori(10, 8, b), OpCode(69420)],
         );
         let summary = emulator.step_jit_summarize::<JitSummary>()?;
         tracing::info!(?summary.function);
@@ -117,15 +117,15 @@ mod tests {
     }
     #[rstest]
     #[case(0b11110000)]
-    fn andi_2(setup_tracing: (), mut emulator: Emu, #[case] imm: i16) -> color_eyre::Result<()> {
+    fn ori_2(setup_tracing: (), mut emulator: Emu, #[case] imm: i16) -> color_eyre::Result<()> {
         use crate::JitSummary;
 
         emulator
             .mem
-            .write_array(KSEG0Addr::from_phys(0), &[andi(10, 0, imm), OpCode(69420)]);
+            .write_array(KSEG0Addr::from_phys(0), &[ori(10, 0, imm), OpCode(69420)]);
         let summary = emulator.step_jit_summarize::<JitSummary>()?;
         tracing::info!(?summary.function);
-        assert_eq!(emulator.cpu.gpr[10], 0);
+        assert_eq!(emulator.cpu.gpr[10], imm as u64);
         Ok(())
     }
 }
