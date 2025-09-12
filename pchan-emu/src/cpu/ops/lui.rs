@@ -1,0 +1,116 @@
+use std::fmt::Display;
+
+use crate::cpu::REG_STR;
+use crate::cpu::ops::prelude::*;
+use crate::cranelift_bs::*;
+
+#[derive(Debug, Clone, Copy)]
+pub struct LUI {
+    rt: usize,
+    imm: i16,
+}
+
+impl Display for LUI {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "lui ${} {}", REG_STR[self.rt], self.imm)
+    }
+}
+
+impl TryFrom<OpCode> for LUI {
+    type Error = TryFromOpcodeErr;
+
+    fn try_from(value: OpCode) -> Result<Self, Self::Error> {
+        let value = value.as_primary(PrimeOp::LUI)?;
+        Ok(LUI {
+            rt: value.bits(16..21) as usize,
+            imm: value.bits(0..16) as i16,
+        })
+    }
+}
+
+impl Op for LUI {
+    fn is_block_boundary(&self) -> Option<BoundaryType> {
+        None
+    }
+
+    fn into_opcode(self) -> OpCode {
+        OpCode::default()
+            .with_primary(PrimeOp::LUI)
+            .set_bits(0..16, self.imm as i32 as u32)
+            .set_bits(16..21, self.rt as u32)
+    }
+
+    fn emit_ir(
+        &self,
+        mut state: EmitParams,
+        fn_builder: &mut FunctionBuilder,
+    ) -> Option<EmitSummary> {
+        if self.imm == 0 {
+            return Some(
+                EmitSummary::builder()
+                    .register_updates([(self.rt, state.emit_get_zero(fn_builder))])
+                    .build(),
+            );
+        }
+        let rt = fn_builder
+            .ins()
+            .iconst(types::I32, ((self.imm as i32) << 16) as i64);
+        Some(
+            EmitSummary::builder()
+                .register_updates([(self.rt, rt)])
+                .build(),
+        )
+    }
+}
+
+pub fn lui(rt: usize, imm: i16) -> OpCode {
+    LUI { rt, imm }.into_opcode()
+}
+
+#[cfg(test)]
+mod tests {
+    use pchan_utils::setup_tracing;
+    use rstest::rstest;
+
+    use crate::cpu::ops::prelude::*;
+    use crate::{Emu, memory::KSEG0Addr, test_utils::emulator};
+
+    #[rstest]
+    #[case(8, 0x1234, 0x1234_0000)]
+    #[case(8, 0, 0)]
+    fn lui_1(
+        setup_tracing: (),
+        mut emulator: Emu,
+        #[case] reg: usize,
+        #[case] value: i16,
+        #[case] expected: u32,
+    ) -> color_eyre::Result<()> {
+        use crate::JitSummary;
+
+        emulator
+            .mem
+            .write_array(KSEG0Addr::from_phys(0), &[lui(reg, value), OpCode(69420)]);
+
+        let summary = emulator.step_jit_summarize::<JitSummary>()?;
+        tracing::info!(?summary.function);
+        assert_eq!(emulator.cpu.gpr[reg], expected);
+
+        Ok(())
+    }
+
+    #[rstest]
+    fn lui_2(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
+        use crate::JitSummary;
+
+        emulator
+            .mem
+            .write_array(KSEG0Addr::from_phys(0), &[lui(8, 0x1234), OpCode(69420)]);
+        emulator.cpu.gpr[8] = 0x1111_1111;
+
+        let summary = emulator.step_jit_summarize::<JitSummary>()?;
+        tracing::info!(?summary.function);
+        assert_eq!(emulator.cpu.gpr[8], 0x1234_0000);
+
+        Ok(())
+    }
+}
