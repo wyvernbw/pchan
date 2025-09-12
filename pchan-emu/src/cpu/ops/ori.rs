@@ -61,7 +61,7 @@ impl Op for ORI {
         use crate::cranelift_bs::*;
         // 0 | imm = imm
         if self.rs == 0 {
-            let rt = fn_builder.ins().iconst(types::I64, self.imm as i64);
+            let rt = fn_builder.ins().iconst(types::I32, self.imm as i64);
             return Some(
                 EmitSummary::builder()
                     .register_updates([(self.rt, rt)])
@@ -112,7 +112,7 @@ mod tests {
         mut emulator: Emu,
         #[case] a: i16,
         #[case] b: i16,
-        #[case] expected: u64,
+        #[case] expected: u32,
     ) -> color_eyre::Result<()> {
         use crate::JitSummary;
 
@@ -135,7 +135,7 @@ mod tests {
             .write_array(KSEG0Addr::from_phys(0), &[ori(10, 0, imm), OpCode(69420)]);
         let summary = emulator.step_jit_summarize::<JitSummary>()?;
         tracing::info!(?summary.function);
-        assert_eq!(emulator.cpu.gpr[10], imm as u64);
+        assert_eq!(emulator.cpu.gpr[10], imm as u32);
         Ok(())
     }
 }

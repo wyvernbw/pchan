@@ -61,7 +61,7 @@ impl Op for XORI {
         use crate::cranelift_bs::*;
 
         if self.rs == 0 {
-            let rt = fn_builder.ins().iconst(types::I64, self.imm as i64);
+            let rt = fn_builder.ins().iconst(types::I32, self.imm as i64);
             return Some(
                 EmitSummary::builder()
                     .register_updates([(self.rt, rt)])
@@ -107,13 +107,13 @@ mod tests {
     #[case(0, 0, 0)]
     #[case(0b11110000, 0b00111100, 0b11001100)]
     #[case(-1, -1, 0)] // 0xFFFF ^ 0xFFFF = 0
-    #[case(i16::MIN, 0, i16::MIN as u64)] // -32768 ^ 0 = -32768
+    #[case(i16::MIN, 0, i16::MIN as u32)] // -32768 ^ 0 = -32768
     fn xori_1(
         setup_tracing: (),
         mut emulator: Emu,
         #[case] a: i16,
         #[case] b: i16,
-        #[case] expected: u64,
+        #[case] expected: u32,
     ) -> color_eyre::Result<()> {
         use crate::JitSummary;
 
@@ -136,7 +136,7 @@ mod tests {
             .write_array(KSEG0Addr::from_phys(0), &[xori(10, 0, imm), OpCode(69420)]);
         let summary = emulator.step_jit_summarize::<JitSummary>()?;
         tracing::info!(?summary.function);
-        assert_eq!(emulator.cpu.gpr[10], imm as u64);
+        assert_eq!(emulator.cpu.gpr[10], imm as u32);
         Ok(())
     }
 }

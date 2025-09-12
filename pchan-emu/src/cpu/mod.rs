@@ -18,8 +18,8 @@ pub struct Cpu {
             .intersperse(" ".to_string())
             .collect::<String>()
     )]
-    pub gpr: [u64; 32],
-    pub pc: u64,
+    pub gpr: [u32; 32],
+    pub pc: u32,
 }
 
 impl Display for Cpu {
@@ -43,7 +43,7 @@ impl Display for Cpu {
 
 impl Cpu {
     pub fn clear_registers(&mut self) {
-        self.gpr = [0u64; 32];
+        self.gpr = [0u32; 32];
     }
 }
 

@@ -52,12 +52,14 @@ impl Op for SW {
         // get cached register if possible, otherwise load it in
         let rs = state.emit_get_register(fn_builder, self.rs);
         let rs = fn_builder.ins().band_imm(rs, 0x1FFF_FFFF);
+        let rs = fn_builder.ins().uextend(state.ptr_type, rs);
+
         let rt = state.emit_get_register(fn_builder, self.rt);
         let mem_ptr = fn_builder.ins().iadd(mem_ptr, rs);
 
         fn_builder
             .ins()
-            .istore32(MemFlags::new(), rt, mem_ptr, self.imm as i32);
+            .store(MemFlags::new(), rt, mem_ptr, self.imm as i32);
         None
     }
 
@@ -82,7 +84,7 @@ mod tests {
     use crate::{Emu, cpu::ops::OpCode, memory::KSEG0Addr, test_utils::emulator};
 
     #[rstest]
-    pub fn test_sh(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
+    pub fn test_sw(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
         use crate::cpu::ops::prelude::*;
 
         emulator
@@ -90,7 +92,7 @@ mod tests {
             .write_all(KSEG0Addr::from_phys(0), [sw(9, 8, 0), OpCode(69420)]);
 
         emulator.cpu.gpr[8] = 32; // base register
-        emulator.cpu.gpr[9] = u32::MAX as u64;
+        emulator.cpu.gpr[9] = u32::MAX;
 
         emulator.step_jit()?;
 

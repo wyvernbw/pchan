@@ -1,4 +1,5 @@
 use std::fmt::Display;
+use std::ops::DerefMut;
 
 use crate::cpu::REG_STR;
 use crate::cpu::ops::{self, BoundaryType, EmitSummary, Op, TryFromOpcodeErr};
@@ -42,11 +43,12 @@ impl Op for LB {
         // get cached register if possible, otherwise load it in
         let rs = state.emit_get_register(fn_builder, self.rs);
         let rs = fn_builder.ins().band_imm(rs, 0x1FFF_FFFF);
+        let rs = fn_builder.ins().uextend(state.ptr_type, rs);
         let mem_ptr = fn_builder.ins().iadd(mem_ptr, rs);
 
         let rt = fn_builder
             .ins()
-            .sload8(types::I64, MemFlags::new(), mem_ptr, self.imm as i32);
+            .sload8(types::I32, MemFlags::new(), mem_ptr, self.imm as i32);
         Some(
             EmitSummary::builder()
                 .delayed_register_updates(vec![(self.rt, rt)].into_boxed_slice())
@@ -105,8 +107,7 @@ mod tests {
         // Run the block
         emulator.step_jit()?;
 
-        // 0xFF should be sign-extended to 0xFFFFFFFFFFFFFFFF
-        assert_eq!(emulator.cpu.gpr[8], 0xFFFFFFFFFFFFFFFF);
+        assert_eq!(emulator.cpu.gpr[8], -1i32 as u32);
 
         // 0x7F should be sign-extended to 0x7F
         assert_eq!(emulator.cpu.gpr[10], 0x7F);

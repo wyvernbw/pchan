@@ -105,7 +105,7 @@ mod tests {
         mut emulator: Emu,
         #[case] a: i16,
         #[case] b: i16,
-        #[case] expected: u64,
+        #[case] expected: u32,
     ) -> color_eyre::Result<()> {
         emulator.mem.write_array(
             KSEG0Addr::from_phys(0),

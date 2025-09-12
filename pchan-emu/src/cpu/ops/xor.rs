@@ -105,13 +105,13 @@ mod tests {
     #[case(0, 0, 0)]
     #[case(0b11110000, 0b00111100, 0b11001100)]
     #[case(-1, -1, 0)] // 0xFFFF ^ 0xFFFF = 0
-    #[case(i16::MIN, 0, i16::MIN as u64)] // -32768 ^ 0 = -32768
+    #[case(i16::MIN, 0, i16::MIN as u32)] // -32768 ^ 0 = -32768
     fn xor_1(
         setup_tracing: (),
         mut emulator: Emu,
         #[case] a: i16,
         #[case] b: i16,
-        #[case] expected: u64,
+        #[case] expected: u32,
     ) -> color_eyre::Result<()> {
         emulator.mem.write_array(
             KSEG0Addr::from_phys(0),

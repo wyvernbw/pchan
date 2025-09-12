@@ -129,10 +129,10 @@ impl Emu {
 
         // collect blocks in function
         let mut cfg = Graph::with_capacity(20, 64);
-        let entry_idx = cfg.add_node(BasicBlock::new(self.cpu.pc as u32));
+        let entry_idx = cfg.add_node(BasicBlock::new(self.cpu.pc));
         let mut blocks = walk_fn(
             WalkFnParams::builder()
-                .pc(self.cpu.pc as u32)
+                .pc(self.cpu.pc)
                 .mem(&self.mem)
                 .cfg(cfg)
                 .current_node_index(entry_idx)
@@ -293,7 +293,7 @@ impl Emu {
         fn_builder.append_block_param(cranelift_block, ptr_type);
         for reg in deps {
             register_cache[*reg] = Some(CachedValue {
-                value: fn_builder.append_block_param(cranelift_block, ptr_type),
+                value: fn_builder.append_block_param(cranelift_block, types::I32),
                 dirty: false,
             });
         }
@@ -354,8 +354,9 @@ impl Emu {
             .call();
         let cpu_value = fn_builder.block_params(basic_block.clif_block())[0];
         let pc_value = fn_builder.ins().iconst(
-            types::I64,
-            basic_block.address as i64 + (basic_block.ops.len().saturating_sub(1)) as i64 * 4,
+            types::I32,
+            (basic_block.address as i32 + (basic_block.ops.len().saturating_sub(1)) as i32 * 4)
+                as i64,
         );
         fn_builder.ins().store(
             MemFlags::new(),
@@ -397,9 +398,10 @@ impl Emu {
                 .cache(register_cache)
                 .call();
             let cpu_value = fn_builder.block_params(basic_block.clif_block())[0];
-            let pc_value = fn_builder
-                .ins()
-                .iconst(types::I64, basic_block.address as i64 + idx as i64 * 4);
+            let pc_value = fn_builder.ins().iconst(
+                types::I32,
+                (basic_block.address as i32 + idx as i32 * 4) as i64,
+            );
             fn_builder.ins().store(
                 MemFlags::new(),
                 pc_value,
@@ -422,7 +424,7 @@ impl Emu {
         if let Some(summary) = summary
             && let Some(pc) = summary.pc_update
         {
-            cpu.pc = pc as u64;
+            cpu.pc = pc;
             tracing::debug!(cpu.pc);
         }
         tracing::debug!("{:?} compiled {} instructions", basic_block.clif_block, idx);

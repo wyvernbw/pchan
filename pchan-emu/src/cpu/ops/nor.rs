@@ -96,7 +96,7 @@ mod tests {
     use crate::{Emu, memory::KSEG0Addr, test_utils::emulator};
 
     #[rstest]
-    #[case(0x7FFF, 0x7FFF, 0xFFFF_FFFF_FFFF_8000)] // i16::MAX | i16::MAX
+    #[case(0x7FFF, 0x7FFF, 0xFFFF_8000)] // i16::MAX | i16::MAX
     #[case(i16::MIN, i16::MIN, 0x0000_7FFF)] // -32768 | -32768 = -32768, ~(-32768) = 0x7FFF
     #[case(0xFFFFu16 as i16, 0x0000, 0)] // 0xFFFF | 0 = 0xFFFF, ~0xFFFF = 0xFFFF_0000
     #[case(0x0000, 0xFFFFu16 as i16, 0)] // 0 | 0xFFFF = 0xFFFF, ~0xFFFF = 0xFFFF_0000
@@ -109,7 +109,7 @@ mod tests {
         mut emulator: Emu,
         #[case] a: i16,
         #[case] b: i16,
-        #[case] expected: u64,
+        #[case] expected: u32,
     ) -> color_eyre::Result<()> {
         emulator.mem.write_array(
             KSEG0Addr::from_phys(0),

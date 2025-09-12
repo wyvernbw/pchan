@@ -107,7 +107,7 @@ mod tests {
         emulator
             .mem
             .write_all(KSEG0Addr::from_phys(emulator.cpu.pc as u32), program);
-        emulator.cpu.gpr[8] = u32::MAX as u64;
+        emulator.cpu.gpr[8] = u32::MAX;
         emulator.cpu.gpr[9] = 1;
         emulator.step_jit()?;
         assert_eq!(

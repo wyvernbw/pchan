@@ -39,26 +39,26 @@ pub struct JIT {
 
 #[derive(derive_more::Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Hash)]
 #[debug("Page#{}", self.0)]
-pub struct BlockPage(u64);
+pub struct BlockPage(u32);
 
 impl BlockPage {
-    const SHIFT: u64 = 8;
+    const SHIFT: u32 = 8;
 
-    pub fn new(address: u64) -> Self {
+    pub fn new(address: u32) -> Self {
         Self(address >> Self::SHIFT)
     }
 }
 
 /// TODO: make it store a module function ref as well
 #[derive(Debug, Clone, Default)]
-pub struct BlockMap(HashMap<BlockPage, HashMap<u64, BlockFn>>);
+pub struct BlockMap(HashMap<BlockPage, HashMap<u32, BlockFn>>);
 
 impl BlockMap {
-    pub fn insert(&mut self, address: u64, func: BlockFn) -> Option<BlockFn> {
+    pub fn insert(&mut self, address: u32, func: BlockFn) -> Option<BlockFn> {
         let page = BlockPage::new(address);
         self.0.entry(page).or_default().insert(address, func)
     }
-    pub fn get(&self, address: u64) -> Option<&BlockFn> {
+    pub fn get(&self, address: u32) -> Option<&BlockFn> {
         let page = BlockPage::new(address);
         self.0.get(&page).and_then(|map| map.get(&address))
     }
@@ -116,7 +116,7 @@ impl JIT {
     #[inline]
     pub fn create_function(
         &mut self,
-        address: u64,
+        address: u32,
     ) -> Result<(FuncId, Function), Box<ModuleError>> {
         let sig = self.create_signature();
         let func_id = self.module.declare_function(
@@ -142,7 +142,7 @@ impl JIT {
         self.block_map.0.clear();
     }
 
-    pub fn apply_dirty_pages(&mut self, address: u64) {
+    pub fn apply_dirty_pages(&mut self, address: u32) {
         let page = BlockPage::new(address);
         if self.dirty_pages.remove(&page)
             && let Some(page) = self.block_map.0.get_mut(&page)
@@ -151,7 +151,7 @@ impl JIT {
         }
     }
 
-    pub fn use_cached_function(&self, address: u64, cpu: &mut Cpu, mem: &mut Memory) -> bool {
+    pub fn use_cached_function(&self, address: u32, cpu: &mut Cpu, mem: &mut Memory) -> bool {
         if let Some(function) = self.block_map.get(address) {
             tracing::trace!("invoking cached function {function:?}");
             function(cpu, mem, false);
@@ -190,15 +190,15 @@ impl JIT {
     #[instrument(skip(builder, block))]
     pub fn emit_load_reg(builder: &mut FunctionBuilder<'_>, block: Block, idx: usize) -> Value {
         if idx == 0 {
-            return builder.ins().iconst(types::I64, 0);
+            return builder.ins().iconst(types::I32, 0);
         }
         let block_state = builder.block_params(block)[0];
         let offset = core::mem::offset_of!(Cpu, gpr);
-        let offset = i32::try_from(offset + idx * size_of::<u64>()).expect("offset overflow");
+        let offset = i32::try_from(offset + idx * size_of::<u32>()).expect("offset overflow");
 
         builder
             .ins()
-            .load(types::I64, MemFlags::new(), block_state, offset)
+            .load(types::I32, MemFlags::new(), block_state, offset)
     }
 
     #[builder]
@@ -214,7 +214,7 @@ impl JIT {
         }
         const GPR: usize = const { core::mem::offset_of!(Cpu, gpr) };
         let block_state = builder.block_params(block)[0];
-        let offset = i32::try_from(GPR + idx * size_of::<u64>()).expect("offset overflow");
+        let offset = i32::try_from(GPR + idx * size_of::<u32>()).expect("offset overflow");
         tracing::trace!("stored");
         builder
             .ins()

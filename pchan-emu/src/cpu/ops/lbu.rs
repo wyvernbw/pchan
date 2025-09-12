@@ -44,11 +44,12 @@ impl Op for LBU {
         // get cached register if possible, otherwise load it in
         let rs = state.emit_get_register(fn_builder, self.rs);
         let rs = fn_builder.ins().band_imm(rs, 0x1FFF_FFFF);
+        let rs = fn_builder.ins().uextend(state.ptr_type, rs);
         let mem_ptr = fn_builder.ins().iadd(mem_ptr, rs);
 
         let rt = fn_builder
             .ins()
-            .uload8(types::I64, MemFlags::new(), mem_ptr, self.imm as i32);
+            .uload8(types::I32, MemFlags::new(), mem_ptr, self.imm as i32);
         Some(
             EmitSummary::builder()
                 .delayed_register_updates(vec![(self.rt, rt)].into_boxed_slice())
@@ -103,7 +104,7 @@ mod tests {
         emulator.cpu.gpr[9] = 16;
         emulator.mem.as_mut()[20] = 69;
         emulator.step_jit()?;
-        assert_eq!(emulator.cpu.gpr[8], emulator.mem.as_ref()[20] as u64);
+        assert_eq!(emulator.cpu.gpr[8], emulator.mem.as_ref()[20] as u32);
         Ok(())
     }
 }

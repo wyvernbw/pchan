@@ -63,7 +63,7 @@ impl Op for ADDIU {
         // case 1: 0 + x = x
         // => 1 iconst instruction
         if self.rs == 0 {
-            let rt = fn_builder.ins().iconst(types::I64, self.imm as i64);
+            let rt = fn_builder.ins().iconst(types::I32, self.imm as i64);
             return Some(
                 EmitSummary::builder()
                     .register_updates([(self.rt, rt)])

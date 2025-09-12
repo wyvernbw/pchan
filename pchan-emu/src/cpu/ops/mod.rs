@@ -20,6 +20,7 @@ pub mod slt;
 pub mod slti;
 pub mod sltiu;
 pub mod sltu;
+pub mod srlv;
 pub mod xor;
 pub mod xori;
 
@@ -64,6 +65,7 @@ pub mod prelude {
     pub use super::slti::*;
     pub use super::sltiu::*;
     pub use super::sltu::*;
+    pub use super::srlv::*;
     pub use super::subu::*;
     pub use super::sw::*;
     pub use super::xor::*;
@@ -315,7 +317,7 @@ impl<'a> EmitParams<'a> {
         match self.const_one {
             Some(one) => one,
             None => {
-                let one = fn_builder.ins().iconst(types::I64, 1);
+                let one = fn_builder.ins().iconst(types::I32, 1);
                 self.const_one = Some(one);
                 one
             }
@@ -407,7 +409,7 @@ pub enum BoundaryType {
 
 #[enum_dispatch(DecodedOp)]
 pub trait Op: Sized + Display + TryFrom<OpCode> {
-    fn invalidates_cache_at(&self) -> Option<u64> {
+    fn invalidates_cache_at(&self) -> Option<u32> {
         None
     }
     fn is_block_boundary(&self) -> Option<BoundaryType>;
@@ -546,6 +548,8 @@ pub enum DecodedOp {
     XORI(XORI),
     #[strum(transparent)]
     SLLV(SLLV),
+    #[strum(transparent)]
+    SRLV(SRLV),
 }
 
 impl TryFrom<OpCode> for DecodedOp {
@@ -560,6 +564,7 @@ impl TryFrom<OpCode> for DecodedOp {
             return Ok(DecodedOp::NOP(NOP));
         }
         match (opcode.primary(), opcode.secondary()) {
+            (PrimeOp::SPECIAL, SecOp::SRLV) => SRLV::try_from(opcode).map(Self::SRLV),
             (PrimeOp::SPECIAL, SecOp::SLLV) => SLLV::try_from(opcode).map(Self::SLLV),
             (PrimeOp::XORI, _) => XORI::try_from(opcode).map(Self::XORI),
             (PrimeOp::ORI, _) => ORI::try_from(opcode).map(Self::ORI),
@@ -638,6 +643,7 @@ mod decode_display_tests {
     #[case::ori(DecodedOp::new(ori(8, 9, 4)), "ori $t0 $t1 4")]
     #[case::xori(DecodedOp::new(xori(8, 9, 4)), "xori $t0 $t1 4")]
     #[case::sllv(DecodedOp::new(sllv(8, 9, 10)), "sllv $t0 $t1 $t2")]
+    #[case::srlv(DecodedOp::new(srlv(8, 9, 10)), "srlv $t0 $t1 $t2")]
     fn test_display(setup_tracing: (), #[case] op: DecodedOp, #[case] expected: &str) {
         assert_eq!(op.to_string(), expected);
     }

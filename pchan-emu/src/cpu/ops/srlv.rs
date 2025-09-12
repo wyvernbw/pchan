@@ -5,30 +5,30 @@ use crate::cpu::ops::prelude::*;
 use crate::cranelift_bs::*;
 
 #[derive(Debug, Clone, Copy)]
-pub struct SLLV {
+pub struct SRLV {
     rd: usize,
     rt: usize,
     rs: usize,
 }
 
-impl Display for SLLV {
+impl Display for SRLV {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "sllv ${} ${} ${}",
+            "srlv ${} ${} ${}",
             REG_STR[self.rd], REG_STR[self.rt], REG_STR[self.rs]
         )
     }
 }
 
-impl TryFrom<OpCode> for SLLV {
+impl TryFrom<OpCode> for SRLV {
     type Error = TryFromOpcodeErr;
 
     fn try_from(value: OpCode) -> Result<Self, Self::Error> {
         let value = value
             .as_primary(PrimeOp::SPECIAL)?
-            .as_secondary(SecOp::SLLV)?;
-        Ok(SLLV {
+            .as_secondary(SecOp::SRLV)?;
+        Ok(SRLV {
             rd: value.bits(11..16) as usize,
             rt: value.bits(16..21) as usize,
             rs: value.bits(21..26) as usize,
@@ -36,7 +36,7 @@ impl TryFrom<OpCode> for SLLV {
     }
 }
 
-impl Op for SLLV {
+impl Op for SRLV {
     fn is_block_boundary(&self) -> Option<BoundaryType> {
         None
     }
@@ -44,7 +44,7 @@ impl Op for SLLV {
     fn into_opcode(self) -> OpCode {
         OpCode::default()
             .with_primary(PrimeOp::SPECIAL)
-            .with_secondary(SecOp::SLLV)
+            .with_secondary(SecOp::SRLV)
             .set_bits(11..16, self.rd as u32)
             .set_bits(16..21, self.rt as u32)
             .set_bits(21..26, self.rs as u32)
@@ -55,7 +55,7 @@ impl Op for SLLV {
         mut state: EmitParams,
         fn_builder: &mut FunctionBuilder,
     ) -> Option<EmitSummary> {
-        // optimize 0 << x = 0
+        // optimize 0 >> x = 0
         if self.rt == 0 {
             let rd = state.emit_get_zero(fn_builder);
             return Some(
@@ -64,7 +64,7 @@ impl Op for SLLV {
                     .build(),
             );
         }
-        // optimize x << 0 = x
+        // optimize x >> 0 = x
         let rt = state.emit_get_register(fn_builder, self.rt);
         if self.rs == 0 {
             return Some(
@@ -74,7 +74,7 @@ impl Op for SLLV {
             );
         }
         let rs = state.emit_get_register(fn_builder, self.rs);
-        let rd = fn_builder.ins().ishl(rt, rs);
+        let rd = fn_builder.ins().ushr(rt, rs);
         Some(
             EmitSummary::builder()
                 .register_updates([(self.rd, rd)])
@@ -84,8 +84,8 @@ impl Op for SLLV {
 }
 
 #[inline]
-pub fn sllv(rd: usize, rt: usize, rs: usize) -> OpCode {
-    SLLV { rd, rs, rt }.into_opcode()
+pub fn srlv(rd: usize, rt: usize, rs: usize) -> OpCode {
+    SRLV { rd, rs, rt }.into_opcode()
 }
 
 #[cfg(test)]
@@ -99,10 +99,11 @@ mod tests {
     use crate::{Emu, memory::KSEG0Addr, test_utils::emulator};
 
     #[rstest]
-    #[case(1, 6, 64)]
+    #[case(64, 6, 1)]
     #[case(32, 0, 32)]
-    #[case(0b00001111, 4, 0b11110000)]
-    fn sllv_1(
+    #[case(-32, 2, 1073741816)]
+    #[case(0b11110000, 4, 0b00001111)]
+    fn srlv_1(
         setup_tracing: (),
         mut emulator: Emu,
         #[case] a: i16,
@@ -114,7 +115,7 @@ mod tests {
             &[
                 addiu(8, 0, a),
                 addiu(9, 0, b),
-                sllv(10, 8, 9),
+                srlv(10, 8, 9),
                 OpCode(69420),
             ],
         );
@@ -123,10 +124,11 @@ mod tests {
         assert_eq!(emulator.cpu.gpr[10], expected);
         Ok(())
     }
+
     #[rstest]
     #[case(8, 0)]
     #[case(0b00001111, 0)]
-    fn sllv_2(
+    fn srlv_2(
         setup_tracing: (),
         mut emulator: Emu,
         #[case] value: i16,
@@ -134,7 +136,7 @@ mod tests {
     ) -> color_eyre::Result<()> {
         emulator.mem.write_array(
             KSEG0Addr::from_phys(0),
-            &[addiu(9, 0, value), sllv(10, 0, 9), OpCode(69420)],
+            &[addiu(9, 0, value), srlv(10, 0, 9), OpCode(69420)],
         );
         let summary = emulator.step_jit_summarize::<JitSummary>()?;
         tracing::info!(?summary.function);
