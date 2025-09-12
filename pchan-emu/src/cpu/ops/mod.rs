@@ -15,6 +15,7 @@ pub mod andi;
 pub mod nor;
 pub mod or;
 pub mod ori;
+pub mod sllv;
 pub mod slt;
 pub mod slti;
 pub mod sltiu;
@@ -58,6 +59,7 @@ pub mod prelude {
     pub use super::ori::*;
     pub use super::sb::*;
     pub use super::sh::*;
+    pub use super::sllv::*;
     pub use super::slt::*;
     pub use super::slti::*;
     pub use super::sltiu::*;
@@ -495,6 +497,8 @@ pub enum DecodedOp {
     ORI(ORI),
     #[strum(transparent)]
     XORI(XORI),
+    #[strum(transparent)]
+    SLLV(SLLV),
 }
 
 impl TryFrom<OpCode> for DecodedOp {
@@ -509,6 +513,7 @@ impl TryFrom<OpCode> for DecodedOp {
             return Ok(DecodedOp::NOP(NOP));
         }
         match (opcode.primary(), opcode.secondary()) {
+            (PrimeOp::SPECIAL, SecOp::SLLV) => SLLV::try_from(opcode).map(Self::SLLV),
             (PrimeOp::XORI, _) => XORI::try_from(opcode).map(Self::XORI),
             (PrimeOp::ORI, _) => ORI::try_from(opcode).map(Self::ORI),
             (PrimeOp::ANDI, _) => ANDI::try_from(opcode).map(Self::ANDI),
@@ -585,6 +590,7 @@ mod decode_display_tests {
     #[case::andi(DecodedOp::new(andi(8, 9, 4)), "andi $t0 $t1 4")]
     #[case::ori(DecodedOp::new(ori(8, 9, 4)), "ori $t0 $t1 4")]
     #[case::xori(DecodedOp::new(xori(8, 9, 4)), "xori $t0 $t1 4")]
+    #[case::sllv(DecodedOp::new(sllv(8, 9, 10)), "sllv $t0 $t1 $t2")]
     fn test_display(setup_tracing: (), #[case] op: DecodedOp, #[case] expected: &str) {
         assert_eq!(op.to_string(), expected);
     }
