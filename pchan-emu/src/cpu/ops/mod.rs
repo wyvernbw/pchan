@@ -15,6 +15,7 @@ pub mod andi;
 pub mod nor;
 pub mod or;
 pub mod ori;
+pub mod sll;
 pub mod sllv;
 pub mod slt;
 pub mod slti;
@@ -61,6 +62,7 @@ pub mod prelude {
     pub use super::ori::*;
     pub use super::sb::*;
     pub use super::sh::*;
+    pub use super::sll::*;
     pub use super::sllv::*;
     pub use super::slt::*;
     pub use super::slti::*;
@@ -554,12 +556,14 @@ pub enum DecodedOp {
     SRLV(SRLV),
     #[strum(transparent)]
     SRAV(SRAV),
+    #[strum(transparent)]
+    SLL(SLL),
 }
 
 impl TryFrom<OpCode> for DecodedOp {
     type Error = impl std::error::Error;
 
-    #[instrument(err)]
+    #[instrument(err, ret)]
     fn try_from(opcode: OpCode) -> Result<Self, Self::Error> {
         if opcode.0 == 69420 {
             return Ok(DecodedOp::HaltBlock(HaltBlock));
@@ -568,6 +572,7 @@ impl TryFrom<OpCode> for DecodedOp {
             return Ok(DecodedOp::NOP(NOP));
         }
         match (opcode.primary(), opcode.secondary()) {
+            (PrimeOp::SPECIAL, SecOp::SLL) => SLL::try_from(opcode).map(Self::SLL),
             (PrimeOp::SPECIAL, SecOp::SRAV) => SRAV::try_from(opcode).map(Self::SRAV),
             (PrimeOp::SPECIAL, SecOp::SRLV) => SRLV::try_from(opcode).map(Self::SRLV),
             (PrimeOp::SPECIAL, SecOp::SLLV) => SLLV::try_from(opcode).map(Self::SLLV),
@@ -650,6 +655,7 @@ mod decode_display_tests {
     #[case::sllv(DecodedOp::new(sllv(8, 9, 10)), "sllv $t0 $t1 $t2")]
     #[case::srlv(DecodedOp::new(srlv(8, 9, 10)), "srlv $t0 $t1 $t2")]
     #[case::srav(DecodedOp::new(srav(8, 9, 10)), "srav $t0 $t1 $t2")]
+    #[case::sll(DecodedOp::new(sll(8, 9, 4)), "sll $t0 $t1 4")]
     fn test_display(setup_tracing: (), #[case] op: DecodedOp, #[case] expected: &str) {
         assert_eq!(op.to_string(), expected);
     }
