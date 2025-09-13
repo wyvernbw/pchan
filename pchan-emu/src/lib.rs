@@ -455,7 +455,7 @@ impl Emu {
             );
         }
         {}
-        let summary = op.emit_ir(
+        if let Some(summary) = op.emit_ir(
             EmitParams::builder()
                 .ptr_type(ptr_type)
                 .cache(register_cache)
@@ -465,12 +465,18 @@ impl Emu {
                 .deps_map(deps_map)
                 .build(),
             fn_builder,
-        );
-        if let Some(summary) = summary
-            && let Some(pc) = summary.pc_update
-        {
-            cpu.pc = pc;
-            tracing::debug!(cpu.pc);
+        ) {
+            JIT::apply_cache_updates()
+                .updates(CacheUpdates::new(
+                    &summary,
+                    CacheUpdatesRegisters::Immediate,
+                ))
+                .cache(register_cache)
+                .call();
+            if let Some(pc) = summary.pc_update {
+                cpu.pc = pc;
+                tracing::debug!(cpu.pc);
+            }
         }
         tracing::debug!("{:?} compiled {} instructions", basic_block.clif_block, idx);
     }

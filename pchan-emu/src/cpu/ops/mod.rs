@@ -33,6 +33,7 @@ pub mod xori;
 // jumps
 pub mod beq;
 pub mod j;
+pub mod jal;
 
 // loads
 pub mod lb;
@@ -55,6 +56,7 @@ pub mod prelude {
     pub use super::andi::*;
     pub use super::beq::*;
     pub use super::j::*;
+    pub use super::jal::*;
     pub use super::lb::*;
     pub use super::lbu::*;
     pub use super::lh::*;
@@ -82,7 +84,9 @@ pub mod prelude {
     pub use super::sw::*;
     pub use super::xor::*;
     pub use super::xori::*;
-    pub use super::{BoundaryType, EmitParams, EmitSummary, Op, PrimeOp, SecOp, TryFromOpcodeErr};
+    pub use super::{
+        BoundaryType, EmitParams, EmitSummary, MipsOffset, Op, PrimeOp, SecOp, TryFromOpcodeErr,
+    };
 }
 
 use prelude::*;
@@ -394,6 +398,12 @@ impl<'a> EmitParams<'a> {
             }
         }
     }
+    fn update_cache_immediate(&mut self, id: usize, value: Value) {
+        self.cache.registers[id] = Some(CachedValue {
+            dirty: false,
+            value,
+        });
+    }
 }
 
 #[derive(Builder, Debug, Default)]
@@ -627,12 +637,14 @@ pub enum DecodedOp {
     LUI(LUI),
     #[strum(transparent)]
     MULT(MULT),
+    #[strum(transparent)]
+    JAL(JAL),
 }
 
 impl TryFrom<OpCode> for DecodedOp {
     type Error = impl std::error::Error;
 
-    #[instrument(err, ret)]
+    #[instrument(err)]
     fn try_from(opcode: OpCode) -> Result<Self, Self::Error> {
         if opcode.0 == 69420 {
             return Ok(DecodedOp::HaltBlock(HaltBlock));
@@ -641,6 +653,7 @@ impl TryFrom<OpCode> for DecodedOp {
             return Ok(DecodedOp::NOP(NOP));
         }
         match (opcode.primary(), opcode.secondary()) {
+            (PrimeOp::JAL, _) => JAL::try_from(opcode).map(Self::JAL),
             (PrimeOp::SPECIAL, SecOp::MULT) => MULT::try_from(opcode).map(Self::MULT),
             (PrimeOp::LUI, _) => LUI::try_from(opcode).map(Self::LUI),
             (PrimeOp::SPECIAL, SecOp::SRA) => SRA::try_from(opcode).map(Self::SRA),
@@ -733,6 +746,7 @@ mod decode_display_tests {
     #[case::sra(DecodedOp::new(sra(8, 9, 4)), "sra $t0 $t1 4")]
     #[case::lui(DecodedOp::new(lui(8, 32)), "lui $t0 32")]
     #[case::mult(DecodedOp::new(mult(8, 9)), "mult $t0 $t1")]
+    #[case::jal(DecodedOp::new(jal(0x0040_0000)), "jal 0x00400000")]
     fn test_display(setup_tracing: (), #[case] op: DecodedOp, #[case] expected: &str) {
         assert_eq!(op.to_string(), expected);
     }
