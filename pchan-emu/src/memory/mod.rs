@@ -91,7 +91,7 @@ pub const fn memory_map() -> [MemoryRegion; 1 << 16] {
     table
 }
 
-static MEM_MAP: [MemoryRegion; 1 << 16] = memory_map();
+pub static MEM_MAP: [MemoryRegion; 1 << 16] = memory_map();
 
 #[inline]
 pub const fn map_physical(phys: PhysAddr) -> u32 {

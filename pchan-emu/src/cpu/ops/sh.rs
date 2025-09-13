@@ -51,8 +51,7 @@ impl Op for SH {
 
         // get cached register if possible, otherwise load it in
         let rs = state.emit_get_register(fn_builder, self.rs);
-        let rs = fn_builder.ins().band_imm(rs, 0x1FFF_FFFF);
-        let rs = fn_builder.ins().uextend(state.ptr_type, rs);
+        let rs = state.emit_map_address(fn_builder, rs);
         let rt = state.emit_get_register(fn_builder, self.rt);
         let mem_ptr = fn_builder.ins().iadd(mem_ptr, rs);
 

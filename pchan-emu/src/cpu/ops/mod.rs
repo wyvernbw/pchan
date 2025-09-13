@@ -27,6 +27,7 @@ pub mod sra;
 pub mod srav;
 pub mod srl;
 pub mod srlv;
+pub mod subu;
 pub mod xor;
 pub mod xori;
 
@@ -45,7 +46,6 @@ pub mod lw;
 // stores
 pub mod sb;
 pub mod sh;
-pub mod subu;
 pub mod sw;
 
 pub mod prelude {
@@ -294,6 +294,7 @@ impl<'a> EmitParams<'a> {
         vec![
             BlockArg::Value(self.cpu(fn_builder)),
             BlockArg::Value(self.memory(fn_builder)),
+            BlockArg::Value(self.mem_map(fn_builder)),
         ]
     }
     #[instrument(skip(fn_builder, self))]
@@ -328,6 +329,10 @@ impl<'a> EmitParams<'a> {
     fn memory(&self, fn_builder: &mut FunctionBuilder) -> Value {
         let block = self.cfg[self.node].clif_block();
         fn_builder.block_params(block)[1]
+    }
+    fn mem_map(&self, fn_builder: &mut FunctionBuilder) -> Value {
+        let block = self.block().clif_block();
+        fn_builder.block_params(block)[2]
     }
     fn emit_get_one(&mut self, fn_builder: &mut FunctionBuilder) -> Value {
         match self.cache.const_one {
@@ -403,6 +408,15 @@ impl<'a> EmitParams<'a> {
             dirty: false,
             value,
         });
+    }
+    fn emit_map_address(&self, fn_builder: &mut FunctionBuilder, address: Value) -> Value {
+        let mem_map = self.mem_map(fn_builder);
+        JIT::emit_map_address()
+            .fn_builder(fn_builder)
+            .ptr_type(self.ptr_type)
+            .address(address)
+            .mem_map_ptr(mem_map)
+            .call()
     }
 }
 

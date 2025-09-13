@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
+    mem::offset_of,
     ptr,
 };
 
@@ -13,7 +14,7 @@ use crate::{
         ops::{CachedValue, EmitSummary},
     },
     cranelift_bs::*,
-    memory::Memory,
+    memory::{Memory, MemoryRegion},
 };
 
 #[derive(derive_more::Debug)]
@@ -85,6 +86,7 @@ impl Default for JIT {
 
         let ptr = module.target_config().pointer_type();
         let mut sig = Signature::new(CallConv::SystemV);
+        sig.params.push(AbiParam::new(ptr));
         sig.params.push(AbiParam::new(ptr));
         sig.params.push(AbiParam::new(ptr));
 
@@ -186,10 +188,16 @@ impl JIT {
         }
     }
 
-    pub fn use_cached_function(&self, address: u32, cpu: &mut Cpu, mem: &mut Memory) -> bool {
+    pub fn use_cached_function(
+        &self,
+        address: u32,
+        cpu: &mut Cpu,
+        mem: &mut Memory,
+        mem_map: &[MemoryRegion],
+    ) -> bool {
         if let Some(function) = self.block_map.get(address) {
             tracing::trace!("invoking cached function {function:?}");
-            function(cpu, mem, false);
+            function(cpu, mem, false, mem_map);
             true
         } else {
             false
@@ -380,6 +388,38 @@ impl JIT {
         tracing::trace!("done");
     }
 
+    #[builder]
+    pub fn emit_map_address(
+        fn_builder: &mut FunctionBuilder<'_>,
+        ptr_type: Type,
+        mem_map_ptr: Value,
+        address: Value,
+    ) -> Value {
+        let address = fn_builder.ins().band_imm(address, 0x1FFF_FFFF);
+        // let index = fn_builder.ins().ushr_imm(address, 16);
+        let index = fn_builder.ins().iconst(types::I32, 0);
+        let index = fn_builder.ins().uextend(ptr_type, index);
+        let index = fn_builder
+            .ins()
+            .imul_imm(index, size_of::<MemoryRegion>() as i64);
+        let lookup = fn_builder.ins().iadd(index, mem_map_ptr);
+
+        let region_val =
+            fn_builder
+                .ins()
+                .load(types::I64, MemFlags::new().with_aligned(), lookup, 0);
+
+        let phys_start = {
+            let phys_start = fn_builder
+                .ins()
+                .ushr_imm(region_val, offset_of!(MemoryRegion, phys_start) as i64 * 8);
+            fn_builder.ins().ireduce(types::I32, phys_start)
+        };
+
+        let offset = fn_builder.ins().isub(address, phys_start);
+        fn_builder.ins().uextend(ptr_type, offset)
+    }
+
     pub fn cache_usage(&self) -> (usize, usize) {
         (
             self.block_map.0.len(),
@@ -390,18 +430,26 @@ impl JIT {
 
 #[derive(Debug, Clone, Copy)]
 #[repr(transparent)]
-pub struct BlockFn(pub fn(*mut Cpu, *mut [u8]));
+pub struct BlockFn(pub fn(*mut Cpu, *mut u8, *const MemoryRegion));
 
-type BlockFnArgs<'a> = (&'a mut Cpu, &'a mut Memory, bool);
+type BlockFnArgs<'a> = (&'a mut Cpu, &'a mut Memory, bool, &'a [MemoryRegion]);
 
 impl BlockFn {
     fn call_block(&self, args: BlockFnArgs) {
         if args.2 {
             self.0
                 .instrument(tracing::info_span!("fn", addr = ?self.0))
-                .inner()(ptr::from_mut(args.0), ptr::from_mut(args.1.as_mut()))
+                .inner()(
+                ptr::from_mut(args.0),
+                args.1.as_mut().as_mut_ptr(),
+                args.3.as_ptr(),
+            )
         } else {
-            self.0(ptr::from_mut(args.0), ptr::from_mut(args.1.as_mut()))
+            self.0(
+                ptr::from_mut(args.0),
+                args.1.as_mut().as_mut_ptr(),
+                args.3.as_ptr(),
+            )
         }
     }
 }

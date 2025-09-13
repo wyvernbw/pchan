@@ -31,10 +31,7 @@
 use std::{borrow::Cow, collections::HashMap, mem::offset_of};
 
 use bon::{Builder, bon, builder};
-use color_eyre::{
-    Section,
-    eyre::{self, Context, eyre},
-};
+use color_eyre::eyre::{Context, eyre};
 use crossbeam::queue::ArrayQueue;
 use petgraph::{
     algo::is_cyclic_directed,
@@ -50,7 +47,7 @@ use crate::{
         ops::{BoundaryType, CachedValue, DecodedOp, EmitParams, EmitSummary, Op},
     },
     jit::{BlockPage, CacheUpdates, CacheUpdatesRegisters, JIT},
-    memory::{Memory, PhysAddr},
+    memory::{MEM_MAP, Memory, PhysAddr},
 };
 
 pub mod cranelift_bs {
@@ -175,9 +172,9 @@ impl Emu {
         self.jit.apply_dirty_pages(initial_address);
 
         // try cache first
-        let cached = self
-            .jit
-            .use_cached_function(initial_address, &mut self.cpu, &mut self.mem);
+        let cached =
+            self.jit
+                .use_cached_function(initial_address, &mut self.cpu, &mut self.mem, &MEM_MAP);
         if cached {
             return Ok(T::summarize(SummarizeDeps::builder().build()));
         }
@@ -316,7 +313,7 @@ impl Emu {
 
         let function = self.jit.get_func(func_id);
         tracing::info!("compiled function: {:?}", function.0);
-        function(&mut self.cpu, &mut self.mem, true);
+        function(&mut self.cpu, &mut self.mem, true, &MEM_MAP);
         self.jit.block_map.insert(initial_address, function);
 
         Ok(summary)
@@ -340,6 +337,7 @@ impl Emu {
     ) -> EmitBlockSummary {
         // fn_builder.seal_block(cranelift_block);
         fn_builder.switch_to_block(cranelift_block);
+        fn_builder.append_block_param(cranelift_block, ptr_type);
         fn_builder.append_block_param(cranelift_block, ptr_type);
         fn_builder.append_block_param(cranelift_block, ptr_type);
         for reg in deps.registers.iter() {

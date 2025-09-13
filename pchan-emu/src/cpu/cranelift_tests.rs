@@ -2,7 +2,7 @@ use pchan_utils::setup_tracing;
 use pretty_assertions::assert_eq;
 use rstest::rstest;
 
-use crate::{Emu, jit::JIT, test_utils::emulator};
+use crate::{Emu, jit::JIT, memory::MEM_MAP, test_utils::emulator};
 
 #[rstest]
 fn basic_jit(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
@@ -102,7 +102,7 @@ fn basic_adder(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
     emulator.cpu.gpr[10] = 42;
 
     tracing::info!(%emulator.cpu);
-    adder(&mut emulator.cpu, &mut emulator.mem, true);
+    adder(&mut emulator.cpu, &mut emulator.mem, true, &MEM_MAP);
     tracing::info!(%emulator.cpu);
     assert_eq!(
         emulator.cpu.gpr[11],
