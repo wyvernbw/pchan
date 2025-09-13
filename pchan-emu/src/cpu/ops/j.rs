@@ -55,6 +55,7 @@ impl Op for J {
         Some(
             EmitSummary::builder()
                 .pc_update(MipsOffset::RegionJump(self.imm).calculate_address(state.pc))
+                .finished_block(true)
                 .build(),
         )
     }
@@ -71,7 +72,7 @@ mod tests {
     use pretty_assertions::assert_eq;
     use rstest::rstest;
 
-    use crate::{Emu, cpu::ops::OpCode, memory::KSEG0Addr, test_utils::emulator};
+    use crate::{Emu, JitSummary, memory::KSEG0Addr, test_utils::emulator};
 
     #[rstest]
     fn basic_jump(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
@@ -87,7 +88,7 @@ mod tests {
 
         emulator
             .mem
-            .write_all(KSEG0Addr::from_phys(emulator.cpu.pc as u32), program);
+            .write_all(KSEG0Addr::from_phys(emulator.cpu.pc), program);
         emulator
             .mem
             .write_all(KSEG0Addr::from_phys(0x0000_2000), function);
@@ -111,12 +112,14 @@ mod tests {
 
         emulator
             .mem
-            .write_all(KSEG0Addr::from_phys(emulator.cpu.pc as u32), program);
+            .write_all(KSEG0Addr::from_phys(emulator.cpu.pc), program);
         emulator
             .mem
             .write_all(KSEG0Addr::from_phys(0x0000_2000), function);
 
-        emulator.step_jit()?;
+        let summary = emulator.step_jit_summarize::<JitSummary>()?;
+        tracing::info!(?summary.function);
+
         assert_eq!(emulator.cpu.gpr[9], 69);
         assert_eq!(emulator.cpu.gpr[10], 32);
 

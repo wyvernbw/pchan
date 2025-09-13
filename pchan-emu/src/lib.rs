@@ -354,6 +354,22 @@ impl Emu {
             if op.is_block_boundary().is_some() {
                 tracing::trace!(%op, "block boundary");
                 let summary = EmitBlockSummary;
+
+                if idx + 1 < basic_block.ops.len() {
+                    Self::emit_op()
+                        .fn_builder(fn_builder)
+                        .ptr_type(ptr_type)
+                        .node(node)
+                        .deps_map(deps_map)
+                        .cfg(cfg)
+                        .register_cache(register_cache)
+                        .op(&basic_block.ops[idx + 1])
+                        .idx(idx + 1)
+                        .summary_queue(&mut summary_queue)
+                        .basic_block(basic_block)
+                        .call();
+                }
+
                 Self::emit_block_boundary()
                     .op(op)
                     .register_cache(register_cache)
@@ -368,59 +384,68 @@ impl Emu {
                     .call();
                 return summary;
             }
-            let summary = op.emit_ir(
-                EmitParams::builder()
-                    .ptr_type(ptr_type)
-                    .cache(register_cache)
-                    .pc(basic_block.address + idx as u32 * 4)
-                    .node(node)
-                    .cfg(cfg)
-                    .deps_map(deps_map)
-                    .build(),
-                fn_builder,
-            );
-
-            if let Some(summary) = summary_queue.take() {
-                // flush_updates();
-                JIT::apply_cache_updates()
-                    .updates(CacheUpdates::new(&summary, CacheUpdatesRegisters::Delayed))
-                    .cache(register_cache)
-                    .call();
-            }
-
-            if let Some(summary) = summary {
-                JIT::apply_cache_updates()
-                    .updates(CacheUpdates::new(
-                        &summary,
-                        CacheUpdatesRegisters::Immediate,
-                    ))
-                    .cache(register_cache)
-                    .call();
-                summary_queue = Some(summary);
-            }
+            Self::emit_op()
+                .fn_builder(fn_builder)
+                .ptr_type(ptr_type)
+                .node(node)
+                .deps_map(deps_map)
+                .cfg(cfg)
+                .register_cache(register_cache)
+                .op(op)
+                .idx(idx)
+                .summary_queue(&mut summary_queue)
+                .basic_block(basic_block)
+                .call();
         }
-
-        // JIT::emit_updates()
-        //     .builder(fn_builder)
-        //     .block(cranelift_block)
-        //     .cache(register_cache)
-        //     .call();
-        // let cpu_value = fn_builder.block_params(basic_block.clif_block())[0];
-        // let pc_value = fn_builder.ins().iconst(
-        //     types::I32,
-        //     (basic_block.address as i32 + (basic_block.ops.len().saturating_sub(1)) as i32 * 4)
-        //         as i64,
-        // );
-        // fn_builder.ins().store(
-        //     MemFlags::new(),
-        //     pc_value,
-        //     cpu_value,
-        //     offset_of!(Cpu, pc) as i32,
-        // );
 
         fn_builder.ins().return_(&[]);
 
         EmitBlockSummary
+    }
+
+    #[builder]
+    pub fn emit_op(
+        fn_builder: &mut FunctionBuilder<'_>,
+        ptr_type: types::Type,
+        cfg: &Graph<BasicBlock, ()>,
+        node: NodeIndex,
+        register_cache: &mut EntryCache,
+        deps_map: &HashMap<Block, CacheDependency>,
+        op: &DecodedOp,
+        basic_block: &BasicBlock,
+        idx: usize,
+        summary_queue: &mut Option<EmitSummary>,
+    ) {
+        let summary = op.emit_ir(
+            EmitParams::builder()
+                .ptr_type(ptr_type)
+                .cache(register_cache)
+                .pc(basic_block.address + idx as u32 * 4)
+                .node(node)
+                .cfg(cfg)
+                .deps_map(deps_map)
+                .build(),
+            fn_builder,
+        );
+
+        if let Some(summary) = summary_queue.take() {
+            // flush_updates();
+            JIT::apply_cache_updates()
+                .updates(CacheUpdates::new(&summary, CacheUpdatesRegisters::Delayed))
+                .cache(register_cache)
+                .call();
+        }
+
+        if let Some(summary) = summary {
+            JIT::apply_cache_updates()
+                .updates(CacheUpdates::new(
+                    &summary,
+                    CacheUpdatesRegisters::Immediate,
+                ))
+                .cache(register_cache)
+                .call();
+            *summary_queue = Some(summary);
+        }
     }
 
     #[builder]
@@ -486,6 +511,9 @@ impl Emu {
             if let Some(pc) = summary.pc_update {
                 cpu.pc = pc;
                 tracing::debug!(cpu.pc);
+            }
+            if !summary.finished_block {
+                fn_builder.ins().return_(&[]);
             }
         }
         tracing::debug!("{:?} compiled {} instructions", basic_block.clif_block, idx);
@@ -586,6 +614,11 @@ fn walk_fn(params: WalkFnParams<'_>) -> color_eyre::Result<WalkFnSummary> {
         match op.is_block_boundary() {
             Some(BoundaryType::Function { .. }) => {
                 cfg[state.current_node].ops.push(op);
+                let op = mem.read::<u32>(PhysAddr(state.pc + 4));
+                let op = cpu::ops::OpCode(op);
+                let op = DecodedOp::try_from(op)?;
+                cfg[state.current_node].ops.push(op);
+
                 continue;
             }
             None => {

@@ -69,6 +69,7 @@ impl Op for JAL {
         fn_builder.ins().jump(next_block.clif_block(), &params);
         Some(
             EmitSummary::builder()
+                .finished_block(true)
                 .register_updates([(RA, pc)])
                 .pc_update(MipsOffset::RegionJump(self.imm).calculate_address(state.pc))
                 .build(),

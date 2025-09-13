@@ -40,6 +40,7 @@ pub mod xori;
 pub mod beq;
 pub mod j;
 pub mod jal;
+pub mod jalr;
 pub mod jr;
 
 // loads
@@ -63,6 +64,7 @@ pub mod prelude {
     pub use super::beq::*;
     pub use super::j::*;
     pub use super::jal::*;
+    pub use super::jalr::*;
     pub use super::jr::*;
     pub use super::lb::*;
     pub use super::lbu::*;
@@ -434,6 +436,14 @@ impl<'a> EmitParams<'a> {
         let cpu = self.cpu(fn_builder);
         JIT::emit_store_pc(fn_builder, value, cpu);
     }
+    fn emit_store_register(&self, fn_builder: &mut FunctionBuilder, reg: usize, value: Value) {
+        JIT::emit_store_reg()
+            .builder(fn_builder)
+            .block(self.block().clif_block())
+            .idx(reg)
+            .value(value)
+            .call();
+    }
 }
 
 #[derive(Builder, Debug, Default)]
@@ -453,6 +463,8 @@ pub struct EmitSummary {
         value
     })]
     pub lo: Option<CachedValue>,
+    #[builder(default)]
+    pub finished_block: bool,
 }
 
 impl<S: emit_summary_builder::State> EmitSummaryBuilder<S> {
@@ -676,6 +688,8 @@ pub enum DecodedOp {
     JAL(JAL),
     #[strum(transparent)]
     JR(JR),
+    #[strum(transparent)]
+    JALR(JALR),
 }
 
 impl TryFrom<OpCode> for DecodedOp {
@@ -690,6 +704,7 @@ impl TryFrom<OpCode> for DecodedOp {
             return Ok(DecodedOp::NOP(NOP));
         }
         match (opcode.primary(), opcode.secondary()) {
+            (PrimeOp::SPECIAL, SecOp::JALR) => JALR::try_from(opcode).map(Self::JALR),
             (PrimeOp::SPECIAL, SecOp::JR) => JR::try_from(opcode).map(Self::JR),
             (PrimeOp::JAL, _) => JAL::try_from(opcode).map(Self::JAL),
             (PrimeOp::SPECIAL, SecOp::MTLO) => MTLO::try_from(opcode).map(Self::MTLO),
@@ -796,6 +811,7 @@ mod decode_display_tests {
     #[case::mthi(DecodedOp::new(mthi(8)), "mthi $t0")]
     #[case::mtlo(DecodedOp::new(mtlo(8)), "mtlo $t0")]
     #[case::jr(DecodedOp::new(jr(8)), "jr $t0")]
+    #[case::jalr(DecodedOp::new(jalr(8, 9)), "jalr $t0 $t1")]
     fn test_display(setup_tracing: (), #[case] op: DecodedOp, #[case] expected: &str) {
         assert_eq!(op.to_string(), expected);
     }

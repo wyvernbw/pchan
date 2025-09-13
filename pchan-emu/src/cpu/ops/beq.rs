@@ -95,7 +95,8 @@ impl Op for BEQ {
             else_block.clif_block(),
             &else_params,
         );
-        None
+
+        Some(EmitSummary::builder().finished_block(true).build())
     }
 }
 
