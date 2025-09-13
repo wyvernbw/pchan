@@ -5,12 +5,12 @@ use crate::cpu::ops::prelude::*;
 use crate::cranelift_bs::*;
 
 #[derive(Debug, Clone, Copy)]
-pub struct MULT {
+pub struct MULTU {
     rs: usize,
     rt: usize,
 }
 
-impl Op for MULT {
+impl Op for MULTU {
     fn is_block_boundary(&self) -> Option<BoundaryType> {
         None
     }
@@ -18,7 +18,7 @@ impl Op for MULT {
     fn into_opcode(self) -> crate::cpu::ops::OpCode {
         OpCode::default()
             .with_primary(PrimeOp::SPECIAL)
-            .with_secondary(SecOp::MULT)
+            .with_secondary(SecOp::MULTU)
             .set_bits(21..26, self.rs as u32)
             .set_bits(16..21, self.rt as u32)
     }
@@ -39,12 +39,13 @@ impl Op for MULT {
 
         let rs = state.emit_get_register(fn_builder, self.rs);
         let rt = state.emit_get_register(fn_builder, self.rt);
+
         let lo = fn_builder.ins().imul(rs, rt);
-        let hi = fn_builder.ins().smulhi(rs, rt);
+        let hi = fn_builder.ins().umulhi(rs, rt);
 
         // Extend to 64-bit
         let lo64 = fn_builder.ins().uextend(types::I64, lo);
-        let hi64 = fn_builder.ins().sextend(types::I64, hi);
+        let hi64 = fn_builder.ins().uextend(types::I64, hi);
 
         // Shift high half into upper 32 bits
         let hi64_shifted = fn_builder.ins().ishl_imm(hi64, 32);
@@ -55,28 +56,28 @@ impl Op for MULT {
     }
 }
 
-impl Display for MULT {
+impl Display for MULTU {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "mult ${} ${}", REG_STR[self.rs], REG_STR[self.rt])
+        write!(f, "multu ${} ${}", REG_STR[self.rs], REG_STR[self.rt])
     }
 }
 
-impl TryFrom<OpCode> for MULT {
+impl TryFrom<OpCode> for MULTU {
     type Error = TryFromOpcodeErr;
 
     fn try_from(value: OpCode) -> Result<Self, Self::Error> {
         let value = value
             .as_primary(PrimeOp::SPECIAL)?
-            .as_secondary(SecOp::MULT)?;
-        Ok(MULT {
+            .as_secondary(SecOp::MULTU)?;
+        Ok(MULTU {
             rs: value.bits(21..26) as usize,
             rt: value.bits(16..21) as usize,
         })
     }
 }
 
-pub fn mult(rs: usize, rt: usize) -> OpCode {
-    MULT { rs, rt }.into_opcode()
+pub fn multu(rs: usize, rt: usize) -> OpCode {
+    MULTU { rs, rt }.into_opcode()
 }
 
 #[cfg(test)]
@@ -90,10 +91,10 @@ mod tests {
 
     #[rstest]
     #[case(1, 1, 1)]
-    #[case(2, -2i32 as u32, -4i64 as u64)]
+    #[case(0xFFFFFFFF, 2, 0x1FFFFFFFE)]
     #[case(2, 0, 0)]
     #[case(2_000_000_000, 2_000_000_000, 4_000_000_000_000_000_000)]
-    pub fn mult_1(
+    pub fn multu_1(
         setup_tracing: (),
         mut emulator: Emu,
         #[case] a: u32,
@@ -104,7 +105,7 @@ mod tests {
 
         emulator
             .mem
-            .write_array(KSEG0Addr::from_phys(0), &[mult(8, 9), OpCode(69420)]);
+            .write_array(KSEG0Addr::from_phys(0), &[multu(8, 9), OpCode(69420)]);
         emulator.cpu.gpr[8] = a;
         emulator.cpu.gpr[9] = b;
 
@@ -120,7 +121,7 @@ mod tests {
     #[case(2, 0, 0)]
     #[case(0, 2, 0)]
     #[case(0, 0, 0)]
-    pub fn mult_2_shortpath(
+    pub fn multu_2_shortpath(
         setup_tracing: (),
         mut emulator: Emu,
         #[case] a: usize,
@@ -133,7 +134,7 @@ mod tests {
 
         emulator
             .mem
-            .write_array(KSEG0Addr::from_phys(0), &[mult(a, b), OpCode(69420)]);
+            .write_array(KSEG0Addr::from_phys(0), &[multu(a, b), OpCode(69420)]);
         if a != 0 {
             emulator.cpu.gpr[a] = 32;
         }
