@@ -190,6 +190,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "const_for"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d9c50fcfdf972929aff202c16b80086aa3cfc6a3a820af714096c58c7c1d0582"
+
+[[package]]
 name = "core-foundation-sys"
 version = "0.8.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -829,6 +835,7 @@ version = "0.1.0"
 dependencies = [
  "bon",
  "color-eyre",
+ "const_for",
  "cranelift",
  "crossbeam",
  "derive_more",

@@ -1,6 +1,11 @@
 // allow for dev
 #![allow(dead_code)]
+#![allow(long_running_const_eval)]
 #![allow(incomplete_features)]
+#![feature(const_for)]
+#![feature(const_clone)]
+#![feature(const_default)]
+#![feature(derive_const)]
 #![feature(hash_map_macro)]
 #![feature(iter_map_windows)]
 #![feature(iterator_try_collect)]
@@ -26,6 +31,10 @@
 use std::{borrow::Cow, collections::HashMap, mem::offset_of};
 
 use bon::{Builder, bon, builder};
+use color_eyre::{
+    Section,
+    eyre::{self, Context, eyre},
+};
 use crossbeam::queue::ArrayQueue;
 use petgraph::{
     algo::is_cyclic_directed,
@@ -144,6 +153,9 @@ impl Emu {
     pub fn load_bios(&mut self) -> color_eyre::Result<()> {
         self.boot.load_bios(&mut self.mem)?;
         Ok(())
+    }
+    pub fn jump_to_bios(&mut self) {
+        self.cpu.jump_to_bios();
     }
     fn create_block_queue(fn_builder: &mut FunctionBuilder) -> ArrayQueue<Block> {
         let clif_blocks = ArrayQueue::new(16);
@@ -570,7 +582,7 @@ fn walk_fn(params: WalkFnParams<'_>) -> color_eyre::Result<WalkFnSummary> {
 
         let op = mem.read::<u32>(PhysAddr(state.pc));
         let op = cpu::ops::OpCode(op);
-        let op = DecodedOp::try_from(op)?;
+        let op = DecodedOp::try_from(op).wrap_err(eyre!("failed at pc 0x{:08X}", state.pc))?;
         tracing::trace!(pc = state.pc, op = format!("{op}"), "read at");
 
         match op.is_block_boundary() {

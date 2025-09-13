@@ -1,4 +1,5 @@
-use std::ops::{Add, Mul};
+use const_for::const_for;
+use std::ops::{Add, Index, Mul};
 
 use thiserror::Error;
 use tracing::instrument;
@@ -17,12 +18,11 @@ pub fn buffer(size: usize) -> Box<[u8]> {
     vec![0u8; size].into_boxed_slice()
 }
 
-const MEM_SIZE: usize = kb(2048) + kb(8192) + kb(1) + kb(8) + kb(8) + kb(2048) + kb(512) + 512;
-const MEM_KB: usize = from_kb(MEM_SIZE) + 1;
+pub type Buffer = Box<[u8]>;
 
 #[derive(derive_more::Debug)]
 #[debug("memory:{}kb", MEM_SIZE/1024)]
-pub struct Memory(Box<[u8]>);
+pub struct Memory(Buffer);
 
 impl AsRef<[u8]> for Memory {
     fn as_ref(&self) -> &[u8] {
@@ -36,9 +36,80 @@ impl AsMut<[u8]> for Memory {
     }
 }
 
+static MEM_SIZE: usize = kb(2048) + kb(8192) + kb(1) + kb(8) + kb(8) + kb(2048) + kb(512) + 512;
+// const MEM_SIZE: usize = 600 * 1024 * 1024;
+static MEM_KB: usize = from_kb(MEM_SIZE) + 1;
+
 impl Default for Memory {
     fn default() -> Self {
         Memory(buffer(MEM_SIZE))
+    }
+}
+
+#[derive(derive_more::Debug)]
+#[derive_const(Default)]
+#[debug("0x{:08X}:0x{:08X}", self.host_start, self.phys_start)]
+pub struct MemoryRegion {
+    pub host_start: u32,
+    pub phys_start: u32,
+}
+
+pub const fn memory_map() -> [MemoryRegion; 1 << 16] {
+    const REGIONS: [(u32, usize); 8] = [
+        (0, kb(2048)),
+        (0x1F000000, kb(8192)),
+        (0x1F800000, kb(1)),
+        (0x1F801000, kb(8)),
+        (0x1F802000, kb(8)),
+        (0x1FA00000, kb(2048)),
+        (0x1FC00000, kb(512)),
+        (0x1FFE0000, 512),
+    ];
+    let mut start = 0u32;
+    let mut current = 0;
+    let mut table = [const { MemoryRegion::default() }; 1 << 16];
+    while current < REGIONS.len() {
+        let mut i = REGIONS[current].0 >> 16;
+        let end = (REGIONS[current].0 + REGIONS[current].1 as u32) >> 16;
+        while i <= end {
+            table[i as usize] = MemoryRegion {
+                host_start: start,
+                phys_start: REGIONS[current].0,
+            };
+            i += 1;
+        }
+        start += REGIONS[current].1 as u32;
+        current += 1;
+    }
+    // while current < table.len() {
+    //     table[current] = MemoryRegion {
+    //         host_start: current as u32,
+    //         phys_start: current as u32,
+    //     };
+    //     current += 1;
+    // }
+    table
+}
+
+static MEM_MAP: [MemoryRegion; 1 << 16] = memory_map();
+
+#[inline]
+pub const fn map_physical(phys: PhysAddr) -> u32 {
+    phys.0 >> 16
+}
+
+pub fn lookup_phys(phys: PhysAddr) -> u32 {
+    let index = map_physical(phys);
+    let region = &MEM_MAP[index as usize];
+    let offset = phys.0 - region.phys_start;
+    region.host_start + offset
+}
+
+impl Index<PhysAddr> for Memory {
+    type Output = u8;
+
+    fn index(&self, index: PhysAddr) -> &Self::Output {
+        &self.0[lookup_phys(index) as usize]
     }
 }
 
@@ -112,7 +183,7 @@ pub struct Addr(pub u32);
 
 impl KSEG0Addr {
     pub const fn to_phys(self) -> PhysAddr {
-        PhysAddr(self.0 - 0x8000_0000u32)
+        PhysAddr(self.0 & 0x1FFF_FFFF)
     }
     pub const fn from_phys(value: u32) -> Self {
         PhysAddr(value).to_kseg0()
@@ -132,7 +203,7 @@ impl const Add<u32> for KSEG0Addr {
 
 impl KSEG1Addr {
     pub const fn to_phys(self) -> PhysAddr {
-        PhysAddr(self.0 - 0xA000_0000u32)
+        PhysAddr(self.0 & 0x1FFF_FFFF)
     }
     pub const fn as_u32(self) -> u32 {
         self.0
@@ -420,7 +491,7 @@ impl Memory {
     #[instrument(err, skip(self))]
     pub fn try_read<T: MemRead>(&self, addr: impl Address) -> Result<T, MemReadError> {
         let addr = addr.try_into().map_err(|_| MemReadError::unmapped(addr))?;
-        let addr = addr.as_usize();
+        let addr = lookup_phys(addr) as usize;
         let slice = self
             .0
             .get(addr..(addr + size_of::<T>()))
@@ -440,8 +511,8 @@ impl Memory {
     where
         [(); size_of::<T>()]:,
     {
-        let addr = addr.try_into().map_err(|_| MemWriteError::unmapped(addr))?;
-        let addr = addr.as_usize();
+        let addr: PhysAddr = addr.try_into().map_err(|_| MemWriteError::unmapped(addr))?;
+        let addr = lookup_phys(addr) as usize;
         let slice = self
             .0
             .get_mut(addr..(addr + size_of::<T>()))

@@ -2,6 +2,8 @@ use std::fmt::Display;
 
 use pchan_utils::array;
 
+use crate::memory::{KSEG0Addr, KSEG1Addr};
+
 #[cfg(test)]
 mod cranelift_tests;
 pub mod ops;
@@ -45,6 +47,9 @@ impl Display for Cpu {
 impl Cpu {
     pub fn clear_registers(&mut self) {
         self.gpr = [0u32; 32];
+    }
+    pub fn jump_to_bios(&mut self) {
+        self.pc = KSEG1Addr(0xBFC0_0000).to_phys().as_u32();
     }
 }
 

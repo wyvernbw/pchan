@@ -6,7 +6,7 @@ use std::{
 
 use thiserror::Error;
 
-use crate::memory::{Memory, buffer, kb};
+use crate::memory::{KSEG1Addr, Memory, buffer, from_kb, kb};
 
 #[derive(derive_more::Debug)]
 pub struct Bootloader {
@@ -33,14 +33,14 @@ impl Bootloader {
     pub fn load_bios(&self, mem: &mut Memory) -> Result<(), BootError> {
         let mut bios_file =
             fs::File::open(&self.bios_path).map_err(BootError::BiosFileOpenError)?;
-        let mut bios = buffer(kb(600));
+        let mut bios = buffer(kb(524));
         let _ = bios_file
             .read(&mut bios)
             .map_err(BootError::BiosReadError)?;
+        let bios_slice = &bios[kb(12)..];
+        tracing::info!("loaded bios: {}kb", from_kb(bios_slice.len()));
 
-        mem.as_mut()
-            .write_all(&bios)
-            .map_err(BootError::BiosReadError)?;
+        mem.write_all(KSEG1Addr(0xBFC0_0000), bios_slice.iter().cloned());
 
         Ok(())
     }
