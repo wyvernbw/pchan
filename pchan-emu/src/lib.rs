@@ -112,7 +112,6 @@ struct EntryCache {
     const_zero_i64: Option<Value>,
     hi: Option<CachedValue>,
     lo: Option<CachedValue>,
-    hilo: Option<CachedValue>,
 }
 
 #[derive(Default, Clone, Debug)]
@@ -139,8 +138,8 @@ impl CacheDependency {
         }
         CacheDependency {
             registers: set,
-            hi: entry.hi.is_some() || entry.hilo.is_some(),
-            lo: entry.lo.is_some() || entry.hilo.is_some(),
+            hi: entry.hi.is_some(),
+            lo: entry.lo.is_some(),
         }
     }
 }

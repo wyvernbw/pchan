@@ -1,15 +1,13 @@
 use std::backtrace::Backtrace;
 
 use rstest::*;
+use tracing_subscriber::prelude::*;
 use tracing_subscriber::{
     EnvFilter,
     fmt::{self, format::FmtSpan},
-    prelude::*,
     util::SubscriberInitExt,
 };
 
-use tracing::{Level, info, info_span};
-use tracing_subscriber::Registry;
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::{Layer, layer::SubscriberExt};
 

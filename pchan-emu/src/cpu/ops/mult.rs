@@ -32,7 +32,8 @@ impl Op for MULT {
         if self.rs == 0 || self.rt == 0 {
             return Some(
                 EmitSummary::builder()
-                    .hilo(state.emit_get_zero_i64(fn_builder))
+                    .hi(state.emit_get_zero(fn_builder))
+                    .lo(state.emit_get_zero(fn_builder))
                     .build(),
             );
         }
@@ -42,16 +43,16 @@ impl Op for MULT {
         let lo = fn_builder.ins().imul(rs, rt);
         let hi = fn_builder.ins().smulhi(rs, rt);
 
-        // Extend to 64-bit
-        let lo64 = fn_builder.ins().uextend(types::I64, lo);
-        let hi64 = fn_builder.ins().sextend(types::I64, hi);
+        // // Extend to 64-bit
+        // let lo64 = fn_builder.ins().uextend(types::I64, lo);
+        // let hi64 = fn_builder.ins().sextend(types::I64, hi);
 
-        // Shift high half into upper 32 bits
-        let hi64_shifted = fn_builder.ins().ishl_imm(hi64, 32);
+        // // Shift high half into upper 32 bits
+        // let hi64_shifted = fn_builder.ins().ishl_imm(hi64, 32);
 
-        // Combine high and low halves
-        let full64 = fn_builder.ins().bor(hi64_shifted, lo64);
-        Some(EmitSummary::builder().hilo(full64).build())
+        // // Combine high ad low halves
+        // let full64 = fn_builder.ins().bor(hi64_shifted, lo64);
+        Some(EmitSummary::builder().hi(hi).lo(lo).build())
     }
 }
 
@@ -148,7 +149,7 @@ mod tests {
 
         let op_count = summary.function.unwrap().dfg.num_insts();
 
-        assert!(op_count <= 3 + 2);
+        assert!(op_count <= 3 + 2 + 1);
 
         Ok(())
     }

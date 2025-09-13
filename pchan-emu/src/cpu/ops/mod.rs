@@ -13,6 +13,7 @@ pub mod addu;
 pub mod and;
 pub mod andi;
 pub mod lui;
+pub mod mflo;
 pub mod mult;
 pub mod multu;
 pub mod nor;
@@ -64,6 +65,7 @@ pub mod prelude {
     pub use super::lhu::*;
     pub use super::lui::*;
     pub use super::lw::*;
+    pub use super::mflo::*;
     pub use super::mult::*;
     pub use super::multu::*;
     pub use super::nop;
@@ -439,11 +441,6 @@ pub struct EmitSummary {
         value
     })]
     pub lo: Option<CachedValue>,
-    #[builder(with = |value: Value| CachedValue {
-        dirty: true,
-        value
-    })]
-    pub hilo: Option<CachedValue>,
 }
 
 impl<S: emit_summary_builder::State> EmitSummaryBuilder<S> {
@@ -656,6 +653,8 @@ pub enum DecodedOp {
     #[strum(transparent)]
     MULTU(MULTU),
     #[strum(transparent)]
+    MFLO(MFLO),
+    #[strum(transparent)]
     JAL(JAL),
 }
 
@@ -672,6 +671,7 @@ impl TryFrom<OpCode> for DecodedOp {
         }
         match (opcode.primary(), opcode.secondary()) {
             (PrimeOp::JAL, _) => JAL::try_from(opcode).map(Self::JAL),
+            (PrimeOp::SPECIAL, SecOp::MFLO) => MFLO::try_from(opcode).map(Self::MFLO),
             (PrimeOp::SPECIAL, SecOp::MULTU) => MULTU::try_from(opcode).map(Self::MULTU),
             (PrimeOp::SPECIAL, SecOp::MULT) => MULT::try_from(opcode).map(Self::MULT),
             (PrimeOp::LUI, _) => LUI::try_from(opcode).map(Self::LUI),
@@ -767,6 +767,7 @@ mod decode_display_tests {
     #[case::mult(DecodedOp::new(mult(8, 9)), "mult $t0 $t1")]
     #[case::jal(DecodedOp::new(jal(0x0040_0000)), "jal 0x00400000")]
     #[case::multu(DecodedOp::new(multu(8, 9)), "multu $t0 $t1")]
+    #[case::mflo(DecodedOp::new(mflo(8)), "mflo $t0")]
     fn test_display(setup_tracing: (), #[case] op: DecodedOp, #[case] expected: &str) {
         assert_eq!(op.to_string(), expected);
     }

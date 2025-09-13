@@ -108,7 +108,6 @@ pub struct CacheUpdates<'a> {
     registers: Option<&'a [(usize, CachedValue)]>,
     hi: &'a Option<CachedValue>,
     lo: &'a Option<CachedValue>,
-    hilo: &'a Option<CachedValue>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -129,7 +128,6 @@ impl<'a> CacheUpdates<'a> {
             },
             hi: &emit_summary.hi,
             lo: &emit_summary.lo,
-            hilo: &emit_summary.hilo,
         }
     }
 }
@@ -288,7 +286,7 @@ impl JIT {
 
     #[instrument(skip(builder, block))]
     pub fn emit_store_hi(builder: &mut FunctionBuilder<'_>, block: Block, value: Value) {
-        const HI: usize = const { core::mem::offset_of!(Cpu, hilo) };
+        const HI: usize = const { core::mem::offset_of!(Cpu, hilo) + size_of::<u32>() };
         let block_state = builder.block_params(block)[0];
         tracing::trace!("stored");
         builder
@@ -298,7 +296,7 @@ impl JIT {
 
     #[instrument(skip(builder, block))]
     pub fn emit_store_lo(builder: &mut FunctionBuilder<'_>, block: Block, value: Value) {
-        const LO: usize = const { core::mem::offset_of!(Cpu, hilo) + size_of::<u32>() };
+        const LO: usize = const { core::mem::offset_of!(Cpu, hilo) };
         let block_state = builder.block_params(block)[0];
         tracing::trace!("stored");
         builder
@@ -325,11 +323,6 @@ impl JIT {
             }
         }
         // DONE: apply updates to hi and lo
-        if let Some(hilo) = updates.hilo
-            && hilo.dirty
-        {
-            cache.hilo = Some(*hilo);
-        }
         if let Some(hi) = updates.hi {
             cache.hi = Some(*hi);
         }
@@ -369,21 +362,15 @@ impl JIT {
                     .call();
             });
         // DONE: emit store hi and lo
-        if let Some(hilo) = cache.hilo
-            && hilo.dirty
+        if let Some(hi) = cache.hi
+            && hi.dirty
         {
-            JIT::emit_store_hilo(builder, block, hilo.value);
-        } else {
-            if let Some(hi) = cache.hi
-                && hi.dirty
-            {
-                JIT::emit_store_hi(builder, block, hi.value);
-            }
-            if let Some(lo) = cache.lo
-                && lo.dirty
-            {
-                JIT::emit_store_lo(builder, block, lo.value);
-            }
+            JIT::emit_store_hi(builder, block, hi.value);
+        }
+        if let Some(lo) = cache.lo
+            && lo.dirty
+        {
+            JIT::emit_store_lo(builder, block, lo.value);
         }
         tracing::trace!("done");
     }
