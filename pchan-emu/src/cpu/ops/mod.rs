@@ -13,6 +13,7 @@ pub mod addu;
 pub mod and;
 pub mod andi;
 pub mod lui;
+pub mod mfhi;
 pub mod mflo;
 pub mod mult;
 pub mod multu;
@@ -65,6 +66,7 @@ pub mod prelude {
     pub use super::lhu::*;
     pub use super::lui::*;
     pub use super::lw::*;
+    pub use super::mfhi::*;
     pub use super::mflo::*;
     pub use super::mult::*;
     pub use super::multu::*;
@@ -655,6 +657,8 @@ pub enum DecodedOp {
     #[strum(transparent)]
     MFLO(MFLO),
     #[strum(transparent)]
+    MFHI(MFHI),
+    #[strum(transparent)]
     JAL(JAL),
 }
 
@@ -671,6 +675,7 @@ impl TryFrom<OpCode> for DecodedOp {
         }
         match (opcode.primary(), opcode.secondary()) {
             (PrimeOp::JAL, _) => JAL::try_from(opcode).map(Self::JAL),
+            (PrimeOp::SPECIAL, SecOp::MFHI) => MFHI::try_from(opcode).map(Self::MFHI),
             (PrimeOp::SPECIAL, SecOp::MFLO) => MFLO::try_from(opcode).map(Self::MFLO),
             (PrimeOp::SPECIAL, SecOp::MULTU) => MULTU::try_from(opcode).map(Self::MULTU),
             (PrimeOp::SPECIAL, SecOp::MULT) => MULT::try_from(opcode).map(Self::MULT),
@@ -768,6 +773,7 @@ mod decode_display_tests {
     #[case::jal(DecodedOp::new(jal(0x0040_0000)), "jal 0x00400000")]
     #[case::multu(DecodedOp::new(multu(8, 9)), "multu $t0 $t1")]
     #[case::mflo(DecodedOp::new(mflo(8)), "mflo $t0")]
+    #[case::mfhi(DecodedOp::new(mfhi(8)), "mfhi $t0")]
     fn test_display(setup_tracing: (), #[case] op: DecodedOp, #[case] expected: &str) {
         assert_eq!(op.to_string(), expected);
     }

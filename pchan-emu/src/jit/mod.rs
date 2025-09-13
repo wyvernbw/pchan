@@ -246,7 +246,7 @@ impl JIT {
     #[instrument(skip(builder, block))]
     pub fn emit_load_hi(builder: &mut FunctionBuilder<'_>, block: Block) -> Value {
         let block_state = builder.block_params(block)[0];
-        const HI: usize = core::mem::offset_of!(Cpu, hilo);
+        const HI: usize = core::mem::offset_of!(Cpu, hilo) + size_of::<u32>();
 
         builder
             .ins()
@@ -257,7 +257,7 @@ impl JIT {
     #[instrument(skip(builder, block))]
     pub fn emit_load_lo(builder: &mut FunctionBuilder<'_>, block: Block) -> Value {
         let block_state = builder.block_params(block)[0];
-        const LO: usize = core::mem::offset_of!(Cpu, hilo) + size_of::<u32>();
+        const LO: usize = core::mem::offset_of!(Cpu, hilo);
 
         builder
             .ins()
