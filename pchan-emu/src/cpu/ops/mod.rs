@@ -40,6 +40,7 @@ pub mod xori;
 pub mod beq;
 pub mod j;
 pub mod jal;
+pub mod jr;
 
 // loads
 pub mod lb;
@@ -62,6 +63,7 @@ pub mod prelude {
     pub use super::beq::*;
     pub use super::j::*;
     pub use super::jal::*;
+    pub use super::jr::*;
     pub use super::lb::*;
     pub use super::lbu::*;
     pub use super::lh::*;
@@ -428,6 +430,10 @@ impl<'a> EmitParams<'a> {
             .mem_map_ptr(mem_map)
             .call()
     }
+    fn emit_store_pc(&self, fn_builder: &mut FunctionBuilder, value: Value) {
+        let cpu = self.cpu(fn_builder);
+        JIT::emit_store_pc(fn_builder, value, cpu);
+    }
 }
 
 #[derive(Builder, Debug, Default)]
@@ -498,7 +504,7 @@ impl MipsOffset {
 pub enum BoundaryType {
     Block { offset: MipsOffset },
     BlockSplit { lhs: MipsOffset, rhs: MipsOffset },
-    Function,
+    Function { auto_set_pc: bool },
 }
 
 #[enum_dispatch(DecodedOp)]
@@ -560,7 +566,7 @@ impl Display for HaltBlock {
 
 impl Op for HaltBlock {
     fn is_block_boundary(&self) -> Option<BoundaryType> {
-        Some(BoundaryType::Function)
+        Some(BoundaryType::Function { auto_set_pc: true })
     }
 
     fn into_opcode(self) -> crate::cpu::ops::OpCode {
@@ -668,6 +674,8 @@ pub enum DecodedOp {
     MTLO(MTLO),
     #[strum(transparent)]
     JAL(JAL),
+    #[strum(transparent)]
+    JR(JR),
 }
 
 impl TryFrom<OpCode> for DecodedOp {
@@ -682,6 +690,7 @@ impl TryFrom<OpCode> for DecodedOp {
             return Ok(DecodedOp::NOP(NOP));
         }
         match (opcode.primary(), opcode.secondary()) {
+            (PrimeOp::SPECIAL, SecOp::JR) => JR::try_from(opcode).map(Self::JR),
             (PrimeOp::JAL, _) => JAL::try_from(opcode).map(Self::JAL),
             (PrimeOp::SPECIAL, SecOp::MTLO) => MTLO::try_from(opcode).map(Self::MTLO),
             (PrimeOp::SPECIAL, SecOp::MTHI) => MTHI::try_from(opcode).map(Self::MTHI),
@@ -786,6 +795,7 @@ mod decode_display_tests {
     #[case::mfhi(DecodedOp::new(mfhi(8)), "mfhi $t0")]
     #[case::mthi(DecodedOp::new(mthi(8)), "mthi $t0")]
     #[case::mtlo(DecodedOp::new(mtlo(8)), "mtlo $t0")]
+    #[case::jr(DecodedOp::new(jr(8)), "jr $t0")]
     fn test_display(setup_tracing: (), #[case] op: DecodedOp, #[case] expected: &str) {
         assert_eq!(op.to_string(), expected);
     }

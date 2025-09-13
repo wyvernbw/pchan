@@ -400,23 +400,23 @@ impl Emu {
             }
         }
 
-        JIT::emit_updates()
-            .builder(fn_builder)
-            .block(cranelift_block)
-            .cache(register_cache)
-            .call();
-        let cpu_value = fn_builder.block_params(basic_block.clif_block())[0];
-        let pc_value = fn_builder.ins().iconst(
-            types::I32,
-            (basic_block.address as i32 + (basic_block.ops.len().saturating_sub(1)) as i32 * 4)
-                as i64,
-        );
-        fn_builder.ins().store(
-            MemFlags::new(),
-            pc_value,
-            cpu_value,
-            offset_of!(Cpu, pc) as i32,
-        );
+        // JIT::emit_updates()
+        //     .builder(fn_builder)
+        //     .block(cranelift_block)
+        //     .cache(register_cache)
+        //     .call();
+        // let cpu_value = fn_builder.block_params(basic_block.clif_block())[0];
+        // let pc_value = fn_builder.ins().iconst(
+        //     types::I32,
+        //     (basic_block.address as i32 + (basic_block.ops.len().saturating_sub(1)) as i32 * 4)
+        //         as i64,
+        // );
+        // fn_builder.ins().store(
+        //     MemFlags::new(),
+        //     pc_value,
+        //     cpu_value,
+        //     offset_of!(Cpu, pc) as i32,
+        // );
 
         fn_builder.ins().return_(&[]);
 
@@ -444,26 +444,27 @@ impl Emu {
                 .cache(register_cache)
                 .call();
         }
-        if matches!(op.is_block_boundary(), Some(BoundaryType::Function)) {
+        if let Some(BoundaryType::Function { auto_set_pc }) = op.is_block_boundary() {
             tracing::info!(%op, "function boundary");
             JIT::emit_updates()
                 .builder(fn_builder)
                 .block(basic_block.clif_block())
                 .cache(register_cache)
                 .call();
-            let cpu_value = fn_builder.block_params(basic_block.clif_block())[0];
-            let pc_value = fn_builder.ins().iconst(
-                types::I32,
-                (basic_block.address as i32 + idx as i32 * 4) as i64,
-            );
-            fn_builder.ins().store(
-                MemFlags::new(),
-                pc_value,
-                cpu_value,
-                offset_of!(Cpu, pc) as i32,
-            );
-        }
-        {}
+            if auto_set_pc {
+                let cpu_value = fn_builder.block_params(basic_block.clif_block())[0];
+                let pc_value = fn_builder.ins().iconst(
+                    types::I32,
+                    (basic_block.address as i32 + idx as i32 * 4) as i64,
+                );
+                fn_builder.ins().store(
+                    MemFlags::new(),
+                    pc_value,
+                    cpu_value,
+                    offset_of!(Cpu, pc) as i32,
+                );
+            }
+        };
         if let Some(summary) = op.emit_ir(
             EmitParams::builder()
                 .ptr_type(ptr_type)
@@ -583,11 +584,19 @@ fn walk_fn(params: WalkFnParams<'_>) -> color_eyre::Result<WalkFnSummary> {
         tracing::trace!(pc = state.pc, op = format!("{op}"), "read at");
 
         match op.is_block_boundary() {
-            Some(BoundaryType::Function) => {
+            Some(BoundaryType::Function { .. }) => {
+                cfg[state.current_node].ops.push(op);
                 continue;
             }
             None => {
                 cfg[state.current_node].ops.push(op);
+                let len = cfg[state.current_node].ops.len();
+                if len > 4 {
+                    let slice = &cfg[state.current_node].ops[(len - 2)..];
+                    if slice.iter().all(|op| matches!(op, DecodedOp::NOP(_))) {
+                        return Err(eyre!("reading empty program. jit canceled."));
+                    }
+                }
                 stack.push(State {
                     pc: state.pc + 4,
                     from_jump: false,

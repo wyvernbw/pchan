@@ -407,6 +407,15 @@ impl JIT {
         fn_builder.ins().uextend(ptr_type, offset)
     }
 
+    pub fn emit_store_pc(fn_builder: &mut FunctionBuilder<'_>, pc_value: Value, cpu_value: Value) {
+        fn_builder.ins().store(
+            MemFlags::new(),
+            pc_value,
+            cpu_value,
+            offset_of!(Cpu, pc) as i32,
+        );
+    }
+
     pub fn cache_usage(&self) -> (usize, usize) {
         (
             self.block_map.0.len(),

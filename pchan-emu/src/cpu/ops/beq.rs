@@ -128,7 +128,7 @@ mod tests {
 
         emulator
             .mem
-            .write_all(KSEG0Addr::from_phys(emulator.cpu.pc as u32), func);
+            .write_all(KSEG0Addr::from_phys(emulator.cpu.pc), func);
 
         let summary = emulator.step_jit_summarize::<JitSummary>()?;
         if let Some(func) = summary.function {
@@ -137,7 +137,7 @@ mod tests {
 
         let slice = &emulator.mem.as_ref()[0x0000_2000..(0x000_2000 + 4)];
         assert_eq!(slice, &[0, 1, 2, 3]);
-        assert_eq!(emulator.cpu.pc, 44);
+        assert_eq!(emulator.cpu.pc, 48);
 
         Ok(())
     }
@@ -158,7 +158,7 @@ mod tests {
 
         emulator
             .mem
-            .write_all(KSEG0Addr::from_phys(emulator.cpu.pc as u32), func);
+            .write_all(KSEG0Addr::from_phys(emulator.cpu.pc), func);
 
         emulator.step_jit()?;
 
@@ -183,7 +183,7 @@ mod tests {
 
         emulator
             .mem
-            .write_all(KSEG0Addr::from_phys(emulator.cpu.pc as u32), func);
+            .write_all(KSEG0Addr::from_phys(emulator.cpu.pc), func);
 
         emulator.step_jit()?;
 
