@@ -303,7 +303,7 @@ impl Emu {
             _ => {}
         });
 
-        let _span = info_span!("jit_comp", pc = initial_address).entered();
+        let _span = info_span!("jit_comp", pc = %format!("0x{:08X}", initial_address)).entered();
         fn_builder.seal_all_blocks();
 
         Self::close_function(fn_builder);
@@ -521,6 +521,7 @@ impl Emu {
     pub fn run(&mut self) -> color_eyre::Result<()> {
         loop {
             self.step_jit()?;
+            tracing::info!("step: pc=0x{:08X}", self.cpu.pc);
         }
     }
 }
@@ -623,9 +624,10 @@ fn walk_fn(params: WalkFnParams<'_>) -> color_eyre::Result<WalkFnSummary> {
             }
             None => {
                 cfg[state.current_node].ops.push(op);
+                const NOP_TOLERANCE: usize = 16;
                 let len = cfg[state.current_node].ops.len();
-                if len > 4 {
-                    let slice = &cfg[state.current_node].ops[(len - 2)..];
+                if len > 32 {
+                    let slice = &cfg[state.current_node].ops[(len - NOP_TOLERANCE)..];
                     if slice.iter().all(|op| matches!(op, DecodedOp::NOP(_))) {
                         return Err(eyre!("reading empty program. jit canceled."));
                     }

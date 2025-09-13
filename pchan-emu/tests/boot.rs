@@ -10,6 +10,7 @@ pub fn boot(setup_tracing: ()) -> color_eyre::Result<()> {
     let result = emu.run();
     if let Err(err) = result {
         tracing::info!(?err);
+        tracing::info!(?emu.cpu.pc);
     }
     Ok(())
 }

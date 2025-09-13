@@ -5,7 +5,7 @@ use pchan_macros::OpCode;
 use petgraph::prelude::*;
 use std::{collections::HashMap, fmt::Display, ops::Range};
 use thiserror::Error;
-use tracing::instrument;
+use tracing::{Level, instrument};
 
 // alu
 pub mod addiu;
@@ -504,9 +504,10 @@ pub enum MipsOffset {
 }
 
 impl MipsOffset {
+    #[instrument(level = Level::TRACE, ret)]
     pub fn calculate_address(self, base: u32) -> u32 {
         match self {
-            MipsOffset::RegionJump(addr) => (base & 0xFF00_0000) + addr,
+            MipsOffset::RegionJump(addr) => (base & 0xF000_0000) + addr,
             MipsOffset::Relative(offset) => base.wrapping_add_signed(offset),
         }
     }

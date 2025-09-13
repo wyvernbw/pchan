@@ -37,7 +37,7 @@ impl Bootloader {
         let _ = bios_file
             .read(&mut bios)
             .map_err(BootError::BiosReadError)?;
-        let bios_slice = &bios[kb(12)..];
+        let bios_slice = &bios[..kb(512)];
         tracing::info!("loaded bios: {}kb", from_kb(bios_slice.len()));
 
         mem.write_all(KSEG1Addr(0xBFC0_0000), bios_slice.iter().cloned());
