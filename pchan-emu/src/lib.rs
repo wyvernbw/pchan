@@ -181,8 +181,8 @@ impl Emu {
         // collect blocks in function
         let mut cfg = Graph::with_capacity(20, 64);
         let entry_idx = cfg.add_node(BasicBlock::new(self.cpu.pc));
-        let mut blocks = walk_fn(
-            WalkFnParams::builder()
+        let mut blocks = fetch(
+            FetchParams::builder()
                 .pc(self.cpu.pc)
                 .mem(&self.mem)
                 .cfg(cfg)
@@ -532,7 +532,7 @@ struct WalkFnSummary {
 }
 
 #[derive(Builder, Debug)]
-struct WalkFnParams<'a> {
+struct FetchParams<'a> {
     pc: u32,
     mem: &'a Memory,
     #[builder(default)]
@@ -573,8 +573,8 @@ fn find_first_value(than: u32, mapped: &HashMap<u32, NodeIndex>) -> Option<u32> 
     mapped.keys().filter(|addr| addr < &&than).max().cloned()
 }
 
-fn walk_fn(params: WalkFnParams<'_>) -> color_eyre::Result<WalkFnSummary> {
-    let WalkFnParams {
+fn fetch(params: FetchParams<'_>) -> color_eyre::Result<WalkFnSummary> {
+    let FetchParams {
         pc: initial_pc,
         mem,
         mut cfg,
@@ -601,7 +601,7 @@ fn walk_fn(params: WalkFnParams<'_>) -> color_eyre::Result<WalkFnSummary> {
     stack.reserve(256);
 
     while let Some(state) = stack.pop() {
-        let _span = span!(Level::DEBUG, "walk_fn", pc = %format!("0x{:04X}", state.pc), node = ?state.current_node.index(), stack = stack.len()).entered();
+        let _span = span!(Level::DEBUG, "fetch", pc = %format!("0x{:04X}", state.pc), node = ?state.current_node.index()).entered();
 
         if state.from_jump {
             tracing::trace!("=== block({:?}) ===", state.current_node);
@@ -610,7 +610,7 @@ fn walk_fn(params: WalkFnParams<'_>) -> color_eyre::Result<WalkFnSummary> {
         let op = mem.read::<u32>(PhysAddr(state.pc));
         let op = cpu::ops::OpCode(op);
         let op = DecodedOp::try_from(op).wrap_err(eyre!("failed at pc 0x{:08X}", state.pc))?;
-        tracing::trace!(pc = state.pc, op = format!("{op}"), "read at");
+        tracing::trace!(op = format!("{op}"));
 
         match op.is_block_boundary() {
             Some(BoundaryType::Function { .. }) => {

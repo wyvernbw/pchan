@@ -55,6 +55,9 @@ pub mod sb;
 pub mod sh;
 pub mod sw;
 
+// cop
+pub mod mtc;
+
 pub mod prelude {
     pub use super::OpCode;
     pub use super::addiu::*;
@@ -74,6 +77,7 @@ pub mod prelude {
     pub use super::lw::*;
     pub use super::mfhi::*;
     pub use super::mflo::*;
+    pub use super::mtc::*;
     pub use super::mthi::*;
     pub use super::mtlo::*;
     pub use super::mult::*;
@@ -99,7 +103,8 @@ pub mod prelude {
     pub use super::xor::*;
     pub use super::xori::*;
     pub use super::{
-        BoundaryType, EmitParams, EmitSummary, MipsOffset, Op, PrimeOp, SecOp, TryFromOpcodeErr,
+        BoundaryType, CopOp, EmitParams, EmitSummary, MipsOffset, Op, PrimeOp, SecOp,
+        TryFromOpcodeErr,
     };
 }
 
@@ -132,6 +137,11 @@ impl OpCode {
     pub const fn secondary(&self) -> SecOp {
         let code = self.0 & 0x3F;
         SecOp::MAP[code as usize]
+    }
+    #[inline]
+    pub const fn cop(&self) -> CopOp {
+        let code = self.bits(21..26);
+        CopOp::MAP[code as usize]
     }
     #[inline]
     pub const fn bits(&self, range: Range<u8>) -> u32 {
@@ -170,6 +180,37 @@ impl OpCode {
         } else {
             Err(TryFromOpcodeErr::InvalidHeader)
         }
+    }
+    pub fn as_primary_cop(self) -> Result<(Self, u8), TryFromOpcodeErr> {
+        match self.primary() {
+            PrimeOp::COP0 => Ok((self, 0)),
+            PrimeOp::COP1 => Err(TryFromOpcodeErr::InvalidCoprocessor(PrimeOp::COP1)),
+            PrimeOp::COP2 => Ok((self, 2)),
+            PrimeOp::COP3 => Err(TryFromOpcodeErr::InvalidCoprocessor(PrimeOp::COP3)),
+            _ => Err(TryFromOpcodeErr::InvalidHeader),
+        }
+    }
+    pub fn as_cop(self, cop: CopOp) -> Result<Self, TryFromOpcodeErr> {
+        if self.cop() == cop {
+            Ok(self)
+        } else {
+            Err(TryFromOpcodeErr::InvalidHeader)
+        }
+    }
+    pub fn with_primary_cop(self, cop: u8) -> Self {
+        match cop {
+            0 => self.with_primary(PrimeOp::COP0),
+            1 => self.with_primary(PrimeOp::COP1),
+            2 => self.with_primary(PrimeOp::COP2),
+            3 => self.with_primary(PrimeOp::COP3),
+            _ => {
+                tracing::error!("tried to construct op for inexistent cop{}", cop);
+                self
+            }
+        }
+    }
+    pub fn with_cop(self, cop: CopOp) -> Self {
+        self.set_bits(21..26, cop as u32)
     }
 }
 
@@ -271,6 +312,16 @@ pub enum SecOp {
     // System
     SYSCALL = 0x0C,
     BREAK = 0x0D,
+
+    #[opcode(default)]
+    ILLEGAL,
+}
+
+#[repr(u8)]
+#[derive(OpCode, Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::upper_case_acronyms)]
+pub enum CopOp {
+    MTCn = 0b00100,
 
     #[opcode(default)]
     ILLEGAL,
@@ -417,6 +468,19 @@ impl<'a> EmitParams<'a> {
             }
         }
     }
+    fn emit_get_cop_register(
+        &mut self,
+        fn_builder: &mut FunctionBuilder,
+        cop: u8,
+        reg: usize,
+    ) -> Value {
+        JIT::emit_load_cop_reg()
+            .builder(fn_builder)
+            .block(self.block().clif_block())
+            .idx(reg)
+            .cop(cop)
+            .call()
+    }
     fn update_cache_immediate(&mut self, id: usize, value: Value) {
         self.cache.registers[id] = Some(CachedValue {
             dirty: false,
@@ -442,6 +506,21 @@ impl<'a> EmitParams<'a> {
             .block(self.block().clif_block())
             .idx(reg)
             .value(value)
+            .call();
+    }
+    fn emit_store_cop_register(
+        &self,
+        fn_builder: &mut FunctionBuilder,
+        cop: u8,
+        reg: usize,
+        value: Value,
+    ) {
+        JIT::emit_store_cop_reg()
+            .builder(fn_builder)
+            .block(self.block().clif_block())
+            .idx(reg)
+            .value(value)
+            .cop(cop)
             .call();
     }
 }
@@ -495,6 +574,8 @@ pub enum TryFromOpcodeErr {
     InvalidHeader,
     #[error("unknown instruction")]
     UnknownInstruction,
+    #[error("found opcode for invalid coprocessor {0:?}")]
+    InvalidCoprocessor(PrimeOp),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -691,6 +772,10 @@ pub enum DecodedOp {
     JR(JR),
     #[strum(transparent)]
     JALR(JALR),
+
+    // cop
+    #[strum(transparent)]
+    MTCn(MTCn),
 }
 
 impl TryFrom<OpCode> for DecodedOp {
@@ -704,53 +789,65 @@ impl TryFrom<OpCode> for DecodedOp {
         if opcode == OpCode::NOP {
             return Ok(DecodedOp::NOP(NOP));
         }
-        match (opcode.primary(), opcode.secondary()) {
-            (PrimeOp::SPECIAL, SecOp::JALR) => JALR::try_from(opcode).map(Self::JALR),
-            (PrimeOp::SPECIAL, SecOp::JR) => JR::try_from(opcode).map(Self::JR),
-            (PrimeOp::JAL, _) => JAL::try_from(opcode).map(Self::JAL),
-            (PrimeOp::SPECIAL, SecOp::MTLO) => MTLO::try_from(opcode).map(Self::MTLO),
-            (PrimeOp::SPECIAL, SecOp::MTHI) => MTHI::try_from(opcode).map(Self::MTHI),
-            (PrimeOp::SPECIAL, SecOp::MFHI) => MFHI::try_from(opcode).map(Self::MFHI),
-            (PrimeOp::SPECIAL, SecOp::MFLO) => MFLO::try_from(opcode).map(Self::MFLO),
-            (PrimeOp::SPECIAL, SecOp::MULTU) => MULTU::try_from(opcode).map(Self::MULTU),
-            (PrimeOp::SPECIAL, SecOp::MULT) => MULT::try_from(opcode).map(Self::MULT),
-            (PrimeOp::LUI, _) => LUI::try_from(opcode).map(Self::LUI),
-            (PrimeOp::SPECIAL, SecOp::SRA) => SRA::try_from(opcode).map(Self::SRA),
-            (PrimeOp::SPECIAL, SecOp::SRL) => SRL::try_from(opcode).map(Self::SRL),
-            (PrimeOp::SPECIAL, SecOp::SLL) => SLL::try_from(opcode).map(Self::SLL),
-            (PrimeOp::SPECIAL, SecOp::SRAV) => SRAV::try_from(opcode).map(Self::SRAV),
-            (PrimeOp::SPECIAL, SecOp::SRLV) => SRLV::try_from(opcode).map(Self::SRLV),
-            (PrimeOp::SPECIAL, SecOp::SLLV) => SLLV::try_from(opcode).map(Self::SLLV),
-            (PrimeOp::XORI, _) => XORI::try_from(opcode).map(Self::XORI),
-            (PrimeOp::ORI, _) => ORI::try_from(opcode).map(Self::ORI),
-            (PrimeOp::ANDI, _) => ANDI::try_from(opcode).map(Self::ANDI),
-            (PrimeOp::SPECIAL, SecOp::NOR) => NOR::try_from(opcode).map(Self::NOR),
-            (PrimeOp::SPECIAL, SecOp::XOR) => XOR::try_from(opcode).map(Self::XOR),
-            (PrimeOp::SPECIAL, SecOp::OR) => OR::try_from(opcode).map(Self::OR),
-            (PrimeOp::SPECIAL, SecOp::AND) => AND::try_from(opcode).map(Self::AND),
-            (PrimeOp::SLTIU, _) => SLTIU::try_from(opcode).map(Self::SLTIU),
-            (PrimeOp::SLTI, _) => SLTI::try_from(opcode).map(Self::SLTI),
-            (PrimeOp::SPECIAL, SecOp::SLTU) => SLTU::try_from(opcode).map(Self::SLTU),
-            (PrimeOp::SPECIAL, SecOp::SLT) => SLT::try_from(opcode).map(Self::SLT),
-            (PrimeOp::BEQ, _) => BEQ::try_from(opcode).map(Self::BEQ),
-            (PrimeOp::J, _) => J::try_from(opcode).map(Self::J),
-            (PrimeOp::ADDIU | PrimeOp::ADDI, _) => ADDIU::try_from(opcode).map(Self::ADDIU),
-            (PrimeOp::SPECIAL, SecOp::SUBU | SecOp::SUB) => {
+
+        macro_rules! copn {
+            () => {
+                (
+                    PrimeOp::COP0 | PrimeOp::COP1 | PrimeOp::COP2 | PrimeOp::COP3,
+                    _,
+                    CopOp::MTCn,
+                )
+            };
+        }
+
+        match (opcode.primary(), opcode.secondary(), opcode.cop()) {
+            copn!() => MTCn::try_from(opcode).map(Self::MTCn),
+            (PrimeOp::SPECIAL, SecOp::JALR, _) => JALR::try_from(opcode).map(Self::JALR),
+            (PrimeOp::SPECIAL, SecOp::JR, _) => JR::try_from(opcode).map(Self::JR),
+            (PrimeOp::JAL, _, _) => JAL::try_from(opcode).map(Self::JAL),
+            (PrimeOp::SPECIAL, SecOp::MTLO, _) => MTLO::try_from(opcode).map(Self::MTLO),
+            (PrimeOp::SPECIAL, SecOp::MTHI, _) => MTHI::try_from(opcode).map(Self::MTHI),
+            (PrimeOp::SPECIAL, SecOp::MFHI, _) => MFHI::try_from(opcode).map(Self::MFHI),
+            (PrimeOp::SPECIAL, SecOp::MFLO, _) => MFLO::try_from(opcode).map(Self::MFLO),
+            (PrimeOp::SPECIAL, SecOp::MULTU, _) => MULTU::try_from(opcode).map(Self::MULTU),
+            (PrimeOp::SPECIAL, SecOp::MULT, _) => MULT::try_from(opcode).map(Self::MULT),
+            (PrimeOp::LUI, _, _) => LUI::try_from(opcode).map(Self::LUI),
+            (PrimeOp::SPECIAL, SecOp::SRA, _) => SRA::try_from(opcode).map(Self::SRA),
+            (PrimeOp::SPECIAL, SecOp::SRL, _) => SRL::try_from(opcode).map(Self::SRL),
+            (PrimeOp::SPECIAL, SecOp::SLL, _) => SLL::try_from(opcode).map(Self::SLL),
+            (PrimeOp::SPECIAL, SecOp::SRAV, _) => SRAV::try_from(opcode).map(Self::SRAV),
+            (PrimeOp::SPECIAL, SecOp::SRLV, _) => SRLV::try_from(opcode).map(Self::SRLV),
+            (PrimeOp::SPECIAL, SecOp::SLLV, _) => SLLV::try_from(opcode).map(Self::SLLV),
+            (PrimeOp::XORI, _, _) => XORI::try_from(opcode).map(Self::XORI),
+            (PrimeOp::ORI, _, _) => ORI::try_from(opcode).map(Self::ORI),
+            (PrimeOp::ANDI, _, _) => ANDI::try_from(opcode).map(Self::ANDI),
+            (PrimeOp::SPECIAL, SecOp::NOR, _) => NOR::try_from(opcode).map(Self::NOR),
+            (PrimeOp::SPECIAL, SecOp::XOR, _) => XOR::try_from(opcode).map(Self::XOR),
+            (PrimeOp::SPECIAL, SecOp::OR, _) => OR::try_from(opcode).map(Self::OR),
+            (PrimeOp::SPECIAL, SecOp::AND, _) => AND::try_from(opcode).map(Self::AND),
+            (PrimeOp::SLTIU, _, _) => SLTIU::try_from(opcode).map(Self::SLTIU),
+            (PrimeOp::SLTI, _, _) => SLTI::try_from(opcode).map(Self::SLTI),
+            (PrimeOp::SPECIAL, SecOp::SLTU, _) => SLTU::try_from(opcode).map(Self::SLTU),
+            (PrimeOp::SPECIAL, SecOp::SLT, _) => SLT::try_from(opcode).map(Self::SLT),
+            (PrimeOp::BEQ, _, _) => BEQ::try_from(opcode).map(Self::BEQ),
+            (PrimeOp::J, _, _) => J::try_from(opcode).map(Self::J),
+            (PrimeOp::ADDIU | PrimeOp::ADDI, _, _) => ADDIU::try_from(opcode).map(Self::ADDIU),
+            (PrimeOp::SPECIAL, SecOp::SUBU | SecOp::SUB, _) => {
                 // TODO: implement SUB separately from SUBU
                 SUBU::try_from(opcode).map(Self::SUBU)
             }
-            (PrimeOp::SPECIAL, SecOp::ADDU | SecOp::ADD) => {
+            (PrimeOp::SPECIAL, SecOp::ADDU | SecOp::ADD, _) => {
                 // TODO: implement ADD separately from ADDU
                 ADDU::try_from(opcode).map(Self::ADDU)
             }
-            (PrimeOp::SW, _) => SW::try_from(opcode).map(Self::SW),
-            (PrimeOp::SH, _) => SH::try_from(opcode).map(Self::SH),
-            (PrimeOp::SB, _) => SB::try_from(opcode).map(Self::SB),
-            (PrimeOp::LW, _) => LW::try_from(opcode).map(Self::LW),
-            (PrimeOp::LHU, _) => LHU::try_from(opcode).map(Self::LHU),
-            (PrimeOp::LH, _) => LH::try_from(opcode).map(Self::LH),
-            (PrimeOp::LB, _) => LB::try_from(opcode).map(Self::LB),
-            (PrimeOp::LBU, _) => LBU::try_from(opcode).map(Self::LBU),
+            (PrimeOp::SW, _, _) => SW::try_from(opcode).map(Self::SW),
+            (PrimeOp::SH, _, _) => SH::try_from(opcode).map(Self::SH),
+            (PrimeOp::SB, _, _) => SB::try_from(opcode).map(Self::SB),
+            (PrimeOp::LW, _, _) => LW::try_from(opcode).map(Self::LW),
+            (PrimeOp::LHU, _, _) => LHU::try_from(opcode).map(Self::LHU),
+            (PrimeOp::LH, _, _) => LH::try_from(opcode).map(Self::LH),
+            (PrimeOp::LB, _, _) => LB::try_from(opcode).map(Self::LB),
+            (PrimeOp::LBU, _, _) => LBU::try_from(opcode).map(Self::LBU),
             _ => Err(TryFromOpcodeErr::UnknownInstruction),
         }
     }
@@ -813,6 +910,7 @@ mod decode_display_tests {
     #[case::mtlo(DecodedOp::new(mtlo(8)), "mtlo $t0")]
     #[case::jr(DecodedOp::new(jr(8)), "jr $t0")]
     #[case::jalr(DecodedOp::new(jalr(8, 9)), "jalr $t0 $t1")]
+    #[case::mtc(DecodedOp::new(mtc0(8, 16)), "mtc0 $t0, $r16")]
     fn test_display(setup_tracing: (), #[case] op: DecodedOp, #[case] expected: &str) {
         assert_eq!(op.to_string(), expected);
     }

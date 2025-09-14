@@ -2,7 +2,7 @@ use std::fmt::Display;
 
 use pchan_utils::array;
 
-use crate::memory::{KSEG0Addr, KSEG1Addr};
+use crate::memory::KSEG1Addr;
 
 #[cfg(test)]
 mod cranelift_tests;
@@ -23,6 +23,29 @@ pub struct Cpu {
     pub gpr: [u32; 32],
     pub pc: u32,
     pub hilo: u64,
+    pub cop0: Cop0,
+    pub _pad_cop1: [u64; 32],
+    pub _pad_cop2_gte: [u64; 32],
+}
+
+#[derive(derive_more::Debug)]
+pub struct Cop0 {
+    #[debug("{}",
+        reg
+            .iter()
+            .enumerate()
+            .filter(|(_, x)| x != &&0)
+            .map(|(i, x)| format!("$cop0r{}={}", i, x))
+            .intersperse(" ".to_string())
+            .collect::<String>()
+    )]
+    pub reg: [u32; 64],
+}
+
+impl Default for Cop0 {
+    fn default() -> Self {
+        Self { reg: [0u32; 64] }
+    }
 }
 
 impl Display for Cpu {

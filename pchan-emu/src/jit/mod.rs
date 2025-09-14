@@ -10,7 +10,7 @@ use tracing::{Instrument, Level, instrument};
 use crate::{
     EntryCache,
     cpu::{
-        Cpu, REG_STR,
+        Cop0, Cpu, REG_STR,
         ops::{CachedValue, EmitSummary},
     },
     cranelift_bs::*,
@@ -244,6 +244,26 @@ impl JIT {
 
     #[builder]
     #[instrument(skip(builder, block))]
+    pub fn emit_load_cop_reg(
+        builder: &mut FunctionBuilder<'_>,
+        block: Block,
+        cop: u8,
+        idx: usize,
+    ) -> Value {
+        let block_state = builder.block_params(block)[0];
+
+        const COP0: usize = const { core::mem::offset_of!(Cpu, cop0) };
+        const COP_SIZE: usize = size_of::<Cop0>();
+        let offset = i32::try_from(COP0 + COP_SIZE * cop as usize + idx * size_of::<u32>())
+            .expect("offset overflow");
+
+        builder
+            .ins()
+            .load(types::I32, MemFlags::new(), block_state, offset)
+    }
+
+    #[builder]
+    #[instrument(skip(builder, block))]
     pub fn emit_load_hi(builder: &mut FunctionBuilder<'_>, block: Block) -> Value {
         let block_state = builder.block_params(block)[0];
         const HI: usize = core::mem::offset_of!(Cpu, hilo) + size_of::<u32>();
@@ -278,6 +298,28 @@ impl JIT {
         const GPR: usize = const { core::mem::offset_of!(Cpu, gpr) };
         let block_state = builder.block_params(block)[0];
         let offset = i32::try_from(GPR + idx * size_of::<u32>()).expect("offset overflow");
+        tracing::trace!("stored");
+        builder
+            .ins()
+            .store(MemFlags::new(), value, block_state, offset);
+    }
+
+    #[builder]
+    #[instrument(skip(builder, block), fields(reg=REG_STR[idx], value))]
+    pub fn emit_store_cop_reg(
+        builder: &mut FunctionBuilder<'_>,
+        block: Block,
+        cop: u8,
+        idx: usize,
+        value: Value,
+    ) {
+        debug_assert!((0..4).contains(&cop));
+
+        const COP0: usize = const { core::mem::offset_of!(Cpu, cop0) };
+        const COP_SIZE: usize = size_of::<Cop0>();
+        let block_state = builder.block_params(block)[0];
+        let offset = i32::try_from(COP0 + COP_SIZE * cop as usize + idx * size_of::<u32>())
+            .expect("offset overflow");
         tracing::trace!("stored");
         builder
             .ins()
