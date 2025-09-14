@@ -38,6 +38,7 @@ pub mod xori;
 
 // jumps
 pub mod beq;
+pub mod bne;
 pub mod j;
 pub mod jal;
 pub mod jalr;
@@ -65,6 +66,7 @@ pub mod prelude {
     pub use super::and::*;
     pub use super::andi::*;
     pub use super::beq::*;
+    pub use super::bne::*;
     pub use super::j::*;
     pub use super::jal::*;
     pub use super::jalr::*;
@@ -719,6 +721,8 @@ pub enum DecodedOp {
     #[strum(transparent)]
     BEQ(BEQ),
     #[strum(transparent)]
+    BNE(BNE),
+    #[strum(transparent)]
     SLT(SLT),
     #[strum(transparent)]
     SLTU(SLTU),
@@ -830,6 +834,7 @@ impl TryFrom<OpCode> for DecodedOp {
             (PrimeOp::SPECIAL, SecOp::SLTU, _) => SLTU::try_from(opcode).map(Self::SLTU),
             (PrimeOp::SPECIAL, SecOp::SLT, _) => SLT::try_from(opcode).map(Self::SLT),
             (PrimeOp::BEQ, _, _) => BEQ::try_from(opcode).map(Self::BEQ),
+            (PrimeOp::BNE, _, _) => BNE::try_from(opcode).map(Self::BNE),
             (PrimeOp::J, _, _) => J::try_from(opcode).map(Self::J),
             (PrimeOp::ADDIU | PrimeOp::ADDI, _, _) => ADDIU::try_from(opcode).map(Self::ADDIU),
             (PrimeOp::SPECIAL, SecOp::SUBU | SecOp::SUB, _) => {
@@ -883,6 +888,7 @@ mod decode_display_tests {
     #[case::subu(DecodedOp::new(subu(8, 9, 10)), "subu $t0 $t1 $t2")]
     #[case::j(DecodedOp::new(j(0x0040_0000)), "j 0x00400000")]
     #[case::beq(DecodedOp::new(beq(8, 9, 16)), "beq $t0 $t1 0x00000010")]
+    #[case::bne(DecodedOp::new(bne(8, 9, 16)), "bne $t0 $t1 0x00000010")]
     #[case::slt(DecodedOp::new(slt(8, 9, 10)), "slt $t0 $t1 $t2")]
     #[case::sltu(DecodedOp::new(sltu(8, 9, 10)), "sltu $t0 $t1 $t2")]
     #[case::slti(DecodedOp::new(slti(8, 9, 32)), "slti $t0 $t1 32")]
