@@ -24,7 +24,9 @@ pub struct Cpu {
     pub pc: u32,
     pub hilo: u64,
     pub cop0: Cop0,
+    #[debug(skip)]
     pub _pad_cop1: [u64; 32],
+    #[debug(skip)]
     pub _pad_cop2_gte: [u64; 32],
 }
 

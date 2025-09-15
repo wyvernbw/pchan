@@ -27,7 +27,7 @@ pub fn write_test_program(emu: &mut Emu) {
     ];
 
     emu.mem
-        .write_array(KSEG0Addr::from_phys(emu.cpu.pc as u32), &program);
+        .write_array(KSEG0Addr::from_phys(emu.cpu.pc), &program);
 }
 pub fn time<F, T>(f: F) -> (T, f64)
 where

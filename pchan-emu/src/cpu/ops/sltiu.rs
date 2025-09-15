@@ -64,7 +64,7 @@ impl Op for SLTIU {
             return Some(
                 EmitSummary::builder()
                     .register_updates([(self.rt, state.emit_get_zero(fn_builder))])
-                    .build(),
+                    .build(&fn_builder),
             );
         }
 
@@ -73,7 +73,7 @@ impl Op for SLTIU {
             return Some(
                 EmitSummary::builder()
                     .register_updates([(self.rt, state.emit_get_one(fn_builder))])
-                    .build(),
+                    .build(&fn_builder),
             );
         }
 
@@ -81,10 +81,11 @@ impl Op for SLTIU {
         let rt = fn_builder
             .ins()
             .icmp_imm(IntCC::UnsignedLessThan, rs, self.imm as i64);
+        let rt = fn_builder.ins().uextend(types::I32, rt);
         Some(
             EmitSummary::builder()
                 .register_updates([(self.rt, rt)])
-                .build(),
+                .build(&fn_builder),
         )
     }
 }

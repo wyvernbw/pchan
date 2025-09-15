@@ -49,7 +49,7 @@ impl Op for LUI {
             return Some(
                 EmitSummary::builder()
                     .register_updates([(self.rt, state.emit_get_zero(fn_builder))])
-                    .build(),
+                    .build(&fn_builder),
             );
         }
         let rt = fn_builder
@@ -58,7 +58,7 @@ impl Op for LUI {
         Some(
             EmitSummary::builder()
                 .register_updates([(self.rt, rt)])
-                .build(),
+                .build(&fn_builder),
         )
     }
 }

@@ -43,20 +43,17 @@ impl Op for J {
     }
 
     fn emit_ir(&self, state: EmitParams, fn_builder: &mut FunctionBuilder) -> Option<EmitSummary> {
+        tracing::info!("j: jump to 0x{:08X}", self.imm);
+        debug_assert_eq!(state.neighbour_count(), 1);
         let next_block = state.next_at(0);
 
         let params = state.out_params(next_block.clif_block(), fn_builder);
-        tracing::debug!(
-            "jumping to {:?} with {} dependencies",
-            next_block.clif_block,
-            params.len()
-        );
         fn_builder.ins().jump(next_block.clif_block(), &params);
         Some(
             EmitSummary::builder()
                 .pc_update(MipsOffset::RegionJump(self.imm).calculate_address(state.pc))
                 .finished_block(true)
-                .build(),
+                .build(fn_builder),
         )
     }
 }

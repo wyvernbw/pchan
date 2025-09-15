@@ -65,7 +65,7 @@ impl Op for ORI {
             return Some(
                 EmitSummary::builder()
                     .register_updates([(self.rt, rt)])
-                    .build(),
+                    .build(&fn_builder),
             );
         }
         // $rs | 0 == $rs
@@ -74,7 +74,7 @@ impl Op for ORI {
             return Some(
                 EmitSummary::builder()
                     .register_updates([(self.rt, rs)])
-                    .build(),
+                    .build(&fn_builder),
             );
         }
         let rs = state.emit_get_register(fn_builder, self.rs);
@@ -82,7 +82,7 @@ impl Op for ORI {
         Some(
             EmitSummary::builder()
                 .register_updates([(self.rt, rt)])
-                .build(),
+                .build(&fn_builder),
         )
     }
 }

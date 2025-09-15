@@ -1,4 +1,4 @@
-use crate::{BasicBlock, CacheDependency, EntryCache, cranelift_bs::*, jit::JIT};
+use crate::{BasicBlock, CacheDependency, EntryCache, FnBuilderExt, cranelift_bs::*, jit::JIT};
 use bon::Builder;
 use enum_dispatch::enum_dispatch;
 use pchan_macros::OpCode;
@@ -357,6 +357,11 @@ impl<'a> EmitParams<'a> {
             .unwrap();
         &self.cfg[idx]
     }
+    fn neighbour_count(&self) -> usize {
+        self.cfg
+            .neighbors_directed(self.node, Direction::Outgoing)
+            .count()
+    }
     fn emulator_params(&self, fn_builder: &mut FunctionBuilder) -> Vec<BlockArg> {
         vec![
             BlockArg::Value(self.cpu(fn_builder)),
@@ -366,7 +371,7 @@ impl<'a> EmitParams<'a> {
     }
     #[instrument(skip(fn_builder, self))]
     fn out_params(&self, to: Block, fn_builder: &mut FunctionBuilder) -> Vec<BlockArg> {
-        tracing::trace!("{:#?}", self.deps_map);
+        // tracing::trace!("{:#?}", self.deps_map);
         let next_block_deps: Option<_> = self.deps_map.get(&to).map(|dep| dep.registers);
         let mut args = self.emulator_params(fn_builder);
         if let Some(next_block_deps) = next_block_deps {
@@ -489,13 +494,23 @@ impl<'a> EmitParams<'a> {
             value,
         });
     }
-    fn emit_map_address(&self, fn_builder: &mut FunctionBuilder, address: Value) -> Value {
+    fn emit_map_address_to_host(&self, fn_builder: &mut FunctionBuilder, address: Value) -> Value {
         let mem_map = self.mem_map(fn_builder);
-        JIT::emit_map_address()
+        JIT::emit_map_address_to_host()
             .fn_builder(fn_builder)
             .ptr_type(self.ptr_type)
             .address(address)
             .mem_map_ptr(mem_map)
+            .call()
+    }
+    fn emit_map_address_to_physical(
+        &self,
+        fn_builder: &mut FunctionBuilder,
+        address: Value,
+    ) -> Value {
+        JIT::emit_map_address_to_physical()
+            .fn_builder(fn_builder)
+            .address(address)
             .call()
     }
     fn emit_store_pc(&self, fn_builder: &mut FunctionBuilder, value: Value) {
@@ -528,6 +543,7 @@ impl<'a> EmitParams<'a> {
 }
 
 #[derive(Builder, Debug, Default)]
+#[builder(finish_fn(vis = "", name = build_internal))]
 pub struct EmitSummary {
     #[builder(field = Vec::with_capacity(32))]
     pub register_updates: Vec<(usize, CachedValue)>,
@@ -570,6 +586,28 @@ impl<S: emit_summary_builder::State> EmitSummaryBuilder<S> {
     }
 }
 
+impl<S: emit_summary_builder::IsComplete> EmitSummaryBuilder<S> {
+    pub fn build(self, fn_builder: &FunctionBuilder) -> EmitSummary {
+        if cfg!(debug_assertions) {
+            for (_, value) in &self.register_updates {
+                assert_eq!(
+                    fn_builder.type_of(value.value),
+                    types::I32,
+                    "emit summary invalid type for register value"
+                );
+            }
+            for (_, value) in &self.delayed_register_updates {
+                assert_eq!(
+                    fn_builder.type_of(value.value),
+                    types::I32,
+                    "emit summary invalid type for register value"
+                );
+            }
+        }
+        self.build_internal()
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum TryFromOpcodeErr {
     #[error("invalid header")]
@@ -587,7 +625,6 @@ pub enum MipsOffset {
 }
 
 impl MipsOffset {
-    #[instrument(level = Level::TRACE, ret)]
     pub fn calculate_address(self, base: u32) -> u32 {
         match self {
             MipsOffset::RegionJump(addr) => (base & 0xF000_0000) + addr,
@@ -783,7 +820,7 @@ pub enum DecodedOp {
 }
 
 impl TryFrom<OpCode> for DecodedOp {
-    type Error = impl std::error::Error;
+    type Error = TryFromOpcodeErr;
 
     #[instrument(err)]
     fn try_from(opcode: OpCode) -> Result<Self, Self::Error> {
@@ -861,6 +898,37 @@ impl TryFrom<OpCode> for DecodedOp {
 impl DecodedOp {
     pub fn new(opcode: OpCode) -> Self {
         Self::try_from(opcode).unwrap()
+    }
+}
+
+#[derive(Debug, Clone, Copy, derive_more::Display)]
+pub struct OpForceBoundary(pub DecodedOp);
+
+impl Op for OpForceBoundary {
+    fn is_block_boundary(&self) -> Option<BoundaryType> {
+        let auto_set_pc =
+            if let Some(BoundaryType::Function { auto_set_pc }) = self.0.is_block_boundary() {
+                auto_set_pc
+            } else {
+                false
+            };
+        Some(BoundaryType::Function { auto_set_pc })
+    }
+
+    fn into_opcode(self) -> crate::cpu::ops::OpCode {
+        self.0.into_opcode()
+    }
+
+    fn emit_ir(&self, state: EmitParams, fn_builder: &mut FunctionBuilder) -> Option<EmitSummary> {
+        self.0.emit_ir(state, fn_builder)
+    }
+}
+
+impl TryFrom<OpCode> for OpForceBoundary {
+    type Error = TryFromOpcodeErr;
+
+    fn try_from(value: OpCode) -> Result<Self, Self::Error> {
+        DecodedOp::try_from(value).map(Self)
     }
 }
 

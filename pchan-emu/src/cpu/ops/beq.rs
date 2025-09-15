@@ -31,7 +31,7 @@ impl TryFrom<OpCode> for BEQ {
         Ok(BEQ {
             rs: (opcode.bits(21..26)) as usize,
             rt: (opcode.bits(16..21)) as usize,
-            imm: (opcode.bits(0..16) as i32) << 2,
+            imm: (opcode.bits(0..16) as i16 as i32) << 2,
         })
     }
 }
@@ -96,7 +96,11 @@ impl Op for BEQ {
             &else_params,
         );
 
-        Some(EmitSummary::builder().finished_block(true).build())
+        Some(
+            EmitSummary::builder()
+                .finished_block(true)
+                .build(fn_builder),
+        )
     }
 }
 

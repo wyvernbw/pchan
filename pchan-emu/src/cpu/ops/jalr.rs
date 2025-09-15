@@ -48,12 +48,19 @@ impl Op for JALR {
         mut state: EmitParams,
         fn_builder: &mut FunctionBuilder,
     ) -> Option<EmitSummary> {
+        tracing::info!("jalr: saving pc 0x{:08X}", state.pc);
         let rs = state.emit_get_register(fn_builder, self.rs);
-        let rs = state.emit_map_address(fn_builder, rs);
+        let rs = state.emit_map_address_to_physical(fn_builder, rs);
+
         let pc = fn_builder.ins().iconst(types::I32, state.pc as i64 + 8);
         state.emit_store_pc(fn_builder, rs);
         state.emit_store_register(fn_builder, self.rd, pc);
-        Some(EmitSummary::builder().finished_block(false).build())
+        Some(
+            EmitSummary::builder()
+                .register_updates([(self.rd, pc), (self.rd, pc)])
+                .finished_block(false)
+                .build(fn_builder),
+        )
     }
 }
 

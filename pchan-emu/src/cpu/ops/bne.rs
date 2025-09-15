@@ -31,7 +31,7 @@ impl TryFrom<OpCode> for BNE {
         Ok(BNE {
             rs: (opcode.bits(21..26)) as usize,
             rt: (opcode.bits(16..21)) as usize,
-            imm: (opcode.bits(0..16) as i32) << 2,
+            imm: (opcode.bits(0..16) as i16 as i32) << 2,
         })
     }
 }
@@ -96,7 +96,11 @@ impl Op for BNE {
             &else_params,
         );
 
-        Some(EmitSummary::builder().finished_block(true).build())
+        Some(
+            EmitSummary::builder()
+                .finished_block(true)
+                .build(fn_builder),
+        )
     }
 }
 
@@ -120,6 +124,7 @@ mod tests {
 
     #[rstest]
     #[case(Bne1Test { a: 8, b: 8, then: 1, otherwise: 2, expected: 2})]
+    #[case(Bne1Test { a: 8, b: 9, then: 1, otherwise: 2, expected: 1})]
     fn bne_1(
         setup_tracing: (),
         mut emulator: Emu,

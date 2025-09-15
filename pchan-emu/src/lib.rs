@@ -2,6 +2,7 @@
 #![allow(dead_code)]
 #![allow(long_running_const_eval)]
 #![allow(incomplete_features)]
+#![feature(slice_as_array)]
 #![feature(const_for)]
 #![feature(const_clone)]
 #![feature(const_default)]
@@ -22,7 +23,6 @@
 #![feature(debug_closure_helpers)]
 #![feature(iter_intersperse)]
 #![feature(generic_const_exprs)]
-#![feature(slice_as_array)]
 #![feature(portable_simd)]
 #![feature(iter_collect_into)]
 // allow unused variables in tests to supress the setup tracing warnings
@@ -209,21 +209,21 @@ impl Emu {
         while let Some(node) = dfs.next(&blocks.cfg) {
             blocks.cfg[node].clif_block = Some(fn_builder.create_block());
 
-            if tracing::enabled!(Level::TRACE) {
-                let _span = trace_span!("trace_cfg").entered();
-                tracing::trace!(cfg.node = ?blocks.cfg[node].clif_block);
-                for op in blocks.cfg[node].ops.iter() {
-                    tracing::trace!("    {op}");
-                }
+            // if tracing::enabled!(Level::TRACE) {
+            //     let _span = trace_span!("trace_cfg").entered();
+            //     tracing::trace!(cfg.node = ?blocks.cfg[node].clif_block);
+            //     for op in blocks.cfg[node].ops.iter() {
+            //         tracing::trace!("    {op}");
+            //     }
 
-                tracing::trace!(
-                    to = ?&blocks.cfg
-                        .neighbors_directed(node, Direction::Outgoing)
-                        .map(|n| blocks.cfg[n].clif_block)
-                        .collect::<Vec<_>>(),
-                    "    branch"
-                );
-            };
+            //     tracing::trace!(
+            //         to = ?&blocks.cfg
+            //             .neighbors_directed(node, Direction::Outgoing)
+            //             .map(|n| blocks.cfg[n].clif_block)
+            //             .collect::<Vec<_>>(),
+            //         "    branch"
+            //     );
+            // };
         }
 
         let entry_block = blocks.cfg[entry_idx].clif_block();
@@ -247,39 +247,27 @@ impl Emu {
             DfsEvent::Discover(node, _) => {
                 let basic_block = &blocks.cfg[node];
                 let cranelift_block = basic_block.clif_block();
-                let _span = info_span!(
-                    "jit_comp",
-                    node = node.index(),
-                    b = ?cranelift_block,
-                    ops.len = basic_block.ops.len()
-                )
-                .entered();
-                tracing::trace!("=== compling {:?} === ", cranelift_block);
 
                 let prev_register_cache = cache_map.get(&prev_register_cache).unwrap();
                 let mut reg_cache = cache_map.get(&node).unwrap_or(prev_register_cache).clone();
-                tracing::trace!(
-                    "beginning with {} values in cache",
-                    reg_cache.registers.iter().flatten().count()
-                );
 
                 let deps = deps_map
                     .entry(blocks.cfg[node].clif_block())
                     .or_insert(CacheDependency::from_cache_entry(prev_register_cache))
                     .clone();
 
-                if enabled!(Level::TRACE) {
-                    tracing::trace!("deps: {{");
-                    for (block, deps) in deps_map.iter() {
-                        let deps = deps
-                            .registers
-                            .iter()
-                            .map(|reg| format!("${}", REG_STR[reg as usize]))
-                            .collect::<Vec<_>>();
-                        tracing::trace!("    {:?} => {:?}", block, deps);
-                    }
-                    tracing::trace!("}}");
-                }
+                // if enabled!(Level::TRACE) {
+                //     tracing::trace!("deps: {{");
+                //     for (block, deps) in deps_map.iter() {
+                //         let deps = deps
+                //             .registers
+                //             .iter()
+                //             .map(|reg| format!("${}", REG_STR[reg as usize]))
+                //             .collect::<Vec<_>>();
+                //         tracing::trace!("    {:?} => {:?}", block, deps);
+                //     }
+                //     tracing::trace!("}}");
+                // }
 
                 let _ = Self::emit_block()
                     .fn_builder(&mut fn_builder)
@@ -293,10 +281,6 @@ impl Emu {
                     .deps_map(&deps_map)
                     .call();
 
-                tracing::trace!(
-                    "ended with {} values in cache",
-                    reg_cache.registers.iter().flatten().count()
-                );
                 cache_map.insert(node, reg_cache);
                 // prev_register_cache = node;
             }
@@ -313,6 +297,7 @@ impl Emu {
         let function = self.jit.get_func(func_id);
         tracing::info!("compiled function: {:?}", function.0);
         function(&mut self.cpu, &mut self.mem, true, &MEM_MAP);
+        tracing::info!("{:#?}", self.cpu);
         self.jit.block_map.insert(initial_address, function);
 
         Ok(summary)
@@ -322,7 +307,6 @@ impl Emu {
         fn_builder.finalize();
     }
     #[builder]
-    #[instrument(name = "emit", skip_all)]
     pub fn emit_block(
         fn_builder: &mut FunctionBuilder<'_>,
         cranelift_block: Block,
@@ -352,7 +336,6 @@ impl Emu {
         for (idx, op) in basic_block.ops.iter().enumerate() {
             // tracing::info!(op = %op);
             if op.is_block_boundary().is_some() {
-                tracing::trace!(%op, "block boundary");
                 let summary = EmitBlockSummary;
 
                 if idx + 1 < basic_block.ops.len() {
@@ -404,6 +387,7 @@ impl Emu {
     }
 
     #[builder]
+    #[instrument(name = "emit", skip_all, fields(%op, ))]
     pub fn emit_op(
         fn_builder: &mut FunctionBuilder<'_>,
         ptr_type: types::Type,
@@ -449,6 +433,7 @@ impl Emu {
     }
 
     #[builder]
+    #[instrument(name = "emitb", skip_all, fields(%op))]
     pub fn emit_block_boundary(
         op: &DecodedOp,
         mut summary_queue: Option<&EmitSummary>,
@@ -510,9 +495,14 @@ impl Emu {
                 .call();
             if let Some(pc) = summary.pc_update {
                 cpu.pc = pc;
-                tracing::debug!(cpu.pc);
+                tracing::debug!(?cpu.pc, "finished block", );
             }
             if !summary.finished_block {
+                JIT::emit_updates()
+                    .builder(fn_builder)
+                    .block(basic_block.clif_block())
+                    .cache(register_cache)
+                    .call();
                 fn_builder.ins().return_(&[]);
             }
         }
@@ -624,9 +614,9 @@ fn fetch(params: FetchParams<'_>) -> color_eyre::Result<WalkFnSummary> {
             }
             None => {
                 cfg[state.current_node].ops.push(op);
-                const NOP_TOLERANCE: usize = 16;
+                const NOP_TOLERANCE: usize = 64;
                 let len = cfg[state.current_node].ops.len();
-                if len > 32 {
+                if len > NOP_TOLERANCE {
                     let slice = &cfg[state.current_node].ops[(len - NOP_TOLERANCE)..];
                     if slice.iter().all(|op| matches!(op, DecodedOp::NOP(_))) {
                         return Err(eyre!("reading empty program. jit canceled."));
@@ -689,7 +679,7 @@ fn fetch(params: FetchParams<'_>) -> color_eyre::Result<WalkFnSummary> {
                 let op = cpu::ops::OpCode(op);
                 let op = DecodedOp::try_from(op)?;
 
-                tracing::trace!(offsets = ?[lhs, rhs], "potential split in block");
+                tracing::trace!(offsets = ?[lhs, rhs], delay_hazard = %op, "potential split in block");
                 let offsets = [rhs, lhs];
                 for offset in offsets.into_iter() {
                     let new_address = offset.calculate_address(state.pc);
@@ -760,6 +750,16 @@ fn merge_into<N: Clone, E: Clone>(dst: &mut Graph<N, E, Directed>, src: &Graph<N
             new_indices[dst_idx.index()],
             weight,
         );
+    }
+}
+
+pub trait FnBuilderExt {
+    fn type_of(&self, value: Value) -> Type;
+}
+
+impl FnBuilderExt for FunctionBuilder<'_> {
+    fn type_of(&self, value: Value) -> Type {
+        self.func.dfg.value_type(value)
     }
 }
 

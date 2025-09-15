@@ -65,10 +65,11 @@ impl Op for SLT {
         let rs = state.emit_get_register(fn_builder, self.rs);
         let rt = state.emit_get_register(fn_builder, self.rt);
         let rd = fn_builder.ins().icmp(IntCC::SignedLessThan, rs, rt);
+        let rd = fn_builder.ins().uextend(types::I32, rd);
         Some(
             EmitSummary::builder()
                 .register_updates(vec![(self.rd, rd)].into_boxed_slice())
-                .build(),
+                .build(fn_builder),
         )
     }
 }

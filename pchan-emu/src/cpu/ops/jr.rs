@@ -1,6 +1,6 @@
 use std::fmt::Display;
 
-use cranelift::prelude::{FunctionBuilder, InstBuilder};
+use crate::cranelift_bs::*;
 
 use crate::cpu::{REG_STR, ops::prelude::*};
 
@@ -47,7 +47,14 @@ impl Op for JR {
         fn_builder: &mut FunctionBuilder,
     ) -> Option<EmitSummary> {
         let rs = state.emit_get_register(fn_builder, self.rs);
-        let rs = state.emit_map_address(fn_builder, rs);
+        let rs = state.emit_map_address_to_physical(fn_builder, rs);
+
+        debug_assert_eq!(
+            fn_builder.func.dfg.value_type(rs),
+            types::I32,
+            "expected i32 value"
+        );
+
         state.emit_store_pc(fn_builder, rs);
 
         fn_builder.ins().return_(&[]);

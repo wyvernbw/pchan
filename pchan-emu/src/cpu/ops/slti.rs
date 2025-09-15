@@ -63,10 +63,11 @@ impl Op for SLTI {
         let rt = fn_builder
             .ins()
             .icmp_imm(IntCC::SignedLessThan, rs, self.imm as i64);
+        let rt = fn_builder.ins().uextend(types::I32, rt);
         Some(
             EmitSummary::builder()
                 .register_updates(vec![(self.rt, rt)].into_boxed_slice())
-                .build(),
+                .build(fn_builder),
         )
     }
 }

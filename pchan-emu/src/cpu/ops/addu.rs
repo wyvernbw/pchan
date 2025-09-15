@@ -63,7 +63,7 @@ impl Op for ADDU {
             return Some(
                 EmitSummary::builder()
                     .register_updates([(self.rd, rt)])
-                    .build(),
+                    .build(&fn_builder),
             );
         }
         // case 2: 0 + x = x
@@ -72,7 +72,7 @@ impl Op for ADDU {
             return Some(
                 EmitSummary::builder()
                     .register_updates([(self.rd, rs)])
-                    .build(),
+                    .build(&fn_builder),
             );
         }
         let rs = state.emit_get_register(fn_builder, self.rs);
@@ -81,7 +81,7 @@ impl Op for ADDU {
         Some(
             EmitSummary::builder()
                 .register_updates([(self.rd, rd)])
-                .build(),
+                .build(&fn_builder),
         )
     }
 }

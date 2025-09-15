@@ -4,11 +4,14 @@ use std::{
     ptr,
 };
 
-use cranelift::codegen::ir;
+use cranelift::{
+    codegen::{dominator_tree::DominatorTree, flowgraph::ControlFlowGraph, ir},
+    prelude::settings::{Flags, FlagsOrIsa},
+};
 use tracing::{Instrument, Level, instrument};
 
 use crate::{
-    EntryCache,
+    EntryCache, FnBuilderExt,
     cpu::{
         Cop0, Cpu, REG_STR,
         ops::{CachedValue, EmitSummary},
@@ -211,6 +214,7 @@ impl JIT {
         if let Err(err) = self.ctx.replace_redundant_loads() {
             tracing::warn!(%err);
         };
+
         self.module.define_function(func_id, &mut self.ctx)?;
 
         self.module.finalize_definitions()?;
@@ -292,20 +296,26 @@ impl JIT {
         idx: usize,
         value: Value,
     ) {
+        debug_assert_ne!(
+            builder.func.dfg.value_type(value),
+            types::I64,
+            "got 64bit write to register"
+        );
+
         if idx == 0 {
             return;
         }
         const GPR: usize = const { core::mem::offset_of!(Cpu, gpr) };
         let block_state = builder.block_params(block)[0];
         let offset = i32::try_from(GPR + idx * size_of::<u32>()).expect("offset overflow");
-        tracing::trace!("stored");
+        // tracing::trace!("stored");
         builder
             .ins()
             .store(MemFlags::new(), value, block_state, offset);
     }
 
     #[builder]
-    #[instrument(skip(builder, block), fields(reg=REG_STR[idx], value))]
+    #[instrument(skip(builder, block), fields(reg=idx, value))]
     pub fn emit_store_cop_reg(
         builder: &mut FunctionBuilder<'_>,
         block: Block,
@@ -314,6 +324,11 @@ impl JIT {
         value: Value,
     ) {
         debug_assert!((0..4).contains(&cop));
+        debug_assert_eq!(
+            builder.type_of(value),
+            types::I32,
+            "coprocessor register value must be i32"
+        );
 
         const COP0: usize = const { core::mem::offset_of!(Cpu, cop0) };
         const COP_SIZE: usize = size_of::<Cop0>();
@@ -328,6 +343,11 @@ impl JIT {
 
     #[instrument(skip(builder, block))]
     pub fn emit_store_hi(builder: &mut FunctionBuilder<'_>, block: Block, value: Value) {
+        debug_assert_eq!(
+            builder.type_of(value),
+            types::I32,
+            "hi register value must be i32"
+        );
         const HI: usize = const { core::mem::offset_of!(Cpu, hilo) + size_of::<u32>() };
         let block_state = builder.block_params(block)[0];
         tracing::trace!("stored");
@@ -338,6 +358,11 @@ impl JIT {
 
     #[instrument(skip(builder, block))]
     pub fn emit_store_lo(builder: &mut FunctionBuilder<'_>, block: Block, value: Value) {
+        debug_assert_eq!(
+            builder.type_of(value),
+            types::I32,
+            "lo register value must be i32"
+        );
         const LO: usize = const { core::mem::offset_of!(Cpu, hilo) };
         let block_state = builder.block_params(block)[0];
         tracing::trace!("stored");
@@ -371,7 +396,7 @@ impl JIT {
         if let Some(lo) = updates.lo {
             cache.lo = Some(*lo);
         }
-        tracing::trace!("applied cache");
+        // tracing::trace!("applied cache");
     }
 
     #[builder]
@@ -387,6 +412,7 @@ impl JIT {
         let Some(cache) = cache else {
             return;
         };
+        tracing::debug!("cache={:#?}", cache);
         cache
             .registers
             .iter()
@@ -396,6 +422,12 @@ impl JIT {
             .flat_map(|(idx, value)| value.map(|value| (idx, value)))
             .filter(|(_, value)| value.dirty)
             .for_each(|(id, value)| {
+                debug_assert_eq!(
+                    builder.type_of(value.value),
+                    types::I32,
+                    "cached register must be an i32 value"
+                );
+                tracing::debug!("writing cache to ${}", REG_STR[id]);
                 JIT::emit_store_reg()
                     .block(block)
                     .builder(builder)
@@ -414,42 +446,67 @@ impl JIT {
         {
             JIT::emit_store_lo(builder, block, lo.value);
         }
-        tracing::trace!("done");
+        // tracing::trace!("done");
     }
 
     #[builder]
-    pub fn emit_map_address(
+    pub fn emit_map_address_to_physical(
+        fn_builder: &mut FunctionBuilder<'_>,
+        address: Value,
+    ) -> Value {
+        debug_assert_eq!(
+            fn_builder.func.dfg.value_type(address),
+            types::I32,
+            "expected 32bit virtual address!"
+        );
+
+        fn_builder.ins().band_imm(address, 0x1FFF_FFFF)
+    }
+
+    #[builder]
+    pub fn emit_map_address_to_host(
         fn_builder: &mut FunctionBuilder<'_>,
         ptr_type: Type,
         mem_map_ptr: Value,
         address: Value,
     ) -> Value {
+        debug_assert_eq!(
+            fn_builder.func.dfg.value_type(address),
+            types::I32,
+            "expected 32bit virtual address!"
+        );
+
         let address = fn_builder.ins().band_imm(address, 0x1FFF_FFFF);
-        // let index = fn_builder.ins().ushr_imm(address, 16);
-        let index = fn_builder.ins().iconst(types::I32, 0);
-        let index = fn_builder.ins().uextend(ptr_type, index);
+        let address = fn_builder.ins().uextend(ptr_type, address);
+
+        let index = fn_builder.ins().ushr_imm(address, 16);
+        // let index = fn_builder.ins().uextend(ptr_type, index);
         let index = fn_builder
             .ins()
             .imul_imm(index, size_of::<MemoryRegion>() as i64);
-        let lookup = fn_builder.ins().iadd(index, mem_map_ptr);
+        let lookup = fn_builder.ins().iadd(mem_map_ptr, index);
 
-        let region_val =
-            fn_builder
-                .ins()
-                .load(types::I64, MemFlags::new().with_aligned(), lookup, 0);
+        let region_val = fn_builder
+            .ins()
+            .load(types::I64, MemFlags::new(), lookup, 0);
 
         let phys_start = {
-            let phys_start = fn_builder
+            fn_builder
                 .ins()
-                .ushr_imm(region_val, offset_of!(MemoryRegion, phys_start) as i64 * 8);
-            fn_builder.ins().ireduce(types::I32, phys_start)
+                .ushr_imm(region_val, offset_of!(MemoryRegion, phys_start) as i64 * 8)
+        };
+        let host_start = {
+            let host_start = fn_builder.ins().ireduce(types::I32, region_val);
+            fn_builder.ins().uextend(ptr_type, host_start)
         };
 
-        let offset = fn_builder.ins().isub(address, phys_start);
-        fn_builder.ins().uextend(ptr_type, offset)
+        let (offset, _) = fn_builder.ins().usub_overflow(address, phys_start);
+
+        fn_builder.ins().iadd(host_start, offset)
     }
 
     pub fn emit_store_pc(fn_builder: &mut FunctionBuilder<'_>, pc_value: Value, cpu_value: Value) {
+        tracing::info!("write to pc");
         fn_builder.ins().store(
             MemFlags::new(),
             pc_value,

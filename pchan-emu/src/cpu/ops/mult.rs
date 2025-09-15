@@ -34,7 +34,7 @@ impl Op for MULT {
                 EmitSummary::builder()
                     .hi(state.emit_get_zero(fn_builder))
                     .lo(state.emit_get_zero(fn_builder))
-                    .build(),
+                    .build(&fn_builder),
             );
         }
 
@@ -52,7 +52,7 @@ impl Op for MULT {
 
         // // Combine high ad low halves
         // let full64 = fn_builder.ins().bor(hi64_shifted, lo64);
-        Some(EmitSummary::builder().hi(hi).lo(lo).build())
+        Some(EmitSummary::builder().hi(hi).lo(lo).build(&fn_builder))
     }
 }
 

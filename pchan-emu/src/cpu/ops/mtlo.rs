@@ -27,7 +27,7 @@ impl Op for MTLO {
         fn_builder: &mut FunctionBuilder,
     ) -> Option<EmitSummary> {
         let rs = state.emit_get_register(fn_builder, self.rs);
-        Some(EmitSummary::builder().lo(rs).build())
+        Some(EmitSummary::builder().lo(rs).build(&fn_builder))
     }
 }
 

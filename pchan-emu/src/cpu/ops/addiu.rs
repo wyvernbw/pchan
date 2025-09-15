@@ -21,7 +21,9 @@ impl TryFrom<OpCode> for ADDIU {
     type Error = TryFromOpcodeErr;
 
     fn try_from(opcode: OpCode) -> Result<Self, TryFromOpcodeErr> {
-        let opcode = opcode.as_primary(PrimeOp::ADDIU)?;
+        let opcode = opcode
+            .as_primary(PrimeOp::ADDIU)
+            .or_else(|_| opcode.as_primary(PrimeOp::ADDI))?;
         Ok(ADDIU {
             rt: opcode.bits(16..21) as usize,
             rs: opcode.bits(21..26) as usize,
@@ -67,7 +69,7 @@ impl Op for ADDIU {
             return Some(
                 EmitSummary::builder()
                     .register_updates([(self.rt, rt)])
-                    .build(),
+                    .build(fn_builder),
             );
         }
 
@@ -78,7 +80,7 @@ impl Op for ADDIU {
             return Some(
                 EmitSummary::builder()
                     .register_updates([(self.rt, rs)])
-                    .build(),
+                    .build(fn_builder),
             );
         }
 
@@ -86,7 +88,7 @@ impl Op for ADDIU {
         Some(
             EmitSummary::builder()
                 .register_updates([(self.rt, rt)])
-                .build(),
+                .build(fn_builder),
         )
     }
 }

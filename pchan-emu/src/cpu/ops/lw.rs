@@ -53,16 +53,16 @@ impl Op for LW {
 
         // get cached register if possible, otherwise load it in
         let rs = state.emit_get_register(fn_builder, self.rs);
-        let rs = state.emit_map_address(fn_builder, rs);
+        let rs = state.emit_map_address_to_host(fn_builder, rs);
         let mem_ptr = fn_builder.ins().iadd(mem_ptr, rs);
 
         let rt = fn_builder
             .ins()
-            .uload32(MemFlags::new(), mem_ptr, self.imm as i32);
+            .load(types::I32, MemFlags::new(), mem_ptr, self.imm as i32);
         Some(
             EmitSummary::builder()
                 .delayed_register_updates(vec![(self.rt, rt)].into_boxed_slice())
-                .build(),
+                .build(fn_builder),
         )
     }
 

@@ -66,23 +66,24 @@ impl Op for SLTU {
             return Some(
                 EmitSummary::builder()
                     .register_updates([(self.rd, state.emit_get_one(fn_builder))])
-                    .build(),
+                    .build(fn_builder),
             );
         } else if self.rt == 0 {
             return Some(
                 EmitSummary::builder()
                     .register_updates([(self.rd, state.emit_get_zero(fn_builder))])
-                    .build(),
+                    .build(fn_builder),
             );
         }
         let rt = state.emit_get_register(fn_builder, self.rt);
         let rs = state.emit_get_register(fn_builder, self.rs);
         let rd = fn_builder.ins().icmp(IntCC::UnsignedLessThan, rs, rt);
+        let rd = fn_builder.ins().uextend(types::I32, rd);
 
         Some(
             EmitSummary::builder()
                 .register_updates([(self.rd, rd)])
-                .build(),
+                .build(fn_builder),
         )
     }
 }

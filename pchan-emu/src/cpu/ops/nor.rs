@@ -75,7 +75,7 @@ impl Op for NOR {
         Some(
             EmitSummary::builder()
                 .register_updates([(self.rd, rd)])
-                .build(),
+                .build(&fn_builder),
         )
     }
 }

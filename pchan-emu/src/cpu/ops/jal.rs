@@ -48,6 +48,8 @@ impl Op for JAL {
         mut state: EmitParams,
         fn_builder: &mut FunctionBuilder,
     ) -> Option<EmitSummary> {
+        tracing::info!("jal: saving pc 0x{:08X}", state.pc);
+        debug_assert_eq!(state.neighbour_count(), 1);
         let pc = fn_builder.ins().iconst(types::I32, state.pc as i64 + 8);
         state.update_cache_immediate(RA, pc);
 
@@ -70,9 +72,8 @@ impl Op for JAL {
         Some(
             EmitSummary::builder()
                 .finished_block(true)
-                .register_updates([(RA, pc)])
                 .pc_update(MipsOffset::RegionJump(self.imm).calculate_address(state.pc))
-                .build(),
+                .build(fn_builder),
         )
     }
 }

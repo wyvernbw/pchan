@@ -67,7 +67,7 @@ impl Op for SLL {
             return Some(
                 EmitSummary::builder()
                     .register_updates([(self.rd, rt)])
-                    .build(),
+                    .build(&fn_builder),
             );
         }
         // case 2: 0 << imm = 0
@@ -76,7 +76,7 @@ impl Op for SLL {
             return Some(
                 EmitSummary::builder()
                     .register_updates([(self.rd, rt)])
-                    .build(),
+                    .build(&fn_builder),
             );
         }
         // case 3: $rt << imm = $rd
@@ -85,7 +85,7 @@ impl Op for SLL {
         Some(
             EmitSummary::builder()
                 .register_updates([(self.rd, rd)])
-                .build(),
+                .build(&fn_builder),
         )
     }
 }
