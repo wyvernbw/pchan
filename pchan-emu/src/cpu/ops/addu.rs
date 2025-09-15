@@ -63,7 +63,7 @@ impl Op for ADDU {
             return Some(
                 EmitSummary::builder()
                     .register_updates([(self.rd, rt)])
-                    .build(&fn_builder),
+                    .build(fn_builder),
             );
         }
         // case 2: 0 + x = x
@@ -72,7 +72,7 @@ impl Op for ADDU {
             return Some(
                 EmitSummary::builder()
                     .register_updates([(self.rd, rs)])
-                    .build(&fn_builder),
+                    .build(fn_builder),
             );
         }
         let rs = state.emit_get_register(fn_builder, self.rs);
@@ -81,7 +81,7 @@ impl Op for ADDU {
         Some(
             EmitSummary::builder()
                 .register_updates([(self.rd, rd)])
-                .build(&fn_builder),
+                .build(fn_builder),
         )
     }
 }
@@ -105,7 +105,7 @@ mod tests {
         let program = [addu(10, 8, 9), OpCode(69420)];
         emulator
             .mem
-            .write_all(KSEG0Addr::from_phys(emulator.cpu.pc as u32), program);
+            .write_all(KSEG0Addr::from_phys(emulator.cpu.pc), program);
         emulator.cpu.gpr[8] = 32;
         emulator.cpu.gpr[9] = 64;
         emulator.step_jit()?;
@@ -121,7 +121,7 @@ mod tests {
         let program = [addu(10, 8, 9), OpCode(69420)];
         emulator
             .mem
-            .write_all(KSEG0Addr::from_phys(emulator.cpu.pc as u32), program);
+            .write_all(KSEG0Addr::from_phys(emulator.cpu.pc), program);
         emulator.cpu.gpr[8] = u32::MAX;
         emulator.cpu.gpr[9] = 1;
         emulator.step_jit()?;

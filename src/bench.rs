@@ -9,10 +9,10 @@ use crate::{time, write_test_program};
 fn bench_single() {
     #[allow(clippy::unit_arg)]
     setup_tracing();
-    black_box({
+    let _: () = black_box({
         let mut emu = Emu::default();
         write_test_program(&mut emu);
-        _ = emu.step_jit();
+        _ = emu.step_jit()
     });
 }
 #[test]

@@ -67,7 +67,7 @@ impl Op for SRA {
             return Some(
                 EmitSummary::builder()
                     .register_updates([(self.rd, rt)])
-                    .build(&fn_builder),
+                    .build(fn_builder),
             );
         }
         // case 2: 0 << imm = 0
@@ -76,7 +76,7 @@ impl Op for SRA {
             return Some(
                 EmitSummary::builder()
                     .register_updates([(self.rd, rt)])
-                    .build(&fn_builder),
+                    .build(fn_builder),
             );
         }
         // case 3: $rt << imm = $rd
@@ -85,7 +85,7 @@ impl Op for SRA {
         Some(
             EmitSummary::builder()
                 .register_updates([(self.rd, rd)])
-                .build(&fn_builder),
+                .build(fn_builder),
         )
     }
 }

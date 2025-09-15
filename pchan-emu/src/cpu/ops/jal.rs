@@ -1,11 +1,8 @@
 use std::fmt::Display;
-use std::mem::offset_of;
 
-use crate::cpu::Cpu;
 use crate::cranelift_bs::*;
 
 use crate::cpu::{RA, ops::prelude::*};
-use crate::jit::JIT;
 
 #[derive(Debug, Clone, Copy)]
 #[allow(clippy::upper_case_acronyms)]

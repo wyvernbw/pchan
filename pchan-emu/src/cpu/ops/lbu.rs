@@ -52,7 +52,7 @@ impl Op for LBU {
         Some(
             EmitSummary::builder()
                 .delayed_register_updates(vec![(self.rt, rt)].into_boxed_slice())
-                .build(&fn_builder),
+                .build(fn_builder),
         )
     }
 

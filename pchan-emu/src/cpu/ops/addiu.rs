@@ -113,7 +113,7 @@ mod tests {
         let program = [addiu(9, 8, -16), addiu(10, 0, 8), OpCode(69420)];
         emulator
             .mem
-            .write_all(KSEG0Addr::from_phys(emulator.cpu.pc as u32), program);
+            .write_all(KSEG0Addr::from_phys(emulator.cpu.pc), program);
         emulator.cpu.gpr[8] = 32;
         emulator.step_jit()?;
         assert_eq!(emulator.cpu.gpr[9], emulator.cpu.gpr[8] - 16);

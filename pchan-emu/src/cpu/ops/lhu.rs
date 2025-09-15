@@ -62,7 +62,7 @@ impl Op for LHU {
         Some(
             EmitSummary::builder()
                 .delayed_register_updates(vec![(self.rt, rt)].into_boxed_slice())
-                .build(&fn_builder),
+                .build(fn_builder),
         )
     }
 
@@ -86,7 +86,7 @@ mod tests {
 
     use crate::{
         Emu,
-        cpu::ops::{self, DecodedOp},
+        cpu::ops::{self},
         memory::{KSEG0Addr, PhysAddr},
         test_utils::emulator,
     };

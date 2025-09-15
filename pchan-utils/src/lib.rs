@@ -1,31 +1,13 @@
 use std::backtrace::Backtrace;
 
 use rstest::*;
-use tracing_subscriber::prelude::*;
 use tracing_subscriber::{
     EnvFilter,
     fmt::{self, format::FmtSpan},
     util::SubscriberInitExt,
 };
 
-use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::{Layer, layer::SubscriberExt};
-
-// Custom layer that prints span close events only for "my_span"
-struct ExitPrinterLayer(String);
-
-impl<S> Layer<S> for ExitPrinterLayer
-where
-    S: tracing::Subscriber + for<'a> LookupSpan<'a>,
-{
-    fn on_close(&self, id: tracing::span::Id, ctx: tracing_subscriber::layer::Context<S>) {
-        if let Some(span) = ctx.span(&id)
-            && span.name() == self.0
-        {
-            println!("Span '{}' closed!", span.name());
-        }
-    }
-}
 
 #[fixture]
 pub fn setup_tracing() {

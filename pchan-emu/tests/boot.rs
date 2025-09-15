@@ -1,3 +1,5 @@
+#![allow(unused_variables)]
+
 use std::io::Write;
 
 use pchan_emu::{Emu, dynarec::JitSummary, memory::kb};

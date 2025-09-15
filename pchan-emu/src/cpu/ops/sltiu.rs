@@ -64,7 +64,7 @@ impl Op for SLTIU {
             return Some(
                 EmitSummary::builder()
                     .register_updates([(self.rt, state.emit_get_zero(fn_builder))])
-                    .build(&fn_builder),
+                    .build(fn_builder),
             );
         }
 
@@ -73,7 +73,7 @@ impl Op for SLTIU {
             return Some(
                 EmitSummary::builder()
                     .register_updates([(self.rt, state.emit_get_one(fn_builder))])
-                    .build(&fn_builder),
+                    .build(fn_builder),
             );
         }
 
@@ -85,7 +85,7 @@ impl Op for SLTIU {
         Some(
             EmitSummary::builder()
                 .register_updates([(self.rt, rt)])
-                .build(&fn_builder),
+                .build(fn_builder),
         )
     }
 }

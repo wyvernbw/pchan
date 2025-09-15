@@ -1,6 +1,5 @@
 use std::fmt::Display;
 
-use color_eyre::owo_colors::OwoColorize;
 
 use crate::cpu::REG_STR;
 use crate::cpu::ops::{self, BoundaryType, EmitSummary, Op, TryFromOpcodeErr};

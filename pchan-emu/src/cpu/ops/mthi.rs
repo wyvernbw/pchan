@@ -27,7 +27,7 @@ impl Op for MTHI {
         fn_builder: &mut FunctionBuilder,
     ) -> Option<EmitSummary> {
         let rs = state.emit_get_register(fn_builder, self.rs);
-        Some(EmitSummary::builder().hi(rs).build(&fn_builder))
+        Some(EmitSummary::builder().hi(rs).build(fn_builder))
     }
 }
 

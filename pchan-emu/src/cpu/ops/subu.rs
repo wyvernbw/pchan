@@ -66,7 +66,7 @@ impl Op for SUBU {
         Some(
             EmitSummary::builder()
                 .register_updates([(self.rd, rd)])
-                .build(&fn_builder),
+                .build(fn_builder),
         )
     }
 }
@@ -82,7 +82,7 @@ mod tests {
     use pretty_assertions::assert_eq;
     use rstest::rstest;
 
-    use crate::{Emu, cpu::ops::OpCode, memory::KSEG0Addr, test_utils::emulator};
+    use crate::{Emu, memory::KSEG0Addr, test_utils::emulator};
 
     #[rstest]
     fn addu_1(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
@@ -90,7 +90,7 @@ mod tests {
         let program = [subu(10, 8, 9), OpCode(69420)];
         emulator
             .mem
-            .write_all(KSEG0Addr::from_phys(emulator.cpu.pc as u32), program);
+            .write_all(KSEG0Addr::from_phys(emulator.cpu.pc), program);
         emulator.cpu.gpr[8] = 64;
         emulator.cpu.gpr[9] = 32;
         emulator.step_jit()?;
@@ -106,7 +106,7 @@ mod tests {
         let program = [subu(10, 8, 9), OpCode(69420)];
         emulator
             .mem
-            .write_all(KSEG0Addr::from_phys(emulator.cpu.pc as u32), program);
+            .write_all(KSEG0Addr::from_phys(emulator.cpu.pc), program);
         emulator.cpu.gpr[8] = u32::MAX;
         emulator.cpu.gpr[9] = 1;
         emulator.step_jit()?;

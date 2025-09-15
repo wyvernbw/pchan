@@ -65,14 +65,14 @@ impl Op for XORI {
             return Some(
                 EmitSummary::builder()
                     .register_updates([(self.rt, rt)])
-                    .build(&fn_builder),
+                    .build(fn_builder),
             );
         } else if self.imm == 0 {
             let rs = state.emit_get_register(fn_builder, self.rs);
             return Some(
                 EmitSummary::builder()
                     .register_updates([(self.rt, rs)])
-                    .build(&fn_builder),
+                    .build(fn_builder),
             );
         }
 
@@ -81,7 +81,7 @@ impl Op for XORI {
         Some(
             EmitSummary::builder()
                 .register_updates([(self.rt, rt)])
-                .build(&fn_builder),
+                .build(fn_builder),
         )
     }
 }

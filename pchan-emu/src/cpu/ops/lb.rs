@@ -1,5 +1,4 @@
 use std::fmt::Display;
-use std::ops::DerefMut;
 
 use crate::cpu::REG_STR;
 use crate::cpu::ops::{self, BoundaryType, EmitSummary, Op, TryFromOpcodeErr};
@@ -51,7 +50,7 @@ impl Op for LB {
         Some(
             EmitSummary::builder()
                 .delayed_register_updates(vec![(self.rt, rt)].into_boxed_slice())
-                .build(&fn_builder),
+                .build(fn_builder),
         )
     }
 

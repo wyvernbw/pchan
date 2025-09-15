@@ -30,7 +30,7 @@ impl Op for MFLO {
         Some(
             EmitSummary::builder()
                 .register_updates([(self.rd, lo)])
-                .build(&fn_builder),
+                .build(fn_builder),
         )
     }
 }

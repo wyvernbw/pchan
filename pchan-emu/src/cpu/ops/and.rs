@@ -65,7 +65,7 @@ impl Op for AND {
             return Some(
                 EmitSummary::builder()
                     .register_updates([(self.rd, zero)])
-                    .build(&fn_builder),
+                    .build(fn_builder),
             );
         }
         let rs = state.emit_get_register(fn_builder, self.rs);
@@ -74,7 +74,7 @@ impl Op for AND {
         Some(
             EmitSummary::builder()
                 .register_updates([(self.rd, rd)])
-                .build(&fn_builder),
+                .build(fn_builder),
         )
     }
 }

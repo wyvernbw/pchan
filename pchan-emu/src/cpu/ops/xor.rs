@@ -62,14 +62,14 @@ impl Op for XOR {
             return Some(
                 EmitSummary::builder()
                     .register_updates([(self.rd, rt)])
-                    .build(&fn_builder),
+                    .build(fn_builder),
             );
         } else if self.rt == 0 {
             let rs = state.emit_get_register(fn_builder, self.rs);
             return Some(
                 EmitSummary::builder()
                     .register_updates([(self.rd, rs)])
-                    .build(&fn_builder),
+                    .build(fn_builder),
             );
         }
         let rs = state.emit_get_register(fn_builder, self.rs);
@@ -78,7 +78,7 @@ impl Op for XOR {
         Some(
             EmitSummary::builder()
                 .register_updates([(self.rd, rd)])
-                .build(&fn_builder),
+                .build(fn_builder),
         )
     }
 }

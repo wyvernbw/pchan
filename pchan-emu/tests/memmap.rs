@@ -1,4 +1,5 @@
 #![feature(slice_as_array)]
+#![allow(unused_variables)]
 
 use pchan_emu::{
     Emu,

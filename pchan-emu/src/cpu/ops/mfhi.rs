@@ -30,7 +30,7 @@ impl Op for MFHI {
         Some(
             EmitSummary::builder()
                 .register_updates([(self.rd, hi)])
-                .build(&fn_builder),
+                .build(fn_builder),
         )
     }
 }

@@ -32,7 +32,7 @@ fn block_compile_cache(setup_tracing: (), mut emulator: Emu) -> color_eyre::Resu
 
     emulator
         .mem
-        .write_array(KSEG0Addr::from_phys(emulator.cpu.pc as u32), &program);
+        .write_array(KSEG0Addr::from_phys(emulator.cpu.pc), &program);
 
     let now = Instant::now();
     emulator.step_jit()?;
@@ -77,7 +77,7 @@ fn register_cache_test(setup_tracing: (), mut emulator: Emu) -> color_eyre::Resu
 
     emulator
         .mem
-        .write_array(KSEG0Addr::from_phys(emulator.cpu.pc as u32), &program);
+        .write_array(KSEG0Addr::from_phys(emulator.cpu.pc), &program);
 
     let summary = emulator.step_jit_summarize::<JitSummary>()?;
     let op_count = summary.function.unwrap().dfg.num_insts();

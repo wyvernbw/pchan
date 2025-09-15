@@ -61,7 +61,7 @@ impl Op for SLLV {
             return Some(
                 EmitSummary::builder()
                     .register_updates([(self.rd, rd)])
-                    .build(&fn_builder),
+                    .build(fn_builder),
             );
         }
         // optimize x << 0 = x
@@ -70,7 +70,7 @@ impl Op for SLLV {
             return Some(
                 EmitSummary::builder()
                     .register_updates([(self.rd, rt)])
-                    .build(&fn_builder),
+                    .build(fn_builder),
             );
         }
         let rs = state.emit_get_register(fn_builder, self.rs);
@@ -78,7 +78,7 @@ impl Op for SLLV {
         Some(
             EmitSummary::builder()
                 .register_updates([(self.rd, rd)])
-                .build(&fn_builder),
+                .build(fn_builder),
         )
     }
 }

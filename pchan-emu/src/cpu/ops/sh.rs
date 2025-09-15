@@ -79,7 +79,7 @@ mod tests {
     use pchan_utils::setup_tracing;
     use rstest::rstest;
 
-    use crate::{Emu, cpu::ops::OpCode, memory::KSEG0Addr, test_utils::emulator};
+    use crate::{Emu, memory::KSEG0Addr, test_utils::emulator};
 
     #[rstest]
     pub fn test_sh(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {

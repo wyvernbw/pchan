@@ -34,7 +34,7 @@ impl Op for MULTU {
                 EmitSummary::builder()
                     .hi(state.emit_get_zero(fn_builder))
                     .lo(state.emit_get_zero(fn_builder))
-                    .build(&fn_builder),
+                    .build(fn_builder),
             );
         }
 
@@ -55,7 +55,7 @@ impl Op for MULTU {
 
         // // Combine high and low halves
         // let full64 = fn_builder.ins().bor(hi64_shifted, lo64);
-        Some(EmitSummary::builder().hi(hi).lo(lo).build(&fn_builder))
+        Some(EmitSummary::builder().hi(hi).lo(lo).build(fn_builder))
     }
 }
 
