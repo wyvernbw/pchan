@@ -20,7 +20,7 @@ impl Op for MFLO {
             .set_bits(11..16, self.rd as u32)
     }
 
-    fn emit_ir(&self, mut state: EmitParams) -> Option<EmitSummary> {
+    fn emit_ir(&self, mut state: EmitCtx) -> Option<EmitSummary> {
         let lo = state.emit_get_lo();
         Some(
             EmitSummary::builder()

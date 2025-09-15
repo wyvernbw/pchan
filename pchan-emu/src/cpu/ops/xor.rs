@@ -50,7 +50,7 @@ impl Op for XOR {
             .set_bits(11..16, self.rd as u32)
     }
 
-    fn emit_ir(&self, mut state: EmitParams) -> Option<EmitSummary> {
+    fn emit_ir(&self, mut state: EmitCtx) -> Option<EmitSummary> {
         use crate::cranelift_bs::*;
         if self.rs == 0 {
             let rt = state.emit_get_register(self.rt);

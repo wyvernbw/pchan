@@ -40,7 +40,7 @@ impl Op for LUI {
             .set_bits(16..21, self.rt as u32)
     }
 
-    fn emit_ir(&self, mut state: EmitParams) -> Option<EmitSummary> {
+    fn emit_ir(&self, mut state: EmitCtx) -> Option<EmitSummary> {
         if self.imm == 0 {
             return Some(
                 EmitSummary::builder()

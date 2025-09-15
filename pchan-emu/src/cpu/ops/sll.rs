@@ -53,7 +53,7 @@ impl Op for SLL {
             .set_bits(6..11, (self.imm as i32 as i16) as u32)
     }
 
-    fn emit_ir(&self, mut state: EmitParams) -> Option<EmitSummary> {
+    fn emit_ir(&self, mut state: EmitCtx) -> Option<EmitSummary> {
         use crate::cranelift_bs::*;
         tracing::info!(?self);
         // case 1: $rt << 0 = $rt

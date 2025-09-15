@@ -4,7 +4,7 @@ use crate::cpu::REG_STR;
 use crate::cpu::ops::{self, BoundaryType, EmitSummary, Op, TryFromOpcodeErr};
 use crate::cranelift_bs::*;
 
-use super::{EmitParams, OpCode, PrimeOp};
+use super::{EmitCtx, OpCode, PrimeOp};
 
 #[derive(Debug, Clone, Copy)]
 pub struct SW {
@@ -41,7 +41,7 @@ impl Display for SW {
 }
 
 impl Op for SW {
-    fn emit_ir(&self, mut state: EmitParams) -> Option<EmitSummary> {
+    fn emit_ir(&self, mut state: EmitCtx) -> Option<EmitSummary> {
         // get pointer to memory passed as argument to the function
         let mem_ptr = state.memory();
 

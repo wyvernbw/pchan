@@ -3,7 +3,7 @@ use std::fmt::Display;
 
 use crate::cpu::{
     REG_STR,
-    ops::{BoundaryType, EmitParams, EmitSummary, Op, OpCode, TryFromOpcodeErr},
+    ops::{BoundaryType, EmitCtx, EmitSummary, Op, OpCode, TryFromOpcodeErr},
 };
 
 use super::PrimeOp;
@@ -52,7 +52,7 @@ impl Op for ANDI {
             .set_bits(0..16, (self.imm as i32 as i16) as u32)
     }
 
-    fn emit_ir(&self, mut state: EmitParams) -> Option<EmitSummary> {
+    fn emit_ir(&self, mut state: EmitCtx) -> Option<EmitSummary> {
         use crate::cranelift_bs::*;
         // shortcuts:
         // - case 1: x & 0 = 0

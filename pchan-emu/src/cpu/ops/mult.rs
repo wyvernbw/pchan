@@ -23,7 +23,7 @@ impl Op for MULT {
             .set_bits(16..21, self.rt as u32)
     }
 
-    fn emit_ir(&self, mut state: EmitParams) -> Option<EmitSummary> {
+    fn emit_ir(&self, mut state: EmitCtx) -> Option<EmitSummary> {
         // case 1: $rs = 0 or $rt = 0 => $hi:$lo=0
         if self.rs == 0 || self.rt == 0 {
             return Some(

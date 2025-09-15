@@ -43,7 +43,7 @@ impl Op for JALR {
             .set_bits(11..16, self.rd as u32)
     }
 
-    fn emit_ir(&self, mut state: EmitParams) -> Option<EmitSummary> {
+    fn emit_ir(&self, mut state: EmitCtx) -> Option<EmitSummary> {
         tracing::info!("jalr: saving pc 0x{:08X}", state.pc);
         let rs = state.emit_get_register(self.rs);
         let rs = state.emit_map_address_to_physical(rs);
@@ -55,9 +55,17 @@ impl Op for JALR {
         Some(
             EmitSummary::builder()
                 .register_updates([(self.rd, pc), (self.rd, pc)])
-                .finished_block(false)
                 .build(state.fn_builder),
         )
+    }
+
+    fn hazard_trigger(&self, current_pc: u32) -> Option<u32> {
+        Some(current_pc + 4)
+    }
+
+    fn emit_hazard(&self, mut ctx: EmitCtx) -> EmitSummary {
+        ctx.ins().return_(&[]);
+        EmitSummary::builder().build(&ctx.fn_builder)
     }
 }
 

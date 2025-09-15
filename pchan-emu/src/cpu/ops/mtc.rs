@@ -37,7 +37,7 @@ impl Op for MTCn {
             .set_bits(11..16, self.rd as u32)
     }
 
-    fn emit_ir(&self, mut state: EmitParams) -> Option<EmitSummary> {
+    fn emit_ir(&self, mut state: EmitCtx) -> Option<EmitSummary> {
         let rt = state.emit_get_register(self.rt.into());
         state.emit_store_cop_register(self.cop, self.rd.into(), rt);
         None

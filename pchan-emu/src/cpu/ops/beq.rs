@@ -4,9 +4,7 @@ use tracing::instrument;
 
 use crate::cpu::{
     REG_STR,
-    ops::{
-        BoundaryType, EmitParams, EmitSummary, MipsOffset, Op, OpCode, PrimeOp, TryFromOpcodeErr,
-    },
+    ops::{BoundaryType, EmitCtx, EmitSummary, MipsOffset, Op, OpCode, PrimeOp, TryFromOpcodeErr},
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -61,8 +59,16 @@ impl Op for BEQ {
             .set_bits(0..16, (self.imm >> 2) as i16 as u32)
     }
 
+    fn emit_ir(&self, state: EmitCtx) -> Option<EmitSummary> {
+        Some(EmitSummary::builder().build(state.fn_builder))
+    }
+
+    fn hazard_trigger(&self, current_pc: u32) -> Option<u32> {
+        Some(current_pc + 4)
+    }
+
     #[instrument("beq", skip_all)]
-    fn emit_ir(&self, mut state: EmitParams) -> Option<EmitSummary> {
+    fn emit_hazard(&self, mut state: EmitCtx) -> EmitSummary {
         use crate::cranelift_bs::*;
 
         let rs = state.emit_get_register(self.rs);
@@ -88,11 +94,7 @@ impl Op for BEQ {
             .ins()
             .brif(cond, then_block, &then_params, else_block, &else_params);
 
-        Some(
-            EmitSummary::builder()
-                .finished_block(true)
-                .build(state.fn_builder),
-        )
+        EmitSummary::builder().build(state.fn_builder)
     }
 }
 

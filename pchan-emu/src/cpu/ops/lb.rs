@@ -4,7 +4,7 @@ use crate::cpu::REG_STR;
 use crate::cpu::ops::{self, BoundaryType, EmitSummary, Op, TryFromOpcodeErr};
 use crate::cranelift_bs::*;
 
-use super::{EmitParams, OpCode, PrimeOp};
+use super::{EmitCtx, OpCode, PrimeOp};
 
 #[derive(Debug, Clone, Copy)]
 pub struct LB {
@@ -31,23 +31,27 @@ impl TryFrom<OpCode> for LB {
 }
 
 impl Op for LB {
-    fn emit_ir(&self, mut state: EmitParams) -> Option<EmitSummary> {
+    fn emit_ir(&self, _: EmitCtx) -> Option<EmitSummary> {
+        None
+    }
+
+    fn hazard_trigger(&self, current_pc: u32) -> Option<u32> {
+        Some(current_pc + 4)
+    }
+
+    fn emit_hazard(&self, mut ctx: EmitCtx) -> EmitSummary {
         // get pointer to memory passed as argument to the function
-        let mem_ptr = state.memory();
+        let mem_ptr = ctx.memory();
+        let rs = ctx.emit_get_register(self.rs);
+        let rs = ctx.emit_map_address_to_host(rs);
+        let mem_ptr = ctx.ins().iadd(mem_ptr, rs);
 
-        // get cached register if possible, otherwise load it in
-        let rs = state.emit_get_register(self.rs);
-        let rs = state.emit_map_address_to_host(rs);
-        let mem_ptr = state.ins().iadd(mem_ptr, rs);
-
-        let rt = state
+        let rt = ctx
             .ins()
             .sload8(types::I32, MemFlags::new(), mem_ptr, self.imm as i32);
-        Some(
-            EmitSummary::builder()
-                .delayed_register_updates(vec![(self.rt, rt)].into_boxed_slice())
-                .build(state.fn_builder),
-        )
+        EmitSummary::builder()
+            .register_updates([(self.rt, rt)])
+            .build(ctx.fn_builder)
     }
 
     fn is_block_boundary(&self) -> Option<BoundaryType> {

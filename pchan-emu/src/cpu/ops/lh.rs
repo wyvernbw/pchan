@@ -1,6 +1,7 @@
 use std::fmt::Display;
 
 use crate::cpu::REG_STR;
+use crate::cpu::ops::prelude::EmitCtx;
 use crate::cpu::ops::{self, BoundaryType, EmitSummary, Op, TryFromOpcodeErr};
 use crate::cranelift_bs::*;
 
@@ -41,7 +42,13 @@ impl Display for LH {
 }
 
 impl Op for LH {
-    fn emit_ir(&self, mut state: super::EmitParams) -> Option<EmitSummary> {
+    fn emit_ir(&self, _: EmitCtx) -> Option<EmitSummary> {
+        None
+    }
+    fn hazard_trigger(&self, current_pc: u32) -> Option<u32> {
+        Some(current_pc + 4)
+    }
+    fn emit_hazard(&self, mut state: super::EmitCtx) -> EmitSummary {
         // get pointer to memory passed as argument to the function
         let mem_ptr = state.memory();
 
@@ -53,11 +60,9 @@ impl Op for LH {
         let rt = state
             .ins()
             .sload16(types::I32, MemFlags::new(), mem_ptr, self.imm as i32);
-        Some(
-            EmitSummary::builder()
-                .delayed_register_updates(vec![(self.rt, rt)].into_boxed_slice())
-                .build(state.fn_builder),
-        )
+        EmitSummary::builder()
+            .register_updates([(self.rt, rt)])
+            .build(state.fn_builder)
     }
 
     fn is_block_boundary(&self) -> Option<BoundaryType> {

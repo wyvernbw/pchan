@@ -4,7 +4,7 @@ use crate::cpu::REG_STR;
 use crate::cpu::ops::{self, BoundaryType, EmitSummary, Op, TryFromOpcodeErr};
 use crate::cranelift_bs::*;
 
-use super::{EmitParams, OpCode, PrimeOp};
+use super::{EmitCtx, OpCode, PrimeOp};
 
 #[derive(Debug, Clone, Copy)]
 pub struct LW {
@@ -41,23 +41,26 @@ impl Display for LW {
 }
 
 impl Op for LW {
-    fn emit_ir(&self, mut state: EmitParams) -> Option<EmitSummary> {
+    fn hazard_trigger(&self, current_pc: u32) -> Option<u32> {
+        Some(current_pc + 4)
+    }
+    fn emit_hazard(&self, mut state: EmitCtx) -> EmitSummary {
         // get pointer to memory passed as argument to the function
         let mem_ptr = state.memory();
 
         // get cached register if possible, otherwise load it in
         let rs = state.emit_get_register(self.rs);
+
         let rs = state.emit_map_address_to_host(rs);
         let mem_ptr = state.ins().iadd(mem_ptr, rs);
 
         let rt = state
             .ins()
             .load(types::I32, MemFlags::new(), mem_ptr, self.imm as i32);
-        Some(
-            EmitSummary::builder()
-                .delayed_register_updates(vec![(self.rt, rt)].into_boxed_slice())
-                .build(state.fn_builder),
-        )
+
+        EmitSummary::builder()
+            .register_updates([(self.rt, rt)])
+            .build(state.fn_builder)
     }
 
     fn is_block_boundary(&self) -> Option<BoundaryType> {
@@ -70,6 +73,10 @@ impl Op for LW {
             .set_bits(16..21, self.rt as u32)
             .set_bits(21..26, self.rs as u32)
             .set_bits(0..16, (self.imm as i32 as i16) as u32)
+    }
+
+    fn emit_ir(&self, _: EmitCtx) -> Option<EmitSummary> {
+        None
     }
 }
 

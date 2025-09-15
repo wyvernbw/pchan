@@ -4,9 +4,7 @@ use tracing::instrument;
 
 use crate::cpu::{
     REG_STR,
-    ops::{
-        BoundaryType, EmitParams, EmitSummary, MipsOffset, Op, OpCode, PrimeOp, TryFromOpcodeErr,
-    },
+    ops::{BoundaryType, EmitCtx, EmitSummary, MipsOffset, Op, OpCode, PrimeOp, TryFromOpcodeErr},
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -62,7 +60,7 @@ impl Op for BNE {
     }
 
     #[instrument("bne", skip_all)]
-    fn emit_ir(&self, mut state: EmitParams) -> Option<EmitSummary> {
+    fn emit_hazard(&self, mut state: EmitCtx) -> EmitSummary {
         use crate::cranelift_bs::*;
 
         let rs = state.emit_get_register(self.rs);
@@ -87,12 +85,11 @@ impl Op for BNE {
         state
             .ins()
             .brif(cond, then_block, &then_params, else_block, &else_params);
+        EmitSummary::builder().build(&state.fn_builder)
+    }
 
-        Some(
-            EmitSummary::builder()
-                .finished_block(true)
-                .build(state.fn_builder),
-        )
+    fn emit_ir(&self, ctx: EmitCtx) -> Option<EmitSummary> {
+        Some(EmitSummary::builder().build(&ctx.fn_builder))
     }
 }
 

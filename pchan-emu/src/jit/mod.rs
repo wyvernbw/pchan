@@ -9,12 +9,9 @@ use tracing::{Instrument, Level, instrument};
 
 use crate::{
     FnBuilderExt,
-    cpu::{
-        Cop0, Cpu, REG_STR,
-        ops::{CachedValue, EmitSummary},
-    },
+    cpu::{Cop0, Cpu, REG_STR},
     cranelift_bs::*,
-    dynarec::EntryCache,
+    dynarec::{CachedValue, EmitSummary, EntryCache},
     memory::{Memory, MemoryRegion},
 };
 
@@ -106,27 +103,15 @@ impl Default for JIT {
 
 #[derive(Debug, Clone, Copy)]
 pub struct CacheUpdates<'a> {
-    registers: Option<&'a [(usize, CachedValue)]>,
+    registers: &'a [(usize, CachedValue)],
     hi: &'a Option<CachedValue>,
     lo: &'a Option<CachedValue>,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub enum CacheUpdatesRegisters {
-    Immediate,
-    Delayed,
-}
-
 impl<'a> CacheUpdates<'a> {
-    pub fn new(
-        emit_summary: &'a EmitSummary,
-        registers: CacheUpdatesRegisters,
-    ) -> CacheUpdates<'a> {
+    pub fn new(emit_summary: &'a EmitSummary) -> CacheUpdates<'a> {
         CacheUpdates {
-            registers: match registers {
-                CacheUpdatesRegisters::Immediate => Some(&emit_summary.register_updates),
-                CacheUpdatesRegisters::Delayed => Some(&emit_summary.delayed_register_updates),
-            },
+            registers: &emit_summary.register_updates,
             hi: &emit_summary.hi,
             lo: &emit_summary.lo,
         }
@@ -382,10 +367,8 @@ impl JIT {
     #[builder]
     #[instrument(skip_all)]
     pub fn apply_cache_updates<'a, 'b>(updates: CacheUpdates<'a>, cache: &'b mut EntryCache) {
-        if let Some(registers) = updates.registers {
-            for (id, value) in registers.iter() {
-                cache.registers[*id] = Some(*value);
-            }
+        for (id, value) in updates.registers.iter() {
+            cache.registers[*id] = Some(*value);
         }
         // DONE: apply updates to hi and lo
         if let Some(hi) = updates.hi {

@@ -3,7 +3,7 @@ use std::fmt::Display;
 
 use crate::cpu::{
     REG_STR,
-    ops::{BoundaryType, EmitParams, EmitSummary, Op, OpCode, SecOp, TryFromOpcodeErr},
+    ops::{BoundaryType, EmitCtx, EmitSummary, Op, OpCode, SecOp, TryFromOpcodeErr},
 };
 
 use super::PrimeOp;
@@ -53,7 +53,7 @@ impl Op for SUBU {
             .set_bits(11..16, self.rd as u32)
     }
 
-    fn emit_ir(&self, mut state: EmitParams) -> Option<EmitSummary> {
+    fn emit_ir(&self, mut state: EmitCtx) -> Option<EmitSummary> {
         use crate::cranelift_bs::*;
         let rs = state.emit_get_register(self.rs);
         let rt = state.emit_get_register(self.rt);

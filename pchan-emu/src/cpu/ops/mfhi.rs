@@ -20,7 +20,7 @@ impl Op for MFHI {
             .set_bits(11..16, self.rd as u32)
     }
 
-    fn emit_ir(&self, mut state: EmitParams) -> Option<EmitSummary> {
+    fn emit_ir(&self, mut state: EmitCtx) -> Option<EmitSummary> {
         let hi = state.emit_get_hi();
         Some(
             EmitSummary::builder()

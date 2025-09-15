@@ -50,7 +50,7 @@ impl Op for SRAV {
             .set_bits(21..26, self.rs as u32)
     }
 
-    fn emit_ir(&self, mut state: EmitParams) -> Option<EmitSummary> {
+    fn emit_ir(&self, mut state: EmitCtx) -> Option<EmitSummary> {
         // optimize 0 >> x = 0
         if self.rt == 0 {
             let rd = state.emit_get_zero();

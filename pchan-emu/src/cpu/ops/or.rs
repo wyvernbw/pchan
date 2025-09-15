@@ -50,7 +50,7 @@ impl Op for OR {
             .set_bits(11..16, self.rd as u32)
     }
 
-    fn emit_ir(&self, mut state: EmitParams) -> Option<EmitSummary> {
+    fn emit_ir(&self, mut state: EmitCtx) -> Option<EmitSummary> {
         use crate::cranelift_bs::*;
         let rd = if self.rs == 0 {
             // case 1: x | 0 = x

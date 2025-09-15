@@ -1,8 +1,12 @@
 use cranelift::{
-    codegen::{bitset::ScalarBitSet, ir::Function},
+    codegen::{
+        bitset::ScalarBitSet,
+        ir::{BlockArg, Function},
+    },
+    frontend::FuncInstBuilder,
     prelude::*,
 };
-use std::{borrow::Cow, collections::HashMap, mem::offset_of};
+use std::{borrow::Cow, collections::HashMap};
 
 use bon::{Builder, bon, builder};
 use color_eyre::eyre::{Context, eyre};
@@ -15,12 +19,12 @@ use petgraph::{
 use tracing::{Level, info_span, instrument, span};
 
 use crate::{
-    Emu,
+    Emu, FnBuilderExt,
     cpu::{
         Cpu,
-        ops::{CachedValue, prelude::*},
+        ops::{Hazard, prelude::*},
     },
-    jit::{BlockPage, CacheUpdates, CacheUpdatesRegisters, JIT},
+    jit::{BlockPage, CacheUpdates, JIT},
     memory::{MEM_MAP, Memory, PhysAddr},
 };
 
@@ -52,7 +56,7 @@ impl SummarizeJit for JitSummary {
 
 pub struct EmitBlockSummary;
 
-#[derive(Default, Clone, Debug)]
+#[derive(Default, Clone, Debug, Hash)]
 pub struct EntryCache {
     pub registers: [Option<CachedValue>; 32],
     pub const_one: Option<Value>,
@@ -68,6 +72,12 @@ pub struct CacheDependency {
     pub lo: bool,
     pub const_one: bool,
     pub const_zero_i64: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct HazardEntry<'a> {
+    hazard: Hazard<'a>,
+    cache: EntryCache,
 }
 
 impl CacheDependency {
@@ -180,21 +190,26 @@ impl Emu {
         let mut cache_map = hash_map! {
             entry_idx => EntryCache::default()
         };
-        let mut prev_register_cache = entry_idx;
+        let mut hazards_map = hash_map! {
+            entry_idx => Vec::<HazardEntry<'_>>::with_capacity(32)
+        };
+        let mut prev_node = entry_idx;
 
         depth_first_search(&blocks.cfg, Some(entry_idx), |event| match event {
             DfsEvent::TreeEdge(a, _) => {
-                prev_register_cache = a;
+                prev_node = a;
             }
             DfsEvent::BackEdge(_, b) => {
-                prev_register_cache = b;
+                prev_node = b;
             }
             DfsEvent::Discover(node, _) => {
                 let basic_block = &blocks.cfg[node];
                 let cranelift_block = basic_block.clif_block();
 
-                let prev_register_cache = cache_map.get(&prev_register_cache).unwrap();
+                let prev_register_cache = cache_map.get(&prev_node).unwrap();
+                let prev_hazards = hazards_map.get(&prev_node).unwrap();
                 let mut reg_cache = cache_map.get(&node).unwrap_or(prev_register_cache).clone();
+                let mut hazards = hazards_map.get(&node).unwrap_or(prev_hazards).clone();
 
                 let deps = deps_map
                     .entry(blocks.cfg[node].clif_block())
@@ -211,9 +226,11 @@ impl Emu {
                     .deps(&deps)
                     .register_cache(&mut reg_cache)
                     .deps_map(&deps_map)
+                    .hazards(&mut hazards)
                     .call();
 
                 cache_map.insert(node, reg_cache);
+                hazards_map.insert(node, hazards);
                 // prev_register_cache = node;
             }
             _ => {}
@@ -239,15 +256,16 @@ impl Emu {
         fn_builder.finalize();
     }
     #[builder]
-    pub fn emit_block(
+    pub fn emit_block<'a>(
         fn_builder: &mut FunctionBuilder<'_>,
         cranelift_block: Block,
         ptr_type: types::Type,
-        cfg: &Graph<BasicBlock, ()>,
+        cfg: &'a Graph<BasicBlock, ()>,
         node: NodeIndex,
         register_cache: &mut EntryCache,
         deps: &CacheDependency,
         deps_map: &HashMap<Block, CacheDependency>,
+        hazards: &mut Vec<HazardEntry<'a>>,
         cpu: &mut Cpu,
     ) -> EmitBlockSummary {
         // fn_builder.seal_block(cranelift_block);
@@ -267,39 +285,8 @@ impl Emu {
 
         for (idx, op) in basic_block.ops.iter().enumerate() {
             // tracing::info!(op = %op);
-            if op.is_block_boundary().is_some() {
-                let summary = EmitBlockSummary;
 
-                if idx + 1 < basic_block.ops.len() {
-                    Self::emit_op()
-                        .fn_builder(fn_builder)
-                        .ptr_type(ptr_type)
-                        .node(node)
-                        .deps_map(deps_map)
-                        .cfg(cfg)
-                        .register_cache(register_cache)
-                        .op(&basic_block.ops[idx + 1])
-                        .idx(idx + 1)
-                        .summary_queue(&mut summary_queue)
-                        .basic_block(basic_block)
-                        .call();
-                }
-
-                Self::emit_block_boundary()
-                    .op(op)
-                    .register_cache(register_cache)
-                    .fn_builder(fn_builder)
-                    .maybe_summary_queue(summary_queue.as_ref())
-                    .cpu(cpu)
-                    .ptr_type(ptr_type)
-                    .idx(idx)
-                    .node(node)
-                    .cfg(cfg)
-                    .deps_map(deps_map)
-                    .call();
-                return summary;
-            }
-            Self::emit_op()
+            let hazard = Self::emit_op()
                 .fn_builder(fn_builder)
                 .ptr_type(ptr_type)
                 .node(node)
@@ -310,30 +297,38 @@ impl Emu {
                 .idx(idx)
                 .summary_queue(&mut summary_queue)
                 .basic_block(basic_block)
+                .hazards(hazards)
                 .call();
-        }
 
-        fn_builder.ins().return_(&[]);
+            if let Some(hazard) = hazard {
+                hazards.push(HazardEntry {
+                    hazard,
+                    cache: register_cache.clone(),
+                });
+            }
+        }
 
         EmitBlockSummary
     }
 
     #[builder]
     #[instrument(name = "emit", skip_all, fields(%op, ))]
-    pub fn emit_op(
+    pub fn emit_op<'a>(
         fn_builder: &mut FunctionBuilder<'_>,
         ptr_type: types::Type,
         cfg: &Graph<BasicBlock, ()>,
         node: NodeIndex,
         register_cache: &mut EntryCache,
         deps_map: &HashMap<Block, CacheDependency>,
-        op: &DecodedOp,
+        op: &'a DecodedOp,
         basic_block: &BasicBlock,
         idx: usize,
         summary_queue: &mut Option<EmitSummary>,
-    ) {
+        hazards: &mut [HazardEntry<'_>],
+    ) -> Option<Hazard<'a>> {
+        // op instructions
         let summary = op.emit_ir(
-            EmitParams::builder()
+            EmitCtx::builder()
                 .ptr_type(ptr_type)
                 .cache(register_cache)
                 .pc(basic_block.address + idx as u32 * 4)
@@ -344,102 +339,95 @@ impl Emu {
                 .build(),
         );
 
+        // apply previous op's delayed cache updates
         if let Some(summary) = summary_queue.take() {
             // flush_updates();
             JIT::apply_cache_updates()
-                .updates(CacheUpdates::new(&summary, CacheUpdatesRegisters::Delayed))
+                .updates(CacheUpdates::new(&summary))
                 .cache(register_cache)
                 .call();
         }
 
+        // apply this op's immediate updates
         if let Some(summary) = summary {
             JIT::apply_cache_updates()
-                .updates(CacheUpdates::new(
-                    &summary,
-                    CacheUpdatesRegisters::Immediate,
-                ))
+                .updates(CacheUpdates::new(&summary))
                 .cache(register_cache)
                 .call();
             *summary_queue = Some(summary);
         }
-    }
 
-    #[builder]
-    #[instrument(name = "emitb", skip_all, fields(%op))]
-    pub fn emit_block_boundary(
-        op: &DecodedOp,
-        mut summary_queue: Option<&EmitSummary>,
-        register_cache: &mut EntryCache,
-        fn_builder: &mut FunctionBuilder<'_>,
-        cpu: &mut Cpu,
-        ptr_type: types::Type,
-        node: NodeIndex,
-        cfg: &Graph<BasicBlock, ()>,
-        deps_map: &HashMap<Block, CacheDependency>,
-        idx: usize,
-    ) {
-        let basic_block = &cfg[node];
-
-        if let Some(summary) = summary_queue.take() {
+        // emit potential hazards from past instructions
+        let pc = basic_block.address + idx as u32 * 4;
+        let hazard = hazards
+            .iter_mut()
+            .find(|hazard| hazard.hazard.trigger == pc);
+        if let Some(hazard) = hazard {
+            let summary = (hazard.hazard.emit)(
+                hazard.hazard.op,
+                EmitCtx::builder()
+                    .ptr_type(ptr_type)
+                    .cache(&mut hazard.cache)
+                    .pc(pc)
+                    .node(node)
+                    .cfg(cfg)
+                    .deps_map(deps_map)
+                    .fn_builder(fn_builder)
+                    .build(),
+            );
             JIT::apply_cache_updates()
-                .updates(CacheUpdates::new(summary, CacheUpdatesRegisters::Delayed))
+                .updates(CacheUpdates::new(&summary))
+                .cache(register_cache)
+                .call();
+            *summary_queue = Some(summary);
+        }
+
+        // if op is boundary (last op) emit the op's delayed updates as well
+        if op.is_block_boundary().is_some()
+            && let Some(summary) = summary_queue.take()
+        {
+            // flush_updates();
+            JIT::apply_cache_updates()
+                .updates(CacheUpdates::new(&summary))
                 .cache(register_cache)
                 .call();
         }
-        if let Some(BoundaryType::Function { auto_set_pc }) = op.is_block_boundary() {
-            tracing::info!(%op, "function boundary");
+
+        // if op is function boundary, emit updates to all cached values
+        if op.is_function_boundary() {
             JIT::emit_updates()
                 .builder(fn_builder)
                 .block(basic_block.clif_block())
                 .cache(register_cache)
                 .call();
-            if auto_set_pc {
-                let cpu_value = fn_builder.block_params(basic_block.clif_block())[0];
-                let pc_value = fn_builder.ins().iconst(
-                    types::I32,
-                    (basic_block.address as i32 + idx as i32 * 4) as i64,
-                );
-                fn_builder.ins().store(
-                    MemFlags::new(),
-                    pc_value,
-                    cpu_value,
-                    offset_of!(Cpu, pc) as i32,
-                );
-            }
-        };
-        if let Some(summary) = op.emit_ir(
-            EmitParams::builder()
+        }
+
+        // finally, emit op post update instructions (jumps, returns etc)
+        op.post_update_emit_ir(
+            EmitCtx::builder()
                 .ptr_type(ptr_type)
-                .fn_builder(fn_builder)
                 .cache(register_cache)
                 .pc(basic_block.address + idx as u32 * 4)
                 .node(node)
                 .cfg(cfg)
                 .deps_map(deps_map)
+                .fn_builder(fn_builder)
                 .build(),
-        ) {
-            JIT::apply_cache_updates()
-                .updates(CacheUpdates::new(
-                    &summary,
-                    CacheUpdatesRegisters::Immediate,
-                ))
+        );
+
+        op.get_hazard(
+            EmitCtx::builder()
+                .ptr_type(ptr_type)
                 .cache(register_cache)
-                .call();
-            if let Some(pc) = summary.pc_update {
-                cpu.pc = pc;
-                tracing::debug!(?cpu.pc, "finished block", );
-            }
-            if !summary.finished_block {
-                JIT::emit_updates()
-                    .builder(fn_builder)
-                    .block(basic_block.clif_block())
-                    .cache(register_cache)
-                    .call();
-                fn_builder.ins().return_(&[]);
-            }
-        }
-        tracing::debug!("{:?} compiled {} instructions", basic_block.clif_block, idx);
+                .pc(basic_block.address + idx as u32 * 4)
+                .node(node)
+                .cfg(cfg)
+                .deps_map(deps_map)
+                .fn_builder(fn_builder)
+                .build(),
+        )
     }
+
     pub fn run(&mut self) -> color_eyre::Result<()> {
         loop {
             self.step_jit()?;
@@ -496,6 +484,24 @@ fn find_first_value(than: u32, mapped: &HashMap<u32, NodeIndex>) -> Option<u32> 
 }
 
 fn fetch(params: FetchParams<'_>) -> color_eyre::Result<WalkFnSummary> {
+    fn add_ops_until_hazard_trigger(
+        ops: &mut Vec<DecodedOp>,
+        op: &DecodedOp,
+        mem: &Memory,
+        pc: u32,
+    ) -> color_eyre::Result<()> {
+        let Some(trigger) = op.hazard_trigger(pc) else {
+            return Ok(());
+        };
+        for p in (pc + 4)..=trigger {
+            let op = mem.read::<u32>(PhysAddr(p));
+            let op = OpCode(op);
+            let op = DecodedOp::try_from(op)?;
+            ops.push(op);
+        }
+        Ok(())
+    }
+
     let FetchParams {
         pc: initial_pc,
         mem,
@@ -532,20 +538,16 @@ fn fetch(params: FetchParams<'_>) -> color_eyre::Result<WalkFnSummary> {
         let op = mem.read::<u32>(PhysAddr(state.pc));
         let op = OpCode(op);
         let op = DecodedOp::try_from(op).wrap_err(eyre!("failed at pc 0x{:08X}", state.pc))?;
+        cfg[state.current_node].ops.push(op);
+        add_ops_until_hazard_trigger(&mut cfg[state.current_node].ops, &op, mem, state.pc)?;
+
         tracing::trace!(op = format!("{op}"));
 
         match op.is_block_boundary() {
             Some(BoundaryType::Function { .. }) => {
-                cfg[state.current_node].ops.push(op);
-                let op = mem.read::<u32>(PhysAddr(state.pc + 4));
-                let op = OpCode(op);
-                let op = DecodedOp::try_from(op)?;
-                cfg[state.current_node].ops.push(op);
-
                 continue;
             }
             None => {
-                cfg[state.current_node].ops.push(op);
                 const NOP_TOLERANCE: usize = 64;
                 let len = cfg[state.current_node].ops.len();
                 if len > NOP_TOLERANCE {
@@ -568,31 +570,8 @@ fn fetch(params: FetchParams<'_>) -> color_eyre::Result<WalkFnSummary> {
                     continue;
                 }
 
-                cfg[state.current_node].ops.push(op);
-
-                // execute instruction after branch
-                let op = mem.read::<u32>(PhysAddr(state.pc + 4));
-                let op = OpCode(op);
-                let op = DecodedOp::try_from(op)?;
-
-                // create next node
-                // let next_node = splice_block_if_possible(
-                //     mapped.to_mut(),
-                //     &mut cfg,
-                //     new_address,
-                //     &state,
-                //     recv_block,
-                //     op,
-                // )?;
-
-                // if next_node.is_some() {
-                //     tracing::debug!("quick link {:?} -> {:?}", state.current_node, next_node);
-                //     continue;
-                // }
-
                 let next_node = cfg.add_node(BasicBlock::new(new_address));
                 cfg.add_edge(state.current_node, next_node, ());
-                cfg[next_node].ops.push(op);
                 mapped.to_mut().insert(new_address, next_node);
 
                 tracing::trace!("cfg.link {:?} -> {:?}", state.current_node, next_node);
@@ -604,13 +583,6 @@ fn fetch(params: FetchParams<'_>) -> color_eyre::Result<WalkFnSummary> {
                 });
             }
             Some(BoundaryType::BlockSplit { lhs, rhs }) => {
-                cfg[state.current_node].ops.push(op);
-
-                // execute instruction after branch
-                let op = mem.read::<u32>(PhysAddr(state.pc + 4));
-                let op = OpCode(op);
-                let op = DecodedOp::try_from(op)?;
-
                 tracing::trace!(offsets = ?[lhs, rhs], delay_hazard = %op, "potential split in block");
                 let offsets = [rhs, lhs];
                 for offset in offsets.into_iter() {
@@ -621,24 +593,8 @@ fn fetch(params: FetchParams<'_>) -> color_eyre::Result<WalkFnSummary> {
                         continue;
                     }
 
-                    // create the next node
-                    // let next_node = splice_block_if_possible(
-                    //     mapped.to_mut(),
-                    //     &mut cfg,
-                    //     new_address,
-                    //     &state,
-                    //     recv_block,
-                    //     op,
-                    // )?;
-
-                    // if next_node.is_some() {
-                    //     tracing::debug!("quick link {:?} -> {:?}", state.current_node, next_node);
-                    //     continue;
-                    // }
-
                     let next_node = cfg.add_node(BasicBlock::new(new_address));
                     cfg.add_edge(state.current_node, next_node, ());
-                    cfg[next_node].ops.push(op);
                     mapped.to_mut().insert(new_address, next_node);
 
                     tracing::trace!(
@@ -682,5 +638,265 @@ fn merge_into<N: Clone, E: Clone>(dst: &mut Graph<N, E, Directed>, src: &Graph<N
             new_indices[dst_idx.index()],
             weight,
         );
+    }
+}
+
+#[derive(Debug, Clone, Copy, Hash)]
+pub struct CachedValue {
+    pub dirty: bool,
+    pub value: Value,
+}
+
+#[derive(Builder)]
+pub struct EmitCtx<'a, 'b> {
+    pub fn_builder: &'a mut FunctionBuilder<'b>,
+    pub ptr_type: types::Type,
+    pub cache: &'a mut EntryCache,
+    pub node: NodeIndex,
+    pub pc: u32,
+    pub cfg: &'a Graph<BasicBlock, ()>,
+    pub deps_map: &'a HashMap<Block, CacheDependency>,
+}
+
+impl<'a, 'b> EmitCtx<'a, 'b> {
+    pub fn block(&self) -> &BasicBlock {
+        &self.cfg[self.node]
+    }
+    pub fn ins<'short>(&'short mut self) -> FuncInstBuilder<'short, 'b> {
+        self.fn_builder.ins()
+    }
+    #[instrument(skip(self))]
+    pub fn next_at(&self, idx: usize) -> &BasicBlock {
+        let idx = self
+            .cfg
+            .neighbors_directed(self.node, Direction::Outgoing)
+            .nth(idx)
+            .unwrap();
+        &self.cfg[idx]
+    }
+    pub fn neighbour_count(&self) -> usize {
+        self.cfg
+            .neighbors_directed(self.node, Direction::Outgoing)
+            .count()
+    }
+    pub fn emulator_params(&self) -> Vec<BlockArg> {
+        vec![
+            BlockArg::Value(self.cpu()),
+            BlockArg::Value(self.memory()),
+            BlockArg::Value(self.mem_map()),
+        ]
+    }
+    #[instrument(skip(self))]
+    pub fn out_params(&self, to: Block) -> Vec<BlockArg> {
+        // tracing::trace!("{:#?}", self.deps_map);
+        let next_block_deps: Option<_> = self.deps_map.get(&to).map(|dep| dep.registers);
+        let mut args = self.emulator_params();
+        if let Some(next_block_deps) = next_block_deps {
+            let iter = next_block_deps
+                .iter()
+                .flat_map(|register| self.cache.registers[register as usize])
+                .map(|value| value.value)
+                .map(BlockArg::Value);
+            args.extend(iter);
+        } else {
+            args.extend(
+                self.cache
+                    .registers
+                    .iter()
+                    .flatten()
+                    .cloned()
+                    .map(|value| value.value)
+                    .map(BlockArg::Value),
+            );
+        }
+        args
+    }
+    pub fn cpu(&self) -> Value {
+        let block = self.block().clif_block();
+        self.fn_builder.block_params(block)[0]
+    }
+    pub fn memory(&self) -> Value {
+        let block = self.cfg[self.node].clif_block();
+        self.fn_builder.block_params(block)[1]
+    }
+    pub fn mem_map(&self) -> Value {
+        let block = self.block().clif_block();
+        self.fn_builder.block_params(block)[2]
+    }
+    pub fn emit_get_one(&mut self) -> Value {
+        match self.cache.const_one {
+            Some(one) => one,
+            None => {
+                let one = self.ins().iconst(types::I32, 1);
+                self.cache.const_one = Some(one);
+                one
+            }
+        }
+    }
+    pub fn emit_get_zero_i64(&mut self, fn_builder: &mut FunctionBuilder) -> Value {
+        match self.cache.const_zero_i64 {
+            Some(zero) => zero,
+            None => {
+                let zero = fn_builder.ins().iconst(types::I64, 0);
+                self.cache.const_zero_i64 = Some(zero);
+                zero
+            }
+        }
+    }
+    pub fn emit_get_zero(&mut self) -> Value {
+        self.emit_get_register(0)
+    }
+    pub fn emit_get_hi(&mut self) -> Value {
+        let block = self.block().clif_block();
+        match self.cache.hi {
+            Some(hi) => hi.value,
+            None => {
+                let hi = JIT::emit_load_hi()
+                    .builder(self.fn_builder)
+                    .block(block)
+                    .call();
+                self.cache.hi = Some(CachedValue {
+                    dirty: false,
+                    value: hi,
+                });
+                hi
+            }
+        }
+    }
+    pub fn emit_get_lo(&mut self) -> Value {
+        let block = self.block().clif_block();
+        match self.cache.lo {
+            Some(lo) => lo.value,
+            None => {
+                let lo = JIT::emit_load_lo()
+                    .builder(self.fn_builder)
+                    .block(block)
+                    .call();
+                self.cache.lo = Some(CachedValue {
+                    dirty: false,
+                    value: lo,
+                });
+                lo
+            }
+        }
+    }
+    pub fn emit_get_register(&mut self, id: usize) -> Value {
+        let block = self.block().clif_block();
+        match self.cache.registers[id] {
+            Some(value) => value.value,
+            None => {
+                let value = JIT::emit_load_reg()
+                    .builder(self.fn_builder)
+                    .block(block)
+                    .idx(id)
+                    .call();
+                self.cache.registers[id] = Some(CachedValue {
+                    dirty: false,
+                    value,
+                });
+                value
+            }
+        }
+    }
+    pub fn emit_get_cop_register(
+        &mut self,
+        fn_builder: &mut FunctionBuilder,
+        cop: u8,
+        reg: usize,
+    ) -> Value {
+        JIT::emit_load_cop_reg()
+            .builder(fn_builder)
+            .block(self.block().clif_block())
+            .idx(reg)
+            .cop(cop)
+            .call()
+    }
+    pub fn update_cache_immediate(&mut self, id: usize, value: Value) {
+        self.cache.registers[id] = Some(CachedValue {
+            dirty: false,
+            value,
+        });
+    }
+    pub fn emit_map_address_to_host(&mut self, address: Value) -> Value {
+        let mem_map = self.mem_map();
+        JIT::emit_map_address_to_host()
+            .fn_builder(self.fn_builder)
+            .ptr_type(self.ptr_type)
+            .address(address)
+            .mem_map_ptr(mem_map)
+            .call()
+    }
+    pub fn emit_map_address_to_physical(&mut self, address: Value) -> Value {
+        JIT::emit_map_address_to_physical()
+            .fn_builder(self.fn_builder)
+            .address(address)
+            .call()
+    }
+    pub fn emit_store_pc(&mut self, value: Value) {
+        let cpu = self.cpu();
+        JIT::emit_store_pc(self.fn_builder, value, cpu);
+    }
+    pub fn emit_store_register(&mut self, reg: usize, value: Value) {
+        let block = self.block().clif_block();
+        JIT::emit_store_reg()
+            .builder(self.fn_builder)
+            .block(block)
+            .idx(reg)
+            .value(value)
+            .call();
+    }
+    pub fn emit_store_cop_register(&mut self, cop: u8, reg: usize, value: Value) {
+        let block = self.block().clif_block();
+        JIT::emit_store_cop_reg()
+            .builder(self.fn_builder)
+            .block(block)
+            .idx(reg)
+            .value(value)
+            .cop(cop)
+            .call();
+    }
+}
+
+#[derive(Builder, Debug, Default)]
+#[builder(finish_fn(vis = "", name = build_internal))]
+pub struct EmitSummary {
+    #[builder(field = Vec::with_capacity(32))]
+    pub register_updates: Vec<(usize, CachedValue)>,
+    pub pc_update: Option<u32>,
+    #[builder(with = |value: Value| CachedValue {
+        dirty: true,
+        value
+    })]
+    pub hi: Option<CachedValue>,
+    #[builder(with = |value: Value| CachedValue {
+        dirty: true,
+        value
+    })]
+    pub lo: Option<CachedValue>,
+}
+
+impl<S: emit_summary_builder::State> EmitSummaryBuilder<S> {
+    pub fn register_updates(mut self, values: impl IntoIterator<Item = (usize, Value)>) -> Self {
+        self.register_updates.extend(
+            values
+                .into_iter()
+                .map(|(reg, value)| (reg, CachedValue { dirty: true, value })),
+        );
+        self
+    }
+}
+
+impl<S: emit_summary_builder::IsComplete> EmitSummaryBuilder<S> {
+    pub fn build(self, fn_builder: &FunctionBuilder) -> EmitSummary {
+        if cfg!(debug_assertions) {
+            for (_, value) in &self.register_updates {
+                assert_eq!(
+                    fn_builder.type_of(value.value),
+                    types::I32,
+                    "emit summary invalid type for register value"
+                );
+            }
+        }
+        self.build_internal()
     }
 }

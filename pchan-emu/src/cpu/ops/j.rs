@@ -3,7 +3,7 @@ use std::fmt::Display;
 use cranelift::prelude::InstBuilder;
 
 use crate::cpu::ops::{
-    BoundaryType, EmitParams, EmitSummary, MipsOffset, Op, OpCode, PrimeOp, TryFromOpcodeErr,
+    BoundaryType, EmitCtx, EmitSummary, MipsOffset, Op, OpCode, PrimeOp, TryFromOpcodeErr,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -42,20 +42,22 @@ impl Op for J {
             .set_bits(0..26, self.imm >> 2)
     }
 
-    fn emit_ir(&self, mut state: EmitParams) -> Option<EmitSummary> {
+    fn emit_ir(&self, state: EmitCtx) -> Option<EmitSummary> {
         tracing::info!("j: jump to 0x{:08X}", self.imm);
-        debug_assert_eq!(state.neighbour_count(), 1);
-        let next_block = state.next_at(0).clif_block();
-
-        let params = state.out_params(next_block);
-        state.ins().jump(next_block, &params);
 
         Some(
             EmitSummary::builder()
                 .pc_update(MipsOffset::RegionJump(self.imm).calculate_address(state.pc))
-                .finished_block(true)
                 .build(state.fn_builder),
         )
+    }
+
+    fn post_update_emit_ir(&self, mut ctx: EmitCtx) {
+        debug_assert_eq!(ctx.neighbour_count(), 1);
+        let next_block = ctx.next_at(0).clif_block();
+
+        let params = ctx.out_params(next_block);
+        ctx.ins().jump(next_block, &params);
     }
 }
 

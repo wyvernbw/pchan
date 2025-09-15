@@ -40,21 +40,12 @@ impl Op for JAL {
             .set_bits(0..26, self.imm >> 2)
     }
 
-    fn emit_ir(&self, mut state: EmitParams) -> Option<EmitSummary> {
+    fn emit_ir(&self, mut state: EmitCtx) -> Option<EmitSummary> {
         tracing::info!("jal: saving pc 0x{:08X}", state.pc);
         debug_assert_eq!(state.neighbour_count(), 1);
         let pc = state.pc as i64;
         let pc = state.ins().iconst(types::I32, pc + 8);
         state.update_cache_immediate(RA, pc);
-
-        let next_block = state.next_at(0).clif_block();
-        let params = state.out_params(next_block);
-
-        tracing::debug!(
-            "jumping to {:?} with {} dependencies",
-            next_block,
-            params.len()
-        );
 
         // JIT::emit_store_reg()
         //     .builder(fn_builder)
@@ -62,13 +53,24 @@ impl Op for JAL {
         //     .idx(RA)
         //     .value(pc)
         //     .call();
-        state.ins().jump(next_block, &params);
         Some(
             EmitSummary::builder()
-                .finished_block(true)
                 .pc_update(MipsOffset::RegionJump(self.imm).calculate_address(state.pc))
                 .build(state.fn_builder),
         )
+    }
+
+    fn post_update_emit_ir(&self, mut ctx: EmitCtx) {
+        let next_block = ctx.next_at(0).clif_block();
+        let params = ctx.out_params(next_block);
+
+        tracing::debug!(
+            "jumping to {:?} with {} dependencies",
+            next_block,
+            params.len()
+        );
+
+        ctx.ins().jump(next_block, &params);
     }
 }
 

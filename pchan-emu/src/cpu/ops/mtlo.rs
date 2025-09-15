@@ -20,7 +20,7 @@ impl Op for MTLO {
             .set_bits(21..26, self.rs as u32)
     }
 
-    fn emit_ir(&self, mut state: EmitParams) -> Option<EmitSummary> {
+    fn emit_ir(&self, mut state: EmitCtx) -> Option<EmitSummary> {
         let rs = state.emit_get_register(self.rs);
         Some(EmitSummary::builder().lo(rs).build(state.fn_builder))
     }
