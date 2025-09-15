@@ -66,6 +66,8 @@ pub struct CacheDependency {
     pub registers: ScalarBitSet<u32>,
     pub hi: bool,
     pub lo: bool,
+    pub const_one: bool,
+    pub const_zero_i64: bool,
 }
 
 impl CacheDependency {
@@ -74,6 +76,8 @@ impl CacheDependency {
             registers: ScalarBitSet::default(),
             hi: false,
             lo: false,
+            const_one: false,
+            const_zero_i64: false,
         }
     }
     fn from_cache_entry(entry: &EntryCache) -> Self {
@@ -87,6 +91,8 @@ impl CacheDependency {
             registers: set,
             hi: entry.hi.is_some(),
             lo: entry.lo.is_some(),
+            const_one: entry.const_one.is_some(),
+            const_zero_i64: entry.const_zero_i64.is_some(),
         }
     }
 }
@@ -119,7 +125,7 @@ impl Emu {
         }
 
         // collect blocks in function
-        let mut cfg = Graph::with_capacity(20, 64);
+        let mut cfg = Graph::with_capacity(20, 0);
         let entry_idx = cfg.add_node(BasicBlock::new(self.cpu.pc));
         let mut blocks = fetch(
             FetchParams::builder()
@@ -132,7 +138,6 @@ impl Emu {
 
         tracing::trace!(cfg.cycle = is_cyclic_directed(&blocks.cfg));
 
-        let mut dfs = Dfs::new(&blocks.cfg, entry_idx);
         for node in blocks.cfg.node_indices() {
             for op in blocks.cfg[node].ops.iter() {
                 if let Some(address) = op.invalidates_cache_at() {
@@ -145,6 +150,7 @@ impl Emu {
         let (func_id, mut func) = self.jit.create_function(initial_address)?;
         let mut fn_builder = self.jit.create_fn_builder(&mut func);
 
+        let mut dfs = Dfs::new(&blocks.cfg, entry_idx);
         while let Some(node) = dfs.next(&blocks.cfg) {
             blocks.cfg[node].clif_block = Some(fn_builder.create_block());
 
@@ -194,19 +200,6 @@ impl Emu {
                     .entry(blocks.cfg[node].clif_block())
                     .or_insert(CacheDependency::from_cache_entry(prev_register_cache))
                     .clone();
-
-                // if enabled!(Level::TRACE) {
-                //     tracing::trace!("deps: {{");
-                //     for (block, deps) in deps_map.iter() {
-                //         let deps = deps
-                //             .registers
-                //             .iter()
-                //             .map(|reg| format!("${}", REG_STR[reg as usize]))
-                //             .collect::<Vec<_>>();
-                //         tracing::trace!("    {:?} => {:?}", block, deps);
-                //     }
-                //     tracing::trace!("}}");
-                // }
 
                 let _ = Self::emit_block()
                     .fn_builder(&mut fn_builder)
@@ -347,8 +340,8 @@ impl Emu {
                 .node(node)
                 .cfg(cfg)
                 .deps_map(deps_map)
+                .fn_builder(fn_builder)
                 .build(),
-            fn_builder,
         );
 
         if let Some(summary) = summary_queue.take() {
@@ -417,13 +410,13 @@ impl Emu {
         if let Some(summary) = op.emit_ir(
             EmitParams::builder()
                 .ptr_type(ptr_type)
+                .fn_builder(fn_builder)
                 .cache(register_cache)
                 .pc(basic_block.address + idx as u32 * 4)
                 .node(node)
                 .cfg(cfg)
                 .deps_map(deps_map)
                 .build(),
-            fn_builder,
         ) {
             JIT::apply_cache_updates()
                 .updates(CacheUpdates::new(

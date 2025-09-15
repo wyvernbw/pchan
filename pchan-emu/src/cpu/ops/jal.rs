@@ -40,22 +40,19 @@ impl Op for JAL {
             .set_bits(0..26, self.imm >> 2)
     }
 
-    fn emit_ir(
-        &self,
-        mut state: EmitParams,
-        fn_builder: &mut FunctionBuilder,
-    ) -> Option<EmitSummary> {
+    fn emit_ir(&self, mut state: EmitParams) -> Option<EmitSummary> {
         tracing::info!("jal: saving pc 0x{:08X}", state.pc);
         debug_assert_eq!(state.neighbour_count(), 1);
-        let pc = fn_builder.ins().iconst(types::I32, state.pc as i64 + 8);
+        let pc = state.pc as i64;
+        let pc = state.ins().iconst(types::I32, pc + 8);
         state.update_cache_immediate(RA, pc);
 
-        let next_block = state.next_at(0);
-        let params = state.out_params(next_block.clif_block(), fn_builder);
+        let next_block = state.next_at(0).clif_block();
+        let params = state.out_params(next_block);
 
         tracing::debug!(
             "jumping to {:?} with {} dependencies",
-            next_block.clif_block,
+            next_block,
             params.len()
         );
 
@@ -65,12 +62,12 @@ impl Op for JAL {
         //     .idx(RA)
         //     .value(pc)
         //     .call();
-        fn_builder.ins().jump(next_block.clif_block(), &params);
+        state.ins().jump(next_block, &params);
         Some(
             EmitSummary::builder()
                 .finished_block(true)
                 .pc_update(MipsOffset::RegionJump(self.imm).calculate_address(state.pc))
-                .build(fn_builder),
+                .build(state.fn_builder),
         )
     }
 }

@@ -55,40 +55,36 @@ impl Op for ADDIU {
             .set_bits(0..16, (self.imm as i32 as i16) as u32)
     }
 
-    fn emit_ir(
-        &self,
-        mut state: EmitParams,
-        fn_builder: &mut FunctionBuilder,
-    ) -> Option<EmitSummary> {
+    fn emit_ir(&self, mut state: EmitParams) -> Option<EmitSummary> {
         use crate::cranelift_bs::*;
 
         // case 1: 0 + x = x
         // => 1 iconst instruction
         if self.rs == 0 {
-            let rt = fn_builder.ins().iconst(types::I32, self.imm as i64);
+            let rt = state.fn_builder.ins().iconst(types::I32, self.imm as i64);
             return Some(
                 EmitSummary::builder()
                     .register_updates([(self.rt, rt)])
-                    .build(fn_builder),
+                    .build(state.fn_builder),
             );
         }
 
         // x + 0 = x
         // => 1 iconst instruction or 0 instructions if rs is cached
-        let rs = state.emit_get_register(fn_builder, self.rs);
+        let rs = state.emit_get_register(self.rs);
         if self.imm == 0 {
             return Some(
                 EmitSummary::builder()
                     .register_updates([(self.rt, rs)])
-                    .build(fn_builder),
+                    .build(state.fn_builder),
             );
         }
 
-        let rt = fn_builder.ins().iadd_imm(rs, self.imm as i64);
+        let rt = state.fn_builder.ins().iadd_imm(rs, self.imm as i64);
         Some(
             EmitSummary::builder()
                 .register_updates([(self.rt, rt)])
-                .build(fn_builder),
+                .build(state.fn_builder),
         )
     }
 }

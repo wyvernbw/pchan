@@ -51,37 +51,33 @@ impl Op for ADDU {
             .set_bits(11..16, self.rd as u32)
     }
 
-    fn emit_ir(
-        &self,
-        mut state: EmitParams,
-        fn_builder: &mut FunctionBuilder,
-    ) -> Option<EmitSummary> {
+    fn emit_ir(&self, mut state: EmitParams) -> Option<EmitSummary> {
         use crate::cranelift_bs::*;
         // case 1: x + 0 = x
         if self.rs == 0 {
-            let rt = state.emit_get_register(fn_builder, self.rt);
+            let rt = state.emit_get_register(self.rt);
             return Some(
                 EmitSummary::builder()
                     .register_updates([(self.rd, rt)])
-                    .build(fn_builder),
+                    .build(state.fn_builder),
             );
         }
         // case 2: 0 + x = x
         if self.rt == 0 {
-            let rs = state.emit_get_register(fn_builder, self.rs);
+            let rs = state.emit_get_register(self.rs);
             return Some(
                 EmitSummary::builder()
                     .register_updates([(self.rd, rs)])
-                    .build(fn_builder),
+                    .build(state.fn_builder),
             );
         }
-        let rs = state.emit_get_register(fn_builder, self.rs);
-        let rt = state.emit_get_register(fn_builder, self.rt);
-        let rd = fn_builder.ins().iadd(rs, rt);
+        let rs = state.emit_get_register(self.rs);
+        let rt = state.emit_get_register(self.rt);
+        let rd = state.fn_builder.ins().iadd(rs, rt);
         Some(
             EmitSummary::builder()
                 .register_updates([(self.rd, rd)])
-                .build(fn_builder),
+                .build(state.fn_builder),
         )
     }
 }

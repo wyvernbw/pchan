@@ -52,22 +52,18 @@ impl Op for SLTI {
             .set_bits(21..26, self.rs as u32)
     }
 
-    fn emit_ir(
-        &self,
-        mut state: EmitParams,
-        fn_builder: &mut FunctionBuilder,
-    ) -> Option<EmitSummary> {
+    fn emit_ir(&self, mut state: EmitParams) -> Option<EmitSummary> {
         use crate::cranelift_bs::*;
 
-        let rs = state.emit_get_register(fn_builder, self.rs);
-        let rt = fn_builder
+        let rs = state.emit_get_register(self.rs);
+        let rt = state
             .ins()
             .icmp_imm(IntCC::SignedLessThan, rs, self.imm as i64);
-        let rt = fn_builder.ins().uextend(types::I32, rt);
+        let rt = state.ins().uextend(types::I32, rt);
         Some(
             EmitSummary::builder()
                 .register_updates(vec![(self.rt, rt)].into_boxed_slice())
-                .build(fn_builder),
+                .build(state.fn_builder),
         )
     }
 }
@@ -77,8 +73,8 @@ mod tests {
     use pchan_utils::setup_tracing;
     use rstest::rstest;
 
-    use crate::dynarec::JitSummary;
     use crate::cpu::ops::prelude::*;
+    use crate::dynarec::JitSummary;
     use crate::memory::KSEG0Addr;
     use crate::{Emu, test_utils::emulator};
 

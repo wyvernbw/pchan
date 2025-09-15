@@ -41,23 +41,19 @@ impl Op for JR {
             .set_bits(21..26, self.rs as u32)
     }
 
-    fn emit_ir(
-        &self,
-        mut state: EmitParams,
-        fn_builder: &mut FunctionBuilder,
-    ) -> Option<EmitSummary> {
-        let rs = state.emit_get_register(fn_builder, self.rs);
-        let rs = state.emit_map_address_to_physical(fn_builder, rs);
+    fn emit_ir(&self, mut state: EmitParams) -> Option<EmitSummary> {
+        let rs = state.emit_get_register(self.rs);
+        let rs = state.emit_map_address_to_physical(rs);
 
         debug_assert_eq!(
-            fn_builder.func.dfg.value_type(rs),
+            state.fn_builder.func.dfg.value_type(rs),
             types::I32,
             "expected i32 value"
         );
 
-        state.emit_store_pc(fn_builder, rs);
+        state.emit_store_pc(rs);
 
-        fn_builder.ins().return_(&[]);
+        state.ins().return_(&[]);
 
         None
     }

@@ -53,35 +53,31 @@ impl Op for XORI {
             .set_bits(0..16, (self.imm as i32 as i16) as u32)
     }
 
-    fn emit_ir(
-        &self,
-        mut state: EmitParams,
-        fn_builder: &mut FunctionBuilder,
-    ) -> Option<EmitSummary> {
+    fn emit_ir(&self, mut state: EmitParams) -> Option<EmitSummary> {
         use crate::cranelift_bs::*;
 
         if self.rs == 0 {
-            let rt = fn_builder.ins().iconst(types::I32, self.imm as i64);
+            let rt = state.ins().iconst(types::I32, self.imm as i64);
             return Some(
                 EmitSummary::builder()
                     .register_updates([(self.rt, rt)])
-                    .build(fn_builder),
+                    .build(state.fn_builder),
             );
         } else if self.imm == 0 {
-            let rs = state.emit_get_register(fn_builder, self.rs);
+            let rs = state.emit_get_register(self.rs);
             return Some(
                 EmitSummary::builder()
                     .register_updates([(self.rt, rs)])
-                    .build(fn_builder),
+                    .build(state.fn_builder),
             );
         }
 
-        let rs = state.emit_get_register(fn_builder, self.rs);
-        let rt = fn_builder.ins().bxor_imm(rs, self.imm as i64);
+        let rs = state.emit_get_register(self.rs);
+        let rt = state.ins().bxor_imm(rs, self.imm as i64);
         Some(
             EmitSummary::builder()
                 .register_updates([(self.rt, rt)])
-                .build(fn_builder),
+                .build(state.fn_builder),
         )
     }
 }

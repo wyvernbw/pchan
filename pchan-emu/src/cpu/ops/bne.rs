@@ -63,43 +63,36 @@ impl Op for BNE {
     }
 
     #[instrument("bne", skip_all)]
-    fn emit_ir(
-        &self,
-        mut state: EmitParams,
-        fn_builder: &mut FunctionBuilder,
-    ) -> Option<EmitSummary> {
+    fn emit_ir(&self, mut state: EmitParams) -> Option<EmitSummary> {
         use crate::cranelift_bs::*;
 
-        let rs = state.emit_get_register(fn_builder, self.rs);
-        let rt = state.emit_get_register(fn_builder, self.rt);
+        let rs = state.emit_get_register(self.rs);
+        let rt = state.emit_get_register(self.rt);
 
-        let then_block = state.next_at(0);
-        let else_block = state.next_at(1);
+        let cond = state.ins().icmp(IntCC::NotEqual, rs, rt);
 
-        let then_params = state.out_params(then_block.clif_block(), fn_builder);
-        let else_params = state.out_params(else_block.clif_block(), fn_builder);
+        let then_block = state.next_at(0).clif_block();
+        let then_params = state.out_params(then_block);
 
-        let cond = fn_builder.ins().icmp(IntCC::NotEqual, rs, rt);
+        let else_block = state.next_at(1).clif_block();
+        let else_params = state.out_params(else_block);
+
         tracing::debug!(
             "branch: then={:?}({} deps) else={:?}({} deps)",
-            then_block.clif_block,
+            then_block,
             then_params.len(),
-            else_block.clif_block,
+            else_block,
             else_params.len()
         );
 
-        fn_builder.ins().brif(
-            cond,
-            then_block.clif_block(),
-            &then_params,
-            else_block.clif_block(),
-            &else_params,
-        );
+        state
+            .ins()
+            .brif(cond, then_block, &then_params, else_block, &else_params);
 
         Some(
             EmitSummary::builder()
                 .finished_block(true)
-                .build(fn_builder),
+                .build(state.fn_builder),
         )
     }
 }

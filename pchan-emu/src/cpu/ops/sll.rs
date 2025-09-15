@@ -54,38 +54,34 @@ impl Op for SLL {
             .set_bits(6..11, (self.imm as i32 as i16) as u32)
     }
 
-    fn emit_ir(
-        &self,
-        mut state: EmitParams,
-        fn_builder: &mut FunctionBuilder,
-    ) -> Option<EmitSummary> {
+    fn emit_ir(&self, mut state: EmitParams) -> Option<EmitSummary> {
         use crate::cranelift_bs::*;
         tracing::info!(?self);
         // case 1: $rt << 0 = $rt
         if self.imm == 0 {
-            let rt = state.emit_get_register(fn_builder, self.rt);
+            let rt = state.emit_get_register(self.rt);
             return Some(
                 EmitSummary::builder()
                     .register_updates([(self.rd, rt)])
-                    .build(fn_builder),
+                    .build(state.fn_builder),
             );
         }
         // case 2: 0 << imm = 0
         if self.rt == 0 {
-            let rt = state.emit_get_zero(fn_builder);
+            let rt = state.emit_get_zero();
             return Some(
                 EmitSummary::builder()
                     .register_updates([(self.rd, rt)])
-                    .build(fn_builder),
+                    .build(state.fn_builder),
             );
         }
         // case 3: $rt << imm = $rd
-        let rt = state.emit_get_register(fn_builder, self.rt);
-        let rd = fn_builder.ins().ishl_imm(rt, self.imm as i64);
+        let rt = state.emit_get_register(self.rt);
+        let rd = state.ins().ishl_imm(rt, self.imm as i64);
         Some(
             EmitSummary::builder()
                 .register_updates([(self.rd, rd)])
-                .build(fn_builder),
+                .build(state.fn_builder),
         )
     }
 }

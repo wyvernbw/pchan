@@ -23,25 +23,21 @@ impl Op for MULT {
             .set_bits(16..21, self.rt as u32)
     }
 
-    fn emit_ir(
-        &self,
-        mut state: EmitParams,
-        fn_builder: &mut FunctionBuilder,
-    ) -> Option<EmitSummary> {
+    fn emit_ir(&self, mut state: EmitParams) -> Option<EmitSummary> {
         // case 1: $rs = 0 or $rt = 0 => $hi:$lo=0
         if self.rs == 0 || self.rt == 0 {
             return Some(
                 EmitSummary::builder()
-                    .hi(state.emit_get_zero(fn_builder))
-                    .lo(state.emit_get_zero(fn_builder))
-                    .build(fn_builder),
+                    .hi(state.emit_get_zero())
+                    .lo(state.emit_get_zero())
+                    .build(state.fn_builder),
             );
         }
 
-        let rs = state.emit_get_register(fn_builder, self.rs);
-        let rt = state.emit_get_register(fn_builder, self.rt);
-        let lo = fn_builder.ins().imul(rs, rt);
-        let hi = fn_builder.ins().smulhi(rs, rt);
+        let rs = state.emit_get_register(self.rs);
+        let rt = state.emit_get_register(self.rt);
+        let lo = state.ins().imul(rs, rt);
+        let hi = state.ins().smulhi(rs, rt);
 
         // // Extend to 64-bit
         // let lo64 = fn_builder.ins().uextend(types::I64, lo);
@@ -52,7 +48,7 @@ impl Op for MULT {
 
         // // Combine high ad low halves
         // let full64 = fn_builder.ins().bor(hi64_shifted, lo64);
-        Some(EmitSummary::builder().hi(hi).lo(lo).build(fn_builder))
+        Some(EmitSummary::builder().hi(hi).lo(lo).build(state.fn_builder))
     }
 }
 

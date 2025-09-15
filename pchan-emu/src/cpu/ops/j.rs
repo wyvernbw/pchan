@@ -42,18 +42,19 @@ impl Op for J {
             .set_bits(0..26, self.imm >> 2)
     }
 
-    fn emit_ir(&self, state: EmitParams, fn_builder: &mut FunctionBuilder) -> Option<EmitSummary> {
+    fn emit_ir(&self, mut state: EmitParams) -> Option<EmitSummary> {
         tracing::info!("j: jump to 0x{:08X}", self.imm);
         debug_assert_eq!(state.neighbour_count(), 1);
-        let next_block = state.next_at(0);
+        let next_block = state.next_at(0).clif_block();
 
-        let params = state.out_params(next_block.clif_block(), fn_builder);
-        fn_builder.ins().jump(next_block.clif_block(), &params);
+        let params = state.out_params(next_block);
+        state.ins().jump(next_block, &params);
+
         Some(
             EmitSummary::builder()
                 .pc_update(MipsOffset::RegionJump(self.imm).calculate_address(state.pc))
                 .finished_block(true)
-                .build(fn_builder),
+                .build(state.fn_builder),
         )
     }
 }

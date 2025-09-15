@@ -53,29 +53,25 @@ impl Op for ANDI {
             .set_bits(0..16, (self.imm as i32 as i16) as u32)
     }
 
-    fn emit_ir(
-        &self,
-        mut state: EmitParams,
-        fn_builder: &mut FunctionBuilder,
-    ) -> Option<EmitSummary> {
+    fn emit_ir(&self, mut state: EmitParams) -> Option<EmitSummary> {
         use crate::cranelift_bs::*;
         // shortcuts:
         // - case 1: x & 0 = 0
         // - case 2: 0 & x = 0
         if self.rs == 0 || self.imm == 0 {
-            let rt = state.emit_get_zero(fn_builder);
+            let rt = state.emit_get_zero();
             return Some(
                 EmitSummary::builder()
                     .register_updates([(self.rt, rt)])
-                    .build(fn_builder),
+                    .build(state.fn_builder),
             );
         }
-        let rs = state.emit_get_register(fn_builder, self.rs);
-        let rt = fn_builder.ins().band_imm(rs, self.imm as i64);
+        let rs = state.emit_get_register(self.rs);
+        let rt = state.ins().band_imm(rs, self.imm as i64);
         Some(
             EmitSummary::builder()
                 .register_updates([(self.rt, rt)])
-                .build(fn_builder),
+                .build(state.fn_builder),
         )
     }
 }

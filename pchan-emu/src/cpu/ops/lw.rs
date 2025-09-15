@@ -1,6 +1,5 @@
 use std::fmt::Display;
 
-
 use crate::cpu::REG_STR;
 use crate::cpu::ops::{self, BoundaryType, EmitSummary, Op, TryFromOpcodeErr};
 use crate::cranelift_bs::*;
@@ -42,26 +41,22 @@ impl Display for LW {
 }
 
 impl Op for LW {
-    fn emit_ir(
-        &self,
-        mut state: EmitParams,
-        fn_builder: &mut FunctionBuilder,
-    ) -> Option<EmitSummary> {
+    fn emit_ir(&self, mut state: EmitParams) -> Option<EmitSummary> {
         // get pointer to memory passed as argument to the function
-        let mem_ptr = state.memory(fn_builder);
+        let mem_ptr = state.memory();
 
         // get cached register if possible, otherwise load it in
-        let rs = state.emit_get_register(fn_builder, self.rs);
-        let rs = state.emit_map_address_to_host(fn_builder, rs);
-        let mem_ptr = fn_builder.ins().iadd(mem_ptr, rs);
+        let rs = state.emit_get_register(self.rs);
+        let rs = state.emit_map_address_to_host(rs);
+        let mem_ptr = state.ins().iadd(mem_ptr, rs);
 
-        let rt = fn_builder
+        let rt = state
             .ins()
             .load(types::I32, MemFlags::new(), mem_ptr, self.imm as i32);
         Some(
             EmitSummary::builder()
                 .delayed_register_updates(vec![(self.rt, rt)].into_boxed_slice())
-                .build(fn_builder),
+                .build(state.fn_builder),
         )
     }
 

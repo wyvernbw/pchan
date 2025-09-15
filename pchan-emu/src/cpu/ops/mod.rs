@@ -3,6 +3,7 @@ use crate::{
     dynarec::EntryCache, jit::JIT,
 };
 use bon::Builder;
+use cranelift::frontend::FuncInstBuilder;
 use enum_dispatch::enum_dispatch;
 use pchan_macros::OpCode;
 use petgraph::prelude::*;
@@ -339,7 +340,8 @@ pub struct CachedValue {
 }
 
 #[derive(Builder)]
-pub struct EmitParams<'a> {
+pub struct EmitParams<'a, 'b> {
+    pub fn_builder: &'a mut FunctionBuilder<'b>,
     pub ptr_type: types::Type,
     pub cache: &'a mut EntryCache,
     pub node: NodeIndex,
@@ -348,9 +350,12 @@ pub struct EmitParams<'a> {
     pub deps_map: &'a HashMap<Block, CacheDependency>,
 }
 
-impl<'a> EmitParams<'a> {
+impl<'a, 'b> EmitParams<'a, 'b> {
     fn block(&self) -> &BasicBlock {
         &self.cfg[self.node]
+    }
+    fn ins<'short>(&'short mut self) -> FuncInstBuilder<'short, 'b> {
+        self.fn_builder.ins()
     }
     fn next_at(&self, idx: usize) -> &BasicBlock {
         let idx = self
@@ -365,18 +370,18 @@ impl<'a> EmitParams<'a> {
             .neighbors_directed(self.node, Direction::Outgoing)
             .count()
     }
-    fn emulator_params(&self, fn_builder: &mut FunctionBuilder) -> Vec<BlockArg> {
+    fn emulator_params(&self) -> Vec<BlockArg> {
         vec![
-            BlockArg::Value(self.cpu(fn_builder)),
-            BlockArg::Value(self.memory(fn_builder)),
-            BlockArg::Value(self.mem_map(fn_builder)),
+            BlockArg::Value(self.cpu()),
+            BlockArg::Value(self.memory()),
+            BlockArg::Value(self.mem_map()),
         ]
     }
-    #[instrument(skip(fn_builder, self))]
-    fn out_params(&self, to: Block, fn_builder: &mut FunctionBuilder) -> Vec<BlockArg> {
+    #[instrument(skip(self))]
+    fn out_params(&self, to: Block) -> Vec<BlockArg> {
         // tracing::trace!("{:#?}", self.deps_map);
         let next_block_deps: Option<_> = self.deps_map.get(&to).map(|dep| dep.registers);
-        let mut args = self.emulator_params(fn_builder);
+        let mut args = self.emulator_params();
         if let Some(next_block_deps) = next_block_deps {
             let iter = next_block_deps
                 .iter()
@@ -397,23 +402,23 @@ impl<'a> EmitParams<'a> {
         }
         args
     }
-    fn cpu(&self, fn_builder: &mut FunctionBuilder) -> Value {
+    fn cpu(&self) -> Value {
         let block = self.block().clif_block();
-        fn_builder.block_params(block)[0]
+        self.fn_builder.block_params(block)[0]
     }
-    fn memory(&self, fn_builder: &mut FunctionBuilder) -> Value {
+    fn memory(&self) -> Value {
         let block = self.cfg[self.node].clif_block();
-        fn_builder.block_params(block)[1]
+        self.fn_builder.block_params(block)[1]
     }
-    fn mem_map(&self, fn_builder: &mut FunctionBuilder) -> Value {
+    fn mem_map(&self) -> Value {
         let block = self.block().clif_block();
-        fn_builder.block_params(block)[2]
+        self.fn_builder.block_params(block)[2]
     }
-    fn emit_get_one(&mut self, fn_builder: &mut FunctionBuilder) -> Value {
+    fn emit_get_one(&mut self) -> Value {
         match self.cache.const_one {
             Some(one) => one,
             None => {
-                let one = fn_builder.ins().iconst(types::I32, 1);
+                let one = self.ins().iconst(types::I32, 1);
                 self.cache.const_one = Some(one);
                 one
             }
@@ -429,15 +434,18 @@ impl<'a> EmitParams<'a> {
             }
         }
     }
-    fn emit_get_zero(&mut self, fn_builder: &mut FunctionBuilder) -> Value {
-        self.emit_get_register(fn_builder, 0)
+    fn emit_get_zero(&mut self) -> Value {
+        self.emit_get_register(0)
     }
-    fn emit_get_hi(&mut self, fn_builder: &mut FunctionBuilder) -> Value {
+    fn emit_get_hi(&mut self) -> Value {
         let block = self.block().clif_block();
         match self.cache.hi {
             Some(hi) => hi.value,
             None => {
-                let hi = JIT::emit_load_hi().builder(fn_builder).block(block).call();
+                let hi = JIT::emit_load_hi()
+                    .builder(self.fn_builder)
+                    .block(block)
+                    .call();
                 self.cache.hi = Some(CachedValue {
                     dirty: false,
                     value: hi,
@@ -446,12 +454,15 @@ impl<'a> EmitParams<'a> {
             }
         }
     }
-    fn emit_get_lo(&mut self, fn_builder: &mut FunctionBuilder) -> Value {
+    fn emit_get_lo(&mut self) -> Value {
         let block = self.block().clif_block();
         match self.cache.lo {
             Some(lo) => lo.value,
             None => {
-                let lo = JIT::emit_load_lo().builder(fn_builder).block(block).call();
+                let lo = JIT::emit_load_lo()
+                    .builder(self.fn_builder)
+                    .block(block)
+                    .call();
                 self.cache.lo = Some(CachedValue {
                     dirty: false,
                     value: lo,
@@ -460,13 +471,13 @@ impl<'a> EmitParams<'a> {
             }
         }
     }
-    fn emit_get_register(&mut self, fn_builder: &mut FunctionBuilder, id: usize) -> Value {
+    fn emit_get_register(&mut self, id: usize) -> Value {
         let block = self.block().clif_block();
         match self.cache.registers[id] {
             Some(value) => value.value,
             None => {
                 let value = JIT::emit_load_reg()
-                    .builder(fn_builder)
+                    .builder(self.fn_builder)
                     .block(block)
                     .idx(id)
                     .call();
@@ -497,47 +508,39 @@ impl<'a> EmitParams<'a> {
             value,
         });
     }
-    fn emit_map_address_to_host(&self, fn_builder: &mut FunctionBuilder, address: Value) -> Value {
-        let mem_map = self.mem_map(fn_builder);
+    fn emit_map_address_to_host(&mut self, address: Value) -> Value {
+        let mem_map = self.mem_map();
         JIT::emit_map_address_to_host()
-            .fn_builder(fn_builder)
+            .fn_builder(self.fn_builder)
             .ptr_type(self.ptr_type)
             .address(address)
             .mem_map_ptr(mem_map)
             .call()
     }
-    fn emit_map_address_to_physical(
-        &self,
-        fn_builder: &mut FunctionBuilder,
-        address: Value,
-    ) -> Value {
+    fn emit_map_address_to_physical(&mut self, address: Value) -> Value {
         JIT::emit_map_address_to_physical()
-            .fn_builder(fn_builder)
+            .fn_builder(self.fn_builder)
             .address(address)
             .call()
     }
-    fn emit_store_pc(&self, fn_builder: &mut FunctionBuilder, value: Value) {
-        let cpu = self.cpu(fn_builder);
-        JIT::emit_store_pc(fn_builder, value, cpu);
+    fn emit_store_pc(&mut self, value: Value) {
+        let cpu = self.cpu();
+        JIT::emit_store_pc(self.fn_builder, value, cpu);
     }
-    fn emit_store_register(&self, fn_builder: &mut FunctionBuilder, reg: usize, value: Value) {
+    fn emit_store_register(&mut self, reg: usize, value: Value) {
+        let block = self.block().clif_block();
         JIT::emit_store_reg()
-            .builder(fn_builder)
-            .block(self.block().clif_block())
+            .builder(self.fn_builder)
+            .block(block)
             .idx(reg)
             .value(value)
             .call();
     }
-    fn emit_store_cop_register(
-        &self,
-        fn_builder: &mut FunctionBuilder,
-        cop: u8,
-        reg: usize,
-        value: Value,
-    ) {
+    fn emit_store_cop_register(&mut self, cop: u8, reg: usize, value: Value) {
+        let block = self.block().clif_block();
         JIT::emit_store_cop_reg()
-            .builder(fn_builder)
-            .block(self.block().clif_block())
+            .builder(self.fn_builder)
+            .block(block)
             .idx(reg)
             .value(value)
             .cop(cop)
@@ -650,7 +653,7 @@ pub trait Op: Sized + Display + TryFrom<OpCode> {
     }
     fn is_block_boundary(&self) -> Option<BoundaryType>;
     fn into_opcode(self) -> crate::cpu::ops::OpCode;
-    fn emit_ir(&self, state: EmitParams, fn_builder: &mut FunctionBuilder) -> Option<EmitSummary>;
+    fn emit_ir(&self, state: EmitParams) -> Option<EmitSummary>;
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -665,11 +668,7 @@ impl Op for NOP {
         OpCode::NOP
     }
 
-    fn emit_ir(
-        &self,
-        _state: EmitParams,
-        _fn_builder: &mut FunctionBuilder,
-    ) -> Option<EmitSummary> {
+    fn emit_ir(&self, _state: EmitParams) -> Option<EmitSummary> {
         None
     }
 }
@@ -709,8 +708,8 @@ impl Op for HaltBlock {
         OpCode(69420)
     }
 
-    fn emit_ir(&self, _state: EmitParams, fn_builder: &mut FunctionBuilder) -> Option<EmitSummary> {
-        fn_builder.ins().return_(&[]);
+    fn emit_ir(&self, state: EmitParams) -> Option<EmitSummary> {
+        state.fn_builder.ins().return_(&[]);
         None
     }
 }
@@ -922,8 +921,8 @@ impl Op for OpForceBoundary {
         self.0.into_opcode()
     }
 
-    fn emit_ir(&self, state: EmitParams, fn_builder: &mut FunctionBuilder) -> Option<EmitSummary> {
-        self.0.emit_ir(state, fn_builder)
+    fn emit_ir(&self, state: EmitParams) -> Option<EmitSummary> {
+        self.0.emit_ir(state)
     }
 }
 

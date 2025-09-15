@@ -40,25 +40,21 @@ impl Op for LUI {
             .set_bits(16..21, self.rt as u32)
     }
 
-    fn emit_ir(
-        &self,
-        mut state: EmitParams,
-        fn_builder: &mut FunctionBuilder,
-    ) -> Option<EmitSummary> {
+    fn emit_ir(&self, mut state: EmitParams) -> Option<EmitSummary> {
         if self.imm == 0 {
             return Some(
                 EmitSummary::builder()
-                    .register_updates([(self.rt, state.emit_get_zero(fn_builder))])
-                    .build(fn_builder),
+                    .register_updates([(self.rt, state.emit_get_zero())])
+                    .build(state.fn_builder),
             );
         }
-        let rt = fn_builder
+        let rt = state
             .ins()
             .iconst(types::I32, ((self.imm as i32) << 16) as i64);
         Some(
             EmitSummary::builder()
                 .register_updates([(self.rt, rt)])
-                .build(fn_builder),
+                .build(state.fn_builder),
         )
     }
 }

@@ -21,16 +21,12 @@ impl Op for MFLO {
             .set_bits(11..16, self.rd as u32)
     }
 
-    fn emit_ir(
-        &self,
-        mut state: EmitParams,
-        fn_builder: &mut FunctionBuilder,
-    ) -> Option<EmitSummary> {
-        let lo = state.emit_get_lo(fn_builder);
+    fn emit_ir(&self, mut state: EmitParams) -> Option<EmitSummary> {
+        let lo = state.emit_get_lo();
         Some(
             EmitSummary::builder()
                 .register_updates([(self.rd, lo)])
-                .build(fn_builder),
+                .build(state.fn_builder),
         )
     }
 }

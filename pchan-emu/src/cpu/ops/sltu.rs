@@ -55,35 +55,31 @@ impl Op for SLTU {
             .set_bits(21..26, self.rs as u32)
     }
 
-    fn emit_ir(
-        &self,
-        mut state: EmitParams,
-        fn_builder: &mut FunctionBuilder,
-    ) -> Option<EmitSummary> {
+    fn emit_ir(&self, mut state: EmitParams) -> Option<EmitSummary> {
         use crate::cranelift_bs::*;
 
         if self.rs == 0 {
             return Some(
                 EmitSummary::builder()
-                    .register_updates([(self.rd, state.emit_get_one(fn_builder))])
-                    .build(fn_builder),
+                    .register_updates([(self.rd, state.emit_get_one())])
+                    .build(state.fn_builder),
             );
         } else if self.rt == 0 {
             return Some(
                 EmitSummary::builder()
-                    .register_updates([(self.rd, state.emit_get_zero(fn_builder))])
-                    .build(fn_builder),
+                    .register_updates([(self.rd, state.emit_get_zero())])
+                    .build(state.fn_builder),
             );
         }
-        let rt = state.emit_get_register(fn_builder, self.rt);
-        let rs = state.emit_get_register(fn_builder, self.rs);
-        let rd = fn_builder.ins().icmp(IntCC::UnsignedLessThan, rs, rt);
-        let rd = fn_builder.ins().uextend(types::I32, rd);
+        let rt = state.emit_get_register(self.rt);
+        let rs = state.emit_get_register(self.rs);
+        let rd = state.ins().icmp(IntCC::UnsignedLessThan, rs, rt);
+        let rd = state.ins().uextend(types::I32, rd);
 
         Some(
             EmitSummary::builder()
                 .register_updates([(self.rd, rd)])
-                .build(fn_builder),
+                .build(state.fn_builder),
         )
     }
 }
@@ -93,8 +89,8 @@ mod tests {
     use pchan_utils::setup_tracing;
     use rstest::rstest;
 
-    use crate::dynarec::JitSummary;
     use crate::cpu::ops::prelude::*;
+    use crate::dynarec::JitSummary;
     use crate::memory::KSEG0Addr;
     use crate::{Emu, test_utils::emulator};
 

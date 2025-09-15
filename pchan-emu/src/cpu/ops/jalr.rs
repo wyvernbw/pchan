@@ -43,23 +43,20 @@ impl Op for JALR {
             .set_bits(11..16, self.rd as u32)
     }
 
-    fn emit_ir(
-        &self,
-        mut state: EmitParams,
-        fn_builder: &mut FunctionBuilder,
-    ) -> Option<EmitSummary> {
+    fn emit_ir(&self, mut state: EmitParams) -> Option<EmitSummary> {
         tracing::info!("jalr: saving pc 0x{:08X}", state.pc);
-        let rs = state.emit_get_register(fn_builder, self.rs);
-        let rs = state.emit_map_address_to_physical(fn_builder, rs);
+        let rs = state.emit_get_register(self.rs);
+        let rs = state.emit_map_address_to_physical(rs);
 
-        let pc = fn_builder.ins().iconst(types::I32, state.pc as i64 + 8);
-        state.emit_store_pc(fn_builder, rs);
-        state.emit_store_register(fn_builder, self.rd, pc);
+        let pc = state.pc as i64;
+        let pc = state.ins().iconst(types::I32, pc + 8);
+        state.emit_store_pc(rs);
+        state.emit_store_register(self.rd, pc);
         Some(
             EmitSummary::builder()
                 .register_updates([(self.rd, pc), (self.rd, pc)])
                 .finished_block(false)
-                .build(fn_builder),
+                .build(state.fn_builder),
         )
     }
 }

@@ -51,30 +51,26 @@ impl Op for AND {
             .set_bits(11..16, self.rd as u32)
     }
 
-    fn emit_ir(
-        &self,
-        mut state: EmitParams,
-        fn_builder: &mut FunctionBuilder,
-    ) -> Option<EmitSummary> {
+    fn emit_ir(&self, mut state: EmitParams) -> Option<EmitSummary> {
         use crate::cranelift_bs::*;
         // shortcuts:
         // - case 1: x & 0 = 0
         // - case 2: 0 & x = 0
         if self.rs == 0 || self.rt == 0 {
-            let zero = state.emit_get_zero(fn_builder);
+            let zero = state.emit_get_zero();
             return Some(
                 EmitSummary::builder()
                     .register_updates([(self.rd, zero)])
-                    .build(fn_builder),
+                    .build(state.fn_builder),
             );
         }
-        let rs = state.emit_get_register(fn_builder, self.rs);
-        let rt = state.emit_get_register(fn_builder, self.rt);
-        let rd = fn_builder.ins().band(rs, rt);
+        let rs = state.emit_get_register(self.rs);
+        let rt = state.emit_get_register(self.rt);
+        let rd = state.fn_builder.ins().band(rs, rt);
         Some(
             EmitSummary::builder()
                 .register_updates([(self.rd, rd)])
-                .build(fn_builder),
+                .build(state.fn_builder),
         )
     }
 }
@@ -90,8 +86,8 @@ mod tests {
     use pretty_assertions::assert_eq;
     use rstest::rstest;
 
-    use crate::dynarec::JitSummary;
     use crate::cpu::ops::prelude::*;
+    use crate::dynarec::JitSummary;
     use crate::{Emu, memory::KSEG0Addr, test_utils::emulator};
 
     #[rstest]

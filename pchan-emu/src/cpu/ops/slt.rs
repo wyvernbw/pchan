@@ -55,21 +55,17 @@ impl Op for SLT {
             .set_bits(21..26, self.rs as u32)
     }
 
-    fn emit_ir(
-        &self,
-        mut state: EmitParams,
-        fn_builder: &mut FunctionBuilder,
-    ) -> Option<EmitSummary> {
+    fn emit_ir(&self, mut state: EmitParams) -> Option<EmitSummary> {
         use crate::cranelift_bs::*;
 
-        let rs = state.emit_get_register(fn_builder, self.rs);
-        let rt = state.emit_get_register(fn_builder, self.rt);
-        let rd = fn_builder.ins().icmp(IntCC::SignedLessThan, rs, rt);
-        let rd = fn_builder.ins().uextend(types::I32, rd);
+        let rs = state.emit_get_register(self.rs);
+        let rt = state.emit_get_register(self.rt);
+        let rd = state.ins().icmp(IntCC::SignedLessThan, rs, rt);
+        let rd = state.ins().uextend(types::I32, rd);
         Some(
             EmitSummary::builder()
                 .register_updates(vec![(self.rd, rd)].into_boxed_slice())
-                .build(fn_builder),
+                .build(state.fn_builder),
         )
     }
 }
@@ -79,8 +75,8 @@ mod tests {
     use pchan_utils::setup_tracing;
     use rstest::rstest;
 
-    use crate::dynarec::JitSummary;
     use crate::cpu::ops::prelude::*;
+    use crate::dynarec::JitSummary;
     use crate::memory::KSEG0Addr;
     use crate::{Emu, test_utils::emulator};
 

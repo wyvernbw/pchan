@@ -21,16 +21,12 @@ impl Op for MFHI {
             .set_bits(11..16, self.rd as u32)
     }
 
-    fn emit_ir(
-        &self,
-        mut state: EmitParams,
-        fn_builder: &mut FunctionBuilder,
-    ) -> Option<EmitSummary> {
-        let hi = state.emit_get_hi(fn_builder);
+    fn emit_ir(&self, mut state: EmitParams) -> Option<EmitSummary> {
+        let hi = state.emit_get_hi();
         Some(
             EmitSummary::builder()
                 .register_updates([(self.rd, hi)])
-                .build(fn_builder),
+                .build(state.fn_builder),
         )
     }
 }
