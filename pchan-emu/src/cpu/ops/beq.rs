@@ -1,6 +1,5 @@
 use std::fmt::Display;
 
-use cranelift::prelude::FunctionBuilder;
 use tracing::instrument;
 
 use crate::cpu::{

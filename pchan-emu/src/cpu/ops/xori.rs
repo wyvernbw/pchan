@@ -1,6 +1,5 @@
 use std::fmt::Display;
 
-use cranelift::prelude::FunctionBuilder;
 
 use crate::cpu::{
     REG_STR,

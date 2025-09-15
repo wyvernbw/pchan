@@ -2,7 +2,6 @@ use std::fmt::Display;
 
 use crate::cpu::REG_STR;
 use crate::cpu::ops::prelude::*;
-use crate::cranelift_bs::*;
 
 #[derive(Debug, Clone, Copy)]
 pub struct MTHI {

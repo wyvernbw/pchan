@@ -1,6 +1,6 @@
 use std::fmt::Display;
 
-use cranelift::prelude::{FunctionBuilder, InstBuilder};
+use cranelift::prelude::InstBuilder;
 
 use crate::cpu::ops::{
     BoundaryType, EmitParams, EmitSummary, MipsOffset, Op, OpCode, PrimeOp, TryFromOpcodeErr,
