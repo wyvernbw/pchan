@@ -104,7 +104,7 @@ mod tests {
         #[case] b: u32,
         #[case] expected: u64,
     ) -> color_eyre::Result<()> {
-        use crate::JitSummary;
+        use crate::dynarec::JitSummary;
 
         emulator
             .mem
@@ -133,7 +133,7 @@ mod tests {
     ) -> color_eyre::Result<()> {
         assert!(a == 0 || b == 0);
 
-        use crate::JitSummary;
+        use crate::dynarec::JitSummary;
 
         emulator
             .mem

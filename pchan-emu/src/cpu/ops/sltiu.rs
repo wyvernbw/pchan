@@ -96,7 +96,7 @@ mod tests {
     use pretty_assertions::assert_eq;
     use rstest::rstest;
 
-    use crate::JitSummary;
+    use crate::dynarec::JitSummary;
     use crate::cpu::ops::prelude::*;
     use crate::memory::KSEG0Addr;
     use crate::{Emu, test_utils::emulator};
@@ -117,7 +117,7 @@ mod tests {
     /// $t0 < 0 = false
     #[rstest]
     fn sltiu_2_shortpath(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
-        use crate::JitSummary;
+        use crate::dynarec::JitSummary;
 
         emulator
             .mem
@@ -134,7 +134,7 @@ mod tests {
     /// $zero < 8 = true
     #[rstest]
     fn sltiu_3_shortpath(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
-        use crate::JitSummary;
+        use crate::dynarec::JitSummary;
 
         emulator
             .mem

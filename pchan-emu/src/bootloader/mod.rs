@@ -1,8 +1,4 @@
-use std::{
-    fs,
-    io::{Read, Write},
-    path::PathBuf,
-};
+use std::{fs, io::Read, path::PathBuf};
 
 use thiserror::Error;
 

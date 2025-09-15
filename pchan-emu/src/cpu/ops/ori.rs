@@ -114,7 +114,7 @@ mod tests {
         #[case] b: i16,
         #[case] expected: u32,
     ) -> color_eyre::Result<()> {
-        use crate::JitSummary;
+        use crate::dynarec::JitSummary;
 
         emulator.mem.write_array(
             KSEG0Addr::from_phys(0),
@@ -128,7 +128,7 @@ mod tests {
     #[rstest]
     #[case(0b11110000)]
     fn ori_2(setup_tracing: (), mut emulator: Emu, #[case] imm: i16) -> color_eyre::Result<()> {
-        use crate::JitSummary;
+        use crate::dynarec::JitSummary;
 
         emulator
             .mem

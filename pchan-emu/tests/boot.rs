@@ -1,10 +1,6 @@
 use std::io::Write;
 
-use pchan_emu::{
-    Emu, JitSummary,
-    cpu::ops::DecodedOp,
-    memory::{KSEG1Addr, PhysAddr, kb, map_physical},
-};
+use pchan_emu::{Emu, dynarec::JitSummary, memory::kb};
 use pchan_utils::setup_tracing;
 use rstest::rstest;
 

@@ -4,19 +4,17 @@ use std::{
     ptr,
 };
 
-use cranelift::{
-    codegen::{dominator_tree::DominatorTree, flowgraph::ControlFlowGraph, ir},
-    prelude::settings::{Flags, FlagsOrIsa},
-};
+use cranelift::codegen::ir;
 use tracing::{Instrument, Level, instrument};
 
 use crate::{
-    EntryCache, FnBuilderExt,
+    FnBuilderExt,
     cpu::{
         Cop0, Cpu, REG_STR,
         ops::{CachedValue, EmitSummary},
     },
     cranelift_bs::*,
+    dynarec::EntryCache,
     memory::{Memory, MemoryRegion},
 };
 

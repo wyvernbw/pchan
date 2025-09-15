@@ -112,7 +112,7 @@ mod tests {
     use rstest::rstest;
 
     use crate::cpu::ops::prelude::*;
-    use crate::{Emu, JitSummary, memory::KSEG0Addr, test_utils::emulator};
+    use crate::{Emu, dynarec::JitSummary, memory::KSEG0Addr, test_utils::emulator};
 
     struct Bne1Test {
         a: i16,

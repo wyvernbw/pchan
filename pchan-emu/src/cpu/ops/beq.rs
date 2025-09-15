@@ -110,7 +110,7 @@ mod tests {
     use pretty_assertions::assert_eq;
     use rstest::rstest;
 
-    use crate::{Emu, JitSummary, memory::KSEG0Addr, test_utils::emulator};
+    use crate::{Emu, dynarec::JitSummary, memory::KSEG0Addr, test_utils::emulator};
 
     #[rstest]
     fn beq_basic_loop(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {

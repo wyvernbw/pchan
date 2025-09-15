@@ -94,7 +94,7 @@ mod tests {
     use pretty_assertions::assert_eq;
     use rstest::rstest;
 
-    use crate::JitSummary;
+    use crate::dynarec::JitSummary;
     use crate::cpu::ops::prelude::*;
     use crate::{Emu, memory::KSEG0Addr, test_utils::emulator};
 

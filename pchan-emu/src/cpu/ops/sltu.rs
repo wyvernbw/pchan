@@ -93,7 +93,7 @@ mod tests {
     use pchan_utils::setup_tracing;
     use rstest::rstest;
 
-    use crate::JitSummary;
+    use crate::dynarec::JitSummary;
     use crate::cpu::ops::prelude::*;
     use crate::memory::KSEG0Addr;
     use crate::{Emu, test_utils::emulator};

@@ -85,7 +85,7 @@ mod tests {
         #[case] value: i16,
         #[case] expected: u32,
     ) -> color_eyre::Result<()> {
-        use crate::JitSummary;
+        use crate::dynarec::JitSummary;
 
         emulator
             .mem
@@ -100,7 +100,7 @@ mod tests {
 
     #[rstest]
     fn lui_2(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
-        use crate::JitSummary;
+        use crate::dynarec::JitSummary;
 
         emulator
             .mem

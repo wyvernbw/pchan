@@ -80,7 +80,7 @@ mod tests {
         #[case] b: u32,
         #[case] expected: u32,
     ) -> color_eyre::Result<()> {
-        use crate::{JitSummary, memory::KSEG0Addr};
+        use crate::{dynarec::JitSummary, memory::KSEG0Addr};
 
         emulator.mem.write_array(
             KSEG0Addr::from_phys(0),

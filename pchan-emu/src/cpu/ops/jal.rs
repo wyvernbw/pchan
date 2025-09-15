@@ -89,7 +89,7 @@ mod tests {
     use pretty_assertions::assert_eq;
     use rstest::rstest;
 
-    use crate::{Emu, JitSummary, cpu::RA, memory::KSEG0Addr, test_utils::emulator};
+    use crate::{Emu, cpu::RA, dynarec::JitSummary, memory::KSEG0Addr, test_utils::emulator};
 
     #[rstest]
     fn jal_1(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {

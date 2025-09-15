@@ -122,7 +122,7 @@ mod tests {
     }
     #[rstest]
     fn addiu_2_shortpath(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
-        use crate::JitSummary;
+        use crate::dynarec::JitSummary;
 
         emulator
             .mem
@@ -136,7 +136,7 @@ mod tests {
     }
     #[rstest]
     fn addiu_3_shortpath(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
-        use crate::JitSummary;
+        use crate::dynarec::JitSummary;
 
         emulator.mem.write_array(
             KSEG0Addr::from_phys(0),

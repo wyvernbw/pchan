@@ -1,11 +1,14 @@
-use crate::{BasicBlock, CacheDependency, EntryCache, FnBuilderExt, cranelift_bs::*, jit::JIT};
+use crate::{
+    FnBuilderExt, cranelift_bs::*, dynarec::BasicBlock, dynarec::CacheDependency,
+    dynarec::EntryCache, jit::JIT,
+};
 use bon::Builder;
 use enum_dispatch::enum_dispatch;
 use pchan_macros::OpCode;
 use petgraph::prelude::*;
 use std::{collections::HashMap, fmt::Display, ops::Range};
 use thiserror::Error;
-use tracing::{Level, instrument};
+use tracing::instrument;
 
 // alu
 pub mod addiu;
@@ -105,8 +108,8 @@ pub mod prelude {
     pub use super::xor::*;
     pub use super::xori::*;
     pub use super::{
-        BoundaryType, CopOp, EmitParams, EmitSummary, MipsOffset, Op, PrimeOp, SecOp,
-        TryFromOpcodeErr,
+        BoundaryType, CachedValue, CopOp, DecodedOp, EmitParams, EmitSummary, MipsOffset, Op,
+        PrimeOp, SecOp, TryFromOpcodeErr,
     };
 }
 
@@ -337,12 +340,12 @@ pub struct CachedValue {
 
 #[derive(Builder)]
 pub struct EmitParams<'a> {
-    ptr_type: types::Type,
-    cache: &'a mut EntryCache,
-    node: NodeIndex,
-    pc: u32,
-    cfg: &'a Graph<BasicBlock, ()>,
-    deps_map: &'a HashMap<Block, CacheDependency>,
+    pub ptr_type: types::Type,
+    pub cache: &'a mut EntryCache,
+    pub node: NodeIndex,
+    pub pc: u32,
+    pub cfg: &'a Graph<BasicBlock, ()>,
+    pub deps_map: &'a HashMap<Block, CacheDependency>,
 }
 
 impl<'a> EmitParams<'a> {

@@ -1,8 +1,9 @@
 #![feature(slice_as_array)]
 
 use pchan_emu::{
-    Emu, JitSummary,
-    memory::{Addr, KSEG0Addr, map_physical},
+    Emu,
+    dynarec::JitSummary,
+    memory::{KSEG0Addr, map_physical},
 };
 use pchan_utils::setup_tracing;
 use pretty_assertions::assert_eq;

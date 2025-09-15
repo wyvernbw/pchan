@@ -3,11 +3,7 @@
 
 mod common;
 
-use pchan_emu::{
-    Emu, JitSummary,
-    cpu::{Cpu, ops::OpCode},
-    memory::{KSEG0Addr, Memory},
-};
+use pchan_emu::{Emu, dynarec::JitSummary, memory::KSEG0Addr};
 use pchan_utils::setup_tracing;
 use pretty_assertions::assert_eq;
 use rstest::rstest;

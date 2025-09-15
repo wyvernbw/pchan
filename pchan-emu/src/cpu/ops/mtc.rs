@@ -69,7 +69,7 @@ pub fn mtc2(rt: u8, rd: u8) -> OpCode {
 
 #[cfg(test)]
 mod tests {
-    use crate::{JitSummary, cpu::ops::prelude::*};
+    use crate::{cpu::ops::prelude::*, dynarec::JitSummary};
     use pchan_utils::setup_tracing;
     use pretty_assertions::assert_eq;
     use rstest::rstest;

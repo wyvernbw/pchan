@@ -65,7 +65,7 @@ mod tests {
 
     #[rstest]
     pub fn mthi_1(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
-        use crate::{JitSummary, memory::KSEG0Addr};
+        use crate::{dynarec::JitSummary, memory::KSEG0Addr};
 
         emulator.mem.write_array(
             KSEG0Addr::from_phys(0),
