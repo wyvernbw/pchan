@@ -2,6 +2,7 @@ use crate::{
     cranelift_bs::*,
     dynarec::{EmitCtx, EmitSummary},
 };
+use cranelift::codegen::entity::EntityList;
 use enum_dispatch::enum_dispatch;
 use pchan_macros::OpCode;
 use std::{fmt::Display, ops::Range};
@@ -366,14 +367,7 @@ pub trait Op: Sized + Display + TryFrom<OpCode> {
     }
     fn is_block_boundary(&self) -> Option<BoundaryType>;
     fn into_opcode(self) -> crate::cpu::ops::OpCode;
-    fn emit_ir(&self, ctx: EmitCtx) -> Option<EmitSummary>;
-    fn post_update_emit_ir(&self, mut ctx: EmitCtx) {}
-    fn emit_hazard(&self, mut ctx: EmitCtx) -> EmitSummary {
-        EmitSummary::builder().build(&ctx.fn_builder)
-    }
-    fn hazard_trigger(&self, current_pc: u32) -> Option<u32> {
-        None
-    }
+    fn emit_ir(&self, ctx: EmitCtx) -> EmitSummary;
     fn is_function_boundary(&self) -> bool {
         matches!(
             self.is_block_boundary(),
@@ -400,8 +394,10 @@ impl Op for NOP {
         OpCode::NOP
     }
 
-    fn emit_ir(&self, _state: EmitCtx) -> Option<EmitSummary> {
-        None
+    fn emit_ir(&self, ctx: EmitCtx) -> EmitSummary {
+        EmitSummary::builder()
+            .instructions([])
+            .build(&ctx.fn_builder)
     }
 }
 
@@ -440,12 +436,18 @@ impl Op for HaltBlock {
         OpCode(69420)
     }
 
-    fn emit_ir(&self, _: EmitCtx) -> Option<EmitSummary> {
-        None
-    }
+    fn emit_ir(&self, ctx: EmitCtx) -> EmitSummary {
+        use crate::dynarec::*;
 
-    fn post_update_emit_ir(&self, state: EmitCtx) {
-        state.fn_builder.ins().return_(&[]);
+        let ret = ctx
+            .fn_builder
+            .ins()
+            .MultiAry(Opcode::Return, types::INVALID, EntityList::new())
+            .0;
+
+        EmitSummary::builder()
+            .instructions([bottom(ret)])
+            .build(ctx.fn_builder)
     }
 }
 
@@ -457,16 +459,6 @@ impl TryFrom<OpCode> for HaltBlock {
             return Ok(HaltBlock);
         }
         Err("not halt".to_string())
-    }
-}
-
-impl DecodedOp {
-    pub fn get_hazard(&self, ctx: EmitCtx) -> Option<Hazard<'_>> {
-        self.hazard_trigger(ctx.pc).map(|trigger| Hazard {
-            op: self,
-            emit: Self::emit_hazard,
-            trigger,
-        })
     }
 }
 
@@ -650,26 +642,6 @@ impl DecodedOp {
 
 #[derive(Debug, Clone, Copy, derive_more::Display)]
 pub struct OpForceBoundary(pub DecodedOp);
-
-impl Op for OpForceBoundary {
-    fn is_block_boundary(&self) -> Option<BoundaryType> {
-        let auto_set_pc =
-            if let Some(BoundaryType::Function { auto_set_pc }) = self.0.is_block_boundary() {
-                auto_set_pc
-            } else {
-                false
-            };
-        Some(BoundaryType::Function { auto_set_pc })
-    }
-
-    fn into_opcode(self) -> crate::cpu::ops::OpCode {
-        self.0.into_opcode()
-    }
-
-    fn emit_ir(&self, state: EmitCtx) -> Option<EmitSummary> {
-        self.0.emit_ir(state)
-    }
-}
 
 #[derive(Debug, Error)]
 pub enum TryFromOpcodeErr {

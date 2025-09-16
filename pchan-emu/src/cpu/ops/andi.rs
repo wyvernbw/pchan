@@ -1,6 +1,5 @@
 use std::fmt::Display;
 
-
 use crate::cpu::{
     REG_STR,
     ops::{BoundaryType, EmitCtx, EmitSummary, Op, OpCode, TryFromOpcodeErr},
@@ -52,26 +51,28 @@ impl Op for ANDI {
             .set_bits(0..16, (self.imm as i32 as i16) as u32)
     }
 
-    fn emit_ir(&self, mut state: EmitCtx) -> Option<EmitSummary> {
+    fn emit_ir(&self, mut state: EmitCtx) -> EmitSummary {
         use crate::cranelift_bs::*;
         // shortcuts:
         // - case 1: x & 0 = 0
         // - case 2: 0 & x = 0
         if self.rs == 0 || self.imm == 0 {
-            let rt = state.emit_get_zero();
-            return Some(
-                EmitSummary::builder()
-                    .register_updates([(self.rt, rt)])
-                    .build(state.fn_builder),
-            );
-        }
-        let rs = state.emit_get_register(self.rs);
-        let rt = state.ins().band_imm(rs, self.imm as i64);
-        Some(
-            EmitSummary::builder()
+            let (rt, loadzero) = state.emit_get_zero();
+            return EmitSummary::builder()
+                .instructions([now(loadzero)])
                 .register_updates([(self.rt, rt)])
-                .build(state.fn_builder),
-        )
+                .build(state.fn_builder);
+        }
+        let (rs, load0) = state.emit_get_register(self.rs);
+        let (rt, band) = state.inst(|f| {
+            f.ins()
+                .BinaryImm64(Opcode::BandImm, types::I32, Imm64::new(self.imm as i64), rs)
+                .0
+        });
+        EmitSummary::builder()
+            .instructions([now(load0), now(band)])
+            .register_updates([(self.rt, rt)])
+            .build(state.fn_builder)
     }
 }
 

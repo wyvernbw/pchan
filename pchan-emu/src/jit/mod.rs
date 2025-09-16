@@ -4,7 +4,10 @@ use std::{
     ptr,
 };
 
-use cranelift::codegen::ir;
+use cranelift::codegen::{
+    gimli::SectionBaseAddresses,
+    ir::{self, immediates::Offset32},
+};
 use tracing::{Instrument, Level, instrument};
 
 use crate::{
@@ -216,59 +219,92 @@ impl JIT {
 
     #[builder]
     #[instrument(skip(builder, block))]
-    pub fn emit_load_reg(builder: &mut FunctionBuilder<'_>, block: Block, idx: usize) -> Value {
+    pub fn emit_load_reg(
+        builder: &mut FunctionBuilder<'_>,
+        block: Block,
+        idx: usize,
+    ) -> (Value, Inst) {
         if idx == 0 {
-            return builder.ins().iconst(types::I32, 0);
+            let inst = builder
+                .ins()
+                .UnaryConst(Opcode::Iconst, types::I32, Constant::from_u32(0))
+                .0;
+            let const0 = builder.single_result(inst);
+            return (const0, inst);
         }
-        let block_state = builder.block_params(block)[0];
+        let cpu_value = builder.block_params(block)[0];
         let offset = core::mem::offset_of!(Cpu, gpr);
         let offset = i32::try_from(offset + idx * size_of::<u32>()).expect("offset overflow");
-
-        builder
+        let load = builder
             .ins()
-            .load(types::I32, MemFlags::new(), block_state, offset)
+            .Load(
+                Opcode::Load,
+                types::I32,
+                MemFlags::new(),
+                Offset32::new(offset),
+                cpu_value,
+            )
+            .0;
+        let reg = builder.single_result(load);
+        (reg, load)
+    }
+
+    #[inline]
+    pub fn emit_load_from_cpu(
+        builder: &mut FunctionBuilder<'_>,
+        block: Block,
+        offset: i32,
+    ) -> (Value, Inst) {
+        let cpu_ptr = builder.block_params(block)[0];
+        let load = builder
+            .ins()
+            .Load(
+                Opcode::Load,
+                types::I32,
+                MemFlags::new(),
+                Offset32::new(offset),
+                cpu_ptr,
+            )
+            .0;
+        let value = builder.single_result(load);
+
+        (value, load)
     }
 
     #[builder]
     #[instrument(skip(builder, block))]
+    #[inline]
     pub fn emit_load_cop_reg(
         builder: &mut FunctionBuilder<'_>,
         block: Block,
         cop: u8,
         idx: usize,
-    ) -> Value {
-        let block_state = builder.block_params(block)[0];
-
+    ) -> (Value, Inst) {
         const COP0: usize = const { core::mem::offset_of!(Cpu, cop0) };
         const COP_SIZE: usize = size_of::<Cop0>();
+
         let offset = i32::try_from(COP0 + COP_SIZE * cop as usize + idx * size_of::<u32>())
             .expect("offset overflow");
 
-        builder
-            .ins()
-            .load(types::I32, MemFlags::new(), block_state, offset)
+        JIT::emit_load_from_cpu(builder, block, offset)
     }
 
     #[builder]
     #[instrument(skip(builder, block))]
-    pub fn emit_load_hi(builder: &mut FunctionBuilder<'_>, block: Block) -> Value {
-        let block_state = builder.block_params(block)[0];
+    #[inline]
+    pub fn emit_load_hi(builder: &mut FunctionBuilder<'_>, block: Block) -> (Value, Inst) {
         const HI: usize = core::mem::offset_of!(Cpu, hilo) + size_of::<u32>();
 
-        builder
-            .ins()
-            .load(types::I32, MemFlags::new(), block_state, HI as i32)
+        JIT::emit_load_from_cpu(builder, block, HI as i32)
     }
 
     #[builder]
     #[instrument(skip(builder, block))]
-    pub fn emit_load_lo(builder: &mut FunctionBuilder<'_>, block: Block) -> Value {
-        let block_state = builder.block_params(block)[0];
+    #[inline]
+    pub fn emit_load_lo(builder: &mut FunctionBuilder<'_>, block: Block) -> (Value, Inst) {
         const LO: usize = core::mem::offset_of!(Cpu, hilo);
 
-        builder
-            .ins()
-            .load(types::I32, MemFlags::new(), block_state, LO as i32)
+        JIT::emit_load_from_cpu(builder, block, LO as i32)
     }
 
     #[builder]
@@ -278,23 +314,50 @@ impl JIT {
         block: Block,
         idx: usize,
         value: Value,
-    ) {
-        debug_assert_ne!(
-            builder.func.dfg.value_type(value),
-            types::I64,
-            "got 64bit write to register"
-        );
+    ) -> Inst {
+        let value_type = builder.type_of(value);
+        debug_assert_ne!(value_type, types::I64, "got 64bit write to register");
 
         if idx == 0 {
-            return;
+            return builder.Nop();
         }
         const GPR: usize = const { core::mem::offset_of!(Cpu, gpr) };
-        let block_state = builder.block_params(block)[0];
+        let cpu_ptr = builder.block_params(block)[0];
         let offset = i32::try_from(GPR + idx * size_of::<u32>()).expect("offset overflow");
-        // tracing::trace!("stored");
+
+        let store = builder
+            .ins()
+            .Store(
+                Opcode::Store,
+                value_type,
+                MemFlags::new(),
+                Offset32::new(offset),
+                value,
+                cpu_ptr,
+            )
+            .0;
+        store
+    }
+
+    pub fn emit_store_to_cpu(
+        builder: &mut FunctionBuilder<'_>,
+        block: Block,
+        value: Value,
+        offset: i32,
+    ) -> Inst {
+        let cpu_ptr = builder.block_params(block)[0];
+        let vtype = builder.type_of(value);
         builder
             .ins()
-            .store(MemFlags::new(), value, block_state, offset);
+            .Store(
+                Opcode::Store,
+                vtype,
+                MemFlags::new(),
+                Offset32::new(offset),
+                value,
+                cpu_ptr,
+            )
+            .0
     }
 
     #[builder]
@@ -305,7 +368,7 @@ impl JIT {
         cop: u8,
         idx: usize,
         value: Value,
-    ) {
+    ) -> Inst {
         debug_assert!((0..4).contains(&cop));
         debug_assert_eq!(
             builder.type_of(value),
@@ -315,53 +378,45 @@ impl JIT {
 
         const COP0: usize = const { core::mem::offset_of!(Cpu, cop0) };
         const COP_SIZE: usize = size_of::<Cop0>();
-        let block_state = builder.block_params(block)[0];
         let offset = i32::try_from(COP0 + COP_SIZE * cop as usize + idx * size_of::<u32>())
             .expect("offset overflow");
-        tracing::trace!("stored");
-        builder
-            .ins()
-            .store(MemFlags::new(), value, block_state, offset);
+
+        JIT::emit_store_to_cpu(builder, block, value, offset)
     }
 
     #[instrument(skip(builder, block))]
-    pub fn emit_store_hi(builder: &mut FunctionBuilder<'_>, block: Block, value: Value) {
+    pub fn emit_store_hi(builder: &mut FunctionBuilder<'_>, block: Block, value: Value) -> Inst {
         debug_assert_eq!(
             builder.type_of(value),
             types::I32,
             "hi register value must be i32"
         );
         const HI: usize = const { core::mem::offset_of!(Cpu, hilo) + size_of::<u32>() };
-        let block_state = builder.block_params(block)[0];
-        tracing::trace!("stored");
-        builder
-            .ins()
-            .store(MemFlags::new(), value, block_state, HI as i32);
+
+        JIT::emit_store_to_cpu(builder, block, value, HI as i32)
     }
 
     #[instrument(skip(builder, block))]
-    pub fn emit_store_lo(builder: &mut FunctionBuilder<'_>, block: Block, value: Value) {
+    pub fn emit_store_lo(builder: &mut FunctionBuilder<'_>, block: Block, value: Value) -> Inst {
         debug_assert_eq!(
             builder.type_of(value),
             types::I32,
             "lo register value must be i32"
         );
+
         const LO: usize = const { core::mem::offset_of!(Cpu, hilo) };
-        let block_state = builder.block_params(block)[0];
-        tracing::trace!("stored");
-        builder
-            .ins()
-            .store(MemFlags::new(), value, block_state, LO as i32);
+
+        JIT::emit_store_to_cpu(builder, block, value, LO as i32)
     }
 
     #[instrument(skip(builder, block))]
-    pub fn emit_store_hilo(builder: &mut FunctionBuilder<'_>, block: Block, value: Value) {
+    pub fn emit_store_hilo(builder: &mut FunctionBuilder<'_>, block: Block, value: Value) -> Inst {
         debug_assert_eq!(
             builder.func.dfg.value_type(value),
             types::I64,
             "expected an i64 value!"
         );
-        JIT::emit_store_hi(builder, block, value);
+        JIT::emit_store_hi(builder, block, value)
     }
 
     #[builder]
@@ -389,11 +444,11 @@ impl JIT {
         builder: &mut FunctionBuilder<'_>,
         block: Block,
         cache: Option<&mut EntryCache>,
-    ) {
+    ) -> Vec<Inst> {
         let Some(cache) = cache else {
-            return;
+            return vec![];
         };
-        cache
+        let mut instructions = cache
             .registers
             .iter()
             .enumerate()
@@ -401,45 +456,58 @@ impl JIT {
             .skip(1)
             .flat_map(|(idx, value)| value.map(|value| (idx, value)))
             .filter(|(_, value)| value.dirty)
-            .for_each(|(id, value)| {
+            .map(|(id, value)| {
                 debug_assert_eq!(
                     builder.type_of(value.value),
                     types::I32,
                     "cached register must be an i32 value"
                 );
                 JIT::emit_store_reg()
-                    .block(block)
+                    .block(block.clone())
                     .builder(builder)
                     .idx(id)
                     .value(value.value)
-                    .call();
-            });
+                    .call()
+            })
+            .collect::<Vec<_>>();
+
         // DONE: emit store hi and lo
         if let Some(hi) = cache.hi
             && hi.dirty
         {
-            JIT::emit_store_hi(builder, block, hi.value);
+            instructions.push(JIT::emit_store_hi(builder, block, hi.value));
         }
         if let Some(lo) = cache.lo
             && lo.dirty
         {
-            JIT::emit_store_lo(builder, block, lo.value);
+            instructions.push(JIT::emit_store_lo(builder, block, lo.value));
         }
-        // tracing::trace!("done");
+        instructions
     }
 
     #[builder]
     pub fn emit_map_address_to_physical(
         fn_builder: &mut FunctionBuilder<'_>,
         address: Value,
-    ) -> Value {
+    ) -> (Value, Inst) {
         debug_assert_eq!(
             fn_builder.func.dfg.value_type(address),
             types::I32,
             "expected 32bit virtual address!"
         );
 
-        fn_builder.ins().band_imm(address, 0x1FFF_FFFF)
+        let band = fn_builder
+            .ins()
+            .BinaryImm64(
+                Opcode::BandImm,
+                types::I32,
+                Imm64::new(0x1FFF_FFFF),
+                address,
+            )
+            .0;
+        let address = fn_builder.single_result(band);
+
+        (address, band)
     }
 
     #[builder]
@@ -448,50 +516,113 @@ impl JIT {
         ptr_type: Type,
         mem_map_ptr: Value,
         address: Value,
-    ) -> Value {
+    ) -> (Value, [Inst; 12]) {
         debug_assert_eq!(
             fn_builder.func.dfg.value_type(address),
             types::I32,
             "expected 32bit virtual address!"
         );
 
-        let address = fn_builder.ins().band_imm(address, 0x1FFF_FFFF);
-        let address = fn_builder.ins().uextend(ptr_type, address);
+        // map virutal address to psx physical
+        let (address, band) = JIT::emit_map_address_to_physical()
+            .fn_builder(fn_builder)
+            .address(address)
+            .call();
 
-        let index = fn_builder.ins().ushr_imm(address, 16);
-        // let index = fn_builder.ins().uextend(ptr_type, index);
-        let index = fn_builder
+        // cast address to host pointer type
+        let (address, ptrcast0) = fn_builder.PtrCast(address, ptr_type);
+
+        // convert address into memory region table index
+        let ushr_imm0 = fn_builder
             .ins()
-            .imul_imm(index, size_of::<MemoryRegion>() as i64);
-        let lookup = fn_builder.ins().iadd(mem_map_ptr, index);
+            .BinaryImm64(Opcode::UshrImm, ptr_type, Imm64::new(16), address)
+            .0;
+        let index = fn_builder.single_result(ushr_imm0);
 
-        let region_val = fn_builder
+        // convert index into table offset
+        let imul_imm0 = fn_builder
             .ins()
-            .load(types::I64, MemFlags::new(), lookup, 0);
+            .BinaryImm64(
+                Opcode::ImulImm,
+                ptr_type,
+                Imm64::new(size_of::<MemoryRegion>() as i64),
+                index,
+            )
+            .0;
+        let lookup_offset = fn_builder.single_result(imul_imm0);
 
-        let phys_start = {
-            fn_builder
-                .ins()
-                .ushr_imm(region_val, offset_of!(MemoryRegion, phys_start) as i64 * 8)
-        };
-        let host_start = {
-            let host_start = fn_builder.ins().ireduce(types::I32, region_val);
-            fn_builder.ins().uextend(ptr_type, host_start)
-        };
+        // add table offset to table pointer to get lookup address
+        let iadd0 = fn_builder
+            .ins()
+            .Binary(Opcode::Iadd, ptr_type, mem_map_ptr, lookup_offset)
+            .0;
+        let lookup = fn_builder.single_result(iadd0);
 
-        let (offset, _) = fn_builder.ins().usub_overflow(address, phys_start);
+        // load region descriptor at lookup address
+        let load0 = fn_builder
+            .ins()
+            .LoadNoOffset(Opcode::Load, types::I64, MemFlags::new(), lookup)
+            .0;
+        let region_descriptor = fn_builder.single_result(load0);
 
-        fn_builder.ins().iadd(host_start, offset)
+        // get MemoryRegion.phys_start (high 32 bits)
+        let ushr_imm1 = fn_builder
+            .ins()
+            .BinaryImm64(
+                Opcode::UshrImm,
+                types::I64,
+                Imm64::new(offset_of!(MemoryRegion, phys_start) as i64 * 8),
+                region_descriptor,
+            )
+            .0;
+        let phys_start = fn_builder.single_result(ushr_imm1);
+
+        // get MemoryRegion.host_start (low 32 bits)
+        // first, reduce to I32
+        let ireduce0 = fn_builder
+            .ins()
+            .Unary(Opcode::Ireduce, types::I32, region_descriptor)
+            .0;
+        let host_start = fn_builder.single_result(ireduce0);
+        // then, extend back to I64, this effectively clears the high 32 bits
+        let uextend0 = fn_builder
+            .ins()
+            .Unary(Opcode::Uextend, types::I64, host_start)
+            .0;
+        let host_start = fn_builder.single_result(uextend0);
+
+        // subtract the psx physical start of the region from the physical address,
+        // obtaining an offset into the region
+        let isub0 = fn_builder
+            .ins()
+            .Binary(Opcode::Isub, types::I64, address, phys_start)
+            .0;
+        let offset_in_region = fn_builder.single_result(isub0);
+
+        // calculate the host address by adding the region offset to the
+        // start of the host region
+        let (host_address, iadd1) = fn_builder.inst(|f| {
+            f.ins()
+                .Binary(Opcode::Iadd, types::I64, host_start, offset_in_region)
+                .0
+        });
+
+        // cast host address from I64 to host pointer type
+        let (host_address, ptrcast1) = fn_builder.PtrCast(host_address, ptr_type);
+
+        (
+            host_address,
+            [
+                band, ptrcast0, ushr_imm0, imul_imm0, iadd0, load0, ushr_imm1, ireduce0, uextend0,
+                isub0, iadd1, ptrcast1,
+            ],
+        )
     }
 
-    pub fn emit_store_pc(fn_builder: &mut FunctionBuilder<'_>, pc_value: Value, cpu_value: Value) {
+    pub fn emit_store_pc(fn_builder: &mut FunctionBuilder<'_>, block: Block, pc: Value) -> Inst {
         tracing::info!("write to pc");
-        fn_builder.ins().store(
-            MemFlags::new(),
-            pc_value,
-            cpu_value,
-            offset_of!(Cpu, pc) as i32,
-        );
+
+        JIT::emit_store_to_cpu(fn_builder, block, pc, offset_of!(Cpu, pc) as i32)
     }
 
     pub fn cache_usage(&self) -> (usize, usize) {

@@ -1,5 +1,6 @@
 use std::fmt::Display;
 
+use crate::FnBuilderExt;
 use crate::cpu::REG_STR;
 use crate::cpu::ops::prelude::*;
 
@@ -49,34 +50,33 @@ impl Op for ADDU {
             .set_bits(11..16, self.rd as u32)
     }
 
-    fn emit_ir(&self, mut state: EmitCtx) -> Option<EmitSummary> {
+    fn emit_ir(&self, mut state: EmitCtx) -> EmitSummary {
         use crate::cranelift_bs::*;
         // case 1: x + 0 = x
         if self.rs == 0 {
-            let rt = state.emit_get_register(self.rt);
-            return Some(
-                EmitSummary::builder()
-                    .register_updates([(self.rd, rt)])
-                    .build(state.fn_builder),
-            );
+            let (rt, loadreg) = state.emit_get_register(self.rt);
+            return EmitSummary::builder()
+                .instructions([now(loadreg)])
+                .register_updates([(self.rd, rt)])
+                .build(state.fn_builder);
         }
         // case 2: 0 + x = x
         if self.rt == 0 {
-            let rs = state.emit_get_register(self.rs);
-            return Some(
-                EmitSummary::builder()
-                    .register_updates([(self.rd, rs)])
-                    .build(state.fn_builder),
-            );
+            let (rs, loadreg) = state.emit_get_register(self.rs);
+            return EmitSummary::builder()
+                .instructions([now(loadreg)])
+                .register_updates([(self.rd, rs)])
+                .build(state.fn_builder);
         }
-        let rs = state.emit_get_register(self.rs);
-        let rt = state.emit_get_register(self.rt);
-        let rd = state.fn_builder.ins().iadd(rs, rt);
-        Some(
-            EmitSummary::builder()
-                .register_updates([(self.rd, rd)])
-                .build(state.fn_builder),
-        )
+        let (rs, load0) = state.emit_get_register(self.rs);
+        let (rt, load1) = state.emit_get_register(self.rt);
+        let (rd, iadd) = state
+            .fn_builder
+            .inst(|f| f.ins().Binary(Opcode::Iadd, types::I32, rs, rt).0);
+        EmitSummary::builder()
+            .instructions([now(load0), now(load1), now(iadd)])
+            .register_updates([(self.rd, rd)])
+            .build(state.fn_builder)
     }
 }
 

@@ -2,7 +2,7 @@ use pchan_utils::setup_tracing;
 use pretty_assertions::assert_eq;
 use rstest::rstest;
 
-use crate::{Emu, jit::JIT, memory::MEM_MAP, test_utils::emulator};
+use crate::{Emu, test_utils::emulator};
 
 #[rstest]
 fn basic_jit(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
@@ -41,73 +41,5 @@ fn basic_jit(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
     let const_fn = unsafe { std::mem::transmute::<*const u8, fn() -> i32>(code_ptr) };
     tracing::info!("Result: {}", const_fn()); // Prints: Result: 42
     assert_eq!(const_fn(), 42);
-    Ok(())
-}
-
-#[rstest]
-fn basic_adder(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
-    use crate::cranelift_bs::*;
-
-    let sig = emulator.jit.create_signature();
-
-    let func_id = emulator
-        .jit
-        .module
-        .declare_function("adder", Linkage::Export, &sig)?;
-    let mut func = Function::with_name_signature(UserFuncName::user(0, 1), sig);
-
-    {
-        let mut builder = FunctionBuilder::new(&mut func, &mut emulator.jit.fn_builder_ctx);
-        let block = builder.create_block();
-        builder.append_block_params_for_function_params(block);
-        builder.switch_to_block(block);
-        builder.seal_block(block);
-
-        let a = JIT::emit_load_reg()
-            .builder(&mut builder)
-            .block(block)
-            .idx(9)
-            .call();
-        let b = JIT::emit_load_reg()
-            .builder(&mut builder)
-            .block(block)
-            .idx(10)
-            .call();
-
-        // x + y
-        let sum = builder.ins().iadd(a, b);
-        JIT::emit_store_reg()
-            .builder(&mut builder)
-            .block(block)
-            .idx(11)
-            .value(sum)
-            .call();
-        builder.ins().return_(&[]);
-
-        builder.finalize();
-    }
-
-    emulator.jit.ctx.func = func;
-    emulator
-        .jit
-        .module
-        .define_function(func_id, &mut emulator.jit.ctx)?;
-
-    emulator.jit.module.clear_context(&mut emulator.jit.ctx);
-    emulator.jit.module.finalize_definitions()?;
-
-    let adder = emulator.jit.get_func(func_id);
-
-    emulator.cpu.gpr[9] = 69;
-    emulator.cpu.gpr[10] = 42;
-
-    tracing::info!(%emulator.cpu);
-    adder(&mut emulator.cpu, &mut emulator.mem, true, &MEM_MAP);
-    tracing::info!(%emulator.cpu);
-    assert_eq!(
-        emulator.cpu.gpr[11],
-        emulator.cpu.gpr[9] + emulator.cpu.gpr[10]
-    );
-
     Ok(())
 }

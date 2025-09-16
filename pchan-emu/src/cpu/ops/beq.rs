@@ -59,16 +59,8 @@ impl Op for BEQ {
             .set_bits(0..16, (self.imm >> 2) as i16 as u32)
     }
 
-    fn emit_ir(&self, state: EmitCtx) -> Option<EmitSummary> {
-        Some(EmitSummary::builder().build(state.fn_builder))
-    }
-
-    fn hazard_trigger(&self, current_pc: u32) -> Option<u32> {
-        Some(current_pc + 4)
-    }
-
     #[instrument("beq", skip_all, fields(node = ?state.node, block = ?state.block().clif_block()))]
-    fn emit_hazard(&self, mut state: EmitCtx) -> EmitSummary {
+    fn emit_ir(&self, mut state: EmitCtx) -> EmitSummary {
         use crate::cranelift_bs::*;
 
         let next = state
@@ -77,10 +69,14 @@ impl Op for BEQ {
             .collect::<Vec<_>>();
         tracing::info!(?state.node, ?next);
 
-        let rs = state.emit_get_register(self.rs);
-        let rt = state.emit_get_register(self.rt);
+        let (rs, load0) = state.emit_get_register(self.rs);
+        let (rt, load1) = state.emit_get_register(self.rt);
 
-        let cond = state.ins().icmp(IntCC::Equal, rs, rt);
+        let (cond, icmp) = state.inst(|f| {
+            f.ins()
+                .IntCompare(Opcode::Icmp, types::I32, IntCC::Equal, rs, rt)
+                .0
+        });
 
         let then_block = state.next_at(0).clif_block();
         let then_params = state.out_params(then_block);

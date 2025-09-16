@@ -2,9 +2,12 @@ use std::fmt::Display;
 
 use tracing::instrument;
 
-use crate::cpu::{
-    REG_STR,
-    ops::{BoundaryType, EmitCtx, EmitSummary, Op, OpCode, TryFromOpcodeErr},
+use crate::{
+    FnBuilderExt,
+    cpu::{
+        REG_STR,
+        ops::{BoundaryType, EmitCtx, EmitSummary, Op, OpCode, TryFromOpcodeErr},
+    },
 };
 
 use super::PrimeOp;
@@ -55,38 +58,44 @@ impl Op for ADDIU {
             .set_bits(0..16, (self.imm as i32 as i16) as u32)
     }
 
-    #[instrument("addiu", skip_all, fields(node = ?state.node, block = ?state.block().clif_block()))]
-    fn emit_ir(&self, mut state: EmitCtx) -> Option<EmitSummary> {
+    // #[instrument("addiu", skip_all, fields(node = ?state.node, block = ?state.block().clif_block()))]
+    fn emit_ir(&self, mut state: EmitCtx) -> EmitSummary {
         use crate::cranelift_bs::*;
 
         // case 1: 0 + x = x
         // => 1 iconst instruction
         if self.rs == 0 {
-            let rt = state.fn_builder.ins().iconst(types::I32, self.imm as i64);
-            return Some(
-                EmitSummary::builder()
-                    .register_updates([(self.rt, rt)])
-                    .build(state.fn_builder),
-            );
+            let (rt, iconst) = state.fn_builder.inst(|f| {
+                f.ins()
+                    .UnaryImm(Opcode::Iconst, types::I32, Imm64::new(self.imm as i64))
+                    .0
+            });
+            return EmitSummary::builder()
+                .instructions([now(iconst)])
+                .register_updates([(self.rt, rt)])
+                .build(state.fn_builder);
         }
 
         // x + 0 = x
         // => 1 iconst instruction or 0 instructions if rs is cached
-        let rs = state.emit_get_register(self.rs);
+        let (rs, load0) = state.emit_get_register(self.rs);
         if self.imm == 0 {
-            return Some(
-                EmitSummary::builder()
-                    .register_updates([(self.rt, rs)])
-                    .build(state.fn_builder),
-            );
+            return EmitSummary::builder()
+                .instructions([now(load0)])
+                .register_updates([(self.rt, rs)])
+                .build(state.fn_builder);
         }
 
-        let rt = state.fn_builder.ins().iadd_imm(rs, self.imm as i64);
-        Some(
-            EmitSummary::builder()
-                .register_updates([(self.rt, rt)])
-                .build(state.fn_builder),
-        )
+        let (rt, iadd_imm) = state.fn_builder.inst(|f| {
+            f.ins()
+                .BinaryImm64(Opcode::IaddImm, types::I32, Imm64::new(self.imm as i64), rs)
+                .0
+        });
+
+        EmitSummary::builder()
+            .instructions([now(iadd_imm)])
+            .register_updates([(self.rt, rt)])
+            .build(state.fn_builder)
     }
 }
 

@@ -31,6 +31,7 @@
 use crate::{bootloader::Bootloader, cpu::Cpu, jit::JIT, memory::Memory};
 
 pub mod cranelift_bs {
+    pub use crate::dynarec::*;
     pub use cranelift::codegen::ir::*;
     #[allow(ambiguous_glob_reexports)]
     pub use cranelift::jit::*;
@@ -53,15 +54,74 @@ pub struct Emu {
     pub boot: Bootloader,
 }
 
-use cranelift::prelude::*;
+use cranelift::{
+    codegen::ir::{Inst, Opcode},
+    prelude::*,
+};
+
+pub trait IntoInst {
+    fn into_inst(self) -> Inst;
+}
+
+impl IntoInst for Inst {
+    fn into_inst(self) -> Inst {
+        self
+    }
+}
+
+impl<T> IntoInst for (Inst, T) {
+    fn into_inst(self) -> Inst {
+        self.0
+    }
+}
 
 pub trait FnBuilderExt {
     fn type_of(&self, value: Value) -> Type;
+    fn single_result(&self, inst: Inst) -> Value;
+
+    #[allow(non_snake_case)]
+    fn Nop(&mut self) -> Inst;
+    #[allow(non_snake_case)]
+    fn PtrCast(&mut self, value: Value, ptr_type: Type) -> (Value, Inst);
+    fn inst<R: IntoInst>(&mut self, f: impl Fn(&mut Self) -> R) -> (Value, Inst);
 }
 
 impl FnBuilderExt for FunctionBuilder<'_> {
     fn type_of(&self, value: Value) -> Type {
         self.func.dfg.value_type(value)
+    }
+    fn single_result(&self, inst: Inst) -> Value {
+        self.inst_results(inst)[0]
+    }
+    fn inst<R: IntoInst>(&mut self, f: impl Fn(&mut Self) -> R) -> (Value, Inst) {
+        let inst = f(self).into_inst();
+        let value = self.single_result(inst);
+        (value, inst)
+    }
+    fn Nop(&mut self) -> Inst {
+        let (inst, _) = self.ins().NullAry(Opcode::Nop, types::INVALID);
+        inst
+    }
+
+    fn PtrCast(&mut self, value: Value, ptr_type: Type) -> (Value, Inst) {
+        let value_type = self.type_of(value);
+        if value_type == ptr_type {
+            (value, self.Nop())
+        } else {
+            let extend_or_reduce = match (ptr_type, value_type) {
+                (types::I64, types::I32 | types::I16 | types::I8)
+                | (types::I32, types::I16 | types::I8) => {
+                    self.ins().Unary(Opcode::Uextend, ptr_type, value).0
+                }
+                (types::I32, types::I64) => self.ins().Unary(Opcode::Ireduce, ptr_type, value).0,
+                _ => panic!(
+                    "invalid cast from {} to pointer type {}",
+                    value_type, ptr_type
+                ),
+            };
+            let value = self.single_result(extend_or_reduce);
+            (value, extend_or_reduce)
+        }
     }
 }
 
