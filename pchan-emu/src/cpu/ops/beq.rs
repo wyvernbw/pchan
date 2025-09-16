@@ -67,9 +67,15 @@ impl Op for BEQ {
         Some(current_pc + 4)
     }
 
-    #[instrument("beq", skip_all)]
+    #[instrument("beq", skip_all, fields(node = ?state.node, block = ?state.block().clif_block()))]
     fn emit_hazard(&self, mut state: EmitCtx) -> EmitSummary {
         use crate::cranelift_bs::*;
+
+        let next = state
+            .cfg
+            .neighbors_directed(state.node, petgraph::Direction::Outgoing)
+            .collect::<Vec<_>>();
+        tracing::info!(?state.node, ?next);
 
         let rs = state.emit_get_register(self.rs);
         let rt = state.emit_get_register(self.rt);

@@ -1,6 +1,7 @@
 use std::fmt::Display;
 
 use cranelift::prelude::InstBuilder;
+use tracing::instrument;
 
 use crate::cpu::ops::{
     BoundaryType, EmitCtx, EmitSummary, MipsOffset, Op, OpCode, PrimeOp, TryFromOpcodeErr,
@@ -43,21 +44,24 @@ impl Op for J {
     }
 
     fn emit_ir(&self, state: EmitCtx) -> Option<EmitSummary> {
-        tracing::info!("j: jump to 0x{:08X}", self.imm);
-
-        Some(
-            EmitSummary::builder()
-                .pc_update(MipsOffset::RegionJump(self.imm).calculate_address(state.pc))
-                .build(state.fn_builder),
-        )
+        None
     }
 
-    fn post_update_emit_ir(&self, mut ctx: EmitCtx) {
+    fn hazard_trigger(&self, current_pc: u32) -> Option<u32> {
+        Some(current_pc + 4)
+    }
+
+    #[instrument("j", skip_all, fields(node = ?ctx.node, block = ?ctx.block().clif_block()))]
+    fn emit_hazard(&self, mut ctx: EmitCtx) -> EmitSummary {
         debug_assert_eq!(ctx.neighbour_count(), 1);
         let next_block = ctx.next_at(0).clif_block();
 
         let params = ctx.out_params(next_block);
         ctx.ins().jump(next_block, &params);
+
+        EmitSummary::builder()
+            .pc_update(MipsOffset::RegionJump(self.imm).calculate_address(ctx.pc))
+            .build(ctx.fn_builder)
     }
 }
 

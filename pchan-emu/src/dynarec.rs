@@ -13,6 +13,7 @@ use color_eyre::eyre::{Context, eyre};
 
 use petgraph::{
     algo::is_cyclic_directed,
+    dot::{Config, Dot},
     prelude::*,
     visit::{DfsEvent, depth_first_search},
 };
@@ -78,6 +79,7 @@ pub struct CacheDependency {
 pub struct HazardEntry<'a> {
     hazard: Hazard<'a>,
     cache: EntryCache,
+    node: NodeIndex,
 }
 
 impl CacheDependency {
@@ -147,6 +149,10 @@ impl Emu {
         )?;
 
         tracing::trace!(cfg.cycle = is_cyclic_directed(&blocks.cfg));
+        tracing::info!(
+            "\n{:?}",
+            Dot::with_config(&blocks.cfg, &[Config::EdgeNoLabel, Config::NodeIndexLabel])
+        );
 
         for node in blocks.cfg.node_indices() {
             for op in blocks.cfg[node].ops.iter() {
@@ -210,6 +216,8 @@ impl Emu {
                 let prev_hazards = hazards_map.get(&prev_node).unwrap();
                 let mut reg_cache = cache_map.get(&node).unwrap_or(prev_register_cache).clone();
                 let mut hazards = hazards_map.get(&node).unwrap_or(prev_hazards).clone();
+
+                tracing::info!(?node, ?cranelift_block, "compiling...");
 
                 let deps = deps_map
                     .entry(blocks.cfg[node].clif_block())
@@ -275,9 +283,12 @@ impl Emu {
         fn_builder.append_block_param(cranelift_block, ptr_type);
         for reg in deps.registers.iter() {
             let reg = reg as usize;
+            let dirty = register_cache.registers[reg]
+                .map(|reg| reg.dirty)
+                .unwrap_or(false);
             register_cache.registers[reg] = Some(CachedValue {
                 value: fn_builder.append_block_param(cranelift_block, types::I32),
-                dirty: false,
+                dirty,
             });
         }
         let mut summary_queue: Option<EmitSummary> = None;
@@ -304,6 +315,7 @@ impl Emu {
                 hazards.push(HazardEntry {
                     hazard,
                     cache: register_cache.clone(),
+                    node,
                 });
             }
         }
@@ -324,7 +336,7 @@ impl Emu {
         basic_block: &BasicBlock,
         idx: usize,
         summary_queue: &mut Option<EmitSummary>,
-        hazards: &mut [HazardEntry<'_>],
+        hazards: &mut Vec<HazardEntry<'_>>,
     ) -> Option<Hazard<'a>> {
         // op instructions
         let summary = op.emit_ir(
@@ -361,20 +373,22 @@ impl Emu {
         let pc = basic_block.address + idx as u32 * 4;
         let hazard = hazards
             .iter_mut()
-            .find(|hazard| hazard.hazard.trigger == pc);
-        if let Some(hazard) = hazard {
+            .position(|hazard| hazard.hazard.trigger == pc);
+        if let Some(hazard_idx) = hazard {
+            let hazard = &mut hazards[hazard_idx];
             let summary = (hazard.hazard.emit)(
                 hazard.hazard.op,
                 EmitCtx::builder()
                     .ptr_type(ptr_type)
                     .cache(&mut hazard.cache)
                     .pc(pc)
-                    .node(node)
+                    .node(hazard.node)
                     .cfg(cfg)
                     .deps_map(deps_map)
                     .fn_builder(fn_builder)
                     .build(),
             );
+            hazards.swap_remove(hazard_idx);
             JIT::apply_cache_updates()
                 .updates(CacheUpdates::new(&summary))
                 .cache(register_cache)
@@ -395,11 +409,20 @@ impl Emu {
 
         // if op is function boundary, emit updates to all cached values
         if op.is_function_boundary() {
+            tracing::info!(%op, "emitting updates...");
             JIT::emit_updates()
                 .builder(fn_builder)
                 .block(basic_block.clif_block())
                 .cache(register_cache)
                 .call();
+            if op.is_auto_pc() {
+                let pc = fn_builder
+                    .ins()
+                    .iconst(types::I32, basic_block.address as i64 + idx as i64 * 4 + 4);
+                let block = basic_block.clif_block();
+                let cpu = fn_builder.block_params(block)[0];
+                JIT::emit_store_pc(fn_builder, pc, cpu);
+            }
         }
 
         // finally, emit op post update instructions (jumps, returns etc)
@@ -484,20 +507,19 @@ fn find_first_value(than: u32, mapped: &HashMap<u32, NodeIndex>) -> Option<u32> 
 }
 
 fn fetch(params: FetchParams<'_>) -> color_eyre::Result<WalkFnSummary> {
-    fn add_ops_until_hazard_trigger(
-        ops: &mut Vec<DecodedOp>,
-        op: &DecodedOp,
+    fn emit_block_padding(
+        state: &State,
+        cfg: &mut Graph<BasicBlock, ()>,
         mem: &Memory,
-        pc: u32,
     ) -> color_eyre::Result<()> {
-        let Some(trigger) = op.hazard_trigger(pc) else {
-            return Ok(());
-        };
-        for p in (pc + 4)..=trigger {
-            let op = mem.read::<u32>(PhysAddr(p));
+        let remaining = state.max_padding_address.saturating_sub(state.pc);
+        for i in (0..=remaining).step_by(4) {
+            let addr = state.pc + i + 4;
+            let op = mem.read::<u32>(PhysAddr(addr));
             let op = OpCode(op);
-            let op = DecodedOp::try_from(op)?;
-            ops.push(op);
+            let op = DecodedOp::try_from(op).wrap_err(eyre!("failed at pc 0x{:08X}", state.pc))?;
+            cfg[state.current_node].ops.push(op);
+            tracing::trace!(op = format!("{op}"));
         }
         Ok(())
     }
@@ -519,16 +541,20 @@ fn fetch(params: FetchParams<'_>) -> color_eyre::Result<WalkFnSummary> {
         current_node: NodeIndex,
         pc: u32,
         from_jump: bool,
+        max_padding: u32,
+        max_padding_address: u32,
     }
 
     let mut stack = vec![State {
         current_node: entry_node,
         pc: initial_pc,
         from_jump: true,
+        max_padding: 0,
+        max_padding_address: initial_pc,
     }];
     stack.reserve(256);
 
-    while let Some(state) = stack.pop() {
+    while let Some(mut state) = stack.pop() {
         let _span = span!(Level::DEBUG, "fetch", pc = %format!("0x{:04X}", state.pc), node = ?state.current_node.index()).entered();
 
         if state.from_jump {
@@ -539,12 +565,19 @@ fn fetch(params: FetchParams<'_>) -> color_eyre::Result<WalkFnSummary> {
         let op = OpCode(op);
         let op = DecodedOp::try_from(op).wrap_err(eyre!("failed at pc 0x{:08X}", state.pc))?;
         cfg[state.current_node].ops.push(op);
-        add_ops_until_hazard_trigger(&mut cfg[state.current_node].ops, &op, mem, state.pc)?;
+        let trigger = op.hazard_trigger(state.pc).unwrap_or(0);
+        let pad = trigger.saturating_sub(state.pc);
+        if pad > state.max_padding {
+            state.max_padding = pad;
+            state.max_padding_address = state.pc;
+        }
 
         tracing::trace!(op = format!("{op}"));
+        tracing::trace!(?pad, ?state.max_padding);
 
         match op.is_block_boundary() {
             Some(BoundaryType::Function { .. }) => {
+                emit_block_padding(&state, &mut cfg, mem)?;
                 continue;
             }
             None => {
@@ -574,16 +607,23 @@ fn fetch(params: FetchParams<'_>) -> color_eyre::Result<WalkFnSummary> {
                 cfg.add_edge(state.current_node, next_node, ());
                 mapped.to_mut().insert(new_address, next_node);
 
+                emit_block_padding(&state, &mut cfg, mem)?;
+
                 tracing::trace!("cfg.link {:?} -> {:?}", state.current_node, next_node);
                 // tracing::debug!(offset, "jump in block");
                 stack.push(State {
                     current_node: next_node,
                     pc: new_address,
                     from_jump: true,
+                    max_padding: 0,
+                    max_padding_address: new_address,
                 });
             }
             Some(BoundaryType::BlockSplit { lhs, rhs }) => {
                 tracing::trace!(offsets = ?[lhs, rhs], delay_hazard = %op, "potential split in block");
+
+                emit_block_padding(&state, &mut cfg, mem)?;
+
                 let offsets = [rhs, lhs];
                 for offset in offsets.into_iter() {
                     let new_address = offset.calculate_address(state.pc);
@@ -608,6 +648,8 @@ fn fetch(params: FetchParams<'_>) -> color_eyre::Result<WalkFnSummary> {
                         current_node: next_node,
                         pc: new_address,
                         from_jump: true,
+                        max_padding: 0,
+                        max_padding_address: new_address,
                     })
                 }
             }

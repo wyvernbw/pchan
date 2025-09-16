@@ -59,6 +59,10 @@ impl Op for BNE {
             .set_bits(0..16, (self.imm >> 2) as i16 as u32)
     }
 
+    fn hazard_trigger(&self, current_pc: u32) -> Option<u32> {
+        Some(current_pc + 4)
+    }
+
     #[instrument("bne", skip_all)]
     fn emit_hazard(&self, mut state: EmitCtx) -> EmitSummary {
         use crate::cranelift_bs::*;
@@ -85,11 +89,11 @@ impl Op for BNE {
         state
             .ins()
             .brif(cond, then_block, &then_params, else_block, &else_params);
-        EmitSummary::builder().build(&state.fn_builder)
+        EmitSummary::builder().build(state.fn_builder)
     }
 
     fn emit_ir(&self, ctx: EmitCtx) -> Option<EmitSummary> {
-        Some(EmitSummary::builder().build(&ctx.fn_builder))
+        Some(EmitSummary::builder().build(ctx.fn_builder))
     }
 }
 

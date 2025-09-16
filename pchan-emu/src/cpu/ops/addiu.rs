@@ -1,5 +1,6 @@
 use std::fmt::Display;
 
+use tracing::instrument;
 
 use crate::cpu::{
     REG_STR,
@@ -54,6 +55,7 @@ impl Op for ADDIU {
             .set_bits(0..16, (self.imm as i32 as i16) as u32)
     }
 
+    #[instrument("addiu", skip_all, fields(node = ?state.node, block = ?state.block().clif_block()))]
     fn emit_ir(&self, mut state: EmitCtx) -> Option<EmitSummary> {
         use crate::cranelift_bs::*;
 

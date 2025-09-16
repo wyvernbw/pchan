@@ -393,7 +393,6 @@ impl JIT {
         let Some(cache) = cache else {
             return;
         };
-        tracing::debug!("cache={:#?}", cache);
         cache
             .registers
             .iter()
@@ -408,7 +407,6 @@ impl JIT {
                     types::I32,
                     "cached register must be an i32 value"
                 );
-                tracing::debug!("writing cache to ${}", REG_STR[id]);
                 JIT::emit_store_reg()
                     .block(block)
                     .builder(builder)

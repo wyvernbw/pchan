@@ -380,6 +380,12 @@ pub trait Op: Sized + Display + TryFrom<OpCode> {
             Some(BoundaryType::Function { .. })
         )
     }
+    fn is_auto_pc(&self) -> bool {
+        match self.is_block_boundary() {
+            Some(BoundaryType::Function { auto_set_pc }) => auto_set_pc,
+            _ => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -456,14 +462,11 @@ impl TryFrom<OpCode> for HaltBlock {
 
 impl DecodedOp {
     pub fn get_hazard(&self, ctx: EmitCtx) -> Option<Hazard<'_>> {
-        match self.hazard_trigger(ctx.pc) {
-            Some(trigger) => Some(Hazard {
-                op: self,
-                emit: Self::emit_hazard,
-                trigger,
-            }),
-            None => None,
-        }
+        self.hazard_trigger(ctx.pc).map(|trigger| Hazard {
+            op: self,
+            emit: Self::emit_hazard,
+            trigger,
+        })
     }
 }
 
