@@ -65,7 +65,7 @@ impl Op for AND {
         let (rt, load1) = state.emit_get_register(self.rt);
         let (rd, band) = state
             .fn_builder
-            .inst(|f| f.ins().Binary(Opcode::Band, types::I32, rs, rt).0);
+            .inst(|f| f.pure().Binary(Opcode::Band, types::I32, rs, rt).0);
         EmitSummary::builder()
             .instructions([now(load0), now(load1), now(band)])
             .register_updates([(self.rd, rd)])

@@ -75,7 +75,7 @@ impl Op for JALR {
                 now(iconst),
                 now(storepc),
                 now(storerd),
-                bottom(ret),
+                bomb(1, ret),
             ])
             .register_updates([(self.rd, pc), (self.rd, pc)])
             .build(state.fn_builder)

@@ -59,7 +59,7 @@ impl Op for ADDIU {
         // => 1 iconst instruction
         if self.rs == 0 {
             let (rt, iconst) = state.fn_builder.inst(|f| {
-                f.ins()
+                f.pure()
                     .UnaryImm(Opcode::Iconst, types::I32, Imm64::new(self.imm as i64))
                     .0
             });
@@ -71,22 +71,22 @@ impl Op for ADDIU {
 
         // x + 0 = x
         // => 1 iconst instruction or 0 instructions if rs is cached
-        let (rs, load0) = state.emit_get_register(self.rs);
+        let (rs, loadrs) = state.emit_get_register(self.rs);
         if self.imm == 0 {
             return EmitSummary::builder()
-                .instructions([now(load0)])
+                .instructions([now(loadrs)])
                 .register_updates([(self.rt, rs)])
                 .build(state.fn_builder);
         }
 
         let (rt, iadd_imm) = state.fn_builder.inst(|f| {
-            f.ins()
+            f.pure()
                 .BinaryImm64(Opcode::IaddImm, types::I32, Imm64::new(self.imm as i64), rs)
                 .0
         });
 
         EmitSummary::builder()
-            .instructions([now(iadd_imm)])
+            .instructions([now(loadrs), now(iadd_imm)])
             .register_updates([(self.rt, rt)])
             .build(state.fn_builder)
     }

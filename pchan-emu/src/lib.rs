@@ -3,6 +3,7 @@
 #![allow(long_running_const_eval)]
 #![allow(incomplete_features)]
 #![allow(clippy::collapsible_if)]
+#![feature(assert_matches)]
 #![feature(slice_concat_trait)]
 #![feature(slice_as_array)]
 #![feature(const_for)]
@@ -30,7 +31,9 @@
 // allow unused variables in tests to supress the setup tracing warnings
 #![cfg_attr(test, allow(unused_variables))]
 
-use crate::{bootloader::Bootloader, cpu::Cpu, jit::JIT, memory::Memory};
+use crate::{
+    bootloader::Bootloader, cpu::Cpu, dynarec::prelude::PureInstBuilder, jit::JIT, memory::Memory,
+};
 
 pub mod cranelift_bs {
     pub use cranelift::codegen::ir::*;
@@ -56,7 +59,10 @@ pub struct Emu {
 }
 
 use cranelift::{
-    codegen::ir::{Inst, Opcode},
+    codegen::{
+        cursor::Cursor,
+        ir::{Inst, Opcode},
+    },
     prelude::*,
 };
 
@@ -76,7 +82,7 @@ impl<T> IntoInst for (Inst, T) {
     }
 }
 
-pub trait FnBuilderExt {
+pub trait FnBuilderExt<'a> {
     fn type_of(&self, value: Value) -> Type;
     fn single_result(&self, inst: Inst) -> Value;
 
@@ -87,10 +93,11 @@ pub trait FnBuilderExt {
     #[allow(non_snake_case)]
     fn IConst(&mut self, imm: impl Into<i64>) -> (Value, Inst);
     fn inst<R: IntoInst>(&mut self, f: impl Fn(&mut Self) -> R) -> (Value, Inst);
+    fn pure<'short>(&'short mut self) -> PureInstBuilder<'short, 'a>;
     fn append(&mut self, inst: Inst) -> &mut Self;
 }
 
-impl FnBuilderExt for FunctionBuilder<'_> {
+impl<'a> FnBuilderExt<'a> for FunctionBuilder<'a> {
     fn type_of(&self, value: Value) -> Type {
         self.func.dfg.value_type(value)
     }
@@ -103,7 +110,7 @@ impl FnBuilderExt for FunctionBuilder<'_> {
         (value, inst)
     }
     fn Nop(&mut self) -> Inst {
-        let (inst, _) = self.ins().NullAry(Opcode::Nop, types::INVALID);
+        let (inst, _) = self.pure().NullAry(Opcode::Nop, types::INVALID);
         inst
     }
 
@@ -115,9 +122,9 @@ impl FnBuilderExt for FunctionBuilder<'_> {
             let extend_or_reduce = match (ptr_type, value_type) {
                 (types::I64, types::I32 | types::I16 | types::I8)
                 | (types::I32, types::I16 | types::I8) => {
-                    self.ins().Unary(Opcode::Uextend, ptr_type, value).0
+                    self.pure().Unary(Opcode::Uextend, ptr_type, value).0
                 }
-                (types::I32, types::I64) => self.ins().Unary(Opcode::Ireduce, ptr_type, value).0,
+                (types::I32, types::I64) => self.pure().Unary(Opcode::Ireduce, ptr_type, value).0,
                 _ => panic!(
                     "invalid cast from {} to pointer type {}",
                     value_type, ptr_type
@@ -130,7 +137,7 @@ impl FnBuilderExt for FunctionBuilder<'_> {
     fn IConst(&mut self, imm: impl Into<i64>) -> (Value, Inst) {
         let imm = imm.into();
         self.inst(|f| {
-            f.ins()
+            f.pure()
                 .UnaryImm(Opcode::Iconst, types::I32, Imm64::new(imm))
                 .0
         })
@@ -138,8 +145,16 @@ impl FnBuilderExt for FunctionBuilder<'_> {
 
     fn append(&mut self, inst: Inst) -> &mut Self {
         let block = self.current_block().unwrap();
-        self.func.layout.append_inst(inst, block);
+        self.cursor().at_bottom(block).insert_inst(inst);
         self
+    }
+
+    fn pure<'short>(&'short mut self) -> PureInstBuilder<'short, 'a> {
+        let current_block = self.current_block().unwrap();
+        PureInstBuilder {
+            builder: self,
+            block: current_block,
+        }
     }
 }
 

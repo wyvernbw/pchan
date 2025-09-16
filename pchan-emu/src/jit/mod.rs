@@ -226,7 +226,7 @@ impl JIT {
     ) -> (Value, Inst) {
         if idx == 0 {
             let inst = builder
-                .ins()
+                .pure()
                 .UnaryConst(Opcode::Iconst, types::I32, Constant::from_u32(0))
                 .0;
             let const0 = builder.single_result(inst);
@@ -236,7 +236,7 @@ impl JIT {
         let offset = core::mem::offset_of!(Cpu, gpr);
         let offset = i32::try_from(offset + idx * size_of::<u32>()).expect("offset overflow");
         let load = builder
-            .ins()
+            .pure()
             .Load(
                 Opcode::Load,
                 types::I32,
@@ -257,7 +257,7 @@ impl JIT {
     ) -> (Value, Inst) {
         let cpu_ptr = builder.block_params(block)[0];
         let load = builder
-            .ins()
+            .pure()
             .Load(
                 Opcode::Load,
                 types::I32,
@@ -325,8 +325,8 @@ impl JIT {
         let cpu_ptr = builder.block_params(block)[0];
         let offset = i32::try_from(GPR + idx * size_of::<u32>()).expect("offset overflow");
 
-        let store = builder
-            .ins()
+        builder
+            .pure()
             .Store(
                 Opcode::Store,
                 value_type,
@@ -335,8 +335,7 @@ impl JIT {
                 value,
                 cpu_ptr,
             )
-            .0;
-        store
+            .0
     }
 
     pub fn emit_store_to_cpu(
@@ -348,7 +347,7 @@ impl JIT {
         let cpu_ptr = builder.block_params(block)[0];
         let vtype = builder.type_of(value);
         builder
-            .ins()
+            .pure()
             .Store(
                 Opcode::Store,
                 vtype,
@@ -463,7 +462,7 @@ impl JIT {
                     "cached register must be an i32 value"
                 );
                 JIT::emit_store_reg()
-                    .block(block.clone())
+                    .block(block)
                     .builder(builder)
                     .idx(id)
                     .value(value.value)
@@ -497,7 +496,7 @@ impl JIT {
         );
 
         let band = fn_builder
-            .ins()
+            .pure()
             .BinaryImm64(
                 Opcode::BandImm,
                 types::I32,
@@ -534,14 +533,14 @@ impl JIT {
 
         // convert address into memory region table index
         let ushr_imm0 = fn_builder
-            .ins()
+            .pure()
             .BinaryImm64(Opcode::UshrImm, ptr_type, Imm64::new(16), address)
             .0;
         let index = fn_builder.single_result(ushr_imm0);
 
         // convert index into table offset
         let imul_imm0 = fn_builder
-            .ins()
+            .pure()
             .BinaryImm64(
                 Opcode::ImulImm,
                 ptr_type,
@@ -553,21 +552,21 @@ impl JIT {
 
         // add table offset to table pointer to get lookup address
         let iadd0 = fn_builder
-            .ins()
+            .pure()
             .Binary(Opcode::Iadd, ptr_type, mem_map_ptr, lookup_offset)
             .0;
         let lookup = fn_builder.single_result(iadd0);
 
         // load region descriptor at lookup address
         let load0 = fn_builder
-            .ins()
+            .pure()
             .LoadNoOffset(Opcode::Load, types::I64, MemFlags::new(), lookup)
             .0;
         let region_descriptor = fn_builder.single_result(load0);
 
         // get MemoryRegion.phys_start (high 32 bits)
         let ushr_imm1 = fn_builder
-            .ins()
+            .pure()
             .BinaryImm64(
                 Opcode::UshrImm,
                 types::I64,
@@ -580,13 +579,13 @@ impl JIT {
         // get MemoryRegion.host_start (low 32 bits)
         // first, reduce to I32
         let ireduce0 = fn_builder
-            .ins()
+            .pure()
             .Unary(Opcode::Ireduce, types::I32, region_descriptor)
             .0;
         let host_start = fn_builder.single_result(ireduce0);
         // then, extend back to I64, this effectively clears the high 32 bits
         let uextend0 = fn_builder
-            .ins()
+            .pure()
             .Unary(Opcode::Uextend, types::I64, host_start)
             .0;
         let host_start = fn_builder.single_result(uextend0);
@@ -594,7 +593,7 @@ impl JIT {
         // subtract the psx physical start of the region from the physical address,
         // obtaining an offset into the region
         let isub0 = fn_builder
-            .ins()
+            .pure()
             .Binary(Opcode::Isub, types::I64, address, phys_start)
             .0;
         let offset_in_region = fn_builder.single_result(isub0);
@@ -602,7 +601,7 @@ impl JIT {
         // calculate the host address by adding the region offset to the
         // start of the host region
         let (host_address, iadd1) = fn_builder.inst(|f| {
-            f.ins()
+            f.pure()
                 .Binary(Opcode::Iadd, types::I64, host_start, offset_in_region)
                 .0
         });

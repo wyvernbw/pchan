@@ -61,7 +61,7 @@ impl Op for JR {
             .0;
 
         EmitSummary::builder()
-            .instructions([now(loadreg), now(mapaddr), now(storers), bottom(ret)])
+            .instructions([now(loadreg), now(mapaddr), now(storers), bomb(1, ret)])
             .build(state.fn_builder)
     }
 }

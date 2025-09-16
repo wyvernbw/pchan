@@ -1,5 +1,6 @@
-use crate::{IntoInst, cranelift_bs::*};
+use crate::{IntoInst, cranelift_bs::*, jit::CacheUpdates};
 use std::{
+    assert_matches::assert_matches,
     borrow::Cow,
     collections::HashMap,
     ops::{Index, IndexMut},
@@ -18,6 +19,7 @@ use petgraph::{
 use tracing::{Level, info_span, instrument, span, trace_span};
 
 pub mod prelude {
+    pub use super::builder::*;
     pub use super::*;
     pub use crate::cpu::REG_STR;
     pub use crate::cpu::ops::prelude::*;
@@ -225,7 +227,12 @@ impl Emu {
                     ..state
                 };
 
-                tracing::info!(?node, ?cranelift_block, "compiling...");
+                tracing::info!(
+                    ?node,
+                    ?cranelift_block,
+                    "compiling {} psx ops...",
+                    blocks.ops_for(basic_block).len()
+                );
 
                 state_map.insert(node, state);
 
@@ -608,7 +615,7 @@ impl<'a, 'b> EmitCtx<'a, 'b> {
         let then_params = self.out_params(node);
         let then_block_call = self
             .fn_builder
-            .ins()
+            .pure()
             .data_flow_graph_mut()
             .block_call(then_block_label, &then_params);
         (then_params, then_block_call)
@@ -647,7 +654,7 @@ impl<'a, 'b> EmitCtx<'a, 'b> {
             Some(one) => (one, self.fn_builder.Nop()),
             None => {
                 let (one, iconsti32) = self.fn_builder.inst(|f| {
-                    f.ins()
+                    f.pure()
                         .UnaryImm(Opcode::Iconst, types::I32, Imm64::new(1))
                         .0
                 });
@@ -661,7 +668,7 @@ impl<'a, 'b> EmitCtx<'a, 'b> {
             Some(zero_i64) => (zero_i64, self.fn_builder.Nop()),
             None => {
                 let (zero_i64, iconsti32) = self.fn_builder.inst(|f| {
-                    f.ins()
+                    f.pure()
                         .UnaryImm(Opcode::Iconst, types::I32, Imm64::new(1))
                         .0
                 });
@@ -843,6 +850,7 @@ pub enum ClifInstructionQueueType {
     Now,
     Delayed(u32),
     Bomb(u32),
+    Seal,
     Bottom,
 }
 
@@ -853,12 +861,16 @@ pub struct TickSummary {
 }
 
 impl ClifInstructionQueueType {
+    pub fn is_bomb(&self) -> bool {
+        matches!(self, ClifInstructionQueueType::Bomb(_))
+    }
     pub fn remaining(&self) -> Option<u32> {
         match self {
             ClifInstructionQueueType::Now => None,
             ClifInstructionQueueType::Delayed(rem) => Some(*rem),
             ClifInstructionQueueType::Bomb(rem) => Some(*rem),
-            ClifInstructionQueueType::Bottom => todo!(),
+            ClifInstructionQueueType::Bottom => None,
+            ClifInstructionQueueType::Seal => None,
         }
     }
     pub fn tick(&mut self) -> TickSummary {
@@ -881,7 +893,7 @@ impl ClifInstructionQueueType {
                     bomb_went_off: *by == 0,
                 }
             }
-            ClifInstructionQueueType::Bottom => TickSummary {
+            ClifInstructionQueueType::Seal | ClifInstructionQueueType::Bottom => TickSummary {
                 ready: false,
                 bomb_went_off: false,
             },
@@ -911,7 +923,9 @@ fn collect_instructions(
 
     let ptr_type = state_map[node].ptr_type;
     let address = state_map[node].basic_block.address;
+    let block = state_map[node].basic_block.clif_block();
 
+    let mut bomb_signal = None;
     for (idx, op) in ops.iter().enumerate() {
         let pc = address + idx as u32 * 4;
 
@@ -924,19 +938,30 @@ fn collect_instructions(
             node,
         });
 
-        // cleanup block
-        for inst in &summary.instructions {
-            fn_builder.func.layout.remove_inst(inst.instruction);
-            tracing::trace!(?inst, "removed");
+        JIT::apply_cache_updates()
+            .updates(CacheUpdates::new(&summary))
+            .cache(&mut state_map[node].cache)
+            .call();
+        if op.is_function_boundary() {
+            let updates = JIT::emit_updates()
+                .cache(&mut state_map[node].cache)
+                .builder(fn_builder)
+                .block(block)
+                .call();
+            for inst in updates {
+                let inst = bottom(inst);
+                let _span = trace_span!("emit(updates)", ?inst).entered();
+                queue.push(inst);
+            }
         }
 
         for inst in summary.instructions {
-            let _span = trace_span!("emit", ?inst).entered();
+            let _span = trace_span!("emit", ?inst, %op).entered();
             if cfg!(debug_assertions) {
                 if matches!(
                     inst.queue_type,
                     ClifInstructionQueueType::Bomb(_) | ClifInstructionQueueType::Delayed(_)
-                ) && op.hazard().is_some()
+                ) && op.hazard().is_none()
                 {
                     tracing::warn!(
                         "{} reports no hazard, but emits delayed instruction {:?}. this is likely a bug",
@@ -945,11 +970,12 @@ fn collect_instructions(
                     );
                 }
             }
-            let mut bomb_signal = false;
             queue.retain_mut(|inst: &mut ClifInstruction| {
                 let tick = inst.queue_type.tick();
                 if tick.bomb_went_off {
-                    bomb_signal = true;
+                    bomb_signal = Some(*inst);
+                    tracing::trace!(?inst, "bomb went off");
+                    return false;
                 }
                 if tick.ready {
                     tracing::trace!(?inst, "delayed instruction inserted");
@@ -959,16 +985,17 @@ fn collect_instructions(
                     true
                 }
             });
-            if bomb_signal {
-                break;
-            }
+
             match inst.queue_type {
                 ClifInstructionQueueType::Now => {
                     fn_builder.append(inst.instruction);
                     tracing::trace!(?inst, "inserted instruction")
                 }
-                ClifInstructionQueueType::Bottom => {
+                ClifInstructionQueueType::Seal => {
                     final_instruction = Some(inst.instruction);
+                }
+                ClifInstructionQueueType::Bottom => {
+                    queue.push(inst);
                 }
                 ClifInstructionQueueType::Delayed(_) => {
                     queue.push(inst);
@@ -977,24 +1004,49 @@ fn collect_instructions(
                     queue.push(inst);
                 }
             }
+
+            if bomb_signal.is_some() {
+                break;
+            }
+        }
+        if bomb_signal.is_some() {
+            break;
         }
     }
 
     if !queue.is_empty() {
         queue.sort_by(|a, b| a.queue_type.remaining().cmp(&b.queue_type.remaining()));
-        for inst in queue {
+        queue.retain(|inst| {
+            if let ClifInstructionQueueType::Delayed(_) = inst.queue_type {
+                fn_builder.append(inst.instruction);
+                tracing::trace!(?inst, "fast forward instruction");
+                false
+            } else {
+                true
+            }
+        });
+        queue.retain(|inst| {
+            if inst.queue_type.is_bomb() {
+                return false;
+            }
             fn_builder.append(inst.instruction);
-        }
+            tracing::trace!(?inst, "inserted bottom instruction");
+            false
+        });
     }
 
-    let final_instruction = final_instruction.unwrap_or_else(|| {
-        fn_builder
-            .ins()
-            .MultiAry(Opcode::Return, types::INVALID, EntityList::new())
-            .0
-    });
-
-    fn_builder.append(final_instruction);
+    if let Some(bomb) = bomb_signal {
+        fn_builder.append(bomb.instruction);
+        tracing::trace!(?bomb, "inserted bomb instruction");
+    } else if let Some(final_instruction) = final_instruction {
+        tracing::trace!(?final_instruction, "inserted seal instruction");
+        fn_builder.append(final_instruction);
+    } else {
+        tracing::trace!(?final_instruction, "inserted manual return");
+        fn_builder.ins().return_(&[]);
+    }
+    let i = fn_builder.func.layout.block_insts(block).count();
+    tracing::info!("compiled {i} instructions")
 }
 
 #[derive(Debug, Clone)]
@@ -1073,6 +1125,14 @@ pub const fn bomb(by: u32, inst: Inst) -> ClifInstruction {
 }
 
 #[inline]
+pub const fn seal(inst: Inst) -> ClifInstruction {
+    ClifInstruction {
+        queue_type: ClifInstructionQueueType::Seal,
+        instruction: inst,
+    }
+}
+
+#[inline]
 pub const fn bottom(inst: Inst) -> ClifInstruction {
     ClifInstruction {
         queue_type: ClifInstructionQueueType::Bottom,
@@ -1086,6 +1146,47 @@ trait BasicBlockIndexOps {
 
 impl BasicBlockIndexOps for &[DecodedOp] {
     fn for_block(&self, block: &BasicBlock) -> &[DecodedOp] {
-        &self[block.start..(block.start + block.len)]
+        &self[block.start..=(block.start + block.len)]
+    }
+}
+
+pub mod builder {
+    use crate::dynarec::prelude::*;
+
+    /// Implementation of the [`InstBuilder`] that has
+    /// one convenience method per Cranelift IR instruction.
+    pub struct PureInstBuilder<'short, 'long: 'short> {
+        pub builder: &'short mut FunctionBuilder<'long>,
+        pub block: Block,
+    }
+
+    impl<'short, 'long> PureInstBuilder<'short, 'long> {
+        fn new(builder: &'short mut FunctionBuilder<'long>, block: Block) -> Self {
+            Self { builder, block }
+        }
+    }
+
+    impl<'short, 'long> InstBuilderBase<'short> for PureInstBuilder<'short, 'long> {
+        fn data_flow_graph(&self) -> &DataFlowGraph {
+            &self.builder.func.dfg
+        }
+
+        fn data_flow_graph_mut(&mut self) -> &mut DataFlowGraph {
+            &mut self.builder.func.dfg
+        }
+
+        fn build(
+            self,
+            data: InstructionData,
+            ctrl_typevar: Type,
+        ) -> (Inst, &'short mut DataFlowGraph) {
+            // We only insert the Block in the layout when an instruction is added to it
+            self.builder.ensure_inserted_block();
+
+            let inst = self.builder.func.dfg.make_inst(data);
+            self.builder.func.dfg.make_inst_results(inst, ctrl_typevar);
+
+            (inst, &mut self.builder.func.dfg)
+        }
     }
 }

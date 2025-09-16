@@ -1,4 +1,5 @@
 use crate::{
+    FnBuilderExt,
     cranelift_bs::*,
     dynarec::{EmitCtx, EmitSummary},
 };
@@ -439,17 +440,21 @@ impl Op for HaltBlock {
         OpCode(69420)
     }
 
+    fn hazard(&self) -> Option<u32> {
+        Some(1)
+    }
+
     fn emit_ir(&self, ctx: EmitCtx) -> EmitSummary {
         use crate::dynarec::*;
 
         let ret = ctx
             .fn_builder
-            .ins()
+            .pure()
             .MultiAry(Opcode::Return, types::INVALID, EntityList::new())
             .0;
 
         EmitSummary::builder()
-            .instructions([bottom(ret)])
+            .instructions([bomb(0, ret)])
             .build(ctx.fn_builder)
     }
 }

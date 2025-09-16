@@ -71,7 +71,7 @@ impl Op for ADDU {
         let (rt, load1) = state.emit_get_register(self.rt);
         let (rd, iadd) = state
             .fn_builder
-            .inst(|f| f.ins().Binary(Opcode::Iadd, types::I32, rs, rt).0);
+            .inst(|f| f.pure().Binary(Opcode::Iadd, types::I32, rs, rt).0);
         EmitSummary::builder()
             .instructions([now(load0), now(load1), now(iadd)])
             .register_updates([(self.rd, rd)])
