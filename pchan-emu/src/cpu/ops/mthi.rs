@@ -1,7 +1,5 @@
+use crate::dynarec::prelude::*;
 use std::fmt::Display;
-
-use crate::cpu::REG_STR;
-use crate::cpu::ops::prelude::*;
 
 #[derive(Debug, Clone, Copy)]
 pub struct MTHI {
@@ -20,9 +18,12 @@ impl Op for MTHI {
             .set_bits(21..26, self.rs as u32)
     }
 
-    fn emit_ir(&self, mut state: EmitCtx) -> Option<EmitSummary> {
-        let rs = state.emit_get_register(self.rs);
-        Some(EmitSummary::builder().hi(rs).build(state.fn_builder))
+    fn emit_ir(&self, mut state: EmitCtx) -> EmitSummary {
+        let (rs, loadreg) = state.emit_get_register(self.rs);
+        EmitSummary::builder()
+            .hi(rs)
+            .instructions([now(loadreg)])
+            .build(state.fn_builder)
     }
 }
 

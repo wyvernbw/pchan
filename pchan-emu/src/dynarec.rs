@@ -8,14 +8,28 @@ use std::{
 use bon::{Builder, bon, builder};
 use color_eyre::eyre::{Context, eyre};
 
-use cranelift::codegen::{bitset::ScalarBitSet, cursor::Cursor, entity::EntityList};
+use cranelift::codegen::{bitset::ScalarBitSet, entity::EntityList};
 use petgraph::{
     algo::is_cyclic_directed,
     dot::{Config, Dot},
     prelude::*,
     visit::{DfsEvent, depth_first_search},
 };
-use tracing::{Level, info_span, instrument, span};
+use tracing::{Level, info_span, instrument, span, trace_span};
+
+pub mod prelude {
+    pub use super::*;
+    pub use crate::cpu::REG_STR;
+    pub use crate::cpu::ops::prelude::*;
+    pub use crate::cranelift_bs::*;
+    pub use crate::icmp;
+    pub use crate::icmpimm;
+    pub use crate::load;
+    pub use crate::mult;
+    pub use crate::shift;
+    pub use crate::shiftimm;
+    pub use crate::store;
+}
 
 use crate::{
     Emu, FnBuilderExt,
@@ -176,7 +190,7 @@ impl Emu {
             // };
         }
 
-        let mut state_map = BlockStateMap::default();
+        let mut state_map = BlockStateMap::new(&blocks.cfg);
         state_map.insert(
             entry_idx,
             BlockState {
@@ -202,7 +216,7 @@ impl Emu {
 
                 let prev_state = state_map.get(prev_node).unwrap();
                 let state = state_map.get(node).unwrap_or(prev_state).clone();
-                let mut state = BlockState {
+                let state = BlockState {
                     basic_block: basic_block.clone(),
                     deps: state
                         .deps
@@ -212,6 +226,8 @@ impl Emu {
                 };
 
                 tracing::info!(?node, ?cranelift_block, "compiling...");
+
+                state_map.insert(node, state);
 
                 let _ = Self::emit_block()
                     .state_map(&mut state_map)
@@ -223,7 +239,6 @@ impl Emu {
                     .ops(blocks.ops_for(basic_block))
                     .call();
 
-                state_map.insert(node, state);
                 // prev_register_cache = node;
             }
             _ => {}
@@ -258,7 +273,6 @@ impl Emu {
         node: NodeIndex,
         cpu: &mut Cpu,
     ) -> EmitBlockSummary {
-        // fn_builder.seal_block(cranelift_block);
         let block_state = &mut state_map[node];
         let cranelift_block = block_state.basic_block.clif_block();
         fn_builder.switch_to_block(cranelift_block);
@@ -365,22 +379,46 @@ fn fetch(params: FetchParams<'_>) -> color_eyre::Result<FetchSummary> {
         current_node: NodeIndex,
         pc: u32,
         from_jump: bool,
+        last_hazard: Option<(u32, u32)>,
+        lifetime: Option<u32>,
+    }
+
+    impl State {
+        fn remaining_hazard(&self) -> Option<u32> {
+            if let Some((duration, start)) = self.last_hazard {
+                if self.pc < start {
+                    return None;
+                }
+                Some(duration.saturating_sub(self.pc - start))
+            } else {
+                None
+            }
+        }
     }
 
     let mut stack = vec![State {
         current_node: entry_node,
         pc: initial_pc,
         from_jump: true,
+        last_hazard: None,
+        lifetime: None,
     }];
     stack.reserve(256);
 
     let mut ops = Vec::with_capacity(512);
 
-    while let Some(state) = stack.pop() {
+    while let Some(mut state) = stack.pop() {
         let _span = span!(Level::DEBUG, "fetch", pc = %format!("0x{:04X}", state.pc), node = ?state.current_node.index()).entered();
 
         if state.from_jump {
             tracing::trace!("=== block({:?}) ===", state.current_node);
+        }
+
+        if let Some(lifetime) = &mut state.lifetime {
+            *lifetime = lifetime.saturating_sub(1);
+            if *lifetime == 0 {
+                continue;
+            }
         }
 
         let op = mem.read::<u32>(PhysAddr(state.pc));
@@ -388,11 +426,30 @@ fn fetch(params: FetchParams<'_>) -> color_eyre::Result<FetchSummary> {
         let op = DecodedOp::try_from(op).wrap_err(eyre!("failed at pc 0x{:08X}", state.pc))?;
         cfg[state.current_node].len += 1;
         ops.push(op);
+        let hazard = op.hazard();
+
+        match (state.last_hazard, hazard) {
+            (Some(last_hazard), Some(hazard)) if last_hazard.0 <= hazard => {
+                state.last_hazard = Some((hazard, state.pc));
+            }
+            (None, Some(hazard)) => {
+                state.last_hazard = Some((hazard, state.pc));
+            }
+            _ => {}
+        }
 
         tracing::trace!(op = format!("{op}"));
 
         match op.is_block_boundary() {
             Some(BoundaryType::Function { .. }) => {
+                if let Some(remaining) = state.remaining_hazard() {
+                    stack.push(State {
+                        pc: state.pc + 4,
+                        from_jump: false,
+                        lifetime: Some(remaining),
+                        ..state
+                    });
+                }
                 continue;
             }
             None => {
@@ -428,6 +485,8 @@ fn fetch(params: FetchParams<'_>) -> color_eyre::Result<FetchSummary> {
                     current_node: next_node,
                     pc: new_address,
                     from_jump: true,
+                    last_hazard: state.last_hazard,
+                    lifetime: state.lifetime.or(state.remaining_hazard()),
                 });
             }
             Some(BoundaryType::BlockSplit { lhs, rhs }) => {
@@ -457,6 +516,8 @@ fn fetch(params: FetchParams<'_>) -> color_eyre::Result<FetchSummary> {
                         current_node: next_node,
                         pc: new_address,
                         from_jump: true,
+                        last_hazard: state.last_hazard,
+                        lifetime: state.lifetime.or(state.remaining_hazard()),
                     })
                 }
             }
@@ -490,13 +551,11 @@ impl<'a, 'b> EmitCtx<'a, 'b> {
         &self.cfg[self.node]
     }
     #[instrument(skip(self))]
-    pub fn next_at(&self, idx: usize) -> &BasicBlock {
-        let idx = self
-            .cfg
+    pub fn next_at(&self, idx: usize) -> NodeIndex {
+        self.cfg
             .neighbors_directed(self.node, Direction::Outgoing)
             .nth(idx)
-            .unwrap();
-        &self.cfg[idx]
+            .unwrap()
     }
 
     pub fn state(&self) -> &BlockState {
@@ -515,8 +574,8 @@ impl<'a, 'b> EmitCtx<'a, 'b> {
         &mut self.state_mut().cache
     }
 
-    #[instrument(skip(fn_builder, self))]
-    fn out_params(&self, to: NodeIndex, fn_builder: &mut FunctionBuilder) -> Vec<BlockArg> {
+    #[instrument(skip(self))]
+    pub fn out_params(&self, to: NodeIndex) -> Vec<BlockArg> {
         // tracing::trace!("{:#?}", self.deps_map);
         let next_block_deps: Option<_> =
             self.state_map.get(to).and_then(|state| state.deps.as_ref());
@@ -543,6 +602,18 @@ impl<'a, 'b> EmitCtx<'a, 'b> {
         }
         args
     }
+
+    pub fn block_call(&mut self, node: NodeIndex) -> (Vec<BlockArg>, BlockCall) {
+        let then_block_label = self.cfg[node].clif_block();
+        let then_params = self.out_params(node);
+        let then_block_call = self
+            .fn_builder
+            .ins()
+            .data_flow_graph_mut()
+            .block_call(then_block_label, &then_params);
+        (then_params, then_block_call)
+    }
+
     pub fn neighbour_count(&self) -> usize {
         self.cfg
             .neighbors_directed(self.node, Direction::Outgoing)
@@ -668,10 +739,7 @@ impl<'a, 'b> EmitCtx<'a, 'b> {
             .call()
     }
     pub fn update_cache_immediate(&mut self, id: usize, value: Value) {
-        self.cache_mut().registers[id] = Some(CachedValue {
-            dirty: false,
-            value,
-        });
+        self.cache_mut().registers[id] = Some(CachedValue { dirty: true, value });
     }
     pub fn emit_map_address_to_host(&mut self, address: Value) -> (Value, [Inst; 12]) {
         let mem_map = self.mem_map();
@@ -691,16 +759,16 @@ impl<'a, 'b> EmitCtx<'a, 'b> {
     pub fn emit_store_pc(&mut self, value: Value) -> Inst {
         JIT::emit_store_pc(self.fn_builder, self.block().clif_block(), value)
     }
-    pub fn emit_store_register(&mut self, reg: usize, value: Value) {
+    pub fn emit_store_register(&mut self, reg: usize, value: Value) -> Inst {
         let block = self.block().clif_block();
         JIT::emit_store_reg()
             .builder(self.fn_builder)
             .block(block)
             .idx(reg)
             .value(value)
-            .call();
+            .call()
     }
-    pub fn emit_store_cop_register(&mut self, cop: u8, reg: usize, value: Value) {
+    pub fn emit_store_cop_register(&mut self, cop: u8, reg: usize, value: Value) -> Inst {
         let block = self.block().clif_block();
         JIT::emit_store_cop_reg()
             .builder(self.fn_builder)
@@ -708,7 +776,7 @@ impl<'a, 'b> EmitCtx<'a, 'b> {
             .idx(reg)
             .value(value)
             .cop(cop)
-            .call();
+            .call()
     }
 }
 
@@ -763,7 +831,8 @@ impl<S: emit_summary_builder::IsComplete> EmitSummaryBuilder<S> {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(derive_more::Debug, Clone, Copy)]
+#[debug("Instr({:?}, {:?})", self.queue_type, self.instruction)]
 pub struct ClifInstruction {
     pub queue_type: ClifInstructionQueueType,
     pub instruction: Inst,
@@ -773,18 +842,49 @@ pub struct ClifInstruction {
 pub enum ClifInstructionQueueType {
     Now,
     Delayed(u32),
+    Bomb(u32),
     Bottom,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct TickSummary {
+    ready: bool,
+    bomb_went_off: bool,
+}
+
 impl ClifInstructionQueueType {
-    pub fn tick(&mut self) -> bool {
+    pub fn remaining(&self) -> Option<u32> {
         match self {
-            ClifInstructionQueueType::Now => true,
+            ClifInstructionQueueType::Now => None,
+            ClifInstructionQueueType::Delayed(rem) => Some(*rem),
+            ClifInstructionQueueType::Bomb(rem) => Some(*rem),
+            ClifInstructionQueueType::Bottom => todo!(),
+        }
+    }
+    pub fn tick(&mut self) -> TickSummary {
+        match self {
+            ClifInstructionQueueType::Now => TickSummary {
+                ready: true,
+                bomb_went_off: false,
+            },
             ClifInstructionQueueType::Delayed(by) => {
                 *by = by.saturating_sub(1);
-                *by == 0
+                TickSummary {
+                    ready: *by == 0,
+                    bomb_went_off: false,
+                }
             }
-            ClifInstructionQueueType::Bottom => false,
+            ClifInstructionQueueType::Bomb(by) => {
+                *by = by.saturating_sub(1);
+                TickSummary {
+                    ready: *by == 0,
+                    bomb_went_off: *by == 0,
+                }
+            }
+            ClifInstructionQueueType::Bottom => TickSummary {
+                ready: false,
+                bomb_went_off: false,
+            },
         }
     }
 }
@@ -799,7 +899,7 @@ pub struct BlockState {
     node: NodeIndex,
 }
 
-fn collect_instructions<'a>(
+fn collect_instructions(
     node: NodeIndex,
     fn_builder: &mut FunctionBuilder,
     state_map: &mut BlockStateMap,
@@ -814,6 +914,7 @@ fn collect_instructions<'a>(
 
     for (idx, op) in ops.iter().enumerate() {
         let pc = address + idx as u32 * 4;
+
         let summary = op.emit_ir(EmitCtx {
             fn_builder,
             ptr_type,
@@ -822,14 +923,49 @@ fn collect_instructions<'a>(
             cfg,
             node,
         });
-        let block_state = state_map.get_mut(node).unwrap();
+
+        // cleanup block
+        for inst in &summary.instructions {
+            fn_builder.func.layout.remove_inst(inst.instruction);
+            tracing::trace!(?inst, "removed");
+        }
+
         for inst in summary.instructions {
+            let _span = trace_span!("emit", ?inst).entered();
+            if cfg!(debug_assertions) {
+                if matches!(
+                    inst.queue_type,
+                    ClifInstructionQueueType::Bomb(_) | ClifInstructionQueueType::Delayed(_)
+                ) && op.hazard().is_some()
+                {
+                    tracing::warn!(
+                        "{} reports no hazard, but emits delayed instruction {:?}. this is likely a bug",
+                        op,
+                        inst.instruction
+                    );
+                }
+            }
+            let mut bomb_signal = false;
+            queue.retain_mut(|inst: &mut ClifInstruction| {
+                let tick = inst.queue_type.tick();
+                if tick.bomb_went_off {
+                    bomb_signal = true;
+                }
+                if tick.ready {
+                    tracing::trace!(?inst, "delayed instruction inserted");
+                    fn_builder.append(inst.instruction);
+                    false
+                } else {
+                    true
+                }
+            });
+            if bomb_signal {
+                break;
+            }
             match inst.queue_type {
                 ClifInstructionQueueType::Now => {
-                    fn_builder
-                        .cursor()
-                        .at_last_inst(block_state.basic_block.clif_block())
-                        .insert_inst(inst.instruction);
+                    fn_builder.append(inst.instruction);
+                    tracing::trace!(?inst, "inserted instruction")
                 }
                 ClifInstructionQueueType::Bottom => {
                     final_instruction = Some(inst.instruction);
@@ -837,21 +973,20 @@ fn collect_instructions<'a>(
                 ClifInstructionQueueType::Delayed(_) => {
                     queue.push(inst);
                 }
-            }
-            queue.retain_mut(|inst| {
-                let ready = inst.queue_type.tick();
-                if ready {
-                    fn_builder
-                        .cursor()
-                        .at_last_inst(block_state.basic_block.clif_block())
-                        .insert_inst(inst.instruction);
-                    false
-                } else {
-                    true
+                ClifInstructionQueueType::Bomb(_) => {
+                    queue.push(inst);
                 }
-            });
+            }
         }
     }
+
+    if !queue.is_empty() {
+        queue.sort_by(|a, b| a.queue_type.remaining().cmp(&b.queue_type.remaining()));
+        for inst in queue {
+            fn_builder.append(inst.instruction);
+        }
+    }
+
     let final_instruction = final_instruction.unwrap_or_else(|| {
         fn_builder
             .ins()
@@ -859,19 +994,21 @@ fn collect_instructions<'a>(
             .0
     });
 
-    let block_state = state_map.get(node).unwrap();
-    fn_builder
-        .cursor()
-        .at_bottom(block_state.basic_block.clif_block())
-        .insert_inst(final_instruction);
+    fn_builder.append(final_instruction);
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct BlockStateMap {
     pub inner: Vec<Option<BlockState>>,
 }
 
 impl BlockStateMap {
+    pub fn new<T, E>(graph: &Graph<T, E>) -> Self {
+        let nodes = graph.node_count();
+        BlockStateMap {
+            inner: vec![None; nodes],
+        }
+    }
     pub fn get(&self, index: NodeIndex) -> Option<&BlockState> {
         self.inner[index.index()].as_ref()
     }
@@ -909,7 +1046,29 @@ pub const fn now(inst: Inst) -> ClifInstruction {
 pub const fn delayed(by: u32, inst: Inst) -> ClifInstruction {
     ClifInstruction {
         instruction: inst,
-        queue_type: ClifInstructionQueueType::Delayed(by),
+        queue_type: ClifInstructionQueueType::Delayed(by + 1),
+    }
+}
+
+#[inline]
+pub const fn delayed_maybe(by: Option<u32>, inst: Inst) -> ClifInstruction {
+    match by {
+        Some(by) => ClifInstruction {
+            instruction: inst,
+            queue_type: ClifInstructionQueueType::Delayed(by + 1),
+        },
+        None => ClifInstruction {
+            instruction: inst,
+            queue_type: ClifInstructionQueueType::Now,
+        },
+    }
+}
+
+#[inline]
+pub const fn bomb(by: u32, inst: Inst) -> ClifInstruction {
+    ClifInstruction {
+        instruction: inst,
+        queue_type: ClifInstructionQueueType::Bomb(by + 1),
     }
 }
 

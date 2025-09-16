@@ -1,12 +1,5 @@
+use crate::dynarec::prelude::*;
 use std::fmt::Display;
-
-
-use crate::cpu::{
-    REG_STR,
-    ops::{BoundaryType, EmitCtx, EmitSummary, Op, OpCode, SecOp, TryFromOpcodeErr},
-};
-
-use super::PrimeOp;
 
 #[derive(Debug, Clone, Copy)]
 #[allow(clippy::upper_case_acronyms)]
@@ -53,16 +46,16 @@ impl Op for SUBU {
             .set_bits(11..16, self.rd as u32)
     }
 
-    fn emit_ir(&self, mut state: EmitCtx) -> Option<EmitSummary> {
+    fn emit_ir(&self, mut state: EmitCtx) -> EmitSummary {
         use crate::cranelift_bs::*;
-        let rs = state.emit_get_register(self.rs);
-        let rt = state.emit_get_register(self.rt);
-        let rd = state.ins().isub(rs, rt);
-        Some(
-            EmitSummary::builder()
-                .register_updates([(self.rd, rd)])
-                .build(state.fn_builder),
-        )
+        let (rs, loadrs) = state.emit_get_register(self.rs);
+        let (rt, loadrt) = state.emit_get_register(self.rt);
+        let (rd, sub) = state.inst(|f| f.ins().Binary(Opcode::Isub, types::I32, rs, rt).0);
+
+        EmitSummary::builder()
+            .instructions([now(loadrs), now(loadrt), now(sub)])
+            .register_updates([(self.rd, rd)])
+            .build(state.fn_builder)
     }
 }
 

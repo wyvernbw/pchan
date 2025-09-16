@@ -1,8 +1,6 @@
 use std::fmt::Display;
 
-use crate::cpu::REG_STR;
-use crate::cpu::ops::prelude::*;
-use crate::cranelift_bs::*;
+use crate::dynarec::prelude::*;
 
 #[derive(Debug, Clone, Copy)]
 pub struct LUI {
@@ -40,22 +38,27 @@ impl Op for LUI {
             .set_bits(16..21, self.rt as u32)
     }
 
-    fn emit_ir(&self, mut state: EmitCtx) -> Option<EmitSummary> {
+    fn emit_ir(&self, mut ctx: EmitCtx) -> EmitSummary {
         if self.imm == 0 {
-            return Some(
-                EmitSummary::builder()
-                    .register_updates([(self.rt, state.emit_get_zero())])
-                    .build(state.fn_builder),
-            );
+            let (zero, loadzero) = ctx.emit_get_zero();
+            return EmitSummary::builder()
+                .instructions([now(loadzero)])
+                .register_updates([(self.rt, zero)])
+                .build(ctx.fn_builder);
         }
-        let rt = state
-            .ins()
-            .iconst(types::I32, ((self.imm as i32) << 16) as i64);
-        Some(
-            EmitSummary::builder()
-                .register_updates([(self.rt, rt)])
-                .build(state.fn_builder),
-        )
+        let (rt, iconst) = ctx.inst(|f| {
+            f.ins()
+                .UnaryImm(
+                    Opcode::Iconst,
+                    types::I32,
+                    Imm64::new(((self.imm as i32) << 16) as i64),
+                )
+                .0
+        });
+        EmitSummary::builder()
+            .instructions([now(iconst)])
+            .register_updates([(self.rt, rt)])
+            .build(ctx.fn_builder)
     }
 }
 

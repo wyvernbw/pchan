@@ -1,8 +1,7 @@
 use std::fmt::Display;
 
 use crate::FnBuilderExt;
-use crate::cpu::REG_STR;
-use crate::cpu::ops::prelude::*;
+use crate::dynarec::prelude::*;
 
 use super::PrimeOp;
 

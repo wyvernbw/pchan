@@ -1,11 +1,6 @@
 use std::fmt::Display;
 
-use crate::cpu::{
-    REG_STR,
-    ops::{BoundaryType, EmitCtx, EmitSummary, Op, OpCode, TryFromOpcodeErr},
-};
-
-use super::PrimeOp;
+use crate::dynarec::prelude::*;
 
 #[derive(Debug, Clone, Copy)]
 #[allow(clippy::upper_case_acronyms)]

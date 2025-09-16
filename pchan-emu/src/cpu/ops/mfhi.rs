@@ -1,7 +1,6 @@
 use std::fmt::Display;
 
-use crate::cpu::REG_STR;
-use crate::cpu::ops::prelude::*;
+use crate::dynarec::prelude::*;
 
 #[derive(Debug, Clone, Copy)]
 pub struct MFHI {
@@ -20,13 +19,12 @@ impl Op for MFHI {
             .set_bits(11..16, self.rd as u32)
     }
 
-    fn emit_ir(&self, mut state: EmitCtx) -> Option<EmitSummary> {
-        let hi = state.emit_get_hi();
-        Some(
-            EmitSummary::builder()
-                .register_updates([(self.rd, hi)])
-                .build(state.fn_builder),
-        )
+    fn emit_ir(&self, mut state: EmitCtx) -> EmitSummary {
+        let (hi, loadhi) = state.emit_get_hi();
+        EmitSummary::builder()
+            .instructions([now(loadhi)])
+            .register_updates([(self.rd, hi)])
+            .build(state.fn_builder)
     }
 }
 

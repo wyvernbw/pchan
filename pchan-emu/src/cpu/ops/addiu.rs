@@ -1,14 +1,7 @@
 use std::fmt::Display;
 
-use tracing::instrument;
-
-use crate::{
-    FnBuilderExt,
-    cpu::{
-        REG_STR,
-        ops::{BoundaryType, EmitCtx, EmitSummary, Op, OpCode, TryFromOpcodeErr},
-    },
-};
+use crate::FnBuilderExt;
+use crate::dynarec::prelude::*;
 
 use super::PrimeOp;
 

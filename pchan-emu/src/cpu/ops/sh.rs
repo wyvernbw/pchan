@@ -2,7 +2,7 @@ use std::fmt::Display;
 
 use crate::cpu::REG_STR;
 use crate::cpu::ops::{self, BoundaryType, EmitSummary, Op, TryFromOpcodeErr};
-use crate::cranelift_bs::*;
+use crate::{cranelift_bs::*, store};
 
 use super::{EmitCtx, OpCode, PrimeOp};
 
@@ -41,20 +41,8 @@ impl Display for SH {
 }
 
 impl Op for SH {
-    fn emit_ir(&self, mut state: EmitCtx) -> Option<EmitSummary> {
-        // get pointer to memory passed as argument to the function
-        let mem_ptr = state.memory();
-
-        // get cached register if possible, otherwise load it in
-        let rs = state.emit_get_register(self.rs);
-        let rs = state.emit_map_address_to_host(rs);
-        let rt = state.emit_get_register(self.rt);
-        let mem_ptr = state.ins().iadd(mem_ptr, rs);
-
-        state
-            .ins()
-            .istore16(MemFlags::new(), rt, mem_ptr, self.imm as i32);
-        None
+    fn emit_ir(&self, mut ctx: EmitCtx) -> EmitSummary {
+        store!(self, ctx, Opcode::Istore16)
     }
 
     fn is_block_boundary(&self) -> Option<BoundaryType> {

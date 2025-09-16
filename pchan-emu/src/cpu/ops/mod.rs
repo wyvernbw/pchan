@@ -380,6 +380,9 @@ pub trait Op: Sized + Display + TryFrom<OpCode> {
             _ => false,
         }
     }
+    fn hazard(&self) -> Option<u32> {
+        None
+    }
 }
 
 #[derive(Debug, Clone, Copy)]

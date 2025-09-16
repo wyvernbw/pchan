@@ -1,12 +1,5 @@
+use crate::{FnBuilderExt, dynarec::prelude::*};
 use std::fmt::Display;
-
-
-use crate::cpu::{
-    REG_STR,
-    ops::{BoundaryType, EmitCtx, EmitSummary, Op, OpCode, TryFromOpcodeErr},
-};
-
-use super::PrimeOp;
 
 #[derive(Debug, Clone, Copy)]
 #[allow(clippy::upper_case_acronyms)]
@@ -52,32 +45,31 @@ impl Op for XORI {
             .set_bits(0..16, (self.imm as i32 as i16) as u32)
     }
 
-    fn emit_ir(&self, mut state: EmitCtx) -> Option<EmitSummary> {
-        use crate::cranelift_bs::*;
-
+    fn emit_ir(&self, mut state: EmitCtx) -> EmitSummary {
         if self.rs == 0 {
-            let rt = state.ins().iconst(types::I32, self.imm as i64);
-            return Some(
-                EmitSummary::builder()
-                    .register_updates([(self.rt, rt)])
-                    .build(state.fn_builder),
-            );
+            let (rt, iconst) = state.fn_builder.IConst(self.imm);
+            return EmitSummary::builder()
+                .instructions([now(iconst)])
+                .register_updates([(self.rt, rt)])
+                .build(state.fn_builder);
         } else if self.imm == 0 {
-            let rs = state.emit_get_register(self.rs);
-            return Some(
-                EmitSummary::builder()
-                    .register_updates([(self.rt, rs)])
-                    .build(state.fn_builder),
-            );
+            let (rs, loadrs) = state.emit_get_register(self.rs);
+            return EmitSummary::builder()
+                .instructions([now(loadrs)])
+                .register_updates([(self.rt, rs)])
+                .build(state.fn_builder);
         }
 
-        let rs = state.emit_get_register(self.rs);
-        let rt = state.ins().bxor_imm(rs, self.imm as i64);
-        Some(
-            EmitSummary::builder()
-                .register_updates([(self.rt, rt)])
-                .build(state.fn_builder),
-        )
+        let (rs, loadrs) = state.emit_get_register(self.rs);
+        let (rt, bxorimm) = state.inst(|f| {
+            f.ins()
+                .BinaryImm64(Opcode::BxorImm, types::I32, Imm64::new(self.imm.into()), rs)
+                .0
+        });
+        EmitSummary::builder()
+            .instructions([now(loadrs), now(bxorimm)])
+            .register_updates([(self.rt, rt)])
+            .build(state.fn_builder)
     }
 }
 

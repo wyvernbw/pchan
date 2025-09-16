@@ -1,10 +1,5 @@
+use crate::dynarec::prelude::*;
 use std::fmt::Display;
-
-
-use crate::cpu::REG_STR;
-use crate::cpu::ops::prelude::*;
-
-use super::PrimeOp;
 
 #[derive(Debug, Clone, Copy)]
 #[allow(clippy::upper_case_acronyms)]
@@ -50,31 +45,27 @@ impl Op for XOR {
             .set_bits(11..16, self.rd as u32)
     }
 
-    fn emit_ir(&self, mut state: EmitCtx) -> Option<EmitSummary> {
-        use crate::cranelift_bs::*;
+    fn emit_ir(&self, mut state: EmitCtx) -> EmitSummary {
         if self.rs == 0 {
-            let rt = state.emit_get_register(self.rt);
-            return Some(
-                EmitSummary::builder()
-                    .register_updates([(self.rd, rt)])
-                    .build(state.fn_builder),
-            );
+            let (rt, loadrt) = state.emit_get_register(self.rt);
+            return EmitSummary::builder()
+                .instructions([now(loadrt)])
+                .register_updates([(self.rd, rt)])
+                .build(state.fn_builder);
         } else if self.rt == 0 {
-            let rs = state.emit_get_register(self.rs);
-            return Some(
-                EmitSummary::builder()
-                    .register_updates([(self.rd, rs)])
-                    .build(state.fn_builder),
-            );
+            let (rs, loadrs) = state.emit_get_register(self.rs);
+            return EmitSummary::builder()
+                .instructions([now(loadrs)])
+                .register_updates([(self.rd, rs)])
+                .build(state.fn_builder);
         }
-        let rs = state.emit_get_register(self.rs);
-        let rt = state.emit_get_register(self.rt);
-        let rd = state.ins().bxor(rs, rt);
-        Some(
-            EmitSummary::builder()
-                .register_updates([(self.rd, rd)])
-                .build(state.fn_builder),
-        )
+        let (rs, loadrs) = state.emit_get_register(self.rs);
+        let (rt, loadrt) = state.emit_get_register(self.rt);
+        let (rd, bxor) = state.inst(|f| f.ins().Binary(Opcode::Bxor, types::I32, rs, rt).0);
+        EmitSummary::builder()
+            .instructions([now(loadrs), now(loadrt), now(bxor)])
+            .register_updates([(self.rd, rd)])
+            .build(state.fn_builder)
     }
 }
 

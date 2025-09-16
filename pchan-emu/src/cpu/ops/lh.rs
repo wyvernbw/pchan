@@ -1,9 +1,5 @@
+use crate::dynarec::prelude::*;
 use std::fmt::Display;
-
-use crate::cpu::REG_STR;
-use crate::cpu::ops::prelude::EmitCtx;
-use crate::cpu::ops::{self, BoundaryType, EmitSummary, Op, TryFromOpcodeErr};
-use crate::cranelift_bs::*;
 
 use super::{OpCode, PrimeOp};
 
@@ -14,7 +10,7 @@ pub struct LH {
     imm: i16,
 }
 
-pub fn lh(rt: usize, rs: usize, imm: i16) -> ops::OpCode {
+pub fn lh(rt: usize, rs: usize, imm: i16) -> OpCode {
     LH { rt, rs, imm }.into_opcode()
 }
 
@@ -42,35 +38,16 @@ impl Display for LH {
 }
 
 impl Op for LH {
-    fn emit_ir(&self, _: EmitCtx) -> Option<EmitSummary> {
-        None
-    }
-    fn hazard_trigger(&self, current_pc: u32) -> Option<u32> {
-        Some(current_pc + 4)
-    }
-    fn emit_hazard(&self, mut state: super::EmitCtx) -> EmitSummary {
-        // get pointer to memory passed as argument to the function
-        let mem_ptr = state.memory();
-
-        // get cached register if possible, otherwise load it in
-        let rs = state.emit_get_register(self.rs);
-        let rs = state.emit_map_address_to_host(rs);
-        let mem_ptr = state.ins().iadd(mem_ptr, rs);
-
-        let rt = state
-            .ins()
-            .sload16(types::I32, MemFlags::new(), mem_ptr, self.imm as i32);
-        EmitSummary::builder()
-            .register_updates([(self.rt, rt)])
-            .build(state.fn_builder)
+    fn emit_ir(&self, mut ctx: EmitCtx) -> EmitSummary {
+        load!(self, ctx, Opcode::Sload16)
     }
 
     fn is_block_boundary(&self) -> Option<BoundaryType> {
         None
     }
 
-    fn into_opcode(self) -> ops::OpCode {
-        ops::OpCode::default()
+    fn into_opcode(self) -> OpCode {
+        OpCode::default()
             .with_primary(PrimeOp::LH)
             .set_bits(16..21, self.rt as u32)
             .set_bits(21..26, self.rs as u32)

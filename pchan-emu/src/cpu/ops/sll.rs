@@ -1,10 +1,5 @@
+use crate::dynarec::prelude::*;
 use std::fmt::Display;
-
-
-use crate::cpu::REG_STR;
-use crate::cpu::ops::prelude::*;
-
-use super::PrimeOp;
 
 #[derive(Debug, Clone, Copy)]
 #[allow(clippy::upper_case_acronyms)]
@@ -53,35 +48,8 @@ impl Op for SLL {
             .set_bits(6..11, (self.imm as i32 as i16) as u32)
     }
 
-    fn emit_ir(&self, mut state: EmitCtx) -> Option<EmitSummary> {
-        use crate::cranelift_bs::*;
-        tracing::info!(?self);
-        // case 1: $rt << 0 = $rt
-        if self.imm == 0 {
-            let rt = state.emit_get_register(self.rt);
-            return Some(
-                EmitSummary::builder()
-                    .register_updates([(self.rd, rt)])
-                    .build(state.fn_builder),
-            );
-        }
-        // case 2: 0 << imm = 0
-        if self.rt == 0 {
-            let rt = state.emit_get_zero();
-            return Some(
-                EmitSummary::builder()
-                    .register_updates([(self.rd, rt)])
-                    .build(state.fn_builder),
-            );
-        }
-        // case 3: $rt << imm = $rd
-        let rt = state.emit_get_register(self.rt);
-        let rd = state.ins().ishl_imm(rt, self.imm as i64);
-        Some(
-            EmitSummary::builder()
-                .register_updates([(self.rd, rd)])
-                .build(state.fn_builder),
-        )
+    fn emit_ir(&self, mut ctx: EmitCtx) -> EmitSummary {
+        shiftimm!(self, ctx, Opcode::IshlImm)
     }
 }
 

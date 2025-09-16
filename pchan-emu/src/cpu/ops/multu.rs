@@ -1,8 +1,5 @@
+use crate::dynarec::prelude::*;
 use std::fmt::Display;
-
-use crate::cpu::REG_STR;
-use crate::cpu::ops::prelude::*;
-use crate::cranelift_bs::*;
 
 #[derive(Debug, Clone, Copy)]
 pub struct MULTU {
@@ -23,35 +20,8 @@ impl Op for MULTU {
             .set_bits(16..21, self.rt as u32)
     }
 
-    fn emit_ir(&self, mut state: EmitCtx) -> Option<EmitSummary> {
-        // case 1: $rs = 0 or $rt = 0 => $hi:$lo=0
-        if self.rs == 0 || self.rt == 0 {
-            return Some(
-                EmitSummary::builder()
-                    .hi(state.emit_get_zero())
-                    .lo(state.emit_get_zero())
-                    .build(state.fn_builder),
-            );
-        }
-
-        let rs = state.emit_get_register(self.rs);
-        // let rs = fn_builder.ins().uextend(types::I64, rs);
-        let rt = state.emit_get_register(self.rt);
-        // let rt = fn_builder.ins().uextend(types::I64, rt);
-
-        let lo = state.ins().imul(rs, rt);
-        let hi = state.ins().umulhi(rs, rt);
-
-        // // Extend to 64-bit
-        // let lo64 = fn_builder.ins().uextend(types::I64, lo);
-        // let hi64 = fn_builder.ins().uextend(types::I64, hi);
-
-        // // Shift high half into upper 32 bits
-        // let hi64_shifted = fn_builder.ins().ishl_imm(hi64, 32);
-
-        // // Combine high and low halves
-        // let full64 = fn_builder.ins().bor(hi64_shifted, lo64);
-        Some(EmitSummary::builder().hi(hi).lo(lo).build(state.fn_builder))
+    fn emit_ir(&self, mut ctx: EmitCtx) -> EmitSummary {
+        mult!(self, ctx, Opcode::Umulhi)
     }
 }
 

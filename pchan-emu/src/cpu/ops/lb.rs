@@ -1,10 +1,9 @@
 use std::fmt::Display;
 
-use crate::cpu::REG_STR;
-use crate::cpu::ops::{self, BoundaryType, EmitSummary, Op, TryFromOpcodeErr};
-use crate::cranelift_bs::*;
+use crate::dynarec::prelude::*;
 
 use super::{EmitCtx, OpCode, PrimeOp};
+use crate::load;
 
 #[derive(Debug, Clone, Copy)]
 pub struct LB {
@@ -13,7 +12,7 @@ pub struct LB {
     imm: i16,
 }
 
-pub fn lb(rt: usize, rs: usize, imm: i16) -> ops::OpCode {
+pub fn lb(rt: usize, rs: usize, imm: i16) -> OpCode {
     LB { rt, rs, imm }.into_opcode()
 }
 
@@ -31,35 +30,16 @@ impl TryFrom<OpCode> for LB {
 }
 
 impl Op for LB {
-    fn emit_ir(&self, _: EmitCtx) -> Option<EmitSummary> {
-        None
-    }
-
-    fn hazard_trigger(&self, current_pc: u32) -> Option<u32> {
-        Some(current_pc + 4)
-    }
-
-    fn emit_hazard(&self, mut ctx: EmitCtx) -> EmitSummary {
-        // get pointer to memory passed as argument to the function
-        let mem_ptr = ctx.memory();
-        let rs = ctx.emit_get_register(self.rs);
-        let rs = ctx.emit_map_address_to_host(rs);
-        let mem_ptr = ctx.ins().iadd(mem_ptr, rs);
-
-        let rt = ctx
-            .ins()
-            .sload8(types::I32, MemFlags::new(), mem_ptr, self.imm as i32);
-        EmitSummary::builder()
-            .register_updates([(self.rt, rt)])
-            .build(ctx.fn_builder)
+    fn emit_ir(&self, mut ctx: EmitCtx) -> EmitSummary {
+        load!(self, ctx, Opcode::Sload8)
     }
 
     fn is_block_boundary(&self) -> Option<BoundaryType> {
         None
     }
 
-    fn into_opcode(self) -> ops::OpCode {
-        ops::OpCode::default()
+    fn into_opcode(self) -> OpCode {
+        OpCode::default()
             .with_primary(PrimeOp::LB)
             .set_bits(16..21, self.rt as u32)
             .set_bits(21..26, self.rs as u32)
@@ -112,4 +92,44 @@ mod tests {
 
         Ok(())
     }
+}
+
+#[macro_export]
+macro_rules! load {
+    ($self: expr, $ctx: expr, $opcode: expr) => {{
+        use cranelift::codegen::ir::immediates::Offset32;
+        use $crate::dynarec::prelude::*;
+
+        // get pointer to memory passed as argument to the function
+        let mem_ptr = $ctx.memory();
+        let ptr_type = $ctx.ptr_type;
+        let (rs, loadreg) = $ctx.emit_get_register($self.rs);
+        let (rs, mapaddr) = $ctx.emit_map_address_to_host(rs);
+
+        let (mem_ptr, iadd0) = $ctx.inst(|f| f.ins().Binary(Opcode::Iadd, ptr_type, mem_ptr, rs).0);
+
+        let (rt, sload8) = $ctx.inst(|f| {
+            f.ins()
+                .Load(
+                    $opcode,
+                    types::I32,
+                    MemFlags::new(),
+                    Offset32::new($self.imm as i32),
+                    mem_ptr,
+                )
+                .0
+        });
+
+        EmitSummary::builder()
+            .instructions(
+                [
+                    [now(loadreg)].as_slice(),
+                    mapaddr.map(now).as_slice(),
+                    [now(iadd0), delayed(1, sload8)].as_slice(),
+                ]
+                .concat(),
+            )
+            .register_updates([($self.rt, rt)])
+            .build($ctx.fn_builder)
+    }};
 }

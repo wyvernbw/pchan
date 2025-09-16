@@ -2,10 +2,7 @@ use std::fmt::Display;
 
 use tracing::instrument;
 
-use crate::cpu::{
-    REG_STR,
-    ops::{BoundaryType, EmitCtx, EmitSummary, MipsOffset, Op, OpCode, PrimeOp, TryFromOpcodeErr},
-};
+use crate::dynarec::prelude::*;
 
 #[derive(Debug, Clone, Copy)]
 #[allow(clippy::upper_case_acronyms)]
@@ -59,6 +56,10 @@ impl Op for BEQ {
             .set_bits(0..16, (self.imm >> 2) as i16 as u32)
     }
 
+    fn hazard(&self) -> Option<u32> {
+        Some(1)
+    }
+
     #[instrument("beq", skip_all, fields(node = ?state.node, block = ?state.block().clif_block()))]
     fn emit_ir(&self, mut state: EmitCtx) -> EmitSummary {
         use crate::cranelift_bs::*;
@@ -78,11 +79,23 @@ impl Op for BEQ {
                 .0
         });
 
-        let then_block = state.next_at(0).clif_block();
+        let then_block = state.next_at(0);
+        let then_block_label = state.cfg[then_block].clif_block();
         let then_params = state.out_params(then_block);
+        let then_block_call = state
+            .fn_builder
+            .ins()
+            .data_flow_graph_mut()
+            .block_call(then_block_label, &then_params);
 
-        let else_block = state.next_at(1).clif_block();
+        let else_block = state.next_at(1);
+        let else_block_label = state.cfg[else_block].clif_block();
         let else_params = state.out_params(else_block);
+        let else_block_call = state
+            .fn_builder
+            .ins()
+            .data_flow_graph_mut()
+            .block_call(else_block_label, &else_params);
 
         tracing::debug!(
             "branch: then={:?}({} deps) else={:?}({} deps)",
@@ -92,11 +105,21 @@ impl Op for BEQ {
             else_params.len()
         );
 
-        state
+        let brif = state
+            .fn_builder
             .ins()
-            .brif(cond, then_block, &then_params, else_block, &else_params);
+            .Brif(
+                Opcode::Brif,
+                types::INVALID,
+                then_block_call,
+                else_block_call,
+                cond,
+            )
+            .0;
 
-        EmitSummary::builder().build(state.fn_builder)
+        EmitSummary::builder()
+            .instructions([now(load0), now(load1), now(icmp), bomb(1, brif)])
+            .build(state.fn_builder)
     }
 }
 

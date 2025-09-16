@@ -1,8 +1,6 @@
 use std::fmt::Display;
 
-use crate::cranelift_bs::*;
-
-use crate::cpu::{REG_STR, ops::prelude::*};
+use crate::dynarec::prelude::*;
 
 #[derive(Debug, Clone, Copy)]
 #[allow(clippy::upper_case_acronyms)]
@@ -41,9 +39,13 @@ impl Op for JR {
             .set_bits(21..26, self.rs as u32)
     }
 
-    fn emit_ir(&self, mut state: EmitCtx) -> Option<EmitSummary> {
-        let rs = state.emit_get_register(self.rs);
-        let rs = state.emit_map_address_to_physical(rs);
+    fn hazard(&self) -> Option<u32> {
+        Some(1)
+    }
+
+    fn emit_ir(&self, mut state: EmitCtx) -> EmitSummary {
+        let (rs, loadreg) = state.emit_get_register(self.rs);
+        let (rs, mapaddr) = state.emit_map_address_to_physical(rs);
 
         debug_assert_eq!(
             state.fn_builder.func.dfg.value_type(rs),
@@ -51,13 +53,16 @@ impl Op for JR {
             "expected i32 value"
         );
 
-        state.emit_store_pc(rs);
+        let storers = state.emit_store_pc(rs);
+        let ret = state
+            .fn_builder
+            .ins()
+            .MultiAry(Opcode::Return, types::INVALID, ValueList::new())
+            .0;
 
-        Some(EmitSummary::builder().build(state.fn_builder))
-    }
-
-    fn post_update_emit_ir(&self, mut ctx: EmitCtx) {
-        ctx.ins().return_(&[]);
+        EmitSummary::builder()
+            .instructions([now(loadreg), now(mapaddr), now(storers), bottom(ret)])
+            .build(state.fn_builder)
     }
 }
 

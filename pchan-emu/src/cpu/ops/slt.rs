@@ -1,8 +1,5 @@
+use crate::dynarec::prelude::*;
 use std::fmt::Display;
-
-
-use crate::cpu::REG_STR;
-use crate::cpu::ops::{OpCode, prelude::*};
 
 #[derive(Debug, Clone, Copy)]
 pub struct SLT {
@@ -54,18 +51,8 @@ impl Op for SLT {
             .set_bits(21..26, self.rs as u32)
     }
 
-    fn emit_ir(&self, mut state: EmitCtx) -> Option<EmitSummary> {
-        use crate::cranelift_bs::*;
-
-        let rs = state.emit_get_register(self.rs);
-        let rt = state.emit_get_register(self.rt);
-        let rd = state.ins().icmp(IntCC::SignedLessThan, rs, rt);
-        let rd = state.ins().uextend(types::I32, rd);
-        Some(
-            EmitSummary::builder()
-                .register_updates(vec![(self.rd, rd)].into_boxed_slice())
-                .build(state.fn_builder),
-        )
+    fn emit_ir(&self, mut ctx: EmitCtx) -> EmitSummary {
+        icmp!(self, ctx, IntCC::SignedLessThan)
     }
 }
 
@@ -96,4 +83,24 @@ mod tests {
 
         Ok(())
     }
+}
+
+#[macro_export]
+macro_rules! icmp {
+    ($self:expr, $ctx:expr, $cond:expr) => {{
+        use $crate::dynarec::prelude::*;
+
+        let (rs, loadrs) = $ctx.emit_get_register($self.rs);
+        let (rt, loadrt) = $ctx.emit_get_register($self.rt);
+        let (rd, icmp) = $ctx.inst(|f| {
+            f.ins()
+                .IntCompare(Opcode::Icmp, types::I32, $cond, rs, rt)
+                .0
+        });
+        let (rd, uextend) = $ctx.inst(|f| f.ins().Unary(Opcode::Uextend, types::I32, rd).0);
+        EmitSummary::builder()
+            .instructions([now(loadrs), now(loadrt), now(icmp), now(uextend)])
+            .register_updates([($self.rd, rd)])
+            .build($ctx.fn_builder)
+    }};
 }

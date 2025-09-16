@@ -1,6 +1,6 @@
 use std::fmt::Display;
 
-use cranelift::prelude::InstBuilder;
+use crate::dynarec::prelude::*;
 use tracing::instrument;
 
 use crate::cpu::ops::{
@@ -43,23 +43,23 @@ impl Op for J {
             .set_bits(0..26, self.imm >> 2)
     }
 
-    fn emit_ir(&self, state: EmitCtx) -> Option<EmitSummary> {
-        None
-    }
-
-    fn hazard_trigger(&self, current_pc: u32) -> Option<u32> {
-        Some(current_pc + 4)
+    fn hazard(&self) -> Option<u32> {
+        Some(1)
     }
 
     #[instrument("j", skip_all, fields(node = ?ctx.node, block = ?ctx.block().clif_block()))]
-    fn emit_hazard(&self, mut ctx: EmitCtx) -> EmitSummary {
+    fn emit_ir(&self, mut ctx: EmitCtx) -> EmitSummary {
         debug_assert_eq!(ctx.neighbour_count(), 1);
-        let next_block = ctx.next_at(0).clif_block();
+        let (_, block_call) = ctx.block_call(ctx.next_at(0));
 
-        let params = ctx.out_params(next_block);
-        ctx.ins().jump(next_block, &params);
+        let jump = ctx
+            .fn_builder
+            .ins()
+            .Jump(Opcode::Jump, types::INVALID, block_call)
+            .0;
 
         EmitSummary::builder()
+            .instructions([bomb(1, jump)])
             .pc_update(MipsOffset::RegionJump(self.imm).calculate_address(ctx.pc))
             .build(ctx.fn_builder)
     }

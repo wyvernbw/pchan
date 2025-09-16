@@ -1,8 +1,5 @@
+use crate::dynarec::prelude::*;
 use std::fmt::Display;
-
-
-use crate::cpu::REG_STR;
-use crate::cpu::ops::{OpCode, prelude::*};
 
 #[derive(Debug, Clone, Copy)]
 pub struct SLTIU {
@@ -51,37 +48,26 @@ impl Op for SLTIU {
             .set_bits(21..26, self.rs as u32)
     }
 
-    fn emit_ir(&self, mut state: EmitCtx) -> Option<EmitSummary> {
-        use crate::cranelift_bs::*;
-
+    fn emit_ir(&self, mut ctx: EmitCtx) -> EmitSummary {
         // x < 0u64 (u64::MIN) = false
         if self.imm == 0 {
-            return Some(
-                EmitSummary::builder()
-                    .register_updates([(self.rt, state.emit_get_zero())])
-                    .build(state.fn_builder),
-            );
+            let (zero, loadzero) = ctx.emit_get_zero();
+            return EmitSummary::builder()
+                .instructions([now(loadzero)])
+                .register_updates([(self.rt, zero)])
+                .build(ctx.fn_builder);
         }
 
         // 0u64 < x = true
         if self.rs == 0 {
-            return Some(
-                EmitSummary::builder()
-                    .register_updates([(self.rt, state.emit_get_one())])
-                    .build(state.fn_builder),
-            );
+            let (one, loadone) = ctx.emit_get_one();
+            return EmitSummary::builder()
+                .instructions([now(loadone)])
+                .register_updates([(self.rt, one)])
+                .build(ctx.fn_builder);
         }
 
-        let rs = state.emit_get_register(self.rs);
-        let rt = state
-            .ins()
-            .icmp_imm(IntCC::UnsignedLessThan, rs, self.imm as i64);
-        let rt = state.ins().uextend(types::I32, rt);
-        Some(
-            EmitSummary::builder()
-                .register_updates([(self.rt, rt)])
-                .build(state.fn_builder),
-        )
+        icmpimm!(self, ctx, IntCC::UnsignedLessThan)
     }
 }
 

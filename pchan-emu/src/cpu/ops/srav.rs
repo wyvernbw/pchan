@@ -1,8 +1,5 @@
+use crate::dynarec::prelude::*;
 use std::fmt::Display;
-
-use crate::cpu::REG_STR;
-use crate::cpu::ops::prelude::*;
-use crate::cranelift_bs::*;
 
 #[derive(Debug, Clone, Copy)]
 pub struct SRAV {
@@ -50,32 +47,8 @@ impl Op for SRAV {
             .set_bits(21..26, self.rs as u32)
     }
 
-    fn emit_ir(&self, mut state: EmitCtx) -> Option<EmitSummary> {
-        // optimize 0 >> x = 0
-        if self.rt == 0 {
-            let rd = state.emit_get_zero();
-            return Some(
-                EmitSummary::builder()
-                    .register_updates([(self.rd, rd)])
-                    .build(state.fn_builder),
-            );
-        }
-        // optimize x >> 0 = x
-        let rt = state.emit_get_register(self.rt);
-        if self.rs == 0 {
-            return Some(
-                EmitSummary::builder()
-                    .register_updates([(self.rd, rt)])
-                    .build(state.fn_builder),
-            );
-        }
-        let rs = state.emit_get_register(self.rs);
-        let rd = state.ins().sshr(rt, rs);
-        Some(
-            EmitSummary::builder()
-                .register_updates([(self.rd, rd)])
-                .build(state.fn_builder),
-        )
+    fn emit_ir(&self, mut ctx: EmitCtx) -> EmitSummary {
+        shift!(self, ctx, Opcode::Sshr)
     }
 }
 
@@ -139,4 +112,35 @@ mod tests {
         assert_eq!(emulator.cpu.gpr[10], expected);
         Ok(())
     }
+}
+
+#[macro_export]
+macro_rules! shift {
+    ($self:expr, $ctx:expr, $opcode:expr) => {{
+        use $crate::dynarec::prelude::*;
+
+        // optimize 0 >> x = 0
+        if $self.rt == 0 {
+            let (rd, loadzero) = $ctx.emit_get_zero();
+            return EmitSummary::builder()
+                .instructions([now(loadzero)])
+                .register_updates([($self.rd, rd)])
+                .build($ctx.fn_builder);
+        }
+        // optimize x >> 0 = x
+        let (rt, loadrt) = $ctx.emit_get_register($self.rt);
+        if $self.rs == 0 {
+            return EmitSummary::builder()
+                .instructions([now(loadrt)])
+                .register_updates([($self.rd, rt)])
+                .build($ctx.fn_builder);
+        }
+        let (rs, loadrs) = $ctx.emit_get_register($self.rs);
+        let (rd, shift) = $ctx.inst(|f| f.ins().Binary($opcode, types::I32, rt, rs).0);
+
+        EmitSummary::builder()
+            .instructions([now(loadrt), now(loadrs), now(shift)])
+            .register_updates([($self.rd, rd)])
+            .build($ctx.fn_builder)
+    }};
 }

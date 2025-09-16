@@ -1,8 +1,5 @@
+use crate::dynarec::prelude::*;
 use std::fmt::Display;
-
-use crate::cpu::REG_STR;
-use crate::cpu::ops::{self, BoundaryType, EmitSummary, Op, TryFromOpcodeErr};
-use crate::cranelift_bs::*;
 
 use super::{EmitCtx, OpCode, PrimeOp};
 
@@ -13,7 +10,7 @@ pub struct SB {
     imm: i16,
 }
 
-pub fn sb(rt: usize, rs: usize, imm: i16) -> ops::OpCode {
+pub fn sb(rt: usize, rs: usize, imm: i16) -> OpCode {
     SB { rt, rs, imm }.into_opcode()
 }
 
@@ -41,28 +38,16 @@ impl Display for SB {
 }
 
 impl Op for SB {
-    fn emit_ir(&self, mut state: EmitCtx) -> Option<EmitSummary> {
-        // get pointer to memory passed as argument to the function
-        let mem_ptr = state.memory();
-
-        // get cached register if possible, otherwise load it in
-        let rs = state.emit_get_register(self.rs);
-        let rs = state.emit_map_address_to_host(rs);
-        let rt = state.emit_get_register(self.rt);
-        let mem_ptr = state.ins().iadd(mem_ptr, rs);
-
-        state
-            .ins()
-            .istore8(MemFlags::new(), rt, mem_ptr, self.imm as i32);
-        None
+    fn emit_ir(&self, mut ctx: EmitCtx) -> EmitSummary {
+        store!(self, ctx, Opcode::Istore8)
     }
 
     fn is_block_boundary(&self) -> Option<BoundaryType> {
         None
     }
 
-    fn into_opcode(self) -> ops::OpCode {
-        ops::OpCode::default()
+    fn into_opcode(self) -> OpCode {
+        OpCode::default()
             .with_primary(PrimeOp::SB)
             .set_bits(16..21, self.rt as u32)
             .set_bits(21..26, self.rs as u32)
@@ -94,4 +79,46 @@ mod tests {
 
         Ok(())
     }
+}
+
+#[macro_export]
+macro_rules! store {
+    ($self:expr, $ctx:expr, $opcode:expr) => {{
+        use cranelift::codegen::ir::immediates::Offset32;
+        use $crate::dynarec::prelude::*;
+
+        // get pointer to memory passed as argument to the function
+        let mem_ptr = $ctx.memory();
+        let ptr_type = $ctx.ptr_type;
+
+        // get cached register if possible, otherwise load it in
+        let (rs, loadrs) = $ctx.emit_get_register($self.rs);
+        let (rs, mapaddr) = $ctx.emit_map_address_to_host(rs);
+        let (rt, loadrt) = $ctx.emit_get_register($self.rt);
+        let (mem_ptr, iadd) = $ctx.inst(|f| f.ins().Binary(Opcode::Iadd, ptr_type, mem_ptr, rs).0);
+
+        let store = $ctx
+            .fn_builder
+            .ins()
+            .Store(
+                $opcode,
+                types::I32,
+                MemFlags::new(),
+                Offset32::new($self.imm.into()),
+                rt,
+                mem_ptr,
+            )
+            .0;
+
+        EmitSummary::builder()
+            .instructions(
+                [
+                    [now(loadrs)].as_slice(),
+                    mapaddr.map(now).as_slice(),
+                    [now(loadrt), now(iadd), delayed(1, store)].as_slice(),
+                ]
+                .concat(),
+            )
+            .build($ctx.fn_builder)
+    }};
 }

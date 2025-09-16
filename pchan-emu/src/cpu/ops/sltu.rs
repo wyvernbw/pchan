@@ -1,8 +1,5 @@
+use crate::dynarec::prelude::*;
 use std::fmt::Display;
-
-
-use crate::cpu::REG_STR;
-use crate::cpu::ops::{OpCode, prelude::*};
 
 #[derive(Debug, Clone, Copy)]
 pub struct SLTU {
@@ -54,32 +51,8 @@ impl Op for SLTU {
             .set_bits(21..26, self.rs as u32)
     }
 
-    fn emit_ir(&self, mut state: EmitCtx) -> Option<EmitSummary> {
-        use crate::cranelift_bs::*;
-
-        if self.rs == 0 {
-            return Some(
-                EmitSummary::builder()
-                    .register_updates([(self.rd, state.emit_get_one())])
-                    .build(state.fn_builder),
-            );
-        } else if self.rt == 0 {
-            return Some(
-                EmitSummary::builder()
-                    .register_updates([(self.rd, state.emit_get_zero())])
-                    .build(state.fn_builder),
-            );
-        }
-        let rt = state.emit_get_register(self.rt);
-        let rs = state.emit_get_register(self.rs);
-        let rd = state.ins().icmp(IntCC::UnsignedLessThan, rs, rt);
-        let rd = state.ins().uextend(types::I32, rd);
-
-        Some(
-            EmitSummary::builder()
-                .register_updates([(self.rd, rd)])
-                .build(state.fn_builder),
-        )
+    fn emit_ir(&self, mut ctx: EmitCtx) -> EmitSummary {
+        icmp!(self, ctx, IntCC::UnsignedLessThan)
     }
 }
 

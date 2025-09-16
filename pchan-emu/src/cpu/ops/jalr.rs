@@ -1,7 +1,6 @@
 use std::fmt::Display;
 
-use crate::cpu::{REG_STR, ops::prelude::*};
-use crate::cranelift_bs::*;
+use crate::dynarec::prelude::*;
 
 #[derive(Debug, Clone, Copy)]
 #[allow(clippy::upper_case_acronyms)]
@@ -43,29 +42,43 @@ impl Op for JALR {
             .set_bits(11..16, self.rd as u32)
     }
 
-    fn emit_ir(&self, mut state: EmitCtx) -> Option<EmitSummary> {
+    fn hazard(&self) -> Option<u32> {
+        Some(1)
+    }
+
+    fn emit_ir(&self, mut state: EmitCtx) -> EmitSummary {
         tracing::info!("jalr: saving pc 0x{:08X}", state.pc);
-        let rs = state.emit_get_register(self.rs);
-        let rs = state.emit_map_address_to_physical(rs);
+        // compute jump address
+        let (rs, loadreg) = state.emit_get_register(self.rs);
+        let (rs, mapaddr) = state.emit_map_address_to_physical(rs);
 
+        // store jump address at pc
+        let storepc = state.emit_store_pc(rs);
+
+        // save old pc in rd
         let pc = state.pc as i64;
-        let pc = state.ins().iconst(types::I32, pc + 8);
-        state.emit_store_pc(rs);
-        state.emit_store_register(self.rd, pc);
-        Some(
-            EmitSummary::builder()
-                .register_updates([(self.rd, pc), (self.rd, pc)])
-                .build(state.fn_builder),
-        )
-    }
+        let (pc, iconst) =
+            state.inst(|f| f.ins().UnaryImm(Opcode::Iconst, types::I32, pc.into()).0);
+        let storerd = state.emit_store_register(self.rd, pc);
 
-    fn hazard_trigger(&self, current_pc: u32) -> Option<u32> {
-        Some(current_pc + 4)
-    }
+        // return
+        let ret = state
+            .fn_builder
+            .ins()
+            .MultiAry(Opcode::Return, types::INVALID, ValueList::new())
+            .0;
 
-    fn emit_hazard(&self, mut ctx: EmitCtx) -> EmitSummary {
-        ctx.ins().return_(&[]);
-        EmitSummary::builder().build(&ctx.fn_builder)
+        EmitSummary::builder()
+            .instructions([
+                now(loadreg),
+                now(mapaddr),
+                now(iconst),
+                now(storepc),
+                now(storerd),
+                bottom(ret),
+            ])
+            .register_updates([(self.rd, pc), (self.rd, pc)])
+            .build(state.fn_builder)
     }
 }
 

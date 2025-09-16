@@ -1,8 +1,6 @@
 use std::fmt::Display;
 
-use crate::cranelift_bs::*;
-
-use crate::cpu::{RA, ops::prelude::*};
+use crate::{cpu::RA, dynarec::prelude::*};
 
 #[derive(Debug, Clone, Copy)]
 #[allow(clippy::upper_case_acronyms)]
@@ -40,37 +38,35 @@ impl Op for JAL {
             .set_bits(0..26, self.imm >> 2)
     }
 
-    fn emit_ir(&self, mut state: EmitCtx) -> Option<EmitSummary> {
-        tracing::info!("jal: saving pc 0x{:08X}", state.pc);
-        debug_assert_eq!(state.neighbour_count(), 1);
-        let pc = state.pc as i64;
-        let pc = state.ins().iconst(types::I32, pc + 8);
-        state.update_cache_immediate(RA, pc);
-
-        // JIT::emit_store_reg()
-        //     .builder(fn_builder)
-        //     .block(state.block().clif_block())
-        //     .idx(RA)
-        //     .value(pc)
-        //     .call();
-        Some(
-            EmitSummary::builder()
-                .pc_update(MipsOffset::RegionJump(self.imm).calculate_address(state.pc))
-                .build(state.fn_builder),
-        )
+    fn hazard(&self) -> Option<u32> {
+        Some(1)
     }
 
-    fn post_update_emit_ir(&self, mut ctx: EmitCtx) {
-        let next_block = ctx.next_at(0).clif_block();
-        let params = ctx.out_params(next_block);
+    fn emit_ir(&self, mut ctx: EmitCtx) -> EmitSummary {
+        tracing::info!("jal: saving pc 0x{:08X}", ctx.pc);
+        debug_assert_eq!(ctx.neighbour_count(), 1);
+        let pc = ctx.pc as i64;
+        let (pc, iconst) = ctx.inst(|f| {
+            f.ins()
+                .UnaryImm(Opcode::Iconst, types::I32, Imm64::new(pc + 8))
+                .0
+        });
+        ctx.update_cache_immediate(RA, pc);
 
-        tracing::debug!(
-            "jumping to {:?} with {} dependencies",
-            next_block,
-            params.len()
-        );
+        let (params, block_call) = ctx.block_call(ctx.next_at(0));
 
-        ctx.ins().jump(next_block, &params);
+        tracing::debug!("jumping with {} dependencies", params.len());
+
+        let jump = ctx
+            .fn_builder
+            .ins()
+            .Jump(Opcode::Jump, types::INVALID, block_call)
+            .0;
+
+        EmitSummary::builder()
+            .instructions([now(iconst), bomb(1, jump)])
+            .pc_update(MipsOffset::RegionJump(self.imm).calculate_address(ctx.pc))
+            .build(ctx.fn_builder)
     }
 }
 

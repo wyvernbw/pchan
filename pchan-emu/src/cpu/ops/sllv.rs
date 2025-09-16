@@ -1,8 +1,5 @@
+use crate::dynarec::prelude::*;
 use std::fmt::Display;
-
-use crate::cpu::REG_STR;
-use crate::cpu::ops::prelude::*;
-use crate::cranelift_bs::*;
 
 #[derive(Debug, Clone, Copy)]
 pub struct SLLV {
@@ -50,32 +47,8 @@ impl Op for SLLV {
             .set_bits(21..26, self.rs as u32)
     }
 
-    fn emit_ir(&self, mut state: EmitCtx) -> Option<EmitSummary> {
-        // optimize 0 << x = 0
-        if self.rt == 0 {
-            let rd = state.emit_get_zero();
-            return Some(
-                EmitSummary::builder()
-                    .register_updates([(self.rd, rd)])
-                    .build(state.fn_builder),
-            );
-        }
-        // optimize x << 0 = x
-        let rt = state.emit_get_register(self.rt);
-        if self.rs == 0 {
-            return Some(
-                EmitSummary::builder()
-                    .register_updates([(self.rd, rt)])
-                    .build(state.fn_builder),
-            );
-        }
-        let rs = state.emit_get_register(self.rs);
-        let rd = state.ins().ishl(rt, rs);
-        Some(
-            EmitSummary::builder()
-                .register_updates([(self.rd, rd)])
-                .build(state.fn_builder),
-        )
+    fn emit_ir(&self, mut ctx: EmitCtx) -> EmitSummary {
+        shift!(self, ctx, Opcode::Ishl)
     }
 }
 

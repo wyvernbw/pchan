@@ -2,6 +2,8 @@
 #![allow(dead_code)]
 #![allow(long_running_const_eval)]
 #![allow(incomplete_features)]
+#![allow(clippy::collapsible_if)]
+#![feature(slice_concat_trait)]
 #![feature(slice_as_array)]
 #![feature(const_for)]
 #![feature(const_clone)]
@@ -31,7 +33,6 @@
 use crate::{bootloader::Bootloader, cpu::Cpu, jit::JIT, memory::Memory};
 
 pub mod cranelift_bs {
-    pub use crate::dynarec::*;
     pub use cranelift::codegen::ir::*;
     #[allow(ambiguous_glob_reexports)]
     pub use cranelift::jit::*;
@@ -83,7 +84,10 @@ pub trait FnBuilderExt {
     fn Nop(&mut self) -> Inst;
     #[allow(non_snake_case)]
     fn PtrCast(&mut self, value: Value, ptr_type: Type) -> (Value, Inst);
+    #[allow(non_snake_case)]
+    fn IConst(&mut self, imm: impl Into<i64>) -> (Value, Inst);
     fn inst<R: IntoInst>(&mut self, f: impl Fn(&mut Self) -> R) -> (Value, Inst);
+    fn append(&mut self, inst: Inst) -> &mut Self;
 }
 
 impl FnBuilderExt for FunctionBuilder<'_> {
@@ -122,6 +126,20 @@ impl FnBuilderExt for FunctionBuilder<'_> {
             let value = self.single_result(extend_or_reduce);
             (value, extend_or_reduce)
         }
+    }
+    fn IConst(&mut self, imm: impl Into<i64>) -> (Value, Inst) {
+        let imm = imm.into();
+        self.inst(|f| {
+            f.ins()
+                .UnaryImm(Opcode::Iconst, types::I32, Imm64::new(imm))
+                .0
+        })
+    }
+
+    fn append(&mut self, inst: Inst) -> &mut Self {
+        let block = self.current_block().unwrap();
+        self.func.layout.append_inst(inst, block);
+        self
     }
 }
 

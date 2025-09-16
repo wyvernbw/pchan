@@ -1,10 +1,5 @@
+use crate::dynarec::prelude::*;
 use std::fmt::Display;
-
-
-use crate::cpu::REG_STR;
-use crate::cpu::ops::prelude::*;
-
-use super::PrimeOp;
 
 #[derive(Debug, Clone, Copy)]
 #[allow(clippy::upper_case_acronyms)]
@@ -50,26 +45,34 @@ impl Op for OR {
             .set_bits(11..16, self.rd as u32)
     }
 
-    fn emit_ir(&self, mut state: EmitCtx) -> Option<EmitSummary> {
-        use crate::cranelift_bs::*;
-        let rd = if self.rs == 0 {
+    fn emit_ir(&self, mut state: EmitCtx) -> EmitSummary {
+        if self.rs == 0 {
             // case 1: x | 0 = x
-            state.emit_get_register(self.rt)
+            let (rt, loadrt) = state.emit_get_register(self.rt);
+
+            EmitSummary::builder()
+                .instructions([now(loadrt)])
+                .register_updates([(self.rd, rt)])
+                .build(state.fn_builder)
         } else if self.rt == 0 {
             // case 2: 0 | x = x
-            state.emit_get_register(self.rs)
+            let (rs, loadrs) = state.emit_get_register(self.rs);
+
+            EmitSummary::builder()
+                .instructions([now(loadrs)])
+                .register_updates([(self.rd, rs)])
+                .build(state.fn_builder)
         } else {
             // case 3: x | y = z
-            let rs = state.emit_get_register(self.rs);
-            let rt = state.emit_get_register(self.rt);
+            let (rs, loadrs) = state.emit_get_register(self.rs);
+            let (rt, loadrt) = state.emit_get_register(self.rt);
+            let (rd, bor) = state.inst(|f| f.ins().Binary(Opcode::Bor, types::I32, rs, rt).0);
 
-            state.ins().bor(rs, rt)
-        };
-        Some(
             EmitSummary::builder()
+                .instructions([now(loadrs), now(loadrt), now(bor)])
                 .register_updates([(self.rd, rd)])
-                .build(state.fn_builder),
-        )
+                .build(state.fn_builder)
+        }
     }
 }
 
