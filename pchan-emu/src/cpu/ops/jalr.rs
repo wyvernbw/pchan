@@ -31,7 +31,7 @@ impl Display for JALR {
 
 impl Op for JALR {
     fn is_block_boundary(&self) -> Option<BoundaryType> {
-        Some(BoundaryType::Function { auto_set_pc: false })
+        Some(BoundaryType::Function)
     }
 
     fn into_opcode(self) -> OpCode {
@@ -57,8 +57,11 @@ impl Op for JALR {
 
         // save old pc in rd
         let pc = state.pc as i64;
-        let (pc, iconst) =
-            state.inst(|f| f.pure().UnaryImm(Opcode::Iconst, types::I32, pc.into()).0);
+        let (pc, iconst) = state.inst(|f| {
+            f.pure()
+                .UnaryImm(Opcode::Iconst, types::I32, Imm64::new(pc + 8))
+                .0
+        });
         let storerd = state.emit_store_register(self.rd, pc);
 
         // return
@@ -75,9 +78,9 @@ impl Op for JALR {
                 now(iconst),
                 now(storepc),
                 now(storerd),
-                bomb(1, ret),
+                terminator(bomb(1, ret)),
             ])
-            .register_updates([(self.rd, pc), (self.rd, pc)])
+            .register_updates([(self.rd, pc)])
             .build(state.fn_builder)
     }
 }
@@ -100,6 +103,7 @@ mod tests {
         use crate::cpu::ops::prelude::*;
 
         let program = [
+            addiu(9, 0, 0),
             lui(8, 0x8000u16 as i16),
             ori(8, 8, 0x2000),
             jalr(RA, 8),

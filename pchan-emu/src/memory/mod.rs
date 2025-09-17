@@ -47,7 +47,7 @@ impl Default for Memory {
 
 #[derive(derive_more::Debug)]
 #[derive_const(Default)]
-#[debug("0x{:08X}:0x{:08X}", self.host_start, self.phys_start)]
+#[debug("0x{:08X}:0x{:08X}", self.phys_start, self.host_start)]
 pub struct MemoryRegion {
     pub host_start: u32,
     pub phys_start: u32,
@@ -97,11 +97,13 @@ pub const fn map_physical(phys: PhysAddr) -> u32 {
     phys.0 >> 16
 }
 
+#[instrument]
 pub fn lookup_phys(phys: PhysAddr) -> u32 {
     let index = map_physical(phys);
     let region = &MEM_MAP[index as usize];
-    let offset = phys.0 - region.phys_start;
-    region.host_start + offset
+    tracing::info!(?phys, ?index, ?region);
+    let offset = phys.0 as i32 - region.phys_start as i32;
+    region.host_start.saturating_add_signed(offset)
 }
 
 impl Index<PhysAddr> for Memory {
@@ -556,7 +558,8 @@ impl Memory {
         let start = start
             .try_into()
             .map_err(|_| MemWriteError::unmapped(start))?;
-        let start = start.as_usize();
+        let start = lookup_phys(start);
+        let start = start as usize;
         for (idx, v) in value.iter().enumerate() {
             let start = start + idx * N;
             let end = start + N;

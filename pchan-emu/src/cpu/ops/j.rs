@@ -10,7 +10,7 @@ use crate::cpu::ops::{
 #[derive(Debug, Clone, Copy)]
 #[allow(clippy::upper_case_acronyms)]
 pub struct J {
-    pub imm: u32,
+    pub imm: i32,
 }
 
 impl TryFrom<OpCode> for J {
@@ -19,7 +19,7 @@ impl TryFrom<OpCode> for J {
     fn try_from(opcode: OpCode) -> Result<Self, TryFromOpcodeErr> {
         let opcode = opcode.as_primary(PrimeOp::J)?;
         Ok(J {
-            imm: opcode.bits(0..26) << 2,
+            imm: (opcode.bits(0..26) as i16 as i32) << 2,
         })
     }
 }
@@ -33,14 +33,14 @@ impl Display for J {
 impl Op for J {
     fn is_block_boundary(&self) -> Option<BoundaryType> {
         Some(BoundaryType::Block {
-            offset: MipsOffset::RegionJump(self.imm),
+            offset: MipsOffset::Relative(self.imm),
         })
     }
 
     fn into_opcode(self) -> OpCode {
         OpCode::default()
             .with_primary(PrimeOp::J)
-            .set_bits(0..26, self.imm >> 2)
+            .set_bits(0..26, self.imm as u32 >> 2)
     }
 
     fn hazard(&self) -> Option<u32> {
@@ -48,25 +48,27 @@ impl Op for J {
     }
 
     #[instrument("j", skip_all, fields(node = ?ctx.node, block = ?ctx.block().clif_block()))]
-    fn emit_ir(&self, mut ctx: EmitCtx) -> EmitSummary {
-        debug_assert_eq!(ctx.neighbour_count(), 1);
-        let (_, block_call) = ctx.block_call(ctx.next_at(0));
-
-        let jump = ctx
-            .fn_builder
-            .ins()
-            .Jump(Opcode::Jump, types::INVALID, block_call)
-            .0;
-
+    fn emit_ir(&self, ctx: EmitCtx) -> EmitSummary {
         EmitSummary::builder()
-            .instructions([bomb(1, jump)])
-            .pc_update(MipsOffset::RegionJump(self.imm).calculate_address(ctx.pc))
+            .instructions([terminator(bomb(
+                1,
+                lazy(|mut ctx: EmitCtx| {
+                    debug_assert_eq!(ctx.neighbour_count(), 1);
+                    let (_, block_call) = ctx.block_call(ctx.next_at(0));
+
+                    ctx.fn_builder
+                        .pure()
+                        .Jump(Opcode::Jump, types::INVALID, block_call)
+                        .0
+                }),
+            ))])
+            .pc_update(MipsOffset::Relative(self.imm).calculate_address(ctx.pc))
             .build(ctx.fn_builder)
     }
 }
 
 #[inline]
-pub fn j(imm: u32) -> OpCode {
+pub fn j(imm: i32) -> OpCode {
     J { imm }.into_opcode()
 }
 
@@ -82,11 +84,7 @@ mod tests {
     fn basic_jump(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
         use crate::cpu::ops::prelude::*;
 
-        let program = [
-            addiu(8, 0, 32),
-            j(KSEG0Addr::from_phys(0x0000_2000).as_u32()),
-            nop(),
-        ];
+        let program = [addiu(8, 0, 32), j(0x0000_2000 - 4), nop()];
 
         let function = [addiu(9, 0, 69), nop(), OpCode(69420)];
 
@@ -106,11 +104,7 @@ mod tests {
     fn jump_delay_hazard_1(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
         use crate::cpu::ops::prelude::*;
 
-        let program = [
-            addiu(8, 0, 32),
-            j(KSEG0Addr::from_phys(0x0000_2000).as_u32()),
-            addiu(10, 0, 32),
-        ];
+        let program = [addiu(8, 0, 32), j(0x0000_2000 - 4), addiu(10, 0, 42)];
 
         let function = [addiu(9, 0, 69), nop(), OpCode(69420)];
 
@@ -125,7 +119,7 @@ mod tests {
         tracing::info!(?summary.function);
 
         assert_eq!(emulator.cpu.gpr[9], 69);
-        assert_eq!(emulator.cpu.gpr[10], 32);
+        assert_eq!(emulator.cpu.gpr[10], 42);
 
         Ok(())
     }

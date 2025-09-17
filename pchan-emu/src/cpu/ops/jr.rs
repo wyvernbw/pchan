@@ -29,7 +29,7 @@ impl Display for JR {
 
 impl Op for JR {
     fn is_block_boundary(&self) -> Option<BoundaryType> {
-        Some(BoundaryType::Function { auto_set_pc: false })
+        Some(BoundaryType::Function)
     }
 
     fn into_opcode(self) -> OpCode {
@@ -56,12 +56,17 @@ impl Op for JR {
         let storers = state.emit_store_pc(rs);
         let ret = state
             .fn_builder
-            .ins()
+            .pure()
             .MultiAry(Opcode::Return, types::INVALID, ValueList::new())
             .0;
 
         EmitSummary::builder()
-            .instructions([now(loadreg), now(mapaddr), now(storers), bomb(1, ret)])
+            .instructions([
+                now(loadreg),
+                now(mapaddr),
+                now(storers),
+                terminator(bomb(1, ret)),
+            ])
             .build(state.fn_builder)
     }
 }

@@ -19,6 +19,7 @@ fn bench_single() {
 fn bench_jit() {
     setup_tracing();
     let mut emu = Emu::default();
+    emu.cpu.pc = 0;
     write_test_program(&mut emu);
 
     let mut average = 0.0;
@@ -44,7 +45,9 @@ fn bench_jit() {
     tracing::info!("no cache: took {average}ms");
 
     let mut average = 0.0;
+    emu.cpu.pc = 0;
     _ = black_box(emu.step_jit());
+    emu.cpu.pc = 0;
     for _ in 0..100 {
         emu.mem
             .write_array(KSEG0Addr::from_phys(0x0000_2000), &[0u32, 0u32]);

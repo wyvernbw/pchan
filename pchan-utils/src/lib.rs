@@ -13,7 +13,10 @@ use tracing_subscriber::{Layer, layer::SubscriberExt};
 pub fn setup_tracing() {
     _ = tracing_subscriber::registry()
         .with(
-            fmt::layer().with_ansi(true), // .with_span_events(FmtSpan::CLOSE),
+            fmt::layer()
+                .with_ansi(true)
+                .with_file(false)
+                .with_line_number(false), // .with_span_events(FmtSpan::CLOSE),
         )
         .with(
             fmt::layer()

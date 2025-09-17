@@ -28,6 +28,7 @@
 #![feature(generic_const_exprs)]
 #![feature(portable_simd)]
 #![feature(iter_collect_into)]
+#![feature(iter_array_chunks)]
 // allow unused variables in tests to supress the setup tracing warnings
 #![cfg_attr(test, allow(unused_variables))]
 

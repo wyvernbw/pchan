@@ -47,24 +47,29 @@ impl Op for JAL {
         debug_assert_eq!(ctx.neighbour_count(), 1);
         let pc = ctx.pc as i64;
         let (pc, iconst) = ctx.inst(|f| {
-            f.ins()
+            f.pure()
                 .UnaryImm(Opcode::Iconst, types::I32, Imm64::new(pc + 8))
                 .0
         });
         ctx.update_cache_immediate(RA, pc);
 
-        let (params, block_call) = ctx.block_call(ctx.next_at(0));
-
-        tracing::debug!("jumping with {} dependencies", params.len());
-
-        let jump = ctx
-            .fn_builder
-            .ins()
-            .Jump(Opcode::Jump, types::INVALID, block_call)
-            .0;
-
         EmitSummary::builder()
-            .instructions([now(iconst), bomb(1, jump)])
+            .instructions([
+                now(iconst),
+                terminator(bomb(
+                    1,
+                    lazy(|mut ctx| {
+                        let (params, block_call) = ctx.block_call(ctx.next_at(0));
+
+                        tracing::debug!("jumping with {} dependencies", params.len());
+
+                        ctx.fn_builder
+                            .pure()
+                            .Jump(Opcode::Jump, types::INVALID, block_call)
+                            .0
+                    }),
+                )),
+            ])
             .pc_update(MipsOffset::RegionJump(self.imm).calculate_address(ctx.pc))
             .build(ctx.fn_builder)
     }

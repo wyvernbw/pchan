@@ -961,6 +961,7 @@ dependencies = [
  "pretty_assertions",
  "rayon",
  "rstest",
+ "slab",
  "strum",
  "tailcall",
  "test-log",

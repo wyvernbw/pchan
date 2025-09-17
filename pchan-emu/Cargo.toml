@@ -15,6 +15,7 @@ pchan-macros = { workspace = true }
 pchan-utils = { workspace = true }
 petgraph = "0.8.2"
 rayon = "1.11.0"
+slab.workspace = true
 strum = { version = "0.27.2", features = ["derive"] }
 tailcall = "1.0.1"
 thiserror = "2.0.16"

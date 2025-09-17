@@ -14,7 +14,7 @@ use crate::{
     FnBuilderExt,
     cpu::{Cop0, Cpu, REG_STR},
     cranelift_bs::*,
-    dynarec::{CachedValue, EmitSummary, EntryCache},
+    dynarec::{CacheUpdates, CachedValue, EmitSummary, EntryCache},
     memory::{Memory, MemoryRegion},
 };
 
@@ -403,16 +403,19 @@ impl JIT {
 
     #[builder]
     #[instrument(skip_all)]
-    pub fn apply_cache_updates<'a, 'b>(updates: CacheUpdates<'a>, cache: &'b mut EntryCache) {
-        for (id, value) in updates.registers.iter() {
-            cache.registers[*id] = Some(*value);
+    pub fn apply_cache_updates(updates: &CacheUpdates, cache: &mut EntryCache) {
+        for (id, update) in updates.registers.iter() {
+            if let Some(value) = update.try_value() {
+                cache.registers[*id] = Some(value);
+                tracing::trace!("updated ${}={:?}", REG_STR[*id], value.value);
+            }
         }
         // DONE: apply updates to hi and lo
-        if let Some(hi) = updates.hi {
-            cache.hi = Some(*hi);
+        if let Some(hi) = &updates.hi {
+            cache.hi = hi.try_value();
         }
-        if let Some(lo) = updates.lo {
-            cache.lo = Some(*lo);
+        if let Some(lo) = &updates.lo {
+            cache.lo = lo.try_value();
         }
         // tracing::trace!("applied cache");
     }
@@ -608,7 +611,7 @@ impl JIT {
     }
 
     pub fn emit_store_pc(fn_builder: &mut FunctionBuilder<'_>, block: Block, pc: Value) -> Inst {
-        tracing::info!("write to pc");
+        // tracing::info!("write to pc");
 
         JIT::emit_store_to_cpu(fn_builder, block, pc, offset_of!(Cpu, pc) as i32)
     }

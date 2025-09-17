@@ -351,7 +351,7 @@ impl MipsOffset {
 pub enum BoundaryType {
     Block { offset: MipsOffset },
     BlockSplit { lhs: MipsOffset, rhs: MipsOffset },
-    Function { auto_set_pc: bool },
+    Function,
 }
 
 #[derive(Debug, Clone)]
@@ -375,12 +375,6 @@ pub trait Op: Sized + Display + TryFrom<OpCode> {
             Some(BoundaryType::Function { .. })
         )
     }
-    fn is_auto_pc(&self) -> bool {
-        match self.is_block_boundary() {
-            Some(BoundaryType::Function { auto_set_pc }) => auto_set_pc,
-            _ => false,
-        }
-    }
     fn hazard(&self) -> Option<u32> {
         None
     }
@@ -401,7 +395,7 @@ impl Op for NOP {
     fn emit_ir(&self, ctx: EmitCtx) -> EmitSummary {
         EmitSummary::builder()
             .instructions([])
-            .build(&ctx.fn_builder)
+            .build(ctx.fn_builder)
     }
 }
 
@@ -433,7 +427,7 @@ impl Display for HaltBlock {
 
 impl Op for HaltBlock {
     fn is_block_boundary(&self) -> Option<BoundaryType> {
-        Some(BoundaryType::Function { auto_set_pc: true })
+        Some(BoundaryType::Function)
     }
 
     fn into_opcode(self) -> crate::cpu::ops::OpCode {
@@ -444,7 +438,7 @@ impl Op for HaltBlock {
         Some(1)
     }
 
-    fn emit_ir(&self, ctx: EmitCtx) -> EmitSummary {
+    fn emit_ir(&self, mut ctx: EmitCtx) -> EmitSummary {
         use crate::dynarec::*;
 
         let ret = ctx
@@ -452,9 +446,16 @@ impl Op for HaltBlock {
             .pure()
             .MultiAry(Opcode::Return, types::INVALID, EntityList::new())
             .0;
+        let write_pc = ctx.emit_store_pc_imm(ctx.pc + 4);
 
         EmitSummary::builder()
-            .instructions([terminator(bomb(0, ret))])
+            .instructions(
+                [
+                    write_pc.map(bottom).as_slice(),
+                    [terminator(bomb(1, ret))].as_slice(),
+                ]
+                .concat(),
+            )
             .build(ctx.fn_builder)
     }
 }
@@ -646,6 +647,10 @@ impl DecodedOp {
     pub fn new(opcode: OpCode) -> Self {
         Self::try_from(opcode).unwrap()
     }
+
+    pub fn is_nop(&self) -> bool {
+        matches!(self, Self::NOP(_))
+    }
 }
 
 #[derive(Debug, Clone, Copy, derive_more::Display)]
@@ -690,7 +695,7 @@ mod decode_display_tests {
     #[case::addu(DecodedOp::new(addu(8, 9, 10)), "addu $t0 $t1 $t2")]
     #[case::addiu(DecodedOp::new(addiu(8, 9, 123)), "addiu $t0 $t1 123")]
     #[case::subu(DecodedOp::new(subu(8, 9, 10)), "subu $t0 $t1 $t2")]
-    #[case::j(DecodedOp::new(j(0x0040_0000)), "j 0x00400000")]
+    #[case::j(DecodedOp::new(j(0x0000_2000)), "j 0x00002000")]
     #[case::beq(DecodedOp::new(beq(8, 9, 16)), "beq $t0 $t1 0x00000010")]
     #[case::bne(DecodedOp::new(bne(8, 9, 16)), "bne $t0 $t1 0x00000010")]
     #[case::slt(DecodedOp::new(slt(8, 9, 10)), "slt $t0 $t1 $t2")]

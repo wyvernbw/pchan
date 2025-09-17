@@ -59,32 +59,6 @@ impl Op for SB {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use pchan_utils::setup_tracing;
-    use rstest::rstest;
-
-    use crate::{Emu, memory::KSEG0Addr, test_utils::emulator};
-
-    #[rstest]
-    pub fn test_sb(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
-        use crate::cpu::ops::prelude::*;
-
-        emulator
-            .mem
-            .write_all(KSEG0Addr::from_phys(0), [sb(9, 8, 0), OpCode(69420)]);
-
-        emulator.cpu.gpr[8] = 32; // base register
-        emulator.cpu.gpr[9] = 69;
-
-        emulator.step_jit()?;
-
-        assert_eq!(emulator.mem.read::<u8>(KSEG0Addr::from_phys(32)), 69);
-
-        Ok(())
-    }
-}
-
 #[macro_export]
 macro_rules! store {
     ($self:expr, $ctx:expr, $opcode:expr) => {{
@@ -125,4 +99,29 @@ macro_rules! store {
             )
             .build($ctx.fn_builder)
     }};
+}
+#[cfg(test)]
+mod tests {
+    use pchan_utils::setup_tracing;
+    use rstest::rstest;
+
+    use crate::{Emu, memory::KSEG0Addr, test_utils::emulator};
+
+    #[rstest]
+    pub fn test_sb(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
+        use crate::cpu::ops::prelude::*;
+
+        emulator
+            .mem
+            .write_all(KSEG0Addr::from_phys(0), [sb(9, 8, 0), OpCode(69420)]);
+
+        emulator.cpu.gpr[8] = 32; // base register
+        emulator.cpu.gpr[9] = 69;
+
+        emulator.step_jit()?;
+
+        assert_eq!(emulator.mem.read::<u8>(KSEG0Addr::from_phys(32)), 69);
+
+        Ok(())
+    }
 }

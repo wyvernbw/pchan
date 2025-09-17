@@ -37,7 +37,7 @@ impl Display for LW {
 
 impl Op for LW {
     fn hazard(&self) -> Option<u32> {
-        Some(2)
+        Some(1)
     }
 
     fn emit_ir(&self, mut ctx: EmitCtx) -> EmitSummary {
@@ -61,6 +61,7 @@ impl Op for LW {
 mod tests {
     use crate::dynarec::prelude::*;
     use pchan_utils::setup_tracing;
+    use pretty_assertions::assert_eq;
     use pretty_assertions::assert_ne;
     use rstest::rstest;
 
@@ -101,7 +102,12 @@ mod tests {
 
         emulator.mem.write_all(
             KSEG0Addr::from_phys(0),
-            [lw(8, 9, 0), addiu(8, 8, 12), ops::OpCode(69420)],
+            [
+                addiu(8, 0, 0),
+                lw(8, 9, 0),
+                addiu(8, 8, 12),
+                ops::OpCode(69420),
+            ],
         );
 
         emulator.cpu.gpr[9] = 32; // base register
@@ -134,7 +140,7 @@ mod tests {
         emulator.step_jit()?;
 
         assert_eq!(emulator.cpu.gpr[8], 0xDEAD_BEEF);
-        assert_ne!(emulator.mem.read::<u8>(KSEG0Addr::from_phys(36)), 0);
+        assert_ne!(emulator.mem.read::<u32>(KSEG0Addr::from_phys(36)), 0);
 
         Ok(())
     }

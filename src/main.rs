@@ -15,12 +15,12 @@ pub fn write_test_program(emu: &mut Emu) {
         addiu(8, 0, 0),           // ;  0 $t0 = 0
         addiu(10, 0, 4),          // ;  4 $t2 = 4
         addiu(9, 8, 0x0000_2000), // ;  8 calculate address $t1 = $t0 + 0x0000_2000
-        sb(8, 9, 0),              // ; 12 store $t0 at $t1
-        beq(8, 10, 16),           // ; 16 if $t0=$t2(4) jump by 16 to reach 36
+        sb(8, 9, 0),              // ; 12 store $i at $t1
+        beq(8, 10, 16),           // ; 16 if $t0=$t2(4) jump by 16+8 to reach 40
         nop(),                    // ; 20
         addiu(8, 8, 1),           // ; 24 $t0 = $t0 + 1
         nop(),                    // ; 28
-        j(8),                     // ; 32 jump to 8 (return to beginning of loop)
+        j(-24),                   // ; 32 jump to 8 (return to beginning of loop)
         nop(),                    // ; 36
         nop(),                    // ; 40
         OpCode(69420),            // ; 44 halt

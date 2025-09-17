@@ -60,66 +60,73 @@ impl Op for BNE {
         Some(1)
     }
 
-    #[instrument("beq", skip_all, fields(node = ?state.node, block = ?state.block().clif_block()))]
-    fn emit_ir(&self, mut state: EmitCtx) -> EmitSummary {
+    #[instrument("beq", skip_all, fields(node = ?ctx.node, block = ?ctx.block().clif_block()))]
+    fn emit_ir(&self, mut ctx: EmitCtx) -> EmitSummary {
         use crate::cranelift_bs::*;
 
-        let next = state
+        let next = ctx
             .cfg
-            .neighbors_directed(state.node, petgraph::Direction::Outgoing)
+            .neighbors_directed(ctx.node, petgraph::Direction::Outgoing)
             .collect::<Vec<_>>();
-        tracing::info!(?state.node, ?next);
+        tracing::info!(?ctx.node, ?next);
 
-        let (rs, load0) = state.emit_get_register(self.rs);
-        let (rt, load1) = state.emit_get_register(self.rt);
+        let (rs, load0) = ctx.emit_get_register(self.rs);
+        let (rt, load1) = ctx.emit_get_register(self.rt);
 
-        let (cond, icmp) = state.inst(|f| {
-            f.ins()
+        let (cond, icmp) = ctx.inst(|f| {
+            f.pure()
                 .IntCompare(Opcode::Icmp, types::I32, IntCC::NotEqual, rs, rt)
                 .0
         });
 
-        let then_block = state.next_at(0);
-        let then_block_label = state.cfg[then_block].clif_block();
-        let then_params = state.out_params(then_block);
-        let then_block_call = state
-            .fn_builder
-            .ins()
-            .data_flow_graph_mut()
-            .block_call(then_block_label, &then_params);
-
-        let else_block = state.next_at(1);
-        let else_block_label = state.cfg[else_block].clif_block();
-        let else_params = state.out_params(else_block);
-        let else_block_call = state
-            .fn_builder
-            .ins()
-            .data_flow_graph_mut()
-            .block_call(else_block_label, &else_params);
-
-        tracing::debug!(
-            "branch: then={:?}({} deps) else={:?}({} deps)",
-            then_block,
-            then_params.len(),
-            else_block,
-            else_params.len()
-        );
-
-        let brif = state
-            .fn_builder
-            .ins()
-            .Brif(
-                Opcode::Brif,
-                types::INVALID,
-                then_block_call,
-                else_block_call,
-                cond,
-            )
-            .0;
-
         EmitSummary::builder()
-            .instructions([now(load0), now(load1), now(icmp), bomb(1, brif)])
-            .build(state.fn_builder)
+            .instructions([
+                now(load0),
+                now(load1),
+                now(icmp),
+                terminator(bomb(
+                    1,
+                    lazy_boxed(move |ctx| {
+                        let then_block = ctx.next_at(0);
+                        let then_block_label = ctx.cfg[then_block].clif_block();
+                        let then_params = ctx.out_params(then_block);
+                        let then_block_call = ctx
+                            .fn_builder
+                            .pure()
+                            .data_flow_graph_mut()
+                            .block_call(then_block_label, &then_params);
+
+                        let else_block = ctx.next_at(1);
+                        let else_block_label = ctx.cfg[else_block].clif_block();
+                        let else_params = ctx.out_params(else_block);
+                        let else_block_call = ctx
+                            .fn_builder
+                            .pure()
+                            .data_flow_graph_mut()
+                            .block_call(else_block_label, &else_params);
+
+                        tracing::debug!(
+                            "branch: then={:?}({} deps) else={:?}({} deps)",
+                            then_block,
+                            then_params.len(),
+                            else_block,
+                            else_params.len()
+                        );
+
+                        ctx.fn_builder
+                            .pure()
+                            .Brif(
+                                Opcode::Brif,
+                                types::INVALID,
+                                then_block_call,
+                                else_block_call,
+                                cond,
+                            )
+                            .0
+                    }),
+                )),
+            ])
+            .build(ctx.fn_builder)
     }
 }
 

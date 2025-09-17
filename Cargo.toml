@@ -29,6 +29,7 @@ pchan-emu = { path = "./pchan-emu" }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 color-eyre = "0.6.5"
+slab = "0.4.11"
 
 [profile.bench]
 debug = true
