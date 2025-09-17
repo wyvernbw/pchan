@@ -66,7 +66,7 @@ impl Op for OR {
             // case 3: x | y = z
             let (rs, loadrs) = state.emit_get_register(self.rs);
             let (rt, loadrt) = state.emit_get_register(self.rt);
-            let (rd, bor) = state.inst(|f| f.ins().Binary(Opcode::Bor, types::I32, rs, rt).0);
+            let (rd, bor) = state.inst(|f| f.pure().Binary(Opcode::Bor, types::I32, rs, rt).0);
 
             EmitSummary::builder()
                 .instructions([now(loadrs), now(loadrt), now(bor)])

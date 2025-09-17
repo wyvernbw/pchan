@@ -38,6 +38,10 @@ impl Op for LB {
         None
     }
 
+    fn hazard(&self) -> Option<u32> {
+        Some(1)
+    }
+
     fn into_opcode(self) -> OpCode {
         OpCode::default()
             .with_primary(PrimeOp::LB)
@@ -106,10 +110,11 @@ macro_rules! load {
         let (rs, loadreg) = $ctx.emit_get_register($self.rs);
         let (rs, mapaddr) = $ctx.emit_map_address_to_host(rs);
 
-        let (mem_ptr, iadd0) = $ctx.inst(|f| f.ins().Binary(Opcode::Iadd, ptr_type, mem_ptr, rs).0);
+        let (mem_ptr, iadd0) =
+            $ctx.inst(|f| f.pure().Binary(Opcode::Iadd, ptr_type, mem_ptr, rs).0);
 
         let (rt, sload8) = $ctx.inst(|f| {
-            f.ins()
+            f.pure()
                 .Load(
                     $opcode,
                     types::I32,
@@ -125,7 +130,7 @@ macro_rules! load {
                 [
                     [now(loadreg)].as_slice(),
                     mapaddr.map(now).as_slice(),
-                    [now(iadd0), delayed(1, sload8)].as_slice(),
+                    [now(iadd0), delayed(2, sload8)].as_slice(),
                 ]
                 .concat(),
             )

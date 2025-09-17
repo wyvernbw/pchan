@@ -141,8 +141,8 @@ macro_rules! mult {
 
         let (rs, loadrs) = $ctx.emit_get_register($self.rs);
         let (rt, loadrt) = $ctx.emit_get_register($self.rt);
-        let (lo, imul) = $ctx.inst(|f| f.ins().Binary(Opcode::Imul, types::I32, rs, rt).0);
-        let (hi, smulhi) = $ctx.inst(|f| f.ins().Binary($hiopcode, types::I32, rs, rt).0);
+        let (lo, imul) = $ctx.inst(|f| f.pure().Binary(Opcode::Imul, types::I32, rs, rt).0);
+        let (hi, smulhi) = $ctx.inst(|f| f.pure().Binary($hiopcode, types::I32, rs, rt).0);
 
         // // Extend to 64-bit
         // let lo64 = fn_builder.ins().uextend(types::I64, lo);

@@ -93,11 +93,11 @@ macro_rules! icmp {
         let (rs, loadrs) = $ctx.emit_get_register($self.rs);
         let (rt, loadrt) = $ctx.emit_get_register($self.rt);
         let (rd, icmp) = $ctx.inst(|f| {
-            f.ins()
+            f.pure()
                 .IntCompare(Opcode::Icmp, types::I32, $cond, rs, rt)
                 .0
         });
-        let (rd, uextend) = $ctx.inst(|f| f.ins().Unary(Opcode::Uextend, types::I32, rd).0);
+        let (rd, uextend) = $ctx.inst(|f| f.pure().Unary(Opcode::Uextend, types::I32, rd).0);
         EmitSummary::builder()
             .instructions([now(loadrs), now(loadrt), now(icmp), now(uextend)])
             .register_updates([($self.rd, rd)])

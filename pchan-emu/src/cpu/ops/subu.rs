@@ -50,7 +50,7 @@ impl Op for SUBU {
         use crate::cranelift_bs::*;
         let (rs, loadrs) = state.emit_get_register(self.rs);
         let (rt, loadrt) = state.emit_get_register(self.rt);
-        let (rd, sub) = state.inst(|f| f.ins().Binary(Opcode::Isub, types::I32, rs, rt).0);
+        let (rd, sub) = state.inst(|f| f.pure().Binary(Opcode::Isub, types::I32, rs, rt).0);
 
         EmitSummary::builder()
             .instructions([now(loadrs), now(loadrt), now(sub)])

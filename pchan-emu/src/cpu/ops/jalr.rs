@@ -58,13 +58,13 @@ impl Op for JALR {
         // save old pc in rd
         let pc = state.pc as i64;
         let (pc, iconst) =
-            state.inst(|f| f.ins().UnaryImm(Opcode::Iconst, types::I32, pc.into()).0);
+            state.inst(|f| f.pure().UnaryImm(Opcode::Iconst, types::I32, pc.into()).0);
         let storerd = state.emit_store_register(self.rd, pc);
 
         // return
         let ret = state
             .fn_builder
-            .ins()
+            .pure()
             .MultiAry(Opcode::Return, types::INVALID, ValueList::new())
             .0;
 

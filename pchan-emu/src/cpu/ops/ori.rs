@@ -66,7 +66,7 @@ impl Op for ORI {
         }
         let (rs, loadrs) = state.emit_get_register(self.rs);
         let (rt, bor) = state.inst(|f| {
-            f.ins()
+            f.pure()
                 .BinaryImm64(Opcode::BorImm, types::I32, Imm64::new(self.imm.into()), rs)
                 .0
         });

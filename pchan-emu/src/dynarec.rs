@@ -1,6 +1,5 @@
-use crate::{IntoInst, cranelift_bs::*, jit::CacheUpdates};
+use crate::{IntoInst, cranelift_bs::*};
 use std::{
-    assert_matches::assert_matches,
     borrow::Cow,
     collections::HashMap,
     ops::{Index, IndexMut},
@@ -9,7 +8,7 @@ use std::{
 use bon::{Builder, bon, builder};
 use color_eyre::eyre::{Context, eyre};
 
-use cranelift::codegen::{bitset::ScalarBitSet, entity::EntityList};
+use cranelift::codegen::bitset::ScalarBitSet;
 use petgraph::{
     algo::is_cyclic_directed,
     dot::{Config, Dot},
@@ -21,9 +20,11 @@ use tracing::{Level, info_span, instrument, span, trace_span};
 pub mod prelude {
     pub use super::builder::*;
     pub use super::*;
+    pub use crate::FnBuilderExt;
     pub use crate::cpu::REG_STR;
     pub use crate::cpu::ops::prelude::*;
     pub use crate::cranelift_bs::*;
+    pub use crate::dynarec::JitSummary;
     pub use crate::icmp;
     pub use crate::icmpimm;
     pub use crate::load;
@@ -32,6 +33,7 @@ pub mod prelude {
     pub use crate::shiftimm;
     pub use crate::store;
 }
+pub mod builder;
 
 use crate::{
     Emu, FnBuilderExt,
@@ -812,6 +814,8 @@ pub struct EmitSummary {
     pub lo: Option<CachedValue>,
 }
 
+pub struct CacheUpdates {}
+
 impl<S: emit_summary_builder::State> EmitSummaryBuilder<S> {
     pub fn register_updates(mut self, values: impl IntoIterator<Item = (usize, Value)>) -> Self {
         self.register_updates.extend(
@@ -839,10 +843,11 @@ impl<S: emit_summary_builder::IsComplete> EmitSummaryBuilder<S> {
 }
 
 #[derive(derive_more::Debug, Clone, Copy)]
-#[debug("Instr({:?}, {:?})", self.queue_type, self.instruction)]
+#[debug("Instr({:?}, {:?}{})", self.queue_type, self.instruction, if self.terminator { ", terminator" } else { "" })]
 pub struct ClifInstruction {
     pub queue_type: ClifInstructionQueueType,
     pub instruction: Inst,
+    pub terminator: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -918,7 +923,7 @@ fn collect_instructions(
     cfg: &Graph<BasicBlock, ()>,
     ops: &[DecodedOp],
 ) {
-    let mut queue = Vec::with_capacity(32);
+    let mut queue = Vec::with_capacity(64);
     let mut final_instruction = None;
 
     let ptr_type = state_map[node].ptr_type;
@@ -970,45 +975,45 @@ fn collect_instructions(
                     );
                 }
             }
-            queue.retain_mut(|inst: &mut ClifInstruction| {
-                let tick = inst.queue_type.tick();
-                if tick.bomb_went_off {
-                    bomb_signal = Some(*inst);
-                    tracing::trace!(?inst, "bomb went off");
-                    return false;
-                }
-                if tick.ready {
-                    tracing::trace!(?inst, "delayed instruction inserted");
-                    fn_builder.append(inst.instruction);
-                    false
-                } else {
-                    true
-                }
-            });
-
             match inst.queue_type {
                 ClifInstructionQueueType::Now => {
-                    fn_builder.append(inst.instruction);
+                    fn_builder.append_inst(inst.instruction, inst.terminator);
                     tracing::trace!(?inst, "inserted instruction")
                 }
                 ClifInstructionQueueType::Seal => {
-                    final_instruction = Some(inst.instruction);
+                    final_instruction = Some(inst);
                 }
                 ClifInstructionQueueType::Bottom => {
+                    tracing::trace!(?inst, "bottom instruction scheduled");
                     queue.push(inst);
                 }
                 ClifInstructionQueueType::Delayed(_) => {
+                    tracing::trace!(?inst, "delayed instruction scheduled");
                     queue.push(inst);
                 }
                 ClifInstructionQueueType::Bomb(_) => {
+                    tracing::trace!(?inst, "time is ticking");
                     queue.push(inst);
                 }
             }
-
-            if bomb_signal.is_some() {
-                break;
-            }
         }
+
+        queue.retain_mut(|inst: &mut ClifInstruction| {
+            let tick = inst.queue_type.tick();
+            if tick.bomb_went_off {
+                bomb_signal = Some(*inst);
+                tracing::trace!(?inst, "bomb went off");
+                return false;
+            }
+            if tick.ready {
+                tracing::trace!(?inst, "delayed instruction inserted");
+                fn_builder.append_inst(inst.instruction, inst.terminator);
+                false
+            } else {
+                true
+            }
+        });
+
         if bomb_signal.is_some() {
             break;
         }
@@ -1018,7 +1023,7 @@ fn collect_instructions(
         queue.sort_by(|a, b| a.queue_type.remaining().cmp(&b.queue_type.remaining()));
         queue.retain(|inst| {
             if let ClifInstructionQueueType::Delayed(_) = inst.queue_type {
-                fn_builder.append(inst.instruction);
+                fn_builder.append_inst(inst.instruction, inst.terminator);
                 tracing::trace!(?inst, "fast forward instruction");
                 false
             } else {
@@ -1029,22 +1034,23 @@ fn collect_instructions(
             if inst.queue_type.is_bomb() {
                 return false;
             }
-            fn_builder.append(inst.instruction);
+            fn_builder.append_inst(inst.instruction, inst.terminator);
             tracing::trace!(?inst, "inserted bottom instruction");
             false
         });
     }
 
     if let Some(bomb) = bomb_signal {
-        fn_builder.append(bomb.instruction);
+        fn_builder.append_inst(bomb.instruction, bomb.terminator);
         tracing::trace!(?bomb, "inserted bomb instruction");
     } else if let Some(final_instruction) = final_instruction {
         tracing::trace!(?final_instruction, "inserted seal instruction");
-        fn_builder.append(final_instruction);
+        fn_builder.append_inst(final_instruction.instruction, final_instruction.terminator);
     } else {
         tracing::trace!(?final_instruction, "inserted manual return");
         fn_builder.ins().return_(&[]);
     }
+
     let i = fn_builder.func.layout.block_insts(block).count();
     tracing::info!("compiled {i} instructions")
 }
@@ -1091,6 +1097,7 @@ pub const fn now(inst: Inst) -> ClifInstruction {
     ClifInstruction {
         instruction: inst,
         queue_type: ClifInstructionQueueType::Now,
+        terminator: false,
     }
 }
 
@@ -1099,6 +1106,7 @@ pub const fn delayed(by: u32, inst: Inst) -> ClifInstruction {
     ClifInstruction {
         instruction: inst,
         queue_type: ClifInstructionQueueType::Delayed(by + 1),
+        terminator: false,
     }
 }
 
@@ -1108,10 +1116,12 @@ pub const fn delayed_maybe(by: Option<u32>, inst: Inst) -> ClifInstruction {
         Some(by) => ClifInstruction {
             instruction: inst,
             queue_type: ClifInstructionQueueType::Delayed(by + 1),
+            terminator: false,
         },
         None => ClifInstruction {
             instruction: inst,
             queue_type: ClifInstructionQueueType::Now,
+            terminator: false,
         },
     }
 }
@@ -1121,6 +1131,7 @@ pub const fn bomb(by: u32, inst: Inst) -> ClifInstruction {
     ClifInstruction {
         instruction: inst,
         queue_type: ClifInstructionQueueType::Bomb(by + 1),
+        terminator: false,
     }
 }
 
@@ -1129,6 +1140,7 @@ pub const fn seal(inst: Inst) -> ClifInstruction {
     ClifInstruction {
         queue_type: ClifInstructionQueueType::Seal,
         instruction: inst,
+        terminator: false,
     }
 }
 
@@ -1137,6 +1149,15 @@ pub const fn bottom(inst: Inst) -> ClifInstruction {
     ClifInstruction {
         queue_type: ClifInstructionQueueType::Bottom,
         instruction: inst,
+        terminator: false,
+    }
+}
+
+#[inline]
+pub const fn terminator(inst: ClifInstruction) -> ClifInstruction {
+    ClifInstruction {
+        terminator: true,
+        ..inst
     }
 }
 
@@ -1147,46 +1168,5 @@ trait BasicBlockIndexOps {
 impl BasicBlockIndexOps for &[DecodedOp] {
     fn for_block(&self, block: &BasicBlock) -> &[DecodedOp] {
         &self[block.start..=(block.start + block.len)]
-    }
-}
-
-pub mod builder {
-    use crate::dynarec::prelude::*;
-
-    /// Implementation of the [`InstBuilder`] that has
-    /// one convenience method per Cranelift IR instruction.
-    pub struct PureInstBuilder<'short, 'long: 'short> {
-        pub builder: &'short mut FunctionBuilder<'long>,
-        pub block: Block,
-    }
-
-    impl<'short, 'long> PureInstBuilder<'short, 'long> {
-        fn new(builder: &'short mut FunctionBuilder<'long>, block: Block) -> Self {
-            Self { builder, block }
-        }
-    }
-
-    impl<'short, 'long> InstBuilderBase<'short> for PureInstBuilder<'short, 'long> {
-        fn data_flow_graph(&self) -> &DataFlowGraph {
-            &self.builder.func.dfg
-        }
-
-        fn data_flow_graph_mut(&mut self) -> &mut DataFlowGraph {
-            &mut self.builder.func.dfg
-        }
-
-        fn build(
-            self,
-            data: InstructionData,
-            ctrl_typevar: Type,
-        ) -> (Inst, &'short mut DataFlowGraph) {
-            // We only insert the Block in the layout when an instruction is added to it
-            self.builder.ensure_inserted_block();
-
-            let inst = self.builder.func.dfg.make_inst(data);
-            self.builder.func.dfg.make_inst_results(inst, ctrl_typevar);
-
-            (inst, &mut self.builder.func.dfg)
-        }
     }
 }

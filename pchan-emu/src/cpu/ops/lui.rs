@@ -47,7 +47,7 @@ impl Op for LUI {
                 .build(ctx.fn_builder);
         }
         let (rt, iconst) = ctx.inst(|f| {
-            f.ins()
+            f.pure()
                 .UnaryImm(
                     Opcode::Iconst,
                     types::I32,

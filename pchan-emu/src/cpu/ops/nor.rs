@@ -50,32 +50,33 @@ impl Op for NOR {
         // case 1: x | 0 = x
         if self.rs == 0 {
             let (rt, loadrt) = state.emit_get_register(self.rt);
-            let (rd, bnot) = state.inst(|f| f.ins().Unary(Opcode::Bnot, types::I32, rt).0);
+            let (rd, bnot) = state.inst(|f| f.pure().Unary(Opcode::Bnot, types::I32, rt).0);
 
-            return EmitSummary::builder()
+            EmitSummary::builder()
                 .instructions([now(loadrt), now(bnot)])
                 .register_updates([(self.rd, rd)])
-                .build(state.fn_builder);
+                .build(state.fn_builder)
         // case 2: 0 | x = x
         } else if self.rt == 0 {
             let (rs, loadrs) = state.emit_get_register(self.rs);
-            let (rd, bnot) = state.inst(|f| f.ins().Unary(Opcode::Bnot, types::I32, rs).0);
+            let (rd, bnot) = state.inst(|f| f.pure().Unary(Opcode::Bnot, types::I32, rs).0);
 
-            return EmitSummary::builder()
+            EmitSummary::builder()
                 .instructions([now(loadrs), now(bnot)])
                 .register_updates([(self.rd, rd)])
-                .build(state.fn_builder);
+                .build(state.fn_builder)
         // case 3: x | y = z
         } else {
             let (rs, loadrs) = state.emit_get_register(self.rs);
             let (rt, loadrt) = state.emit_get_register(self.rt);
-            let (rs_or_rt, bor) = state.inst(|f| f.ins().Binary(Opcode::Bor, types::I32, rs, rt).0);
-            let (rd, bnot) = state.inst(|f| f.ins().Unary(Opcode::Bnot, types::I32, rs_or_rt).0);
+            let (rs_or_rt, bor) =
+                state.inst(|f| f.pure().Binary(Opcode::Bor, types::I32, rs, rt).0);
+            let (rd, bnot) = state.inst(|f| f.pure().Unary(Opcode::Bnot, types::I32, rs_or_rt).0);
 
-            return EmitSummary::builder()
+            EmitSummary::builder()
                 .instructions([now(loadrs), now(loadrt), now(bor), now(bnot)])
                 .register_updates([(self.rd, rd)])
-                .build(state.fn_builder);
+                .build(state.fn_builder)
         }
     }
 }

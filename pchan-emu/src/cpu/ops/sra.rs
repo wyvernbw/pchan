@@ -130,7 +130,7 @@ macro_rules! shiftimm {
 
         // case 3: $rt << imm = $rd
         let (rd, sshr_imm) = $ctx.inst(|f| {
-            f.ins()
+            f.pure()
                 .BinaryImm64($opcode, types::I32, Imm64::new($self.imm.into()), rt)
                 .0
         });

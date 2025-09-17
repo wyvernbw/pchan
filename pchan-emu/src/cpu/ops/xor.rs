@@ -61,7 +61,7 @@ impl Op for XOR {
         }
         let (rs, loadrs) = state.emit_get_register(self.rs);
         let (rt, loadrt) = state.emit_get_register(self.rt);
-        let (rd, bxor) = state.inst(|f| f.ins().Binary(Opcode::Bxor, types::I32, rs, rt).0);
+        let (rd, bxor) = state.inst(|f| f.pure().Binary(Opcode::Bxor, types::I32, rs, rt).0);
         EmitSummary::builder()
             .instructions([now(loadrs), now(loadrt), now(bxor)])
             .register_updates([(self.rd, rd)])

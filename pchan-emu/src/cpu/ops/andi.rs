@@ -58,14 +58,14 @@ impl Op for ANDI {
                 .register_updates([(self.rt, rt)])
                 .build(state.fn_builder);
         }
-        let (rs, load0) = state.emit_get_register(self.rs);
+        let (rs, loadrs) = state.emit_get_register(self.rs);
         let (rt, band) = state.inst(|f| {
-            f.ins()
+            f.pure()
                 .BinaryImm64(Opcode::BandImm, types::I32, Imm64::new(self.imm as i64), rs)
                 .0
         });
         EmitSummary::builder()
-            .instructions([now(load0), now(band)])
+            .instructions([now(loadrs), now(band)])
             .register_updates([(self.rt, rt)])
             .build(state.fn_builder)
     }

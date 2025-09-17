@@ -94,7 +94,6 @@ pub trait FnBuilderExt<'a> {
     fn IConst(&mut self, imm: impl Into<i64>) -> (Value, Inst);
     fn inst<R: IntoInst>(&mut self, f: impl Fn(&mut Self) -> R) -> (Value, Inst);
     fn pure<'short>(&'short mut self) -> PureInstBuilder<'short, 'a>;
-    fn append(&mut self, inst: Inst) -> &mut Self;
 }
 
 impl<'a> FnBuilderExt<'a> for FunctionBuilder<'a> {
@@ -141,12 +140,6 @@ impl<'a> FnBuilderExt<'a> for FunctionBuilder<'a> {
                 .UnaryImm(Opcode::Iconst, types::I32, Imm64::new(imm))
                 .0
         })
-    }
-
-    fn append(&mut self, inst: Inst) -> &mut Self {
-        let block = self.current_block().unwrap();
-        self.cursor().at_bottom(block).insert_inst(inst);
-        self
     }
 
     fn pure<'short>(&'short mut self) -> PureInstBuilder<'short, 'a> {

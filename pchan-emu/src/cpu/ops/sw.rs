@@ -38,8 +38,12 @@ impl Display for SW {
 }
 
 impl Op for SW {
+    fn hazard(&self) -> Option<u32> {
+        Some(1)
+    }
+
     fn emit_ir(&self, mut ctx: EmitCtx) -> EmitSummary {
-        store!(self, ctx, Opcode::Istore8)
+        store!(self, ctx, Opcode::Store)
     }
 
     fn is_block_boundary(&self) -> Option<BoundaryType> {
@@ -66,9 +70,10 @@ mod tests {
     pub fn test_sw(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
         use crate::cpu::ops::prelude::*;
 
-        emulator
-            .mem
-            .write_all(KSEG0Addr::from_phys(0), [sw(9, 8, 0), OpCode(69420)]);
+        emulator.mem.write_all(
+            KSEG0Addr::from_phys(0),
+            [sw(9, 8, 0), lw(10, 8, 0), OpCode(69420)],
+        );
 
         emulator.cpu.gpr[8] = 32; // base register
         emulator.cpu.gpr[9] = u32::MAX;

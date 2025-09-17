@@ -12,7 +12,15 @@ tracing-subscriber = { workspace = true }
 
 [workspace]
 resolver = "3"
-members = ["pchan-emu", "pchan-macros", "pchan-utils"]
+members = [
+  "pchan-emu",
+  "pchan-macros",
+  "pchan-utils",
+  "pchan-cranelift-frontend"
+]
+
+[patch.crates-io]
+cranelift-frontend = { path = "./pchan-cranelift-frontend" }
 
 [workspace.dependencies]
 pchan-macros = { path = "./pchan-macros"}

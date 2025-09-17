@@ -62,7 +62,7 @@ impl Op for XORI {
 
         let (rs, loadrs) = state.emit_get_register(self.rs);
         let (rt, bxorimm) = state.inst(|f| {
-            f.ins()
+            f.pure()
                 .BinaryImm64(Opcode::BxorImm, types::I32, Imm64::new(self.imm.into()), rs)
                 .0
         });

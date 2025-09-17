@@ -102,7 +102,7 @@ macro_rules! icmpimm {
 
         let (rs, loadrs) = $ctx.emit_get_register($self.rs);
         let (rt, icmpimm) = $ctx.inst(|f| {
-            f.ins()
+            f.pure()
                 .IntCompareImm(
                     Opcode::IcmpImm,
                     types::I32,
@@ -112,7 +112,7 @@ macro_rules! icmpimm {
                 )
                 .0
         });
-        let (rt, uextend) = $ctx.inst(|f| f.ins().Unary(Opcode::Uextend, types::I32, rt).0);
+        let (rt, uextend) = $ctx.inst(|f| f.pure().Unary(Opcode::Uextend, types::I32, rt).0);
         EmitSummary::builder()
             .instructions([now(loadrs), now(icmpimm), now(uextend)])
             .register_updates([($self.rt, rt)])

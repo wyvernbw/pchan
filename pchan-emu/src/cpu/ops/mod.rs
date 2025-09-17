@@ -454,7 +454,7 @@ impl Op for HaltBlock {
             .0;
 
         EmitSummary::builder()
-            .instructions([bomb(0, ret)])
+            .instructions([terminator(bomb(0, ret))])
             .build(ctx.fn_builder)
     }
 }

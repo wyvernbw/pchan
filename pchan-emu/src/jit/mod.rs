@@ -104,23 +104,6 @@ impl Default for JIT {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct CacheUpdates<'a> {
-    registers: &'a [(usize, CachedValue)],
-    hi: &'a Option<CachedValue>,
-    lo: &'a Option<CachedValue>,
-}
-
-impl<'a> CacheUpdates<'a> {
-    pub fn new(emit_summary: &'a EmitSummary) -> CacheUpdates<'a> {
-        CacheUpdates {
-            registers: &emit_summary.register_updates,
-            hi: &emit_summary.hi,
-            lo: &emit_summary.lo,
-        }
-    }
-}
-
 #[bon::bon]
 impl JIT {
     #[inline]
@@ -227,7 +210,7 @@ impl JIT {
         if idx == 0 {
             let inst = builder
                 .pure()
-                .UnaryConst(Opcode::Iconst, types::I32, Constant::from_u32(0))
+                .UnaryImm(Opcode::Iconst, types::I32, Imm64::new(0))
                 .0;
             let const0 = builder.single_result(inst);
             return (const0, inst);
@@ -560,7 +543,13 @@ impl JIT {
         // load region descriptor at lookup address
         let load0 = fn_builder
             .pure()
-            .LoadNoOffset(Opcode::Load, types::I64, MemFlags::new(), lookup)
+            .Load(
+                Opcode::Load,
+                types::I64,
+                MemFlags::new(),
+                Offset32::new(0),
+                lookup,
+            )
             .0;
         let region_descriptor = fn_builder.single_result(load0);
 

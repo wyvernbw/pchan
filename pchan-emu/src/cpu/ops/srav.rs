@@ -136,7 +136,7 @@ macro_rules! shift {
                 .build($ctx.fn_builder);
         }
         let (rs, loadrs) = $ctx.emit_get_register($self.rs);
-        let (rd, shift) = $ctx.inst(|f| f.ins().Binary($opcode, types::I32, rt, rs).0);
+        let (rd, shift) = $ctx.inst(|f| f.pure().Binary($opcode, types::I32, rt, rs).0);
 
         EmitSummary::builder()
             .instructions([now(loadrt), now(loadrs), now(shift)])

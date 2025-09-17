@@ -46,6 +46,10 @@ impl Op for SB {
         None
     }
 
+    fn hazard(&self) -> Option<u32> {
+        Some(1)
+    }
+
     fn into_opcode(self) -> OpCode {
         OpCode::default()
             .with_primary(PrimeOp::SB)
@@ -95,11 +99,11 @@ macro_rules! store {
         let (rs, loadrs) = $ctx.emit_get_register($self.rs);
         let (rs, mapaddr) = $ctx.emit_map_address_to_host(rs);
         let (rt, loadrt) = $ctx.emit_get_register($self.rt);
-        let (mem_ptr, iadd) = $ctx.inst(|f| f.ins().Binary(Opcode::Iadd, ptr_type, mem_ptr, rs).0);
+        let (mem_ptr, iadd) = $ctx.inst(|f| f.pure().Binary(Opcode::Iadd, ptr_type, mem_ptr, rs).0);
 
         let store = $ctx
             .fn_builder
-            .ins()
+            .pure()
             .Store(
                 $opcode,
                 types::I32,

@@ -1,10 +1,5 @@
+use crate::dynarec::prelude::*;
 use std::fmt::Display;
-
-use crate::cpu::REG_STR;
-use crate::cpu::ops::{self, BoundaryType, EmitSummary, Op, TryFromOpcodeErr};
-use crate::{cranelift_bs::*, load};
-
-use super::{EmitCtx, OpCode, PrimeOp};
 
 #[derive(Debug, Clone, Copy)]
 pub struct LW {
@@ -13,7 +8,7 @@ pub struct LW {
     imm: i16,
 }
 
-pub fn lw(rt: usize, rs: usize, imm: i16) -> ops::OpCode {
+pub fn lw(rt: usize, rs: usize, imm: i16) -> OpCode {
     LW { rt, rs, imm }.into_opcode()
 }
 
@@ -41,6 +36,10 @@ impl Display for LW {
 }
 
 impl Op for LW {
+    fn hazard(&self) -> Option<u32> {
+        Some(2)
+    }
+
     fn emit_ir(&self, mut ctx: EmitCtx) -> EmitSummary {
         load!(self, ctx, Opcode::Load)
     }
@@ -49,8 +48,8 @@ impl Op for LW {
         None
     }
 
-    fn into_opcode(self) -> ops::OpCode {
-        ops::OpCode::default()
+    fn into_opcode(self) -> OpCode {
+        OpCode::default()
             .with_primary(PrimeOp::LW)
             .set_bits(16..21, self.rt as u32)
             .set_bits(21..26, self.rs as u32)
@@ -60,6 +59,7 @@ impl Op for LW {
 
 #[cfg(test)]
 mod tests {
+    use crate::dynarec::prelude::*;
     use pchan_utils::setup_tracing;
     use pretty_assertions::assert_ne;
     use rstest::rstest;
@@ -67,14 +67,13 @@ mod tests {
     use crate::{
         Emu,
         cpu::ops::{self},
+        dynarec::JitSummary,
         memory::KSEG0Addr,
         test_utils::emulator,
     };
 
     #[rstest]
     pub fn test_lw(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
-        use crate::cpu::ops::prelude::*;
-
         emulator
             .mem
             .write::<u32>(KSEG0Addr::from_phys(32), 0xDEAD_BEEF); // -32768
@@ -96,34 +95,29 @@ mod tests {
 
     #[rstest]
     pub fn load_delay_hazard_1(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
-        use crate::cpu::ops::prelude::*;
-
         emulator
             .mem
             .write::<u32>(KSEG0Addr::from_phys(32), 0xDEAD_BEEF);
 
         emulator.mem.write_all(
             KSEG0Addr::from_phys(0),
-            [lw(8, 9, 0), sb(8, 10, 0), ops::OpCode(69420)],
+            [lw(8, 9, 0), addiu(8, 8, 12), ops::OpCode(69420)],
         );
 
         emulator.cpu.gpr[9] = 32; // base register
-        emulator.cpu.gpr[10] = 36;
 
         // Run the block
-        emulator.step_jit()?;
+        let summary = emulator.step_jit_summarize::<JitSummary>()?;
+        tracing::info!(?summary.function);
 
+        // $t0 is replaced with 0xDEAD_BEEF, even tho load happened before
         assert_eq!(emulator.cpu.gpr[8], 0xDEAD_BEEF);
-        // 0xDEAD_BEEF wasnt loaded by the time the store happened
-        assert_eq!(emulator.mem.read::<u8>(KSEG0Addr::from_phys(36)), 0);
 
         Ok(())
     }
 
     #[rstest]
     pub fn load_delay_hazard_2(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
-        use crate::cpu::ops::prelude::*;
-
         emulator
             .mem
             .write::<u32>(KSEG0Addr::from_phys(32), 0xDEAD_BEEF);
