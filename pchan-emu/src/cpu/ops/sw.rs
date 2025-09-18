@@ -80,7 +80,10 @@ mod tests {
 
         emulator.step_jit()?;
 
-        assert_eq!(emulator.mem.read::<u32>(KSEG0Addr::from_phys(32)), u32::MAX);
+        assert_eq!(
+            emulator.mem.read_01::<u32>(KSEG0Addr::from_phys(32)),
+            u32::MAX
+        );
 
         Ok(())
     }

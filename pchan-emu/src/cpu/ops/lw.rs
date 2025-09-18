@@ -41,7 +41,7 @@ impl Op for LW {
     }
 
     fn emit_ir(&self, mut ctx: EmitCtx) -> EmitSummary {
-        load!(self, ctx, Opcode::Load)
+        load!(self, ctx, read32)
     }
 
     fn is_block_boundary(&self) -> Option<BoundaryType> {
@@ -140,7 +140,7 @@ mod tests {
         emulator.step_jit()?;
 
         assert_eq!(emulator.cpu.gpr[8], 0xDEAD_BEEF);
-        assert_ne!(emulator.mem.read::<u32>(KSEG0Addr::from_phys(36)), 0);
+        assert_ne!(emulator.mem.read_01::<u32>(KSEG0Addr::from_phys(36)), 0);
 
         Ok(())
     }

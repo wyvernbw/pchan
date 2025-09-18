@@ -952,6 +952,7 @@ dependencies = [
  "color-eyre",
  "const_for",
  "cranelift",
+ "cranelift-codegen",
  "crossbeam",
  "derive_more",
  "enum_dispatch",

@@ -38,8 +38,12 @@ impl Display for LH {
 }
 
 impl Op for LH {
+    fn hazard(&self) -> Option<u32> {
+        Some(1)
+    }
+
     fn emit_ir(&self, mut ctx: EmitCtx) -> EmitSummary {
-        load!(self, ctx, Opcode::Sload16)
+        load!(self, ctx, readi16)
     }
 
     fn is_block_boundary(&self) -> Option<BoundaryType> {

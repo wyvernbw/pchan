@@ -4,17 +4,14 @@ use std::{
     ptr,
 };
 
-use cranelift::codegen::{
-    gimli::SectionBaseAddresses,
-    ir::{self, immediates::Offset32},
-};
+use cranelift::codegen::ir::{self, immediates::Offset32};
 use tracing::{Instrument, Level, instrument};
 
 use crate::{
     FnBuilderExt,
     cpu::{Cop0, Cpu, REG_STR},
     cranelift_bs::*,
-    dynarec::{CacheUpdates, CachedValue, EmitSummary, EntryCache},
+    dynarec::{CacheUpdates, EntryCache},
     memory::{Memory, MemoryRegion},
 };
 
@@ -41,6 +38,7 @@ pub struct JIT {
     pub block_map: BlockMap,
     pub dirty_pages: HashSet<BlockPage>,
     pub func_idx: usize,
+    pub func_table: FunctionTable,
 }
 
 #[derive(derive_more::Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Hash)]
@@ -70,22 +68,105 @@ impl BlockMap {
     }
 }
 
+#[derive(derive_more::Debug)]
+pub struct FunctionTable {
+    read32: FuncId,
+    readi16: FuncId,
+    readi8: FuncId,
+    readu16: FuncId,
+    readu8: FuncId,
+}
+
+#[derive(derive_more::Debug)]
+pub struct FuncRefTable {
+    pub read32: FuncRef,
+    pub readi16: FuncRef,
+    pub readi8: FuncRef,
+    pub readu16: FuncRef,
+    pub readu8: FuncRef,
+}
+
 impl Default for JIT {
     fn default() -> Self {
         // Set up JIT
-        let mut flags = settings::builder();
-        flags.set("opt_level", "none").unwrap();
-        let isa = cranelift::native::builder()
-            .unwrap()
-            .finish(settings::Flags::new(flags))
-            .unwrap();
-        let jit_builder = JITBuilder::with_isa(isa, default_libcall_names());
-        let module = JITModule::new(jit_builder);
+        // let mut flags = settings::builder();
+        // flags.set("opt_level", "none").unwrap();
+        // let isa = cranelift::native::builder()
+        //     .unwrap()
+        //     .finish(settings::Flags::new(flags))
+        //     .unwrap();
+        // let jit_builder = JITBuilder::with_isa(isa, default_libcall_names());
+        let mut jit_builder =
+            JITBuilder::with_flags(&[("opt_level", "none")], default_libcall_names()).unwrap();
+        jit_builder
+            .symbol("read32", Memory::read32 as *const u8)
+            .symbol("readi16", Memory::readi16 as *const u8)
+            .symbol("readi8", Memory::readi8 as *const u8)
+            .symbol("readu16", Memory::readu16 as *const u8)
+            .symbol("readu8", Memory::readu8 as *const u8);
+
+        let mut module = JITModule::new(jit_builder);
+        let ptr = module.target_config().pointer_type();
+
+        let read32 = {
+            let mut read32_sig = Signature::new(CallConv::SystemV);
+            read32_sig.params.push(AbiParam::new(ptr));
+            read32_sig.params.push(AbiParam::new(types::I32));
+            read32_sig.returns.push(AbiParam::new(types::I32));
+
+            module
+                .declare_function("read32", Linkage::Import, &read32_sig)
+                .expect("failed to link read32 function")
+        };
+
+        let readi16 = {
+            let mut readi16_sig = Signature::new(CallConv::SystemV);
+            readi16_sig.params.push(AbiParam::new(ptr));
+            readi16_sig.params.push(AbiParam::new(types::I32));
+            readi16_sig.returns.push(AbiParam::new(types::I32));
+
+            module
+                .declare_function("readi16", Linkage::Import, &readi16_sig)
+                .expect("failed to link readi16 function")
+        };
+
+        let readi8 = {
+            let mut readi8_sig = Signature::new(CallConv::SystemV);
+            readi8_sig.params.push(AbiParam::new(ptr));
+            readi8_sig.params.push(AbiParam::new(types::I32));
+            readi8_sig.returns.push(AbiParam::new(types::I32));
+
+            module
+                .declare_function("readi8", Linkage::Import, &readi8_sig)
+                .expect("failed to link readi8 function")
+        };
+
+        let readu16 = {
+            let mut readu16_sig = Signature::new(CallConv::SystemV);
+            readu16_sig.params.push(AbiParam::new(ptr));
+            readu16_sig.params.push(AbiParam::new(types::I32));
+            readu16_sig.returns.push(AbiParam::new(types::I32));
+
+            module
+                .declare_function("readu16", Linkage::Import, &readu16_sig)
+                .expect("failed to link readu16 function")
+        };
+
+        let readu8 = {
+            let mut readu8_sig = Signature::new(CallConv::SystemV);
+            readu8_sig.params.push(AbiParam::new(ptr));
+            readu8_sig.params.push(AbiParam::new(types::I32));
+            readu8_sig.returns.push(AbiParam::new(types::I32));
+
+            module
+                .declare_function("readu8", Linkage::Import, &readu8_sig)
+                .expect("failed to link readu8 function")
+        };
+
         let fn_builder_ctx = FunctionBuilderContext::new();
         let ctx = module.make_context();
         let data_description = DataDescription::new();
 
-        let ptr = module.target_config().pointer_type();
         let mut sig = Signature::new(CallConv::SystemV);
         sig.params.push(AbiParam::new(ptr));
         sig.params.push(AbiParam::new(ptr));
@@ -100,6 +181,13 @@ impl Default for JIT {
             block_map: BlockMap::default(),
             func_idx: 1,
             dirty_pages: HashSet::default(),
+            func_table: FunctionTable {
+                read32,
+                readi16,
+                readi8,
+                readu16,
+                readu8,
+            },
         }
     }
 }
@@ -137,6 +225,31 @@ impl JIT {
         );
         self.func_idx += 1;
         Ok((func_id, func))
+    }
+
+    pub fn create_func_ref_table(&mut self, func: &mut Function) -> FuncRefTable {
+        let read32 = self
+            .module
+            .declare_func_in_func(self.func_table.read32, func);
+        let readi16 = self
+            .module
+            .declare_func_in_func(self.func_table.readi16, func);
+        let readi8 = self
+            .module
+            .declare_func_in_func(self.func_table.readi8, func);
+        let readu16 = self
+            .module
+            .declare_func_in_func(self.func_table.readu16, func);
+        let readu8 = self
+            .module
+            .declare_func_in_func(self.func_table.readu8, func);
+        FuncRefTable {
+            read32,
+            readi16,
+            readi8,
+            readu16,
+            readu8,
+        }
     }
 
     #[inline]

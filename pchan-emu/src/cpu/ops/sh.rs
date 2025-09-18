@@ -78,7 +78,7 @@ mod tests {
 
         emulator.step_jit()?;
 
-        assert_eq!(emulator.mem.read::<u16>(KSEG0Addr::from_phys(32)), 690);
+        assert_eq!(emulator.mem.read_01::<u16>(KSEG0Addr::from_phys(32)), 690);
 
         Ok(())
     }

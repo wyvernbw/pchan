@@ -1,4 +1,4 @@
-use crate::{IntoInst, cranelift_bs::*, memory};
+use crate::{IntoInst, cranelift_bs::*, jit::FuncRefTable, memory};
 use std::{
     borrow::Cow,
     collections::HashMap,
@@ -173,6 +173,7 @@ impl Emu {
         }
 
         let (func_id, mut func) = self.jit.create_function(initial_address)?;
+        let func_ref_table = self.jit.create_func_ref_table(&mut func);
         let mut fn_builder = self.jit.create_fn_builder(&mut func);
 
         let mut dfs = Dfs::new(&blocks.cfg, blocks.entry);
@@ -255,6 +256,7 @@ impl Emu {
                     .node(node)
                     .cfg(&blocks.cfg)
                     .ops(blocks.ops_for(basic_block))
+                    .func_ref_table(&func_ref_table)
                     .call();
             }
             _ => {}
@@ -284,6 +286,7 @@ impl Emu {
         ops: &[DecodedOp],
         state_map: &'a mut BlockStateMap,
         fn_builder: &'a mut FunctionBuilder<'b>,
+        func_ref_table: &'a FuncRefTable,
         ptr_type: types::Type,
         cfg: &'a Graph<BasicBlock, ()>,
         node: NodeIndex,
@@ -307,7 +310,7 @@ impl Emu {
             });
         }
 
-        collect_instructions(node, fn_builder, state_map, cfg, ops, cpu);
+        collect_instructions(node, fn_builder, func_ref_table, state_map, cfg, ops, cpu);
 
         EmitBlockSummary
     }
@@ -526,6 +529,7 @@ pub struct CachedValue {
 #[derive(Builder)]
 pub struct EmitCtx<'a, 'b> {
     pub fn_builder: &'a mut FunctionBuilder<'b>,
+    pub func_ref_table: &'a FuncRefTable,
     pub state_map: &'a mut BlockStateMap,
     pub ptr_type: types::Type,
     pub node: NodeIndex,
@@ -1022,6 +1026,7 @@ pub struct BlockState {
 fn collect_instructions(
     node: NodeIndex,
     fn_builder: &mut FunctionBuilder,
+    func_ref_table: &FuncRefTable,
     state_map: &mut BlockStateMap,
     cfg: &Graph<BasicBlock, ()>,
     ops: &[DecodedOp],
@@ -1045,6 +1050,7 @@ fn collect_instructions(
 
         let summary = op.emit_ir(EmitCtx {
             fn_builder,
+            func_ref_table,
             ptr_type,
             state_map,
             pc,
@@ -1079,6 +1085,7 @@ fn collect_instructions(
                 ClifInstructionQueueType::Now => {
                     let i = inst.instruction(EmitCtx {
                         fn_builder,
+                        func_ref_table,
                         ptr_type,
                         state_map,
                         pc,
@@ -1092,6 +1099,7 @@ fn collect_instructions(
                 ClifInstructionQueueType::Seal => {
                     let i = inst.instruction(EmitCtx {
                         fn_builder,
+                        func_ref_table,
                         ptr_type,
                         state_map,
                         pc,
@@ -1154,6 +1162,7 @@ fn collect_instructions(
                 tracing::trace!(?inst, "delayed instruction inserted");
                 let i = inst.instruction(EmitCtx {
                     fn_builder,
+                    func_ref_table,
                     ptr_type,
                     state_map,
                     pc,
@@ -1214,6 +1223,7 @@ fn collect_instructions(
                 // fn_builder.append_inst(inst.instruction, inst.terminator);
                 let i = inst.instruction(EmitCtx {
                     fn_builder,
+                    func_ref_table,
                     ptr_type,
                     state_map,
                     pc,
@@ -1230,6 +1240,7 @@ fn collect_instructions(
             .for_each(|inst| {
                 let i = inst.instruction(EmitCtx {
                     fn_builder,
+                    func_ref_table,
                     ptr_type,
                     state_map,
                     pc,
@@ -1244,6 +1255,7 @@ fn collect_instructions(
     if let Some(bomb) = bomb_signal.or(queued_bomb) {
         let i = bomb.instruction(EmitCtx {
             fn_builder,
+            func_ref_table,
             ptr_type,
             state_map,
             pc,
@@ -1256,6 +1268,7 @@ fn collect_instructions(
     } else if let Some(final_instruction) = final_instruction {
         let i = final_instruction.instruction(EmitCtx {
             fn_builder,
+            func_ref_table,
             ptr_type,
             state_map,
             pc,

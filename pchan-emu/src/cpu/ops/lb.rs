@@ -31,7 +31,7 @@ impl TryFrom<OpCode> for LB {
 
 impl Op for LB {
     fn emit_ir(&self, mut ctx: EmitCtx) -> EmitSummary {
-        load!(self, ctx, Opcode::Sload8)
+        load!(self, ctx, readi8)
     }
 
     fn is_block_boundary(&self) -> Option<BoundaryType> {
@@ -59,53 +59,6 @@ impl Display for LB {
             REG_STR[self.rt], REG_STR[self.rs], self.imm
         )
     }
-}
-
-/// load timeline
-///
-/// - load happens
-/// - next instruction (load hidden)
-/// - value (cache) updates
-/// - 2nd instruction (load visible)
-#[macro_export]
-macro_rules! load {
-    ($self: expr, $ctx: expr, $opcode: expr) => {{
-        use cranelift::codegen::ir::immediates::Offset32;
-        use $crate::dynarec::prelude::*;
-
-        // get pointer to memory passed as argument to the function
-        let mem_ptr = $ctx.memory();
-        let ptr_type = $ctx.ptr_type;
-        let (rs, loadreg) = $ctx.emit_get_register($self.rs);
-        let (rs, mapaddr) = $ctx.emit_map_address_to_host(rs);
-
-        let (mem_ptr, iadd0) =
-            $ctx.inst(|f| f.pure().Binary(Opcode::Iadd, ptr_type, mem_ptr, rs).0);
-
-        let (rt, sload8) = $ctx.inst(|f| {
-            f.pure()
-                .Load(
-                    $opcode,
-                    types::I32,
-                    MemFlags::new(),
-                    Offset32::new($self.imm as i32),
-                    mem_ptr,
-                )
-                .0
-        });
-
-        EmitSummary::builder()
-            .instructions(
-                [
-                    [now(loadreg)].as_slice(),
-                    mapaddr.map(now).as_slice(),
-                    [now(iadd0), now(sload8)].as_slice(),
-                ]
-                .concat(),
-            )
-            .register_updates([($self.rt, updtdelay(1, rt))])
-            .build($ctx.fn_builder)
-    }};
 }
 
 #[cfg(test)]

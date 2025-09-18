@@ -43,8 +43,12 @@ impl Display for LHU {
 }
 
 impl Op for LHU {
+    fn hazard(&self) -> Option<u32> {
+        Some(1)
+    }
+
     fn emit_ir(&self, mut ctx: EmitCtx) -> EmitSummary {
-        load!(self, ctx, Opcode::Uload16)
+        load!(self, ctx, readu16)
     }
 
     fn is_block_boundary(&self) -> Option<BoundaryType> {
@@ -81,7 +85,7 @@ mod tests {
             [lhu(8, 9, 4), nop(), ops::OpCode(69420)],
         );
 
-        let op = emulator.mem.read::<ops::OpCode>(PhysAddr(0));
+        let op = emulator.mem.read_01::<ops::OpCode>(PhysAddr(0));
         tracing::debug!(decoded = ?DecodedOp::try_from(op));
         tracing::debug!("{:08X?}", &emulator.mem.as_ref()[..22]);
 

@@ -5,6 +5,8 @@ use tracing::instrument;
 
 use crate::cpu::ops;
 
+pub mod fastmem;
+
 pub const fn kb(value: usize) -> usize {
     value * 1024
 }
@@ -35,82 +37,14 @@ impl AsMut<[u8]> for Memory {
     }
 }
 
-static MEM_SIZE: usize = kb(2048) + kb(8192) + kb(1) + kb(8) + kb(8) + kb(2048) + kb(512) + 512;
+static MEM_SIZE: usize =
+    kb(2048) + kb(8192) + kb(64) + kb(64) + kb(64) + kb(2048) + kb(512) + kb(64);
 // const MEM_SIZE: usize = 600 * 1024 * 1024;
 static MEM_KB: usize = from_kb(MEM_SIZE) + 1;
 
 impl Default for Memory {
     fn default() -> Self {
         Memory(buffer(MEM_SIZE))
-    }
-}
-
-#[derive(derive_more::Debug)]
-#[derive_const(Default)]
-#[debug("0x{:08X}:0x{:08X}", self.phys_start, self.host_start)]
-pub struct MemoryRegion {
-    pub host_start: u32,
-    pub phys_start: u32,
-}
-
-pub const fn memory_map() -> [MemoryRegion; 1 << 16] {
-    const REGIONS: [(u32, usize); 8] = [
-        (0, kb(2048)),
-        (0x1F000000, kb(8192)),
-        (0x1F800000, kb(1)),
-        (0x1F801000, kb(8)),
-        (0x1F802000, kb(8)),
-        (0x1FA00000, kb(2048)),
-        (0x1FC00000, kb(512)),
-        (0x1FFE0000, 512),
-    ];
-    let mut start = 0u32;
-    let mut current = 0;
-    let mut table = [const { MemoryRegion::default() }; 1 << 16];
-    while current < REGIONS.len() {
-        let mut i = REGIONS[current].0 >> 16;
-        let end = (REGIONS[current].0 + REGIONS[current].1 as u32) >> 16;
-        while i <= end {
-            table[i as usize] = MemoryRegion {
-                host_start: start,
-                phys_start: REGIONS[current].0,
-            };
-            i += 1;
-        }
-        start += REGIONS[current].1 as u32;
-        current += 1;
-    }
-    // while current < table.len() {
-    //     table[current] = MemoryRegion {
-    //         host_start: current as u32,
-    //         phys_start: current as u32,
-    //     };
-    //     current += 1;
-    // }
-    table
-}
-
-pub static MEM_MAP: [MemoryRegion; 1 << 16] = memory_map();
-
-#[inline]
-pub const fn map_physical(phys: PhysAddr) -> u32 {
-    phys.0 >> 16
-}
-
-#[instrument]
-pub fn lookup_phys(phys: PhysAddr) -> u32 {
-    let index = map_physical(phys);
-    let region = &MEM_MAP[index as usize];
-    tracing::info!(?phys, ?index, ?region);
-    let offset = phys.0 as i32 - region.phys_start as i32;
-    region.host_start.saturating_add_signed(offset)
-}
-
-impl Index<PhysAddr> for Memory {
-    type Output = u8;
-
-    fn index(&self, index: PhysAddr) -> &Self::Output {
-        &self.0[lookup_phys(index) as usize]
     }
 }
 
@@ -483,6 +417,10 @@ impl ToWord for u32 {
     }
 }
 
+pub const fn lookup_phys(addr: PhysAddr) -> u32 {
+    addr.0
+}
+
 #[rustfmt::skip]
 pub const trait Address: TryInto<PhysAddr> + core::fmt::Debug + 'static + Copy {}
 
@@ -500,7 +438,7 @@ impl Memory {
         let value = T::from_slice(slice).map_err(MemReadError::DerefErr)?;
         Ok(value)
     }
-    pub fn read<T: MemRead>(&self, addr: impl Address) -> T {
+    pub fn read_01<T: MemRead>(&self, addr: impl Address) -> T {
         self.try_read(addr).unwrap()
     }
     #[instrument(err, skip(self, value))]
