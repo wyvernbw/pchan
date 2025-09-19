@@ -39,8 +39,27 @@ impl AsMut<[u8]> for Memory {
     }
 }
 
-static MEM_SIZE: usize =
-    kb(2048) + kb(8192) + kb(64) + kb(64) + kb(64) + kb(2048) + kb(512) + kb(64);
+pub struct MemMap {
+    ram: usize,
+    scratch: usize,
+    io: usize,
+    exp_2: usize,
+    exp_3: usize,
+    bios: usize,
+    cache_control: usize,
+}
+
+pub static MEM_MAP: MemMap = MemMap {
+    ram: 0,
+    scratch: kb(2048),
+    io: kb(2048) + kb(64),
+    exp_2: kb(2048) + kb(64) + kb(64),
+    exp_3: kb(2048) + kb(64) + kb(64) + kb(64),
+    bios: kb(2048) + kb(64) + kb(64) + kb(64) + kb(2048),
+    cache_control: kb(2048) + kb(64) + kb(64) + kb(64) + kb(2048) + kb(512),
+};
+
+static MEM_SIZE: usize = kb(2048) + kb(64) + kb(64) + kb(64) + kb(2048) + kb(512) + kb(64);
 // const MEM_SIZE: usize = 600 * 1024 * 1024;
 static MEM_KB: usize = from_kb(MEM_SIZE) + 1;
 
@@ -183,7 +202,7 @@ impl Memory {
         T::ext(read)
     }
 
-    pub fn write<T>(&mut self, address: u32, value: T) {
+    pub fn write<T: Copy>(&mut self, address: u32, value: T) {
         unsafe {
             Memory::write_raw(self.0.as_mut_ptr(), address, value);
         }

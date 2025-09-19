@@ -1071,9 +1071,7 @@ fn collect_instructions(
             node,
         });
 
-        if op.is_nop() {
-            tracing::trace!("nop");
-        }
+        if op.is_nop() {}
         if summary.instructions.is_empty() && !op.is_nop() {
             tracing::warn!("emitted no instructions")
         }
@@ -1106,8 +1104,6 @@ fn collect_instructions(
                         node,
                     });
                     fn_builder.append_inst(i, inst.terminator);
-
-                    tracing::trace!(?inst, "inserted instruction")
                 }
                 ClifInstructionQueueType::Seal => {
                     let i = inst.instruction(EmitCtx {
@@ -1120,19 +1116,15 @@ fn collect_instructions(
                         node,
                     });
                     fn_builder.append_inst(i, inst.terminator);
-                    tracing::trace!(?inst, "inserted seal instruction");
                     final_instruction = Some(inst);
                 }
                 ClifInstructionQueueType::Bottom => {
-                    tracing::trace!(?inst, "bottom instruction scheduled");
                     queue.push(inst);
                 }
                 ClifInstructionQueueType::Delayed(_) => {
-                    tracing::trace!(?inst, "delayed instruction scheduled");
                     queue.push(inst);
                 }
                 ClifInstructionQueueType::Bomb(_) => {
-                    tracing::trace!(?inst, "time is ticking");
                     queued_bomb = Some(inst.clone());
                     queue.push(inst.clone());
                 }
@@ -1168,11 +1160,9 @@ fn collect_instructions(
             let tick = inst.queue_type.tick();
             if tick.bomb_went_off {
                 bomb_signal = Some(inst.clone());
-                tracing::trace!(?inst, "bomb went off");
                 return false;
             }
             if tick.ready {
-                tracing::trace!(?inst, "delayed instruction inserted");
                 let i = inst.instruction(EmitCtx {
                     fn_builder,
                     func_ref_table,
@@ -1243,7 +1233,6 @@ fn collect_instructions(
                     node,
                 });
                 fn_builder.append_inst(i, inst.terminator);
-                tracing::trace!(?inst, "fast forward instruction");
             });
         // emit all bottom instructions
         queue
@@ -1260,7 +1249,6 @@ fn collect_instructions(
                     node,
                 });
                 fn_builder.append_inst(i, inst.terminator);
-                tracing::trace!(?inst, "inserted bottom instruction");
             });
     }
 
@@ -1275,8 +1263,6 @@ fn collect_instructions(
             node,
         });
         fn_builder.append_inst(i, bomb.terminator);
-
-        tracing::trace!(?bomb, "inserted bomb instruction");
     } else if let Some(final_instruction) = final_instruction {
         let i = final_instruction.instruction(EmitCtx {
             fn_builder,
@@ -1288,10 +1274,7 @@ fn collect_instructions(
             node,
         });
         fn_builder.append_inst(i, final_instruction.terminator);
-
-        tracing::trace!(?final_instruction, "inserted seal instruction");
     } else {
-        tracing::trace!(?final_instruction, "inserted manual return");
         fn_builder.ins().return_(&[]);
     }
 

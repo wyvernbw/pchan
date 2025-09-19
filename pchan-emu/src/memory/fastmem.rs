@@ -1,10 +1,9 @@
 use std::sync::LazyLock;
 
-use const_hex::const_encode;
 use pchan_utils::hex;
 use tracing::instrument;
 
-use crate::memory::{Memory, kb};
+use crate::memory::{MEM_MAP, Memory, kb};
 
 const PAGE_COUNT: usize = 0x10000;
 const PAGE_SIZE: usize = kb(64);
@@ -42,22 +41,21 @@ fn generate_page_tables() -> Lut {
     }
 
     const BIOS_PAGE_COUNT: usize = kb(512) / PAGE_SIZE;
-    const BIOS_OFFSET: u32 = (kb(2048) + kb(8192) + kb(64) + kb(64) + kb(64) + kb(2048)) as u32;
 
     for i in 0..BIOS_PAGE_COUNT {
         let offset = ((i * PAGE_SIZE) & 0x1FFFFF) as u32;
 
         #[allow(clippy::identity_op)]
-        table_read[i + 0x1FC0] = Some(BIOS_OFFSET + offset);
-        table_read[i + 0x9FC0] = Some(BIOS_OFFSET + offset);
-        table_read[i + 0xBFC0] = Some(BIOS_OFFSET + offset);
+        table_read[i + 0x1FC0] = Some(MEM_MAP.bios as u32 + offset);
+        table_read[i + 0x9FC0] = Some(MEM_MAP.bios as u32 + offset);
+        table_read[i + 0xBFC0] = Some(MEM_MAP.bios as u32 + offset);
 
         // thats it, bios is not writeable
     }
 
     // DONE: make sure to increase emulator memory to use a 64kb scratch
     // this is so we can map scratch with fastmem
-    const SCRATCH_OFFSET: u32 = (kb(2048) + kb(8129)) as u32;
+    const SCRATCH_OFFSET: u32 = MEM_MAP.scratch as u32;
 
     #[allow(clippy::identity_op)]
     table_read[0x1F80] = Some(SCRATCH_OFFSET);
@@ -79,13 +77,13 @@ impl Memory {
     /// this is never safe, live fast die young
     pub unsafe fn read_raw<T: Copy>(mem: *const u8, address: u32) -> T {
         let page = address >> 16;
+        let offset = address & 0xFFFF;
 
         let lut_ptr = LUT.read[page as usize];
 
         match lut_ptr {
             // fastmem
             Some(region_ptr) => {
-                let offset = address & 0xFFFF;
                 let ptr = mem
                     .wrapping_add(region_ptr as usize)
                     .wrapping_add(offset as usize);
@@ -94,10 +92,20 @@ impl Memory {
             }
             // memcheck
             None => {
-                tracing::error!(
-                    "read to address=0x{address:08X?} requires memcheck (not yet implemented)"
-                );
-                unsafe { std::mem::zeroed() }
+                let _span = tracing::info_span!("memcheck").entered();
+                match address {
+                    0xfffe0000.. => {
+                        let ptr = mem
+                            .wrapping_add(offset as usize)
+                            .wrapping_add(MEM_MAP.cache_control);
+                        tracing::info!("read in cache control");
+                        unsafe { *(ptr as *const T) }
+                    }
+                    _ => {
+                        tracing::error!("unsupported region");
+                        unsafe { std::mem::zeroed() }
+                    }
+                }
             }
         }
     }
@@ -149,6 +157,21 @@ impl Memory {
 }
 
 impl Memory {
+    /// # SAFETY
+    pub unsafe fn write_impl<T>(ptr: *mut u8, value: T) {
+        let ptr = ptr as *mut T;
+
+        if !ptr.is_aligned() {
+            tracing::error!(
+                "emulator trigger unaligned write in an aligned operation. consider the exception handler invoked (not yet implemented)"
+            );
+            return;
+        }
+
+        unsafe {
+            std::ptr::write(ptr, value);
+        }
+    }
     /// # write
     ///
     /// aligned write generic over T.
@@ -157,39 +180,54 @@ impl Memory {
     /// # SAFETY
     ///
     /// here be segfaults... should be fine tho
-    pub unsafe fn write_raw<T>(mem: *mut u8, address: u32, value: T) {
+    pub unsafe fn write_raw<T: Copy>(mem: *mut u8, address: u32, value: T) {
         let page = address >> 16;
+        let offset = address & 0x0000_FFFF;
 
         let lut_ptr = LUT.read[page as usize];
 
         match lut_ptr {
             // fastmem
             Some(region_ptr) => {
-                let offset = address & 0xFFFF;
                 let ptr = mem
                     .wrapping_add(region_ptr as usize)
                     .wrapping_add(offset as usize);
-                let ptr = ptr as *mut T;
-
-                if !ptr.is_aligned() {
-                    tracing::error!(
-                        "emulator trigger unaligned write in an aligned operation. consider the exception handler invoked (not yet implemented)"
-                    );
-                    return;
-                }
-
                 unsafe {
-                    std::ptr::write(ptr, value);
+                    Memory::write_impl(ptr, value);
                 }
             }
             // memcheck
             None => {
-                tracing::error!(
-                    "write to address={address:08X?} requires memcheck (not yet implemented)"
-                );
+                let _span = tracing::info_span!("memcheck").entered();
+                match address {
+                    0xfffe0000.. => {
+                        let ptr = mem
+                            .wrapping_add(offset as usize)
+                            .wrapping_add(MEM_MAP.cache_control);
+                        unsafe {
+                            Memory::write_impl(ptr, value);
+                        };
+                        Memory::write_to_cache_control(address, value);
+                    }
+                    _ => {
+                        tracing::error!("unsupported region");
+                    }
+                }
             }
         }
     }
+
+    fn write_to_cache_control<T>(address: u32, value: T) {
+        match address {
+            0xfffe_0130 => {
+                tracing::info!("side effect");
+            }
+            _ => {
+                tracing::error!("unsupported cache control address");
+            }
+        }
+    }
+
     /// # Safety
     ///
     /// this is never safe, live fast die young

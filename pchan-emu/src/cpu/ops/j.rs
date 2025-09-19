@@ -10,7 +10,7 @@ use crate::cpu::ops::{
 #[derive(Debug, Clone, Copy)]
 #[allow(clippy::upper_case_acronyms)]
 pub struct J {
-    pub imm: i32,
+    pub imm: u32,
 }
 
 impl TryFrom<OpCode> for J {
@@ -19,7 +19,7 @@ impl TryFrom<OpCode> for J {
     fn try_from(opcode: OpCode) -> Result<Self, TryFromOpcodeErr> {
         let opcode = opcode.as_primary(PrimeOp::J)?;
         Ok(J {
-            imm: (opcode.bits(0..26) as i16 as i32) << 2,
+            imm: opcode.bits(0..26) << 2,
         })
     }
 }
@@ -33,14 +33,14 @@ impl Display for J {
 impl Op for J {
     fn is_block_boundary(&self) -> Option<BoundaryType> {
         Some(BoundaryType::Block {
-            offset: MipsOffset::Relative(self.imm),
+            offset: MipsOffset::RegionJump(self.imm),
         })
     }
 
     fn into_opcode(self) -> OpCode {
         OpCode::default()
             .with_primary(PrimeOp::J)
-            .set_bits(0..26, self.imm as u32 >> 2)
+            .set_bits(0..26, self.imm >> 2)
     }
 
     fn hazard(&self) -> Option<u32> {
@@ -62,13 +62,13 @@ impl Op for J {
                         .0
                 }),
             ))])
-            .pc_update(MipsOffset::Relative(self.imm).calculate_address(ctx.pc))
+            .pc_update(MipsOffset::RegionJump(self.imm).calculate_address(ctx.pc))
             .build(ctx.fn_builder)
     }
 }
 
 #[inline]
-pub fn j(imm: i32) -> OpCode {
+pub fn j(imm: u32) -> OpCode {
     J { imm }.into_opcode()
 }
 

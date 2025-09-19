@@ -143,7 +143,7 @@ mod tests {
             nop(),                    // ; 20
             addiu(8, 8, 1),           // ; 24 $t0 = $t0 + 1
             nop(),                    // ; 28
-            j(-24),                   // ; 32 jump to 8 (return to beginning of loop)
+            j(8),                     // ; 32 jump to 8 (return to beginning of loop)
             nop(),                    // ; 36
             nop(),                    // ; 40
             OpCode(69420),            // ; 44 halt
