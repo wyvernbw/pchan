@@ -1,14 +1,10 @@
 #![feature(ptr_as_ref_unchecked)]
-use std::{
-    backtrace::Backtrace,
-    cell::{Cell, RefCell},
-};
+use std::{backtrace::Backtrace, cell::Cell};
 
-use heapless::HistoryBuf;
 use rstest::*;
 use tracing_subscriber::{
     EnvFilter,
-    fmt::{self, format::FmtSpan},
+    fmt::{self},
     util::SubscriberInitExt,
 };
 
@@ -98,14 +94,21 @@ pub fn hex<T>(x: &T) -> &'static str {
     BUFFERS.with(|b| {
         let buf = b.next_ptr();
         let buf: &mut [u8; 130] = unsafe { &mut *(buf as *mut [u8; 130]) };
-        buf[0] = b'0';
-        buf[1] = b'x';
         let start = 2;
         let buf_pad = &mut buf[start..(start + len * 2)];
 
-        let _ = const_hex::encode_to_slice_upper(bytes, buf_pad);
-
+        let _ = const_hex::encode_to_slice(bytes, buf_pad);
+        if cfg!(target_endian = "little") {
+            let byte_len = len * 2;
+            for i in 0..(len / 2) {
+                let byte_idx = i * 2;
+                buf_pad.swap(byte_idx, byte_len - byte_idx - 2);
+                buf_pad.swap(byte_idx + 1, byte_len - byte_idx - 2 + 1);
+            }
+        }
         let buf = &mut buf[0..(start + len * 2)];
+        buf[0] = b'0';
+        buf[1] = b'x';
         unsafe { str::from_utf8_unchecked(buf) }
     })
 }
