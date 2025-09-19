@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 bon = "3.7.2"
 color-eyre = "*"
+const-hex.workspace = true
 const_for = "0.1.5"
 cranelift = { version = "0.123.2", features = ["core", "jit", "module", "native"] }
 cranelift-codegen = { version = "0.123.2", features = ["arm64", "x86"] }

@@ -9,3 +9,5 @@ tracing-subscriber = { workspace = true }
 color-eyre = { workspace = true }
 tracing = { workspace = true }
 tracing-panic = "0.1.2"
+const-hex.workspace = true
+heapless = "0.9.1"

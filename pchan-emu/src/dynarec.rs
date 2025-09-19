@@ -21,7 +21,7 @@ use petgraph::{
     visit::{DfsEvent, depth_first_search},
 };
 use slab::Slab;
-use tracing::instrument;
+use tracing::{Level, enabled, instrument};
 use tracing::{info_span, trace_span};
 
 pub mod prelude {
@@ -161,11 +161,13 @@ impl Emu {
                 .build(),
         )?;
 
-        tracing::trace!(cfg.cycle = is_cyclic_directed(&blocks.cfg));
-        tracing::trace!(
-            "\n{:?}",
-            Dot::with_config(&blocks.cfg, &[Config::EdgeNoLabel, Config::NodeIndexLabel])
-        );
+        if enabled!(Level::TRACE) {
+            tracing::trace!(cfg.cycle = is_cyclic_directed(&blocks.cfg));
+            tracing::trace!(
+                "\n{:?}",
+                Dot::with_config(&blocks.cfg, &[Config::EdgeNoLabel, Config::NodeIndexLabel])
+            );
+        }
 
         for node in blocks.cfg.node_indices() {
             let block = &blocks.cfg[node];
@@ -244,12 +246,14 @@ impl Emu {
                     ..state
                 };
 
-                tracing::trace!(
-                    ?node,
-                    ?cranelift_block,
-                    "compiling {} psx ops...",
-                    blocks.ops_for(basic_block).len()
-                );
+                if enabled!(Level::TRACE) {
+                    tracing::trace!(
+                        ?node,
+                        ?cranelift_block,
+                        "compiling {} psx ops...",
+                        blocks.ops_for(basic_block).len()
+                    );
+                }
 
                 state_map.insert(node, state);
 
@@ -437,8 +441,10 @@ fn fetch(params: FetchParams<'_>) -> color_eyre::Result<FetchSummary> {
         mapped.to_mut().insert(state.start_pc, state.node);
         cfg[state.node].address = state.start_pc;
 
-        tracing::trace!(" ---- begin block ---- ");
-        tracing::trace!(" ┗━> address: 0x{:08X?}", state.start_pc);
+        if enabled!(Level::TRACE) {
+            tracing::trace!(" ---- begin block ---- ");
+            tracing::trace!(" ┗━> address: 0x{:08X?}", state.start_pc);
+        }
         let mut lifetime: Option<u32> = None;
         let mut boundary: Option<(DecodedOp, u32)> = None;
 
@@ -452,7 +458,9 @@ fn fetch(params: FetchParams<'_>) -> color_eyre::Result<FetchSummary> {
             let Ok(op) = DecodedOp::try_from(opcode) else {
                 break;
             };
-            tracing::trace!("0x{:08X?}  {}", pc, op);
+            if enabled!(Level::TRACE) {
+                tracing::trace!("0x{:08X?}  {}", pc, op);
+            }
             ops.push(op);
             ops_end = ops.len();
 
@@ -520,7 +528,7 @@ fn fetch(params: FetchParams<'_>) -> color_eyre::Result<FetchSummary> {
 
     Ok(FetchSummary {
         cfg,
-        entry: entry,
+        entry,
         decoded_ops: ops,
     })
 }

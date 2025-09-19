@@ -9,6 +9,7 @@ pchan-utils = { workspace = true }
 pchan-emu = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+const-hex = { workspace = true, features = ["alloc"] }
 
 [workspace]
 resolver = "3"
@@ -23,6 +24,7 @@ members = [
 cranelift-frontend = { path = "./pchan-cranelift-frontend" }
 
 [workspace.dependencies]
+const-hex = { version = "1.16.0", features = ["nightly", "portable-simd"] }
 pchan-macros = { path = "./pchan-macros"}
 pchan-utils = { path = "./pchan-utils"}
 pchan-emu = { path = "./pchan-emu" }

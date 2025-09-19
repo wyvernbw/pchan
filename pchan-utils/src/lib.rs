@@ -1,5 +1,10 @@
-use std::backtrace::Backtrace;
+#![feature(ptr_as_ref_unchecked)]
+use std::{
+    backtrace::Backtrace,
+    cell::{Cell, RefCell},
+};
 
+use heapless::HistoryBuf;
 use rstest::*;
 use tracing_subscriber::{
     EnvFilter,
@@ -57,4 +62,50 @@ macro_rules! array {
     ($($idx:literal => $val:expr),+ $(,)?) => (
         [$( $val ),+]
     );
+}
+
+use std::{mem::size_of, slice, str};
+
+thread_local! {
+    static BUFFERS: Buffers = const { Buffers::new() };
+}
+
+struct Buffers {
+    slots: [[u8; 130]; 4], // 4 concurrent hex strings per thread
+    index: Cell<usize>,
+}
+
+impl Buffers {
+    const fn new() -> Self {
+        Self {
+            slots: [[0; 130]; 4],
+            index: Cell::new(0),
+        }
+    }
+
+    fn next_ptr(&self) -> *mut u8 {
+        let i = self.index.get();
+        self.index.set((i + 1) % self.slots.len());
+        self.slots[i].as_ptr() as *mut u8
+    }
+}
+
+pub fn hex<T>(x: &T) -> &'static str {
+    let ptr = x as *const T as *const u8;
+    let len = size_of::<T>();
+    let bytes = unsafe { slice::from_raw_parts(ptr, len) };
+
+    BUFFERS.with(|b| {
+        let buf = b.next_ptr();
+        let buf: &mut [u8; 130] = unsafe { &mut *(buf as *mut [u8; 130]) };
+        buf[0] = b'0';
+        buf[1] = b'x';
+        let start = 2;
+        let buf_pad = &mut buf[start..(start + len * 2)];
+
+        let _ = const_hex::encode_to_slice_upper(bytes, buf_pad);
+
+        let buf = &mut buf[0..(start + len * 2)];
+        unsafe { str::from_utf8_unchecked(buf) }
+    })
 }
