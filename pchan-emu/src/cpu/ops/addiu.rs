@@ -104,15 +104,14 @@ mod tests {
     use rstest::rstest;
 
     use crate::cpu::ops::prelude::*;
-    use crate::{Emu, memory::KSEG0Addr, test_utils::emulator};
+    use crate::cpu::program;
+    use crate::{Emu, test_utils::emulator};
 
     #[rstest]
     fn addiu_1(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
         use crate::cpu::ops::prelude::*;
-        let program = [addiu(9, 8, -16), addiu(10, 0, 8), OpCode(69420)];
-        emulator
-            .mem
-            .write_all(KSEG0Addr::from_phys(emulator.cpu.pc), program);
+        let program = program([addiu(9, 8, -16), addiu(10, 0, 8), OpCode(69420)]);
+        emulator.mem.write_many(emulator.cpu.pc, &program);
         emulator.cpu.gpr[8] = 32;
         emulator.step_jit()?;
         assert_eq!(emulator.cpu.gpr[9], emulator.cpu.gpr[8] - 16);
@@ -125,7 +124,7 @@ mod tests {
 
         emulator
             .mem
-            .write_array(KSEG0Addr::from_phys(0), &[addiu(10, 0, 32), OpCode(69420)]);
+            .write_many(0x0, &program([addiu(10, 0, 32), OpCode(69420)]));
         let summary = emulator.step_jit_summarize::<JitSummary>()?;
         tracing::info!(?summary.function);
         assert_eq!(emulator.cpu.gpr[10], 32);
@@ -137,9 +136,9 @@ mod tests {
     fn addiu_3_shortpath(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
         use crate::dynarec::JitSummary;
 
-        emulator.mem.write_array(
-            KSEG0Addr::from_phys(0),
-            &[addiu(8, 0, 21), addiu(10, 8, 0), OpCode(69420)],
+        emulator.mem.write_many(
+            0x0,
+            &program([addiu(8, 0, 21), addiu(10, 8, 0), OpCode(69420)]),
         );
         let summary = emulator.step_jit_summarize::<JitSummary>()?;
         tracing::info!(?summary.function);

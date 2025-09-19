@@ -57,7 +57,7 @@ mod tests {
     use rstest::rstest;
 
     use crate::Emu;
-    use crate::cpu::ops::prelude::*;
+    use crate::dynarec::prelude::*;
     use crate::test_utils::emulator;
 
     #[rstest]
@@ -72,12 +72,9 @@ mod tests {
         #[case] b: u32,
         #[case] expected: u32,
     ) -> color_eyre::Result<()> {
-        use crate::{dynarec::JitSummary, memory::KSEG0Addr};
-
-        emulator.mem.write_array(
-            KSEG0Addr::from_phys(0),
-            &[mult(8, 9), nop(), mflo(10), OpCode(69420)],
-        );
+        emulator
+            .mem
+            .write_many(0x0, &program([mult(8, 9), nop(), mflo(10), OpCode(69420)]));
         emulator.cpu.gpr[8] = a;
         emulator.cpu.gpr[9] = b;
 

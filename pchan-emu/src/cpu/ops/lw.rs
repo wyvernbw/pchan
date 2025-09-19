@@ -60,6 +60,7 @@ impl Op for LW {
 #[cfg(test)]
 mod tests {
     use crate::dynarec::prelude::*;
+    use crate::memory::ext;
     use pchan_utils::setup_tracing;
     use pretty_assertions::assert_eq;
     use pretty_assertions::assert_ne;
@@ -69,20 +70,16 @@ mod tests {
         Emu,
         cpu::ops::{self},
         dynarec::JitSummary,
-        memory::KSEG0Addr,
         test_utils::emulator,
     };
 
     #[rstest]
     pub fn test_lw(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
+        emulator.mem.write::<u32>(32, 0xDEAD_BEEF); // -32768
+
         emulator
             .mem
-            .write::<u32>(KSEG0Addr::from_phys(32), 0xDEAD_BEEF); // -32768
-
-        emulator.mem.write_all(
-            KSEG0Addr::from_phys(0),
-            [lw(8, 9, 0), nop(), ops::OpCode(69420)],
-        );
+            .write_many(0, &program([lw(8, 9, 0), nop(), ops::OpCode(69420)]));
 
         emulator.cpu.gpr[9] = 32; // base register
 
@@ -96,18 +93,16 @@ mod tests {
 
     #[rstest]
     pub fn load_delay_hazard_1(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
-        emulator
-            .mem
-            .write::<u32>(KSEG0Addr::from_phys(32), 0xDEAD_BEEF);
+        emulator.mem.write::<u32>(32, 0xDEAD_BEEF);
 
-        emulator.mem.write_all(
-            KSEG0Addr::from_phys(0),
-            [
+        emulator.mem.write_many(
+            0,
+            &program([
                 addiu(8, 0, 0),
                 lw(8, 9, 0),
                 addiu(8, 8, 12),
                 ops::OpCode(69420),
-            ],
+            ]),
         );
 
         emulator.cpu.gpr[9] = 32; // base register
@@ -124,13 +119,11 @@ mod tests {
 
     #[rstest]
     pub fn load_delay_hazard_2(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
-        emulator
-            .mem
-            .write::<u32>(KSEG0Addr::from_phys(32), 0xDEAD_BEEF);
+        emulator.mem.write::<u32>(32, 0xDEAD_BEEF);
 
-        emulator.mem.write_all(
-            KSEG0Addr::from_phys(0),
-            [lw(8, 9, 0), nop(), sb(8, 10, 0), ops::OpCode(69420)],
+        emulator.mem.write_many(
+            0,
+            &program([lw(8, 9, 0), nop(), sb(8, 10, 0), ops::OpCode(69420)]),
         );
 
         emulator.cpu.gpr[9] = 32; // base register
@@ -140,7 +133,7 @@ mod tests {
         emulator.step_jit()?;
 
         assert_eq!(emulator.cpu.gpr[8], 0xDEAD_BEEF);
-        assert_ne!(emulator.mem.read_01::<u32>(KSEG0Addr::from_phys(36)), 0);
+        assert_ne!(emulator.mem.read::<u32, ext::NoExt>(36), 0);
 
         Ok(())
     }

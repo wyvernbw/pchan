@@ -89,8 +89,8 @@ mod tests {
     use pretty_assertions::assert_eq;
     use rstest::rstest;
 
-    use crate::cpu::ops::prelude::*;
-    use crate::{Emu, memory::KSEG0Addr, test_utils::emulator};
+    use crate::dynarec::prelude::*;
+    use crate::{Emu, test_utils::emulator};
 
     #[rstest]
     #[case(1, 1, 1)]
@@ -107,9 +107,9 @@ mod tests {
     ) -> color_eyre::Result<()> {
         use crate::dynarec::JitSummary;
 
-        emulator.mem.write_array(
-            KSEG0Addr::from_phys(0),
-            &[addiu(8, 0, a), ori(10, 8, b), OpCode(69420)],
+        emulator.mem.write_many(
+            0x0,
+            &program([addiu(8, 0, a), ori(10, 8, b), OpCode(69420)]),
         );
         let summary = emulator.step_jit_summarize::<JitSummary>()?;
         tracing::info!(?summary.function);
@@ -123,7 +123,7 @@ mod tests {
 
         emulator
             .mem
-            .write_array(KSEG0Addr::from_phys(0), &[ori(10, 0, imm), OpCode(69420)]);
+            .write_many(0x0, &program([ori(10, 0, imm), OpCode(69420)]));
         let summary = emulator.step_jit_summarize::<JitSummary>()?;
         tracing::info!(?summary.function);
         assert_eq!(emulator.cpu.gpr[10], imm as u32);

@@ -2,7 +2,7 @@ use std::{fs, io::Read, path::PathBuf};
 
 use thiserror::Error;
 
-use crate::memory::{KSEG1Addr, Memory, buffer, from_kb, kb};
+use crate::memory::{Memory, buffer, from_kb, kb};
 
 #[derive(derive_more::Debug)]
 pub struct Bootloader {
@@ -36,7 +36,7 @@ impl Bootloader {
         let bios_slice = &bios[..kb(512)];
         tracing::info!("loaded bios: {}kb", from_kb(bios_slice.len()));
 
-        mem.write_all(KSEG1Addr(0xBFC0_0000), bios_slice.iter().cloned());
+        mem.write_many(0xBFC0_0000, bios_slice);
 
         Ok(())
     }

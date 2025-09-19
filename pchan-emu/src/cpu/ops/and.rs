@@ -86,7 +86,7 @@ mod tests {
 
     use crate::cpu::ops::prelude::*;
     use crate::dynarec::JitSummary;
-    use crate::{Emu, memory::KSEG0Addr, test_utils::emulator};
+    use crate::{Emu, test_utils::emulator};
 
     #[rstest]
     #[case(1, 1, 1)]
@@ -101,9 +101,11 @@ mod tests {
         #[case] b: i16,
         #[case] expected: u32,
     ) -> color_eyre::Result<()> {
-        emulator.mem.write_array(
-            KSEG0Addr::from_phys(0),
-            &[addiu(8, 0, a), addiu(9, 0, b), and(10, 8, 9), OpCode(69420)],
+        use crate::cpu::program;
+
+        emulator.mem.write_many(
+            0x0,
+            &program([addiu(8, 0, a), addiu(9, 0, b), and(10, 8, 9), OpCode(69420)]),
         );
         let summary = emulator.step_jit_summarize::<JitSummary>()?;
         tracing::info!(?summary.function);

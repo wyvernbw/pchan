@@ -2,7 +2,7 @@
 #![feature(duration_millis_float)]
 #![allow(unused_variables)]
 
-use pchan_emu::{Emu, memory::KSEG0Addr};
+use pchan_emu::Emu;
 use std::{hint::black_box, time::Instant};
 
 #[cfg(test)]
@@ -11,7 +11,7 @@ pub mod bench;
 pub fn write_test_program(emu: &mut Emu) {
     use pchan_emu::cpu::ops::prelude::*;
 
-    let program = [
+    let main = program([
         addiu(8, 0, 0),           // ;  0 $t0 = 0
         addiu(10, 0, 4),          // ;  4 $t2 = 4
         addiu(9, 8, 0x0000_2000), // ;  8 calculate address $t1 = $t0 + 0x0000_2000
@@ -24,10 +24,9 @@ pub fn write_test_program(emu: &mut Emu) {
         nop(),                    // ; 36
         nop(),                    // ; 40
         OpCode(69420),            // ; 44 halt
-    ];
+    ]);
 
-    emu.mem
-        .write_array(KSEG0Addr::from_phys(emu.cpu.pc), &program);
+    emu.mem.write_many::<u32>(emu.cpu.pc, &main);
 }
 pub fn time<F, T>(f: F) -> (T, f64)
 where

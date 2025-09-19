@@ -1,4 +1,9 @@
-use crate::{IntoInst, cranelift_bs::*, jit::FuncRefTable, memory};
+use crate::{
+    IntoInst,
+    cranelift_bs::*,
+    jit::FuncRefTable,
+    memory::{self, ext},
+};
 use std::{
     borrow::Cow,
     collections::HashMap,
@@ -41,7 +46,7 @@ use crate::{
     Emu, FnBuilderExt,
     cpu::{Cpu, ops::prelude::*},
     jit::{BlockPage, JIT},
-    memory::{MEM_MAP, Memory, PhysAddr},
+    memory::Memory,
 };
 
 #[derive(Debug, Builder, Clone)]
@@ -139,9 +144,9 @@ impl Emu {
         self.jit.apply_dirty_pages(initial_address);
 
         // try cache first
-        let cached =
-            self.jit
-                .use_cached_function(initial_address, &mut self.cpu, &mut self.mem, &MEM_MAP);
+        let cached = self
+            .jit
+            .use_cached_function(initial_address, &mut self.cpu, &mut self.mem);
         if cached {
             return Ok(T::summarize(SummarizeDeps::builder().build()));
         }
@@ -271,7 +276,10 @@ impl Emu {
 
         let function = self.jit.get_func(func_id);
         tracing::info!("compiled function: {:?}", function.0);
-        function(&mut self.cpu, &mut self.mem, true, &MEM_MAP);
+        {
+            let _span = info_span!("fn", addr = ?function.0).entered();
+            function(&mut self.cpu, &mut self.mem, true);
+        }
         tracing::trace!("{:#?}", self.cpu);
         self.jit.block_map.insert(initial_address, function);
 
@@ -430,25 +438,20 @@ fn fetch(params: FetchParams<'_>) -> color_eyre::Result<FetchSummary> {
         cfg[state.node].address = state.start_pc;
 
         tracing::trace!(" ---- begin block ---- ");
-        let addr = memory::lookup_phys(memory::PhysAddr(state.start_pc));
-        tracing::trace!(?addr, " ┗━> mem addr: ",);
+        tracing::trace!(" ┗━> address: 0x{:08X?}", state.start_pc);
         let mut lifetime: Option<u32> = None;
         let mut boundary: Option<(DecodedOp, u32)> = None;
 
         let ops_start = ops.len();
         let mut ops_end = ops.len();
 
-        for (idx, data) in mem.as_ref()[(addr as usize)..]
-            .iter()
-            .cloned()
-            .array_chunks::<4>()
-            .enumerate()
-        {
-            let opcode = OpCode(u32::from_le_bytes(data));
+        let mut pc = state.start_pc;
+
+        while pc < u32::MAX {
+            let opcode = mem.read::<OpCode, ext::NoExt>(pc);
             let Ok(op) = DecodedOp::try_from(opcode) else {
                 break;
             };
-            let pc = state.start_pc + idx as u32 * 4;
             tracing::trace!("0x{:08X?}  {}", pc, op);
             ops.push(op);
             ops_end = ops.len();
@@ -464,6 +467,8 @@ fn fetch(params: FetchParams<'_>) -> color_eyre::Result<FetchSummary> {
                 lifetime = Some(4);
                 boundary = Some((op, pc));
             }
+
+            pc += 4;
         }
 
         let padded_ops_end = ops_end + 4;
@@ -473,7 +478,7 @@ fn fetch(params: FetchParams<'_>) -> color_eyre::Result<FetchSummary> {
 
         match boundary.is_block_boundary() {
             None => {}
-            Some(BoundaryType::Function { .. }) => {}
+            Some(BoundaryType::Function) => {}
             Some(BoundaryType::Block { offset }) => {
                 let new_address = offset.calculate_address(pc);
 
@@ -1032,8 +1037,8 @@ fn collect_instructions(
     ops: &[DecodedOp],
     cpu: &mut Cpu,
 ) {
-    let mut queue = Slab::with_capacity(64);
-    let mut updates_queue = Slab::with_capacity(64);
+    let mut queue = Vec::with_capacity(64);
+    let mut updates_queue = Vec::with_capacity(64);
     let mut final_instruction = None;
 
     let ptr_type = state_map[node].ptr_type;
@@ -1112,16 +1117,16 @@ fn collect_instructions(
                 }
                 ClifInstructionQueueType::Bottom => {
                     tracing::trace!(?inst, "bottom instruction scheduled");
-                    queue.insert(inst);
+                    queue.push(inst);
                 }
                 ClifInstructionQueueType::Delayed(_) => {
                     tracing::trace!(?inst, "delayed instruction scheduled");
-                    queue.insert(inst);
+                    queue.push(inst);
                 }
                 ClifInstructionQueueType::Bomb(_) => {
                     tracing::trace!(?inst, "time is ticking");
                     queued_bomb = Some(inst.clone());
-                    queue.insert(inst.clone());
+                    queue.push(inst.clone());
                 }
             }
         }
@@ -1139,10 +1144,10 @@ fn collect_instructions(
                 .cache(&mut state_map[node].cache)
                 .call();
         } else {
-            updates_queue.insert(summary.updates);
+            updates_queue.push(summary.updates);
         }
 
-        updates_queue.retain(|_, updates: &mut CacheUpdates| {
+        updates_queue.retain_mut(|updates: &mut CacheUpdates| {
             let res = !updates.tick();
             JIT::apply_cache_updates()
                 .updates(updates)
@@ -1151,7 +1156,7 @@ fn collect_instructions(
             res
         });
 
-        queue.retain(|_, inst: &mut ClifInstruction| {
+        queue.retain_mut(|inst: &mut ClifInstruction| {
             let tick = inst.queue_type.tick();
             if tick.bomb_went_off {
                 bomb_signal = Some(inst.clone());
@@ -1188,7 +1193,7 @@ fn collect_instructions(
     let _span = trace_span!("emit(closing)").entered();
 
     while !updates_queue.is_empty() {
-        updates_queue.retain(|_, updates: &mut CacheUpdates| {
+        updates_queue.retain_mut(|updates: &mut CacheUpdates| {
             let res = !updates.tick();
             JIT::apply_cache_updates()
                 .updates(updates)
@@ -1207,13 +1212,12 @@ fn collect_instructions(
         for inst in updates {
             let inst = bottom(inst);
             let _span = trace_span!("emit(updates)", ?inst).entered();
-            queue.insert(inst);
+            queue.push(inst);
         }
     }
 
     let pc = address + ops.len() as u32 * 4;
     if !queue.is_empty() {
-        let mut queue = queue.into_iter().map(|(_, el)| el).collect::<Vec<_>>();
         queue.sort_by(|a, b| a.queue_type.remaining().cmp(&b.queue_type.remaining()));
         // emit remaining delayed instructions
         queue

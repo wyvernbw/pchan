@@ -104,14 +104,6 @@ impl Op for BEQ {
                             .data_flow_graph_mut()
                             .block_call(else_block_label, &else_params);
 
-                        tracing::debug!(
-                            "branch: then={:?}({} deps) else={:?}({} deps)",
-                            then_block,
-                            then_params.len(),
-                            else_block,
-                            else_params.len()
-                        );
-
                         ctx.fn_builder
                             .pure()
                             .Brif(
@@ -135,13 +127,14 @@ mod tests {
     use pretty_assertions::assert_eq;
     use rstest::rstest;
 
-    use crate::{Emu, dynarec::JitSummary, memory::KSEG0Addr, test_utils::emulator};
+    use crate::cpu::program;
+    use crate::{Emu, dynarec::JitSummary, test_utils::emulator};
 
     #[rstest]
     fn beq_basic_loop(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
         use crate::cpu::ops::prelude::*;
 
-        let func = [
+        let func = program([
             addiu(8, 0, 0),           // ;  0 $t0 = 0
             addiu(10, 0, 4),          // ;  4 $t2 = 4
             addiu(9, 8, 0x0000_2000), // ;  8 calculate address $t1 = $t0 + 0x0000_2000
@@ -154,11 +147,9 @@ mod tests {
             nop(),                    // ; 36
             nop(),                    // ; 40
             OpCode(69420),            // ; 44 halt
-        ];
+        ]);
 
-        emulator
-            .mem
-            .write_all(KSEG0Addr::from_phys(emulator.cpu.pc), func);
+        emulator.mem.write_many(0x0, &func);
 
         let summary = emulator.step_jit_summarize::<JitSummary>()?;
         if let Some(func) = summary.function {
@@ -175,7 +166,7 @@ mod tests {
     fn beq_taken(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
         use crate::cpu::ops::prelude::*;
 
-        let func = [
+        let func = program([
             addiu(8, 0, 5),   // $t0 = 5
             addiu(9, 0, 5),   // $t1 = 5
             beq(8, 9, 8),     // $t0 == $t1, branch taken
@@ -184,11 +175,9 @@ mod tests {
             addiu(11, 0, 99), // executed after branch target
             sb(11, 0, 0x41),  // store 99 at memory[0x41]
             OpCode(69420),    // halt
-        ];
+        ]);
 
-        emulator
-            .mem
-            .write_all(KSEG0Addr::from_phys(emulator.cpu.pc), func);
+        emulator.mem.write_many(emulator.cpu.pc, &func);
 
         emulator.step_jit()?;
 
@@ -202,18 +191,16 @@ mod tests {
     fn beq_not_taken(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
         use crate::cpu::ops::prelude::*;
 
-        let func = [
+        let func = program([
             addiu(8, 0, 1),   // $t0 = 1
             addiu(9, 0, 2),   // $t1 = 2
             beq(8, 9, 8),     // $t0 != $t1, branch not taken
             addiu(10, 0, 42), // executed because branch not taken
             sb(10, 0, 0x30),  // store 42 at memory[0x30]
             OpCode(69420),    // halt
-        ];
+        ]);
 
-        emulator
-            .mem
-            .write_all(KSEG0Addr::from_phys(emulator.cpu.pc), func);
+        emulator.mem.write_many(emulator.cpu.pc, &func);
 
         emulator.step_jit()?;
 

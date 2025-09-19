@@ -72,7 +72,7 @@ mod tests {
     use rstest::rstest;
 
     use crate::cpu::ops::prelude::*;
-    use crate::{Emu, memory::KSEG0Addr, test_utils::emulator};
+    use crate::{Emu, test_utils::emulator};
 
     #[rstest]
     #[case(8, 0x1234, 0x1234_0000)]
@@ -88,7 +88,7 @@ mod tests {
 
         emulator
             .mem
-            .write_array(KSEG0Addr::from_phys(0), &[lui(reg, value), OpCode(69420)]);
+            .write_many(0x0, &program([lui(reg, value), OpCode(69420)]));
 
         let summary = emulator.step_jit_summarize::<JitSummary>()?;
         tracing::info!(?summary.function);
@@ -103,7 +103,7 @@ mod tests {
 
         emulator
             .mem
-            .write_array(KSEG0Addr::from_phys(0), &[lui(8, 0x1234), OpCode(69420)]);
+            .write_many(0x0, &program([lui(8, 0x1234), OpCode(69420)]));
         emulator.cpu.gpr[8] = 0x1111_1111;
 
         let summary = emulator.step_jit_summarize::<JitSummary>()?;

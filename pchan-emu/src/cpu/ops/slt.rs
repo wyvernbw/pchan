@@ -61,21 +61,19 @@ mod tests {
     use pchan_utils::setup_tracing;
     use rstest::rstest;
 
-    use crate::cpu::ops::prelude::*;
-    use crate::dynarec::JitSummary;
-    use crate::memory::KSEG0Addr;
+    use crate::dynarec::prelude::*;
     use crate::{Emu, test_utils::emulator};
 
     #[rstest]
     fn basic_slt(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
-        emulator.mem.write_array(
-            KSEG0Addr::from_phys(0),
-            &[
+        emulator.mem.write_many(
+            0x0,
+            &program([
                 addiu(8, 0, 16),
                 addiu(9, 0, -3),
                 slt(10, 9, 8),
                 OpCode(69420),
-            ],
+            ]),
         );
         let summary = emulator.step_jit_summarize::<JitSummary>()?;
         tracing::info!(?summary.function);

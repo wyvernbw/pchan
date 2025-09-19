@@ -30,6 +30,7 @@
 #![feature(generic_const_exprs)]
 #![feature(portable_simd)]
 #![feature(iter_collect_into)]
+#![feature(custom_inner_attributes)]
 #![feature(iter_array_chunks)]
 // allow unused variables in tests to supress the setup tracing warnings
 #![cfg_attr(test, allow(unused_variables))]
@@ -52,6 +53,28 @@ pub mod dynarec;
 pub mod jit;
 pub mod memory;
 
+pub const fn max_simd_width_bytes() -> usize {
+    if cfg!(target_feature = "avx512f") {
+        return 64;
+    } // 512 bits
+
+    if cfg!(target_feature = "neon") {
+        return 16;
+    }
+
+    if cfg!(target_feature = "avx2") {
+        return 32;
+    } // 256 bits
+
+    if cfg!(target_feature = "sse2") {
+        return 16;
+    } // 128 bits
+
+    1
+}
+
+const MAX_SIMD_WIDTH: usize = max_simd_width_bytes();
+
 #[derive(Default, derive_more::Debug)]
 pub struct Emu {
     #[debug(skip)]
@@ -62,10 +85,7 @@ pub struct Emu {
 }
 
 use cranelift::{
-    codegen::{
-        cursor::Cursor,
-        ir::{Inst, Opcode},
-    },
+    codegen::ir::{Inst, Opcode},
     prelude::*,
 };
 

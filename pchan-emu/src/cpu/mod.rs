@@ -2,7 +2,7 @@ use std::fmt::Display;
 
 use pchan_utils::array;
 
-use crate::memory::KSEG1Addr;
+use crate::cpu::ops::OpCode;
 
 #[cfg(test)]
 mod cranelift_tests;
@@ -74,7 +74,7 @@ impl Cpu {
         self.gpr = [0u32; 32];
     }
     pub fn jump_to_bios(&mut self) {
-        self.pc = KSEG1Addr(0xBFC0_0000).to_phys().as_u32();
+        self.pc = 0xBFC0_0000;
     }
 }
 
@@ -116,3 +116,7 @@ pub const REG_STR: &[&str] = &array![
     30 => "fp(s8)",
     31 => "ra"
 ];
+
+pub fn program<const N: usize>(prog: [OpCode; N]) -> [u32; N] {
+    prog.map(|op| op.0)
+}

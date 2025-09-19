@@ -39,7 +39,7 @@ impl Display for SB {
 
 impl Op for SB {
     fn emit_ir(&self, mut ctx: EmitCtx) -> EmitSummary {
-        store!(self, ctx, Opcode::Istore8)
+        store!(self, ctx, write8)
     }
 
     fn is_block_boundary(&self) -> Option<BoundaryType> {
@@ -59,68 +59,27 @@ impl Op for SB {
     }
 }
 
-#[macro_export]
-macro_rules! store {
-    ($self:expr, $ctx:expr, $opcode:expr) => {{
-        use cranelift::codegen::ir::immediates::Offset32;
-        use $crate::dynarec::prelude::*;
-
-        // get pointer to memory passed as argument to the function
-        let mem_ptr = $ctx.memory();
-        let ptr_type = $ctx.ptr_type;
-
-        // get cached register if possible, otherwise load it in
-        let (rs, loadrs) = $ctx.emit_get_register($self.rs);
-        let (rs, mapaddr) = $ctx.emit_map_address_to_host(rs);
-        let (rt, loadrt) = $ctx.emit_get_register($self.rt);
-        let (mem_ptr, iadd) = $ctx.inst(|f| f.pure().Binary(Opcode::Iadd, ptr_type, mem_ptr, rs).0);
-
-        let store = $ctx
-            .fn_builder
-            .pure()
-            .Store(
-                $opcode,
-                types::I32,
-                MemFlags::new(),
-                Offset32::new($self.imm.into()),
-                rt,
-                mem_ptr,
-            )
-            .0;
-
-        EmitSummary::builder()
-            .instructions(
-                [
-                    [now(loadrs)].as_slice(),
-                    mapaddr.map(now).as_slice(),
-                    [now(loadrt), now(iadd), delayed(1, store)].as_slice(),
-                ]
-                .concat(),
-            )
-            .build($ctx.fn_builder)
-    }};
-}
 #[cfg(test)]
 mod tests {
     use pchan_utils::setup_tracing;
     use rstest::rstest;
 
-    use crate::{Emu, memory::KSEG0Addr, test_utils::emulator};
+    use crate::dynarec::prelude::*;
+    use crate::memory::ext;
+    use crate::{Emu, test_utils::emulator};
 
     #[rstest]
     pub fn test_sb(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
-        use crate::cpu::ops::prelude::*;
-
         emulator
             .mem
-            .write_all(KSEG0Addr::from_phys(0), [sb(9, 8, 0), OpCode(69420)]);
+            .write_many(0, &program([sb(9, 8, 0), OpCode(69420)]));
 
         emulator.cpu.gpr[8] = 32; // base register
         emulator.cpu.gpr[9] = 69;
 
         emulator.step_jit()?;
 
-        assert_eq!(emulator.mem.read_01::<u8>(KSEG0Addr::from_phys(32)), 69);
+        assert_eq!(emulator.mem.read::<u8, ext::Sign>(32), 69);
 
         Ok(())
     }

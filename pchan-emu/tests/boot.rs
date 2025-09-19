@@ -20,8 +20,6 @@ pub fn boot(setup_tracing: ()) -> color_eyre::Result<()> {
     //     }
     // }
     // return Ok(());
-    let first_summary = emu.step_jit_summarize::<JitSummary>()?;
-    tracing::info!(?first_summary.function);
     let result = emu.run();
     if let Err(err) = result {
         tracing::info!(?err);

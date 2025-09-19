@@ -58,6 +58,7 @@ pub mod lw;
 // stores
 pub mod sb;
 pub mod sh;
+pub mod store;
 pub mod sw;
 
 // cop
@@ -111,6 +112,7 @@ pub mod prelude {
     pub use super::{
         BoundaryType, CopOp, DecodedOp, MipsOffset, Op, PrimeOp, SecOp, TryFromOpcodeErr,
     };
+    pub use crate::cpu::program;
     pub use crate::dynarec::{EmitCtx, EmitSummary};
 }
 

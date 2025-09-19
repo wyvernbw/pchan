@@ -96,13 +96,13 @@ mod tests {
     use pretty_assertions::assert_eq;
     use rstest::rstest;
 
-    use crate::{Emu, cpu::RA, dynarec::JitSummary, memory::KSEG0Addr, test_utils::emulator};
+    use crate::{Emu, cpu::RA, dynarec::JitSummary, test_utils::emulator};
 
     #[rstest]
     fn jalr_1(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
         use crate::cpu::ops::prelude::*;
 
-        let program = [
+        let main = program([
             addiu(9, 0, 0),
             lui(8, 0x8000u16 as i16),
             ori(8, 8, 0x2000),
@@ -110,14 +110,12 @@ mod tests {
             nop(),
             addiu(9, 9, 32),
             OpCode(69420),
-        ];
+        ]);
 
-        let function = [addiu(9, 0, 69), nop(), jr(RA)];
+        let function = program([addiu(9, 0, 69), nop(), jr(RA)]);
 
-        emulator
-            .mem
-            .write_all(KSEG0Addr::from_phys(emulator.cpu.pc), program);
-        emulator.mem.write_all(KSEG0Addr(0x8000_2000), function);
+        emulator.mem.write_many(emulator.cpu.pc, &main);
+        emulator.mem.write_many(0x8000_2000, &function);
 
         for i in 0..3 {
             let summary = emulator.step_jit_summarize::<JitSummary>()?;
@@ -134,7 +132,7 @@ mod tests {
     fn jalr_1_delay_hazard(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
         use crate::cpu::ops::prelude::*;
 
-        let program = [
+        let main = program([
             // initialize state
             lui(8, 0x8000u16 as i16),
             ori(8, 8, 0x2000),
@@ -147,19 +145,17 @@ mod tests {
             nop(),
             addiu(9, 9, 32),
             OpCode(69420),
-        ];
+        ]);
 
-        let function = [
+        let function = program([
             // using fucked up state $t0=-69, end result is 0
             addiu(9, 9, 69),
             nop(),
             jr(RA),
-        ];
+        ]);
 
-        emulator
-            .mem
-            .write_all(KSEG0Addr::from_phys(emulator.cpu.pc), program);
-        emulator.mem.write_all(KSEG0Addr(0x8000_2000), function);
+        emulator.mem.write_many(emulator.cpu.pc, &main);
+        emulator.mem.write_many(0x8000_2000, &function);
 
         for i in 0..3 {
             let summary = emulator.step_jit_summarize::<JitSummary>()?;

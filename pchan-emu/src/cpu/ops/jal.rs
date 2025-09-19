@@ -86,33 +86,29 @@ mod tests {
     use pretty_assertions::assert_eq;
     use rstest::rstest;
 
-    use crate::{Emu, cpu::RA, dynarec::JitSummary, memory::KSEG0Addr, test_utils::emulator};
+    use crate::{Emu, cpu::RA, dynarec::JitSummary, test_utils::emulator};
 
     #[rstest]
     fn jal_1(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
         use crate::cpu::ops::prelude::*;
 
-        let program = [
+        let main = program([
             addiu(8, 0, 32),
-            jal(KSEG0Addr::from_phys(0x0000_2000).as_u32()), // 4
-            nop(),                                           // 8
-            nop(),                                           // 12
-        ];
+            jal(0x0000_2000), // 4
+            nop(),            // 8
+            nop(),            // 12
+        ]);
 
-        let function = [
+        let function = program([
             addiu(9, 0, 69),
             nop(),
             // load return address into $t2
             addiu(10, RA, 0),
             OpCode(69420),
-        ];
+        ]);
 
-        emulator
-            .mem
-            .write_all(KSEG0Addr::from_phys(emulator.cpu.pc), program);
-        emulator
-            .mem
-            .write_all(KSEG0Addr::from_phys(0x0000_2000), function);
+        emulator.mem.write_many(emulator.cpu.pc, &main);
+        emulator.mem.write_many(0x0000_2000, &function);
 
         let summary = emulator.step_jit_summarize::<JitSummary>()?;
         tracing::info!(?summary.function);

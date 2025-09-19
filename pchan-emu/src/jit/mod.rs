@@ -12,7 +12,7 @@ use crate::{
     cpu::{Cop0, Cpu, REG_STR},
     cranelift_bs::*,
     dynarec::{CacheUpdates, EntryCache},
-    memory::{Memory, MemoryRegion},
+    memory::Memory,
 };
 
 #[derive(derive_more::Debug)]
@@ -75,6 +75,10 @@ pub struct FunctionTable {
     readi8: FuncId,
     readu16: FuncId,
     readu8: FuncId,
+
+    write32: FuncId,
+    write16: FuncId,
+    write8: FuncId,
 }
 
 #[derive(derive_more::Debug)]
@@ -84,6 +88,10 @@ pub struct FuncRefTable {
     pub readi8: FuncRef,
     pub readu16: FuncRef,
     pub readu8: FuncRef,
+
+    pub write32: FuncRef,
+    pub write16: FuncRef,
+    pub write8: FuncRef,
 }
 
 impl Default for JIT {
@@ -103,7 +111,10 @@ impl Default for JIT {
             .symbol("readi16", Memory::readi16 as *const u8)
             .symbol("readi8", Memory::readi8 as *const u8)
             .symbol("readu16", Memory::readu16 as *const u8)
-            .symbol("readu8", Memory::readu8 as *const u8);
+            .symbol("readu8", Memory::readu8 as *const u8)
+            .symbol("write32", Memory::write32 as *const u8)
+            .symbol("write16", Memory::write16 as *const u8)
+            .symbol("write8", Memory::write8 as *const u8);
 
         let mut module = JITModule::new(jit_builder);
         let ptr = module.target_config().pointer_type();
@@ -163,6 +174,39 @@ impl Default for JIT {
                 .expect("failed to link readu8 function")
         };
 
+        let write32 = {
+            let mut write32_sig = Signature::new(CallConv::SystemV);
+            write32_sig.params.push(AbiParam::new(ptr));
+            write32_sig.params.push(AbiParam::new(types::I32));
+            write32_sig.params.push(AbiParam::new(types::I32));
+
+            module
+                .declare_function("write32", Linkage::Import, &write32_sig)
+                .expect("failed to link write32 function")
+        };
+
+        let write16 = {
+            let mut write16_sig = Signature::new(CallConv::SystemV);
+            write16_sig.params.push(AbiParam::new(ptr));
+            write16_sig.params.push(AbiParam::new(types::I32));
+            write16_sig.params.push(AbiParam::new(types::I32));
+
+            module
+                .declare_function("write16", Linkage::Import, &write16_sig)
+                .expect("failed to link write16 function")
+        };
+
+        let write8 = {
+            let mut write8_sig = Signature::new(CallConv::SystemV);
+            write8_sig.params.push(AbiParam::new(ptr));
+            write8_sig.params.push(AbiParam::new(types::I32));
+            write8_sig.params.push(AbiParam::new(types::I32));
+
+            module
+                .declare_function("write8", Linkage::Import, &write8_sig)
+                .expect("failed to link write8 function")
+        };
+
         let fn_builder_ctx = FunctionBuilderContext::new();
         let ctx = module.make_context();
         let data_description = DataDescription::new();
@@ -187,6 +231,10 @@ impl Default for JIT {
                 readi8,
                 readu16,
                 readu8,
+
+                write32,
+                write16,
+                write8,
             },
         }
     }
@@ -243,12 +291,24 @@ impl JIT {
         let readu8 = self
             .module
             .declare_func_in_func(self.func_table.readu8, func);
+        let write32 = self
+            .module
+            .declare_func_in_func(self.func_table.write32, func);
+        let write16 = self
+            .module
+            .declare_func_in_func(self.func_table.write16, func);
+        let write8 = self
+            .module
+            .declare_func_in_func(self.func_table.write8, func);
         FuncRefTable {
             read32,
             readi16,
             readi8,
             readu16,
             readu8,
+            write32,
+            write16,
+            write8,
         }
     }
 
@@ -271,16 +331,10 @@ impl JIT {
         }
     }
 
-    pub fn use_cached_function(
-        &self,
-        address: u32,
-        cpu: &mut Cpu,
-        mem: &mut Memory,
-        mem_map: &[MemoryRegion],
-    ) -> bool {
+    pub fn use_cached_function(&self, address: u32, cpu: &mut Cpu, mem: &mut Memory) -> bool {
         if let Some(function) = self.block_map.get(address) {
             tracing::trace!("invoking cached function {function:?}");
-            function(cpu, mem, false, mem_map);
+            function(cpu, mem, false);
             true
         } else {
             false
@@ -609,118 +663,14 @@ impl JIT {
     }
 
     #[builder]
+    #[deprecated]
     pub fn emit_map_address_to_host(
-        fn_builder: &mut FunctionBuilder<'_>,
-        ptr_type: Type,
-        mem_map_ptr: Value,
-        address: Value,
+        _fn_builder: &mut FunctionBuilder<'_>,
+        _ptr_type: Type,
+        _mem_map_ptr: Value,
+        _address: Value,
     ) -> (Value, [Inst; 12]) {
-        debug_assert_eq!(
-            fn_builder.func.dfg.value_type(address),
-            types::I32,
-            "expected 32bit virtual address!"
-        );
-
-        // map virutal address to psx physical
-        let (address, band) = JIT::emit_map_address_to_physical()
-            .fn_builder(fn_builder)
-            .address(address)
-            .call();
-
-        // cast address to host pointer type
-        let (address, ptrcast0) = fn_builder.PtrCast(address, ptr_type);
-
-        // convert address into memory region table index
-        let ushr_imm0 = fn_builder
-            .pure()
-            .BinaryImm64(Opcode::UshrImm, ptr_type, Imm64::new(16), address)
-            .0;
-        let index = fn_builder.single_result(ushr_imm0);
-
-        // convert index into table offset
-        let imul_imm0 = fn_builder
-            .pure()
-            .BinaryImm64(
-                Opcode::ImulImm,
-                ptr_type,
-                Imm64::new(size_of::<MemoryRegion>() as i64),
-                index,
-            )
-            .0;
-        let lookup_offset = fn_builder.single_result(imul_imm0);
-
-        // add table offset to table pointer to get lookup address
-        let iadd0 = fn_builder
-            .pure()
-            .Binary(Opcode::Iadd, ptr_type, mem_map_ptr, lookup_offset)
-            .0;
-        let lookup = fn_builder.single_result(iadd0);
-
-        // load region descriptor at lookup address
-        let load0 = fn_builder
-            .pure()
-            .Load(
-                Opcode::Load,
-                types::I64,
-                MemFlags::new(),
-                Offset32::new(0),
-                lookup,
-            )
-            .0;
-        let region_descriptor = fn_builder.single_result(load0);
-
-        // get MemoryRegion.phys_start (high 32 bits)
-        let ushr_imm1 = fn_builder
-            .pure()
-            .BinaryImm64(
-                Opcode::UshrImm,
-                types::I64,
-                Imm64::new(offset_of!(MemoryRegion, phys_start) as i64 * 8),
-                region_descriptor,
-            )
-            .0;
-        let phys_start = fn_builder.single_result(ushr_imm1);
-
-        // get MemoryRegion.host_start (low 32 bits)
-        // first, reduce to I32
-        let ireduce0 = fn_builder
-            .pure()
-            .Unary(Opcode::Ireduce, types::I32, region_descriptor)
-            .0;
-        let host_start = fn_builder.single_result(ireduce0);
-        // then, extend back to I64, this effectively clears the high 32 bits
-        let uextend0 = fn_builder
-            .pure()
-            .Unary(Opcode::Uextend, types::I64, host_start)
-            .0;
-        let host_start = fn_builder.single_result(uextend0);
-
-        // subtract the psx physical start of the region from the physical address,
-        // obtaining an offset into the region
-        let isub0 = fn_builder
-            .pure()
-            .Binary(Opcode::Isub, types::I64, address, phys_start)
-            .0;
-        let offset_in_region = fn_builder.single_result(isub0);
-
-        // calculate the host address by adding the region offset to the
-        // start of the host region
-        let (host_address, iadd1) = fn_builder.inst(|f| {
-            f.pure()
-                .Binary(Opcode::Iadd, types::I64, host_start, offset_in_region)
-                .0
-        });
-
-        // cast host address from I64 to host pointer type
-        let (host_address, ptrcast1) = fn_builder.PtrCast(host_address, ptr_type);
-
-        (
-            host_address,
-            [
-                band, ptrcast0, ushr_imm0, imul_imm0, iadd0, load0, ushr_imm1, ireduce0, uextend0,
-                isub0, iadd1, ptrcast1,
-            ],
-        )
+        unreachable!("called deprecated function `emit_map_address_to_host`")
     }
 
     pub fn emit_store_pc(fn_builder: &mut FunctionBuilder<'_>, block: Block, pc: Value) -> Inst {
@@ -739,26 +689,18 @@ impl JIT {
 
 #[derive(Debug, Clone, Copy)]
 #[repr(transparent)]
-pub struct BlockFn(pub fn(*mut Cpu, *mut u8, *const MemoryRegion));
+pub struct BlockFn(pub fn(*mut Cpu, *mut u8));
 
-type BlockFnArgs<'a> = (&'a mut Cpu, &'a mut Memory, bool, &'a [MemoryRegion]);
+type BlockFnArgs<'a> = (&'a mut Cpu, &'a mut Memory, bool);
 
 impl BlockFn {
     fn call_block(&self, args: BlockFnArgs) {
         if args.2 {
             self.0
                 .instrument(tracing::info_span!("fn", addr = ?self.0))
-                .inner()(
-                ptr::from_mut(args.0),
-                args.1.as_mut().as_mut_ptr(),
-                args.3.as_ptr(),
-            )
+                .inner()(ptr::from_mut(args.0), args.1.as_mut().as_mut_ptr())
         } else {
-            self.0(
-                ptr::from_mut(args.0),
-                args.1.as_mut().as_mut_ptr(),
-                args.3.as_ptr(),
-            )
+            self.0(ptr::from_mut(args.0), args.1.as_mut().as_mut_ptr())
         }
     }
 }

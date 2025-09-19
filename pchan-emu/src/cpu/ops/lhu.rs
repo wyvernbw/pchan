@@ -69,29 +69,23 @@ mod tests {
     use pchan_utils::setup_tracing;
     use rstest::rstest;
 
-    use crate::{
-        Emu,
-        cpu::ops::{self},
-        memory::{KSEG0Addr, PhysAddr},
-        test_utils::emulator,
-    };
+    use crate::{Emu, memory::ext, test_utils::emulator};
 
     #[rstest]
     pub fn test_lhu(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
         use crate::cpu::ops::prelude::*;
 
-        emulator.mem.write_all(
-            KSEG0Addr::from_phys(0),
-            [lhu(8, 9, 4), nop(), ops::OpCode(69420)],
-        );
+        emulator
+            .mem
+            .write_many(0x0, &program([lhu(8, 9, 4), nop(), OpCode(69420)]));
 
-        let op = emulator.mem.read_01::<ops::OpCode>(PhysAddr(0));
+        let op = emulator.mem.read::<OpCode, ext::NoExt>(0);
         tracing::debug!(decoded = ?DecodedOp::try_from(op));
         tracing::debug!("{:08X?}", &emulator.mem.as_ref()[..22]);
 
         emulator.cpu.gpr[9] = 16;
 
-        emulator.mem.write::<u16>(KSEG0Addr::from_phys(20), 0xABCD);
+        emulator.mem.write::<u16>(20, 0xABCD);
 
         emulator.step_jit()?;
 

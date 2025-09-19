@@ -1,6 +1,6 @@
 use std::hint::black_box;
 
-use pchan_emu::{Emu, memory::KSEG0Addr};
+use pchan_emu::Emu;
 use pchan_utils::setup_tracing;
 
 use crate::{time, write_test_program};
@@ -24,8 +24,7 @@ fn bench_jit() {
 
     let mut average = 0.0;
     for _ in 0..100 {
-        emu.mem
-            .write_array(KSEG0Addr::from_phys(0x0000_2000), &[0u32, 0u32]);
+        emu.mem.write_many::<u32>(0x0000_2000, &[0u32, 0u32]);
         emu.jit.clear_cache();
         emu.cpu.pc = 0;
         emu.cpu.clear_registers();
@@ -49,8 +48,7 @@ fn bench_jit() {
     _ = black_box(emu.step_jit());
     emu.cpu.pc = 0;
     for _ in 0..100 {
-        emu.mem
-            .write_array(KSEG0Addr::from_phys(0x0000_2000), &[0u32, 0u32]);
+        emu.mem.write_many::<u32>(0x0000_2000, &[0u32, 0u32]);
         emu.cpu.pc = 0;
         emu.cpu.clear_registers();
         let (_, elapsed) = time(|| {

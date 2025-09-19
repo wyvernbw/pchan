@@ -68,7 +68,6 @@ impl Op for BNE {
             .cfg
             .neighbors_directed(ctx.node, petgraph::Direction::Outgoing)
             .collect::<Vec<_>>();
-        tracing::info!(?ctx.node, ?next);
 
         let (rs, load0) = ctx.emit_get_register(self.rs);
         let (rt, load1) = ctx.emit_get_register(self.rt);
@@ -105,14 +104,6 @@ impl Op for BNE {
                             .data_flow_graph_mut()
                             .block_call(else_block_label, &else_params);
 
-                        tracing::debug!(
-                            "branch: then={:?}({} deps) else={:?}({} deps)",
-                            then_block,
-                            then_params.len(),
-                            else_block,
-                            else_params.len()
-                        );
-
                         ctx.fn_builder
                             .pure()
                             .Brif(
@@ -138,7 +129,7 @@ mod tests {
     use rstest::rstest;
 
     use crate::cpu::ops::prelude::*;
-    use crate::{Emu, dynarec::JitSummary, memory::KSEG0Addr, test_utils::emulator};
+    use crate::{Emu, dynarec::JitSummary, test_utils::emulator};
 
     struct Bne1Test {
         a: i16,
@@ -156,9 +147,9 @@ mod tests {
         mut emulator: Emu,
         #[case] test: Bne1Test,
     ) -> color_eyre::Result<()> {
-        emulator.mem.write_array(
-            KSEG0Addr::from_phys(0x0),
-            &[
+        emulator.mem.write_many(
+            0x0,
+            &program([
                 addiu(8, 0, test.a),
                 addiu(9, 0, test.b),
                 bne(8, 9, 16),
@@ -168,7 +159,7 @@ mod tests {
                 nop(),
                 addiu(10, 0, test.then),
                 OpCode(69420),
-            ],
+            ]),
         );
 
         let summary = emulator.step_jit_summarize::<JitSummary>()?;

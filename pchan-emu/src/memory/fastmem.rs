@@ -2,7 +2,7 @@ use std::sync::LazyLock;
 
 use tracing::instrument;
 
-use crate::memory::{MEM_SIZE, Memory, kb};
+use crate::memory::{Memory, kb};
 
 const PAGE_COUNT: usize = 0x10000;
 const PAGE_SIZE: usize = kb(64);
@@ -75,7 +75,7 @@ impl Memory {
     /// # Safety
     ///
     /// this is never safe, live fast die young
-    pub unsafe fn read<T: Copy>(mem: *const u8, address: u32) -> T {
+    pub unsafe fn read_raw<T: Copy>(mem: *const u8, address: u32) -> T {
         let page = address >> 16;
 
         let lut_ptr = LUT.read[page as usize];
@@ -88,13 +88,12 @@ impl Memory {
                     .wrapping_add(region_ptr as usize)
                     .wrapping_add(offset as usize);
 
-                let value = unsafe { *(ptr as *const T) };
-                value
+                unsafe { *(ptr as *const T) }
             }
             // memcheck
             None => {
                 tracing::error!(
-                    "write to address={address:08X?} requires memcheck (not yet implemented)"
+                    "read to address=0x{address:08X?} requires memcheck (not yet implemented)"
                 );
                 unsafe { std::mem::zeroed() }
             }
@@ -107,7 +106,7 @@ impl Memory {
     #[instrument(skip(address), fields(address = %format!("0x{address:08X?}")))]
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn read32(mem: *const u8, address: u32) -> i32 {
-        unsafe { Memory::read::<i32>(mem, address) }
+        unsafe { Memory::read_raw::<i32>(mem, address) }
     }
 
     /// # Safety
@@ -116,7 +115,7 @@ impl Memory {
     #[instrument(skip(address), fields(address = %format!("0x{address:08X?}")))]
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn readi16(mem: *const u8, address: u32) -> i32 {
-        unsafe { Memory::read::<i16>(mem, address) as i32 }
+        unsafe { Memory::read_raw::<i16>(mem, address) as i32 }
     }
 
     /// # Safety
@@ -125,7 +124,7 @@ impl Memory {
     #[instrument(skip(address), fields(address = %format!("0x{address:08X?}")))]
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn readi8(mem: *const u8, address: u32) -> i32 {
-        unsafe { Memory::read::<i8>(mem, address) as i32 }
+        unsafe { Memory::read_raw::<i8>(mem, address) as i32 }
     }
 
     /// # Safety
@@ -134,7 +133,7 @@ impl Memory {
     #[instrument(skip(address), fields(address = %format!("0x{address:08X?}")))]
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn readu16(mem: *const u8, address: u32) -> i32 {
-        unsafe { Memory::read::<u16>(mem, address) as u32 as i32 }
+        unsafe { Memory::read_raw::<u16>(mem, address) as u32 as i32 }
     }
 
     /// # Safety
@@ -143,6 +142,76 @@ impl Memory {
     #[instrument(skip(address), fields(address = %format!("0x{address:08X?}")))]
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn readu8(mem: *const u8, address: u32) -> i32 {
-        unsafe { Memory::read::<u8>(mem, address) as u32 as i32 }
+        unsafe { Memory::read_raw::<u8>(mem, address) as u32 as i32 }
+    }
+}
+
+impl Memory {
+    /// # write
+    ///
+    /// aligned write generic over T.
+    /// checks for alignment against T itself, so simd instructions are valid.
+    ///
+    /// # SAFETY
+    ///
+    /// here be segfaults... should be fine tho
+    pub unsafe fn write_raw<T>(mem: *mut u8, address: u32, value: T) {
+        let page = address >> 16;
+
+        let lut_ptr = LUT.read[page as usize];
+
+        match lut_ptr {
+            // fastmem
+            Some(region_ptr) => {
+                let offset = address & 0xFFFF;
+                let ptr = mem
+                    .wrapping_add(region_ptr as usize)
+                    .wrapping_add(offset as usize);
+                let ptr = ptr as *mut T;
+
+                if !ptr.is_aligned() {
+                    tracing::error!(
+                        "emulator trigger unaligned write in an aligned operation. consider the exception handler invoked (not yet implemented)"
+                    );
+                    return;
+                }
+
+                unsafe {
+                    std::ptr::write(ptr, value);
+                }
+            }
+            // memcheck
+            None => {
+                tracing::error!(
+                    "write to address={address:08X?} requires memcheck (not yet implemented)"
+                );
+            }
+        }
+    }
+    /// # Safety
+    ///
+    /// this is never safe, live fast die young
+    #[instrument(skip(address), fields(address = %format!("0x{address:08X?}")))]
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn write32(mem: *mut u8, address: u32, value: i32) {
+        unsafe { Memory::write_raw(mem, address, value) }
+    }
+
+    /// # Safety
+    ///
+    /// this is never safe, live fast die young
+    #[instrument(skip(address), fields(address = %format!("0x{address:08X?}")))]
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn write16(mem: *mut u8, address: u32, value: i32) {
+        unsafe { Memory::write_raw(mem, address, value as i16) }
+    }
+
+    /// # Safety
+    ///
+    /// this is never safe, live fast die young
+    #[instrument(skip(address), fields(address = %format!("0x{address:08X?}")))]
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn write8(mem: *mut u8, address: u32, value: i32) {
+        unsafe { Memory::write_raw(mem, address, value as i8) }
     }
 }

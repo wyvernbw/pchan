@@ -1,12 +1,12 @@
 #[macro_export]
-macro_rules! load {
+macro_rules! store {
     ($self:expr, $ctx:expr, $func:ident) => {{
         use $crate::dynarec::prelude::*;
 
         let mem_ptr = $ctx.memory();
-        // let ptr_type = $ctx.ptr_type;
-        let (rs, loadreg) = $ctx.emit_get_register($self.rs);
-        let (rs, addinst) = $ctx.inst(|f| {
+        let (rs, loadrs) = $ctx.emit_get_register($self.rs);
+        let (rt, loadrt) = $ctx.emit_get_register($self.rt);
+        let (address, add) = $ctx.inst(|f| {
             f.pure()
                 .BinaryImm64(
                     Opcode::IaddImm,
@@ -16,12 +16,12 @@ macro_rules! load {
                 )
                 .0
         });
-        let (rt, readinst) =
-            $ctx.inst(|f| f.pure().call($ctx.func_ref_table.$func, &[mem_ptr, rs]));
-
+        let storeinst = $ctx
+            .fn_builder
+            .pure()
+            .call($ctx.func_ref_table.$func, &[mem_ptr, address, rt]);
         EmitSummary::builder()
-            .instructions([now(loadreg), now(addinst), delayed(1, readinst)])
-            .register_updates([($self.rt, updtdelay(1, rt))])
+            .instructions([now(loadrs), now(loadrt), now(add), delayed(1, storeinst)])
             .build($ctx.fn_builder)
     }};
 }

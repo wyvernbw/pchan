@@ -82,20 +82,18 @@ mod tests {
     use pretty_assertions::assert_eq;
     use rstest::rstest;
 
-    use crate::{Emu, dynarec::JitSummary, memory::KSEG0Addr, test_utils::emulator};
+    use crate::{Emu, dynarec::JitSummary, test_utils::emulator};
 
     #[rstest]
     fn jr_1(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
         use crate::cpu::ops::prelude::*;
 
-        let program = [lui(8, 0x8000u16 as i16), ori(8, 8, 0x2000), jr(8), nop()];
+        let main = program([lui(8, 0x8000u16 as i16), ori(8, 8, 0x2000), jr(8), nop()]);
 
-        let function = [addiu(9, 0, 69), nop(), OpCode(69420)];
+        let function = program([addiu(9, 0, 69), nop(), OpCode(69420)]);
 
-        emulator
-            .mem
-            .write_all(KSEG0Addr::from_phys(emulator.cpu.pc), program);
-        emulator.mem.write_all(KSEG0Addr(0x8000_2000), function);
+        emulator.mem.write_many(emulator.cpu.pc, &main);
+        emulator.mem.write_many(0x8000_2000, &function);
 
         for i in 0..2 {
             let summary = emulator.step_jit_summarize::<JitSummary>()?;

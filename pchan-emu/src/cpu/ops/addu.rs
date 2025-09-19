@@ -90,15 +90,13 @@ mod tests {
     use pretty_assertions::assert_eq;
     use rstest::rstest;
 
-    use crate::{Emu, memory::KSEG0Addr, test_utils::emulator};
+    use crate::{Emu, cpu::program, test_utils::emulator};
 
     #[rstest]
     fn addu_1(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
         use crate::cpu::ops::prelude::*;
-        let program = [addu(10, 8, 9), OpCode(69420)];
-        emulator
-            .mem
-            .write_all(KSEG0Addr::from_phys(emulator.cpu.pc), program);
+        let program = program([addu(10, 8, 9), OpCode(69420)]);
+        emulator.mem.write_many(emulator.cpu.pc, &program);
         emulator.cpu.gpr[8] = 32;
         emulator.cpu.gpr[9] = 64;
         emulator.step_jit()?;
@@ -111,10 +109,8 @@ mod tests {
     #[rstest]
     fn addu_2(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
         use crate::cpu::ops::prelude::*;
-        let program = [addu(10, 8, 9), OpCode(69420)];
-        emulator
-            .mem
-            .write_all(KSEG0Addr::from_phys(emulator.cpu.pc), program);
+        let program = program([addu(10, 8, 9), OpCode(69420)]);
+        emulator.mem.write_many(emulator.cpu.pc, &program);
         emulator.cpu.gpr[8] = u32::MAX;
         emulator.cpu.gpr[9] = 1;
         emulator.step_jit()?;

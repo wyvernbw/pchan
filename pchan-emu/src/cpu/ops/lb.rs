@@ -69,7 +69,7 @@ mod tests {
     use crate::{
         Emu,
         cpu::ops::{self},
-        memory::KSEG0Addr,
+        memory::ext,
         test_utils::emulator,
     };
 
@@ -77,11 +77,11 @@ mod tests {
     pub fn test_lb_sign_extension(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
         use crate::cpu::ops::prelude::*;
 
-        emulator.mem.write(KSEG0Addr::from_phys(32), 0xFFu8);
-        emulator.mem.write(KSEG0Addr::from_phys(33), 0x7Fu8);
-        emulator.mem.write_all(
-            KSEG0Addr::from_phys(0),
-            [lb(8, 9, 0), lb(10, 9, 1), nop(), ops::OpCode(69420)],
+        emulator.mem.write(32, 0xFFu8);
+        emulator.mem.write(33, 0x7Fu8);
+        emulator.mem.write_many(
+            0x0,
+            &program([lb(8, 9, 0), lb(10, 9, 1), nop(), ops::OpCode(69420)]),
         );
 
         emulator.cpu.gpr[9] = 32; // base register
@@ -89,10 +89,10 @@ mod tests {
         // Run the block
         emulator.step_jit()?;
 
-        assert_eq!(emulator.cpu.gpr[8], -1i32 as u32);
+        assert_eq!(emulator.cpu.gpr[8], ext::sign::<u8>(0xFFu8) as u32);
 
         // 0x7F should be sign-extended to 0x7F
-        assert_eq!(emulator.cpu.gpr[10], 0x7F);
+        assert_eq!(emulator.cpu.gpr[10], ext::sign::<u8>(0x7Fu8) as u32);
 
         Ok(())
     }

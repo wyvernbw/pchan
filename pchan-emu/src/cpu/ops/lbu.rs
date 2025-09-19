@@ -64,20 +64,17 @@ mod tests {
     use pchan_utils::setup_tracing;
     use rstest::rstest;
 
-    use crate::{
-        Emu,
-        cpu::ops::{self, DecodedOp, lbu::lbu, nop},
-        memory::{KSEG0Addr, PhysAddr},
-        test_utils::emulator,
-    };
+    use crate::Emu;
+    use crate::dynarec::prelude::*;
+    use crate::memory::ext;
+    use crate::test_utils::emulator;
 
     #[rstest]
     pub fn test_lbu(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
-        emulator.mem.write_all(
-            KSEG0Addr::from_phys(0),
-            [lbu(8, 9, 4), nop(), ops::OpCode(69420)],
-        );
-        let op = emulator.mem.read_01::<ops::OpCode>(PhysAddr(0));
+        emulator
+            .mem
+            .write_many(0x0, &program([lbu(8, 9, 4), nop(), OpCode(69420)]));
+        let op = emulator.mem.read::<OpCode, ext::NoExt>(0x0);
         tracing::debug!(decoded = ?DecodedOp::try_from(op));
         tracing::debug!("{:08X?}", &emulator.mem.as_ref()[..21]);
         emulator.cpu.gpr[9] = 16;

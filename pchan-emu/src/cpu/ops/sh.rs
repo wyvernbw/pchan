@@ -41,8 +41,12 @@ impl Display for SH {
 }
 
 impl Op for SH {
+    fn hazard(&self) -> Option<u32> {
+        Some(1)
+    }
+
     fn emit_ir(&self, mut ctx: EmitCtx) -> EmitSummary {
-        store!(self, ctx, Opcode::Istore16)
+        store!(self, ctx, write16)
     }
 
     fn is_block_boundary(&self) -> Option<BoundaryType> {
@@ -63,22 +67,22 @@ mod tests {
     use pchan_utils::setup_tracing;
     use rstest::rstest;
 
-    use crate::{Emu, memory::KSEG0Addr, test_utils::emulator};
+    use crate::dynarec::prelude::*;
+    use crate::memory::ext;
+    use crate::{Emu, test_utils::emulator};
 
     #[rstest]
     pub fn test_sh(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
-        use crate::cpu::ops::prelude::*;
-
         emulator
             .mem
-            .write_all(KSEG0Addr::from_phys(0), [sh(9, 8, 0), OpCode(69420)]);
+            .write_many(0, &program([sh(9, 8, 0), OpCode(69420)]));
 
         emulator.cpu.gpr[8] = 32; // base register
         emulator.cpu.gpr[9] = 690;
 
         emulator.step_jit()?;
 
-        assert_eq!(emulator.mem.read_01::<u16>(KSEG0Addr::from_phys(32)), 690);
+        assert_eq!(emulator.mem.read::<u16, ext::Sign>(32), 690);
 
         Ok(())
     }

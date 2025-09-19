@@ -78,14 +78,13 @@ mod tests {
     use pretty_assertions::assert_eq;
     use rstest::rstest;
 
-    use crate::{Emu, memory::KSEG0Addr, test_utils::emulator};
+    use crate::{Emu, test_utils::emulator};
 
     #[rstest]
     fn mtc_1(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
-        emulator.mem.write_array(
-            KSEG0Addr::from_phys(0x0),
-            &[addiu(8, 0, 69), mtc0(8, 16), OpCode(69420)],
-        );
+        emulator
+            .mem
+            .write_many(0x0, &program([addiu(8, 0, 69), mtc0(8, 16), OpCode(69420)]));
 
         let summary = emulator.step_jit_summarize::<JitSummary>()?;
 

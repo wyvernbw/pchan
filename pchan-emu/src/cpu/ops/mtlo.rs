@@ -56,17 +56,14 @@ mod tests {
     use rstest::rstest;
 
     use crate::Emu;
-    use crate::cpu::ops::prelude::*;
+    use crate::dynarec::prelude::*;
     use crate::test_utils::emulator;
 
     #[rstest]
     pub fn mtlo_1(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
-        use crate::{dynarec::JitSummary, memory::KSEG0Addr};
-
-        emulator.mem.write_array(
-            KSEG0Addr::from_phys(0),
-            &[multu(8, 9), nop(), mtlo(10), OpCode(69420)],
-        );
+        emulator
+            .mem
+            .write_many(0, &program([multu(8, 9), nop(), mtlo(10), OpCode(69420)]));
         emulator.cpu.gpr[10] = 0x1234;
         emulator.cpu.gpr[8] = 16;
         emulator.cpu.gpr[9] = 16;

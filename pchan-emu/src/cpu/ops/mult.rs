@@ -55,8 +55,7 @@ mod tests {
     use pchan_utils::setup_tracing;
     use rstest::rstest;
 
-    use crate::cpu::ops::prelude::*;
-    use crate::memory::KSEG0Addr;
+    use crate::dynarec::prelude::*;
     use crate::{Emu, test_utils::emulator};
 
     #[rstest]
@@ -75,7 +74,7 @@ mod tests {
 
         emulator
             .mem
-            .write_array(KSEG0Addr::from_phys(0), &[mult(8, 9), OpCode(69420)]);
+            .write_many(0, &program([mult(8, 9), OpCode(69420)]));
         emulator.cpu.gpr[8] = a;
         emulator.cpu.gpr[9] = b;
 
@@ -100,11 +99,9 @@ mod tests {
     ) -> color_eyre::Result<()> {
         assert!(a == 0 || b == 0);
 
-        use crate::dynarec::JitSummary;
-
         emulator
             .mem
-            .write_array(KSEG0Addr::from_phys(0), &[mult(a, b), OpCode(69420)]);
+            .write_many(0x0, &program([mult(a, b), OpCode(69420)]));
         if a != 0 {
             emulator.cpu.gpr[a] = 32;
         }
