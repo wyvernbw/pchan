@@ -4,20 +4,15 @@ use std::{
     ptr,
 };
 
-use cranelift::{
-    codegen::{dominator_tree::DominatorTree, flowgraph::ControlFlowGraph, ir},
-    prelude::settings::{Flags, FlagsOrIsa},
-};
+use cranelift::codegen::ir::{self, immediates::Offset32};
 use tracing::{Instrument, Level, instrument};
 
 use crate::{
-    EntryCache, FnBuilderExt,
-    cpu::{
-        Cop0, Cpu, REG_STR,
-        ops::{CachedValue, EmitSummary},
-    },
+    FnBuilderExt,
+    cpu::{Cop0, Cpu, REG_STR},
     cranelift_bs::*,
-    memory::{Memory, MemoryRegion},
+    dynarec::{CacheUpdates, EntryCache},
+    memory::Memory,
 };
 
 #[derive(derive_more::Debug)]
@@ -43,6 +38,7 @@ pub struct JIT {
     pub block_map: BlockMap,
     pub dirty_pages: HashSet<BlockPage>,
     pub func_idx: usize,
+    pub func_table: FunctionTable,
 }
 
 #[derive(derive_more::Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Hash)]
@@ -72,22 +68,149 @@ impl BlockMap {
     }
 }
 
+#[derive(derive_more::Debug)]
+pub struct FunctionTable {
+    read32: FuncId,
+    readi16: FuncId,
+    readi8: FuncId,
+    readu16: FuncId,
+    readu8: FuncId,
+
+    write32: FuncId,
+    write16: FuncId,
+    write8: FuncId,
+}
+
+#[derive(derive_more::Debug)]
+pub struct FuncRefTable {
+    pub read32: FuncRef,
+    pub readi16: FuncRef,
+    pub readi8: FuncRef,
+    pub readu16: FuncRef,
+    pub readu8: FuncRef,
+
+    pub write32: FuncRef,
+    pub write16: FuncRef,
+    pub write8: FuncRef,
+}
+
 impl Default for JIT {
     fn default() -> Self {
         // Set up JIT
-        let mut flags = settings::builder();
-        flags.set("opt_level", "none").unwrap();
-        let isa = cranelift::native::builder()
-            .unwrap()
-            .finish(settings::Flags::new(flags))
-            .unwrap();
-        let jit_builder = JITBuilder::with_isa(isa, default_libcall_names());
-        let module = JITModule::new(jit_builder);
+        // let mut flags = settings::builder();
+        // flags.set("opt_level", "none").unwrap();
+        // let isa = cranelift::native::builder()
+        //     .unwrap()
+        //     .finish(settings::Flags::new(flags))
+        //     .unwrap();
+        // let jit_builder = JITBuilder::with_isa(isa, default_libcall_names());
+        let mut jit_builder =
+            JITBuilder::with_flags(&[("opt_level", "none")], default_libcall_names()).unwrap();
+        jit_builder
+            .symbol("read32", Memory::read32 as *const u8)
+            .symbol("readi16", Memory::readi16 as *const u8)
+            .symbol("readi8", Memory::readi8 as *const u8)
+            .symbol("readu16", Memory::readu16 as *const u8)
+            .symbol("readu8", Memory::readu8 as *const u8)
+            .symbol("write32", Memory::write32 as *const u8)
+            .symbol("write16", Memory::write16 as *const u8)
+            .symbol("write8", Memory::write8 as *const u8);
+
+        let mut module = JITModule::new(jit_builder);
+        let ptr = module.target_config().pointer_type();
+
+        let read32 = {
+            let mut read32_sig = Signature::new(CallConv::SystemV);
+            read32_sig.params.push(AbiParam::new(ptr));
+            read32_sig.params.push(AbiParam::new(types::I32));
+            read32_sig.returns.push(AbiParam::new(types::I32));
+
+            module
+                .declare_function("read32", Linkage::Import, &read32_sig)
+                .expect("failed to link read32 function")
+        };
+
+        let readi16 = {
+            let mut readi16_sig = Signature::new(CallConv::SystemV);
+            readi16_sig.params.push(AbiParam::new(ptr));
+            readi16_sig.params.push(AbiParam::new(types::I32));
+            readi16_sig.returns.push(AbiParam::new(types::I32));
+
+            module
+                .declare_function("readi16", Linkage::Import, &readi16_sig)
+                .expect("failed to link readi16 function")
+        };
+
+        let readi8 = {
+            let mut readi8_sig = Signature::new(CallConv::SystemV);
+            readi8_sig.params.push(AbiParam::new(ptr));
+            readi8_sig.params.push(AbiParam::new(types::I32));
+            readi8_sig.returns.push(AbiParam::new(types::I32));
+
+            module
+                .declare_function("readi8", Linkage::Import, &readi8_sig)
+                .expect("failed to link readi8 function")
+        };
+
+        let readu16 = {
+            let mut readu16_sig = Signature::new(CallConv::SystemV);
+            readu16_sig.params.push(AbiParam::new(ptr));
+            readu16_sig.params.push(AbiParam::new(types::I32));
+            readu16_sig.returns.push(AbiParam::new(types::I32));
+
+            module
+                .declare_function("readu16", Linkage::Import, &readu16_sig)
+                .expect("failed to link readu16 function")
+        };
+
+        let readu8 = {
+            let mut readu8_sig = Signature::new(CallConv::SystemV);
+            readu8_sig.params.push(AbiParam::new(ptr));
+            readu8_sig.params.push(AbiParam::new(types::I32));
+            readu8_sig.returns.push(AbiParam::new(types::I32));
+
+            module
+                .declare_function("readu8", Linkage::Import, &readu8_sig)
+                .expect("failed to link readu8 function")
+        };
+
+        let write32 = {
+            let mut write32_sig = Signature::new(CallConv::SystemV);
+            write32_sig.params.push(AbiParam::new(ptr));
+            write32_sig.params.push(AbiParam::new(types::I32));
+            write32_sig.params.push(AbiParam::new(types::I32));
+
+            module
+                .declare_function("write32", Linkage::Import, &write32_sig)
+                .expect("failed to link write32 function")
+        };
+
+        let write16 = {
+            let mut write16_sig = Signature::new(CallConv::SystemV);
+            write16_sig.params.push(AbiParam::new(ptr));
+            write16_sig.params.push(AbiParam::new(types::I32));
+            write16_sig.params.push(AbiParam::new(types::I32));
+
+            module
+                .declare_function("write16", Linkage::Import, &write16_sig)
+                .expect("failed to link write16 function")
+        };
+
+        let write8 = {
+            let mut write8_sig = Signature::new(CallConv::SystemV);
+            write8_sig.params.push(AbiParam::new(ptr));
+            write8_sig.params.push(AbiParam::new(types::I32));
+            write8_sig.params.push(AbiParam::new(types::I32));
+
+            module
+                .declare_function("write8", Linkage::Import, &write8_sig)
+                .expect("failed to link write8 function")
+        };
+
         let fn_builder_ctx = FunctionBuilderContext::new();
         let ctx = module.make_context();
         let data_description = DataDescription::new();
 
-        let ptr = module.target_config().pointer_type();
         let mut sig = Signature::new(CallConv::SystemV);
         sig.params.push(AbiParam::new(ptr));
         sig.params.push(AbiParam::new(ptr));
@@ -102,35 +225,17 @@ impl Default for JIT {
             block_map: BlockMap::default(),
             func_idx: 1,
             dirty_pages: HashSet::default(),
-        }
-    }
-}
+            func_table: FunctionTable {
+                read32,
+                readi16,
+                readi8,
+                readu16,
+                readu8,
 
-#[derive(Debug, Clone, Copy)]
-pub struct CacheUpdates<'a> {
-    registers: Option<&'a [(usize, CachedValue)]>,
-    hi: &'a Option<CachedValue>,
-    lo: &'a Option<CachedValue>,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum CacheUpdatesRegisters {
-    Immediate,
-    Delayed,
-}
-
-impl<'a> CacheUpdates<'a> {
-    pub fn new(
-        emit_summary: &'a EmitSummary,
-        registers: CacheUpdatesRegisters,
-    ) -> CacheUpdates<'a> {
-        CacheUpdates {
-            registers: match registers {
-                CacheUpdatesRegisters::Immediate => Some(&emit_summary.register_updates),
-                CacheUpdatesRegisters::Delayed => Some(&emit_summary.delayed_register_updates),
+                write32,
+                write16,
+                write8,
             },
-            hi: &emit_summary.hi,
-            lo: &emit_summary.lo,
         }
     }
 }
@@ -170,6 +275,43 @@ impl JIT {
         Ok((func_id, func))
     }
 
+    pub fn create_func_ref_table(&mut self, func: &mut Function) -> FuncRefTable {
+        let read32 = self
+            .module
+            .declare_func_in_func(self.func_table.read32, func);
+        let readi16 = self
+            .module
+            .declare_func_in_func(self.func_table.readi16, func);
+        let readi8 = self
+            .module
+            .declare_func_in_func(self.func_table.readi8, func);
+        let readu16 = self
+            .module
+            .declare_func_in_func(self.func_table.readu16, func);
+        let readu8 = self
+            .module
+            .declare_func_in_func(self.func_table.readu8, func);
+        let write32 = self
+            .module
+            .declare_func_in_func(self.func_table.write32, func);
+        let write16 = self
+            .module
+            .declare_func_in_func(self.func_table.write16, func);
+        let write8 = self
+            .module
+            .declare_func_in_func(self.func_table.write8, func);
+        FuncRefTable {
+            read32,
+            readi16,
+            readi8,
+            readu16,
+            readu8,
+            write32,
+            write16,
+            write8,
+        }
+    }
+
     #[inline]
     pub fn create_fn_builder<'a>(&'a mut self, func: &'a mut Function) -> FunctionBuilder<'a> {
         FunctionBuilder::new(func, &mut self.fn_builder_ctx)
@@ -189,16 +331,10 @@ impl JIT {
         }
     }
 
-    pub fn use_cached_function(
-        &self,
-        address: u32,
-        cpu: &mut Cpu,
-        mem: &mut Memory,
-        mem_map: &[MemoryRegion],
-    ) -> bool {
+    pub fn use_cached_function(&self, address: u32, cpu: &mut Cpu, mem: &mut Memory) -> bool {
         if let Some(function) = self.block_map.get(address) {
             tracing::trace!("invoking cached function {function:?}");
-            function(cpu, mem, false, mem_map);
+            function(cpu, mem, false);
             true
         } else {
             false
@@ -233,59 +369,92 @@ impl JIT {
 
     #[builder]
     #[instrument(skip(builder, block))]
-    pub fn emit_load_reg(builder: &mut FunctionBuilder<'_>, block: Block, idx: usize) -> Value {
+    pub fn emit_load_reg(
+        builder: &mut FunctionBuilder<'_>,
+        block: Block,
+        idx: usize,
+    ) -> (Value, Inst) {
         if idx == 0 {
-            return builder.ins().iconst(types::I32, 0);
+            let inst = builder
+                .pure()
+                .UnaryImm(Opcode::Iconst, types::I32, Imm64::new(0))
+                .0;
+            let const0 = builder.single_result(inst);
+            return (const0, inst);
         }
-        let block_state = builder.block_params(block)[0];
+        let cpu_value = builder.block_params(block)[0];
         let offset = core::mem::offset_of!(Cpu, gpr);
         let offset = i32::try_from(offset + idx * size_of::<u32>()).expect("offset overflow");
+        let load = builder
+            .pure()
+            .Load(
+                Opcode::Load,
+                types::I32,
+                MemFlags::new(),
+                Offset32::new(offset),
+                cpu_value,
+            )
+            .0;
+        let reg = builder.single_result(load);
+        (reg, load)
+    }
 
-        builder
-            .ins()
-            .load(types::I32, MemFlags::new(), block_state, offset)
+    #[inline]
+    pub fn emit_load_from_cpu(
+        builder: &mut FunctionBuilder<'_>,
+        block: Block,
+        offset: i32,
+    ) -> (Value, Inst) {
+        let cpu_ptr = builder.block_params(block)[0];
+        let load = builder
+            .pure()
+            .Load(
+                Opcode::Load,
+                types::I32,
+                MemFlags::new(),
+                Offset32::new(offset),
+                cpu_ptr,
+            )
+            .0;
+        let value = builder.single_result(load);
+
+        (value, load)
     }
 
     #[builder]
     #[instrument(skip(builder, block))]
+    #[inline]
     pub fn emit_load_cop_reg(
         builder: &mut FunctionBuilder<'_>,
         block: Block,
         cop: u8,
         idx: usize,
-    ) -> Value {
-        let block_state = builder.block_params(block)[0];
-
+    ) -> (Value, Inst) {
         const COP0: usize = const { core::mem::offset_of!(Cpu, cop0) };
         const COP_SIZE: usize = size_of::<Cop0>();
+
         let offset = i32::try_from(COP0 + COP_SIZE * cop as usize + idx * size_of::<u32>())
             .expect("offset overflow");
 
-        builder
-            .ins()
-            .load(types::I32, MemFlags::new(), block_state, offset)
+        JIT::emit_load_from_cpu(builder, block, offset)
     }
 
     #[builder]
     #[instrument(skip(builder, block))]
-    pub fn emit_load_hi(builder: &mut FunctionBuilder<'_>, block: Block) -> Value {
-        let block_state = builder.block_params(block)[0];
+    #[inline]
+    pub fn emit_load_hi(builder: &mut FunctionBuilder<'_>, block: Block) -> (Value, Inst) {
         const HI: usize = core::mem::offset_of!(Cpu, hilo) + size_of::<u32>();
 
-        builder
-            .ins()
-            .load(types::I32, MemFlags::new(), block_state, HI as i32)
+        JIT::emit_load_from_cpu(builder, block, HI as i32)
     }
 
     #[builder]
     #[instrument(skip(builder, block))]
-    pub fn emit_load_lo(builder: &mut FunctionBuilder<'_>, block: Block) -> Value {
-        let block_state = builder.block_params(block)[0];
+    #[inline]
+    pub fn emit_load_lo(builder: &mut FunctionBuilder<'_>, block: Block) -> (Value, Inst) {
         const LO: usize = core::mem::offset_of!(Cpu, hilo);
 
-        builder
-            .ins()
-            .load(types::I32, MemFlags::new(), block_state, LO as i32)
+        JIT::emit_load_from_cpu(builder, block, LO as i32)
     }
 
     #[builder]
@@ -295,23 +464,49 @@ impl JIT {
         block: Block,
         idx: usize,
         value: Value,
-    ) {
-        debug_assert_ne!(
-            builder.func.dfg.value_type(value),
-            types::I64,
-            "got 64bit write to register"
-        );
+    ) -> Inst {
+        let value_type = builder.type_of(value);
+        debug_assert_ne!(value_type, types::I64, "got 64bit write to register");
 
         if idx == 0 {
-            return;
+            return builder.Nop();
         }
         const GPR: usize = const { core::mem::offset_of!(Cpu, gpr) };
-        let block_state = builder.block_params(block)[0];
+        let cpu_ptr = builder.block_params(block)[0];
         let offset = i32::try_from(GPR + idx * size_of::<u32>()).expect("offset overflow");
-        // tracing::trace!("stored");
+
         builder
-            .ins()
-            .store(MemFlags::new(), value, block_state, offset);
+            .pure()
+            .Store(
+                Opcode::Store,
+                value_type,
+                MemFlags::new(),
+                Offset32::new(offset),
+                value,
+                cpu_ptr,
+            )
+            .0
+    }
+
+    pub fn emit_store_to_cpu(
+        builder: &mut FunctionBuilder<'_>,
+        block: Block,
+        value: Value,
+        offset: i32,
+    ) -> Inst {
+        let cpu_ptr = builder.block_params(block)[0];
+        let vtype = builder.type_of(value);
+        builder
+            .pure()
+            .Store(
+                Opcode::Store,
+                vtype,
+                MemFlags::new(),
+                Offset32::new(offset),
+                value,
+                cpu_ptr,
+            )
+            .0
     }
 
     #[builder]
@@ -322,7 +517,7 @@ impl JIT {
         cop: u8,
         idx: usize,
         value: Value,
-    ) {
+    ) -> Inst {
         debug_assert!((0..4).contains(&cop));
         debug_assert_eq!(
             builder.type_of(value),
@@ -332,69 +527,62 @@ impl JIT {
 
         const COP0: usize = const { core::mem::offset_of!(Cpu, cop0) };
         const COP_SIZE: usize = size_of::<Cop0>();
-        let block_state = builder.block_params(block)[0];
         let offset = i32::try_from(COP0 + COP_SIZE * cop as usize + idx * size_of::<u32>())
             .expect("offset overflow");
-        tracing::trace!("stored");
-        builder
-            .ins()
-            .store(MemFlags::new(), value, block_state, offset);
+
+        JIT::emit_store_to_cpu(builder, block, value, offset)
     }
 
     #[instrument(skip(builder, block))]
-    pub fn emit_store_hi(builder: &mut FunctionBuilder<'_>, block: Block, value: Value) {
+    pub fn emit_store_hi(builder: &mut FunctionBuilder<'_>, block: Block, value: Value) -> Inst {
         debug_assert_eq!(
             builder.type_of(value),
             types::I32,
             "hi register value must be i32"
         );
         const HI: usize = const { core::mem::offset_of!(Cpu, hilo) + size_of::<u32>() };
-        let block_state = builder.block_params(block)[0];
-        tracing::trace!("stored");
-        builder
-            .ins()
-            .store(MemFlags::new(), value, block_state, HI as i32);
+
+        JIT::emit_store_to_cpu(builder, block, value, HI as i32)
     }
 
     #[instrument(skip(builder, block))]
-    pub fn emit_store_lo(builder: &mut FunctionBuilder<'_>, block: Block, value: Value) {
+    pub fn emit_store_lo(builder: &mut FunctionBuilder<'_>, block: Block, value: Value) -> Inst {
         debug_assert_eq!(
             builder.type_of(value),
             types::I32,
             "lo register value must be i32"
         );
+
         const LO: usize = const { core::mem::offset_of!(Cpu, hilo) };
-        let block_state = builder.block_params(block)[0];
-        tracing::trace!("stored");
-        builder
-            .ins()
-            .store(MemFlags::new(), value, block_state, LO as i32);
+
+        JIT::emit_store_to_cpu(builder, block, value, LO as i32)
     }
 
     #[instrument(skip(builder, block))]
-    pub fn emit_store_hilo(builder: &mut FunctionBuilder<'_>, block: Block, value: Value) {
+    pub fn emit_store_hilo(builder: &mut FunctionBuilder<'_>, block: Block, value: Value) -> Inst {
         debug_assert_eq!(
             builder.func.dfg.value_type(value),
             types::I64,
             "expected an i64 value!"
         );
-        JIT::emit_store_hi(builder, block, value);
+        JIT::emit_store_hi(builder, block, value)
     }
 
     #[builder]
     #[instrument(skip_all)]
-    pub fn apply_cache_updates<'a, 'b>(updates: CacheUpdates<'a>, cache: &'b mut EntryCache) {
-        if let Some(registers) = updates.registers {
-            for (id, value) in registers.iter() {
-                cache.registers[*id] = Some(*value);
+    pub fn apply_cache_updates(updates: &CacheUpdates, cache: &mut EntryCache) {
+        for (id, update) in updates.registers.iter() {
+            if let Some(value) = update.try_value() {
+                cache.registers[*id] = Some(value);
+                tracing::trace!("updated ${}={:?}", REG_STR[*id], value.value);
             }
         }
         // DONE: apply updates to hi and lo
-        if let Some(hi) = updates.hi {
-            cache.hi = Some(*hi);
+        if let Some(hi) = &updates.hi {
+            cache.hi = hi.try_value();
         }
-        if let Some(lo) = updates.lo {
-            cache.lo = Some(*lo);
+        if let Some(lo) = &updates.lo {
+            cache.lo = lo.try_value();
         }
         // tracing::trace!("applied cache");
     }
@@ -408,12 +596,11 @@ impl JIT {
         builder: &mut FunctionBuilder<'_>,
         block: Block,
         cache: Option<&mut EntryCache>,
-    ) {
+    ) -> Vec<Inst> {
         let Some(cache) = cache else {
-            return;
+            return vec![];
         };
-        tracing::debug!("cache={:#?}", cache);
-        cache
+        let mut instructions = cache
             .registers
             .iter()
             .enumerate()
@@ -421,98 +608,75 @@ impl JIT {
             .skip(1)
             .flat_map(|(idx, value)| value.map(|value| (idx, value)))
             .filter(|(_, value)| value.dirty)
-            .for_each(|(id, value)| {
+            .map(|(id, value)| {
                 debug_assert_eq!(
                     builder.type_of(value.value),
                     types::I32,
                     "cached register must be an i32 value"
                 );
-                tracing::debug!("writing cache to ${}", REG_STR[id]);
                 JIT::emit_store_reg()
                     .block(block)
                     .builder(builder)
                     .idx(id)
                     .value(value.value)
-                    .call();
-            });
+                    .call()
+            })
+            .collect::<Vec<_>>();
+
         // DONE: emit store hi and lo
         if let Some(hi) = cache.hi
             && hi.dirty
         {
-            JIT::emit_store_hi(builder, block, hi.value);
+            instructions.push(JIT::emit_store_hi(builder, block, hi.value));
         }
         if let Some(lo) = cache.lo
             && lo.dirty
         {
-            JIT::emit_store_lo(builder, block, lo.value);
+            instructions.push(JIT::emit_store_lo(builder, block, lo.value));
         }
-        // tracing::trace!("done");
+        instructions
     }
 
     #[builder]
     pub fn emit_map_address_to_physical(
         fn_builder: &mut FunctionBuilder<'_>,
         address: Value,
-    ) -> Value {
+    ) -> (Value, Inst) {
         debug_assert_eq!(
             fn_builder.func.dfg.value_type(address),
             types::I32,
             "expected 32bit virtual address!"
         );
 
-        fn_builder.ins().band_imm(address, 0x1FFF_FFFF)
+        let band = fn_builder
+            .pure()
+            .BinaryImm64(
+                Opcode::BandImm,
+                types::I32,
+                Imm64::new(0x1FFF_FFFF),
+                address,
+            )
+            .0;
+        let address = fn_builder.single_result(band);
+
+        (address, band)
     }
 
     #[builder]
+    #[deprecated]
     pub fn emit_map_address_to_host(
-        fn_builder: &mut FunctionBuilder<'_>,
-        ptr_type: Type,
-        mem_map_ptr: Value,
-        address: Value,
-    ) -> Value {
-        debug_assert_eq!(
-            fn_builder.func.dfg.value_type(address),
-            types::I32,
-            "expected 32bit virtual address!"
-        );
-
-        let address = fn_builder.ins().band_imm(address, 0x1FFF_FFFF);
-        let address = fn_builder.ins().uextend(ptr_type, address);
-
-        let index = fn_builder.ins().ushr_imm(address, 16);
-        // let index = fn_builder.ins().uextend(ptr_type, index);
-        let index = fn_builder
-            .ins()
-            .imul_imm(index, size_of::<MemoryRegion>() as i64);
-        let lookup = fn_builder.ins().iadd(mem_map_ptr, index);
-
-        let region_val = fn_builder
-            .ins()
-            .load(types::I64, MemFlags::new(), lookup, 0);
-
-        let phys_start = {
-            fn_builder
-                .ins()
-                .ushr_imm(region_val, offset_of!(MemoryRegion, phys_start) as i64 * 8)
-        };
-        let host_start = {
-            let host_start = fn_builder.ins().ireduce(types::I32, region_val);
-            fn_builder.ins().uextend(ptr_type, host_start)
-        };
-
-        let (offset, _) = fn_builder.ins().usub_overflow(address, phys_start);
-
-        fn_builder.ins().iadd(host_start, offset)
+        _fn_builder: &mut FunctionBuilder<'_>,
+        _ptr_type: Type,
+        _mem_map_ptr: Value,
+        _address: Value,
+    ) -> (Value, [Inst; 12]) {
+        unreachable!("called deprecated function `emit_map_address_to_host`")
     }
 
-    pub fn emit_store_pc(fn_builder: &mut FunctionBuilder<'_>, pc_value: Value, cpu_value: Value) {
-        tracing::info!("write to pc");
-        fn_builder.ins().store(
-            MemFlags::new(),
-            pc_value,
-            cpu_value,
-            offset_of!(Cpu, pc) as i32,
-        );
+    pub fn emit_store_pc(fn_builder: &mut FunctionBuilder<'_>, block: Block, pc: Value) -> Inst {
+        // tracing::info!("write to pc");
+
+        JIT::emit_store_to_cpu(fn_builder, block, pc, offset_of!(Cpu, pc) as i32)
     }
 
     pub fn cache_usage(&self) -> (usize, usize) {
@@ -525,26 +689,18 @@ impl JIT {
 
 #[derive(Debug, Clone, Copy)]
 #[repr(transparent)]
-pub struct BlockFn(pub fn(*mut Cpu, *mut u8, *const MemoryRegion));
+pub struct BlockFn(pub fn(*mut Cpu, *mut u8));
 
-type BlockFnArgs<'a> = (&'a mut Cpu, &'a mut Memory, bool, &'a [MemoryRegion]);
+type BlockFnArgs<'a> = (&'a mut Cpu, &'a mut Memory, bool);
 
 impl BlockFn {
     fn call_block(&self, args: BlockFnArgs) {
         if args.2 {
             self.0
                 .instrument(tracing::info_span!("fn", addr = ?self.0))
-                .inner()(
-                ptr::from_mut(args.0),
-                args.1.as_mut().as_mut_ptr(),
-                args.3.as_ptr(),
-            )
+                .inner()(ptr::from_mut(args.0), args.1.as_mut().as_mut_ptr())
         } else {
-            self.0(
-                ptr::from_mut(args.0),
-                args.1.as_mut().as_mut_ptr(),
-                args.3.as_ptr(),
-            )
+            self.0(ptr::from_mut(args.0), args.1.as_mut().as_mut_ptr())
         }
     }
 }

@@ -1,9 +1,7 @@
 use std::fmt::Display;
 
-use cranelift::prelude::FunctionBuilder;
-
-use crate::cpu::REG_STR;
-use crate::cpu::ops::prelude::*;
+use crate::FnBuilderExt;
+use crate::dynarec::prelude::*;
 
 use super::PrimeOp;
 
@@ -51,31 +49,27 @@ impl Op for AND {
             .set_bits(11..16, self.rd as u32)
     }
 
-    fn emit_ir(
-        &self,
-        mut state: EmitParams,
-        fn_builder: &mut FunctionBuilder,
-    ) -> Option<EmitSummary> {
+    fn emit_ir(&self, mut state: EmitCtx) -> EmitSummary {
         use crate::cranelift_bs::*;
         // shortcuts:
         // - case 1: x & 0 = 0
         // - case 2: 0 & x = 0
         if self.rs == 0 || self.rt == 0 {
-            let zero = state.emit_get_zero(fn_builder);
-            return Some(
-                EmitSummary::builder()
-                    .register_updates([(self.rd, zero)])
-                    .build(&fn_builder),
-            );
+            let (zero, loadzero) = state.emit_get_zero();
+            return EmitSummary::builder()
+                .instructions([now(loadzero)])
+                .register_updates([(self.rd, zero)])
+                .build(state.fn_builder);
         }
-        let rs = state.emit_get_register(fn_builder, self.rs);
-        let rt = state.emit_get_register(fn_builder, self.rt);
-        let rd = fn_builder.ins().band(rs, rt);
-        Some(
-            EmitSummary::builder()
-                .register_updates([(self.rd, rd)])
-                .build(&fn_builder),
-        )
+        let (rs, load0) = state.emit_get_register(self.rs);
+        let (rt, load1) = state.emit_get_register(self.rt);
+        let (rd, band) = state
+            .fn_builder
+            .inst(|f| f.pure().Binary(Opcode::Band, types::I32, rs, rt).0);
+        EmitSummary::builder()
+            .instructions([now(load0), now(load1), now(band)])
+            .register_updates([(self.rd, rd)])
+            .build(state.fn_builder)
     }
 }
 
@@ -90,9 +84,9 @@ mod tests {
     use pretty_assertions::assert_eq;
     use rstest::rstest;
 
-    use crate::JitSummary;
     use crate::cpu::ops::prelude::*;
-    use crate::{Emu, memory::KSEG0Addr, test_utils::emulator};
+    use crate::dynarec::JitSummary;
+    use crate::{Emu, test_utils::emulator};
 
     #[rstest]
     #[case(1, 1, 1)]
@@ -107,9 +101,11 @@ mod tests {
         #[case] b: i16,
         #[case] expected: u32,
     ) -> color_eyre::Result<()> {
-        emulator.mem.write_array(
-            KSEG0Addr::from_phys(0),
-            &[addiu(8, 0, a), addiu(9, 0, b), and(10, 8, 9), OpCode(69420)],
+        use crate::cpu::program;
+
+        emulator.mem.write_many(
+            0x0,
+            &program([addiu(8, 0, a), addiu(9, 0, b), and(10, 8, 9), OpCode(69420)]),
         );
         let summary = emulator.step_jit_summarize::<JitSummary>()?;
         tracing::info!(?summary.function);

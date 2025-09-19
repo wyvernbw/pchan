@@ -1,9 +1,5 @@
+use crate::dynarec::prelude::*;
 use std::fmt::Display;
-
-use cranelift::prelude::FunctionBuilder;
-
-use crate::cpu::REG_STR;
-use crate::cpu::ops::{OpCode, prelude::*};
 
 #[derive(Debug, Clone, Copy)]
 pub struct SLTU {
@@ -55,36 +51,8 @@ impl Op for SLTU {
             .set_bits(21..26, self.rs as u32)
     }
 
-    fn emit_ir(
-        &self,
-        mut state: EmitParams,
-        fn_builder: &mut FunctionBuilder,
-    ) -> Option<EmitSummary> {
-        use crate::cranelift_bs::*;
-
-        if self.rs == 0 {
-            return Some(
-                EmitSummary::builder()
-                    .register_updates([(self.rd, state.emit_get_one(fn_builder))])
-                    .build(fn_builder),
-            );
-        } else if self.rt == 0 {
-            return Some(
-                EmitSummary::builder()
-                    .register_updates([(self.rd, state.emit_get_zero(fn_builder))])
-                    .build(fn_builder),
-            );
-        }
-        let rt = state.emit_get_register(fn_builder, self.rt);
-        let rs = state.emit_get_register(fn_builder, self.rs);
-        let rd = fn_builder.ins().icmp(IntCC::UnsignedLessThan, rs, rt);
-        let rd = fn_builder.ins().uextend(types::I32, rd);
-
-        Some(
-            EmitSummary::builder()
-                .register_updates([(self.rd, rd)])
-                .build(fn_builder),
-        )
+    fn emit_ir(&self, mut ctx: EmitCtx) -> EmitSummary {
+        icmp!(self, ctx, IntCC::UnsignedLessThan)
     }
 }
 
@@ -93,21 +61,19 @@ mod tests {
     use pchan_utils::setup_tracing;
     use rstest::rstest;
 
-    use crate::JitSummary;
-    use crate::cpu::ops::prelude::*;
-    use crate::memory::KSEG0Addr;
+    use crate::dynarec::prelude::*;
     use crate::{Emu, test_utils::emulator};
 
     #[rstest]
     fn basic_sltu(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
-        emulator.mem.write_array(
-            KSEG0Addr::from_phys(0),
-            &[
+        emulator.mem.write_many(
+            0,
+            &program([
                 addiu(8, 0, 16),
                 addiu(9, 0, -3),
                 sltu(10, 9, 8),
                 OpCode(69420),
-            ],
+            ]),
         );
         let summary = emulator.step_jit_summarize::<JitSummary>()?;
         tracing::info!(?summary.function);

@@ -1,10 +1,7 @@
+use crate::dynarec::prelude::*;
 use std::fmt::Display;
 
-use crate::cpu::REG_STR;
-use crate::cpu::ops::{self, BoundaryType, EmitSummary, Op, TryFromOpcodeErr};
-use crate::cranelift_bs::*;
-
-use super::{EmitParams, OpCode, PrimeOp};
+use super::{EmitCtx, OpCode, PrimeOp};
 
 #[derive(Debug, Clone, Copy)]
 pub struct SW {
@@ -13,7 +10,7 @@ pub struct SW {
     imm: i16,
 }
 
-pub fn sw(rt: usize, rs: usize, imm: i16) -> ops::OpCode {
+pub fn sw(rt: usize, rs: usize, imm: i16) -> OpCode {
     SW { rt, rs, imm }.into_opcode()
 }
 
@@ -41,34 +38,38 @@ impl Display for SW {
 }
 
 impl Op for SW {
-    fn emit_ir(
-        &self,
-        mut state: EmitParams,
-        fn_builder: &mut FunctionBuilder,
-    ) -> Option<EmitSummary> {
-        // get pointer to memory passed as argument to the function
-        let mem_ptr = state.memory(fn_builder);
+    fn hazard(&self) -> Option<u32> {
+        Some(1)
+    }
 
-        // get cached register if possible, otherwise load it in
-        let rs = state.emit_get_register(fn_builder, self.rs);
-        let rs = state.emit_map_address_to_host(fn_builder, rs);
+    fn emit_ir(&self, mut ctx: EmitCtx) -> EmitSummary {
+        {
+            use crate::dynarec::prelude::*;
 
-        let rt = state.emit_get_register(fn_builder, self.rt);
-        let mem_ptr = fn_builder.ins().iadd(mem_ptr, rs);
-
-        fn_builder
-            .ins()
-            .store(MemFlags::new(), rt, mem_ptr, self.imm as i32);
-
-        None
+            let mem_ptr = ctx.memory();
+            let (rs, loadrs) = ctx.emit_get_register(self.rs);
+            let (rt, loadrt) = ctx.emit_get_register(self.rt);
+            let (address, add) = ctx.inst(|f| {
+                f.pure()
+                    .BinaryImm64(Opcode::IaddImm, types::I32, Imm64::new(self.imm as i64), rs)
+                    .0
+            });
+            let storeinst = ctx
+                .fn_builder
+                .pure()
+                .call(ctx.func_ref_table.write32, &[mem_ptr, address, rt]);
+            EmitSummary::builder()
+                .instructions([now(loadrs), now(loadrt), now(add), delayed(1, storeinst)])
+                .build(ctx.fn_builder)
+        }
     }
 
     fn is_block_boundary(&self) -> Option<BoundaryType> {
         None
     }
 
-    fn into_opcode(self) -> ops::OpCode {
-        ops::OpCode::default()
+    fn into_opcode(self) -> OpCode {
+        OpCode::default()
             .with_primary(PrimeOp::SW)
             .set_bits(16..21, self.rt as u32)
             .set_bits(21..26, self.rs as u32)
@@ -81,22 +82,22 @@ mod tests {
     use pchan_utils::setup_tracing;
     use rstest::rstest;
 
-    use crate::{Emu, cpu::ops::OpCode, memory::KSEG0Addr, test_utils::emulator};
+    use crate::dynarec::prelude::*;
+    use crate::memory::ext;
+    use crate::{Emu, test_utils::emulator};
 
     #[rstest]
     pub fn test_sw(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
-        use crate::cpu::ops::prelude::*;
-
         emulator
             .mem
-            .write_all(KSEG0Addr::from_phys(0), [sw(9, 8, 0), OpCode(69420)]);
+            .write_many(0x0, &program([sw(9, 8, 0), lw(10, 8, 0), OpCode(69420)]));
 
         emulator.cpu.gpr[8] = 32; // base register
         emulator.cpu.gpr[9] = u32::MAX;
 
         emulator.step_jit()?;
 
-        assert_eq!(emulator.mem.read::<u32>(KSEG0Addr::from_phys(32)), u32::MAX);
+        assert_eq!(emulator.mem.read::<u32, ext::NoExt>(32), u32::MAX);
 
         Ok(())
     }

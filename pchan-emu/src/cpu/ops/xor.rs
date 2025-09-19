@@ -1,11 +1,5 @@
+use crate::dynarec::prelude::*;
 use std::fmt::Display;
-
-use cranelift::prelude::FunctionBuilder;
-
-use crate::cpu::REG_STR;
-use crate::cpu::ops::prelude::*;
-
-use super::PrimeOp;
 
 #[derive(Debug, Clone, Copy)]
 #[allow(clippy::upper_case_acronyms)]
@@ -51,35 +45,27 @@ impl Op for XOR {
             .set_bits(11..16, self.rd as u32)
     }
 
-    fn emit_ir(
-        &self,
-        mut state: EmitParams,
-        fn_builder: &mut FunctionBuilder,
-    ) -> Option<EmitSummary> {
-        use crate::cranelift_bs::*;
+    fn emit_ir(&self, mut state: EmitCtx) -> EmitSummary {
         if self.rs == 0 {
-            let rt = state.emit_get_register(fn_builder, self.rt);
-            return Some(
-                EmitSummary::builder()
-                    .register_updates([(self.rd, rt)])
-                    .build(&fn_builder),
-            );
+            let (rt, loadrt) = state.emit_get_register(self.rt);
+            return EmitSummary::builder()
+                .instructions([now(loadrt)])
+                .register_updates([(self.rd, rt)])
+                .build(state.fn_builder);
         } else if self.rt == 0 {
-            let rs = state.emit_get_register(fn_builder, self.rs);
-            return Some(
-                EmitSummary::builder()
-                    .register_updates([(self.rd, rs)])
-                    .build(&fn_builder),
-            );
+            let (rs, loadrs) = state.emit_get_register(self.rs);
+            return EmitSummary::builder()
+                .instructions([now(loadrs)])
+                .register_updates([(self.rd, rs)])
+                .build(state.fn_builder);
         }
-        let rs = state.emit_get_register(fn_builder, self.rs);
-        let rt = state.emit_get_register(fn_builder, self.rt);
-        let rd = fn_builder.ins().bxor(rs, rt);
-        Some(
-            EmitSummary::builder()
-                .register_updates([(self.rd, rd)])
-                .build(&fn_builder),
-        )
+        let (rs, loadrs) = state.emit_get_register(self.rs);
+        let (rt, loadrt) = state.emit_get_register(self.rt);
+        let (rd, bxor) = state.inst(|f| f.pure().Binary(Opcode::Bxor, types::I32, rs, rt).0);
+        EmitSummary::builder()
+            .instructions([now(loadrs), now(loadrt), now(bxor)])
+            .register_updates([(self.rd, rd)])
+            .build(state.fn_builder)
     }
 }
 
@@ -94,9 +80,8 @@ mod tests {
     use pretty_assertions::assert_eq;
     use rstest::rstest;
 
-    use crate::JitSummary;
-    use crate::cpu::ops::prelude::*;
-    use crate::{Emu, memory::KSEG0Addr, test_utils::emulator};
+    use crate::dynarec::prelude::*;
+    use crate::{Emu, test_utils::emulator};
 
     #[rstest]
     #[case(1, 1, 0)]
@@ -113,9 +98,9 @@ mod tests {
         #[case] b: i16,
         #[case] expected: u32,
     ) -> color_eyre::Result<()> {
-        emulator.mem.write_array(
-            KSEG0Addr::from_phys(0),
-            &[addiu(8, 0, a), addiu(9, 0, b), xor(10, 8, 9), OpCode(69420)],
+        emulator.mem.write_many(
+            0x0,
+            &program([addiu(8, 0, a), addiu(9, 0, b), xor(10, 8, 9), OpCode(69420)]),
         );
         let summary = emulator.step_jit_summarize::<JitSummary>()?;
         tracing::info!(?summary.function);

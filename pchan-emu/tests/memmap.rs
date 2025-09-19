@@ -1,61 +1,72 @@
 #![feature(slice_as_array)]
+#![feature(portable_simd)]
+#![allow(unused_variables)]
 
-use pchan_emu::{
-    Emu, JitSummary,
-    memory::{Addr, KSEG0Addr, map_physical},
-};
+use pchan_emu::Emu;
+use pchan_emu::dynarec::prelude::*;
+use pchan_emu::memory::ext;
 use pchan_utils::setup_tracing;
 use pretty_assertions::assert_eq;
 use rstest::rstest;
 
 #[rstest]
 // ram
-#[case(0x0000_0000)]
-#[case(0x8000_0000)]
-#[case(0xA000_0000)]
+#[case::kuseg_ram(0x0000_0000)]
+#[case::kseg0_ram(0x8000_0000)]
+#[case::kseg1_ram(0xA000_0000)]
 // expansion 1
-#[case(0x1F00_0000)]
-#[case(0x9F00_0000)]
-#[case(0xBF00_0000)]
+#[case::kuseg_exp1(0x1F00_0000)]
+#[case::kseg0_exp1(0x9F00_0000)]
+#[case::kseg1_exp1(0xBF00_0000)]
 // scratchpad
-#[case(0x1F80_0000)]
-#[case(0x9F80_0000)]
+#[case::kuseg_scratch(0x1F80_0000)]
+#[case::kseg0_scratch(0x9F80_0000)]
 // io ports
-#[case(0x1F80_1000)]
-#[case(0x9F80_1000)]
-#[case(0xBF80_1000)]
+#[case::kuseg_io(0x1F80_1000)]
+#[case::kseg0_io(0x9F80_1000)]
+#[case::kseg1_io(0xBF80_1000)]
+// expansion 2
+#[case::kuseg_exp2(0x1F80_2000)]
+#[case::kseg0_exp2(0x9F80_2000)]
+#[case::kseg1_exp2(0xBF80_2000)]
+// expansion 3
+#[case::kuseg_exp3(0x1FA0_0000)]
+#[case::kseg0_exp3(0x9FA0_0000)]
+#[case::kseg1_exp3(0xBFA0_0000)]
+// bios rom
+// this will overwrite the bios lol
+#[case::kuseg_bios(0x1FC0_0000)]
+#[case::kseg0_bios(0x9FC0_0000)]
+#[case::kseg1_bios(0xBFC0_0000)]
 fn write_to_address(setup_tracing: (), #[case] base: u32) -> color_eyre::Result<()> {
-    use pchan_emu::{cpu::ops::prelude::*, memory::PhysAddr};
-
     let mut emu = Emu::default();
-    emu.mem.write_array(
-        KSEG0Addr::from_phys(emu.cpu.pc),
-        &[
-            addiu(8, 0, 0),
-            addiu(10, 0, 256),
-            lui(9, (base >> 16) as i16),
-            ori(9, 9, (base & 0x0000_FFFF) as i16),
-            addiu(11, 0, 69),
-            sw(8, 9, 0),
-            addiu(8, 8, 4),
-            bne(8, 10, -12),
-            nop(),
-            OpCode(69420),
-        ],
-    );
+    emu.cpu.pc = 0xBFC0_0000;
+    let main = program([
+        addiu(8, 0, 0),
+        addiu(10, 0, 256),
+        lui(9, (base >> 16) as i16),
+        ori(9, 9, (base & 0x0000_FFFF) as i16),
+        addu(11, 8, 9),
+        sw(8, 11, 0),
+        addiu(8, 8, 4),
+        bne(8, 10, -16),
+        nop(),
+        OpCode(69420),
+    ]);
+    emu.mem.write_many::<u32>(0xBFC0_0000, &main);
     let summary = emu.step_jit_summarize::<JitSummary>()?;
     tracing::info!(?summary.function);
 
-    // assert_eq!(emu.cpu.gpr[9], base);
-    assert_eq!(emu.cpu.gpr[11], 69);
-    let base = map_physical(PhysAddr(base & 0x1FFF_FFFF));
-    for i in 0..256 {
-        let idx = base + i * 4;
-        let idx = idx as usize;
-        let value = &emu.mem.as_ref()[idx..(idx + 4)];
-        let value = *value.as_array().unwrap();
-        let value = u32::from_le_bytes(value);
+    assert_eq!(emu.cpu.gpr[9], base);
+    assert_eq!(emu.cpu.gpr[8], 256);
+
+    tracing::info!(?base);
+    let mut address = base;
+    for i in 0..16 {
+        let value = emu.mem.read::<u32, ext::NoExt>(address);
+        tracing::info!(?value);
         assert_eq!(value, i * 4);
+        address += 4;
     }
 
     tracing::info!(?summary.function);

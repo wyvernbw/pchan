@@ -1,11 +1,5 @@
+use crate::dynarec::prelude::*;
 use std::fmt::Display;
-
-use cranelift::prelude::FunctionBuilder;
-
-use crate::cpu::REG_STR;
-use crate::cpu::ops::prelude::*;
-
-use super::PrimeOp;
 
 #[derive(Debug, Clone, Copy)]
 #[allow(clippy::upper_case_acronyms)]
@@ -51,32 +45,39 @@ impl Op for NOR {
             .set_bits(11..16, self.rd as u32)
     }
 
-    fn emit_ir(
-        &self,
-        mut state: EmitParams,
-        fn_builder: &mut FunctionBuilder,
-    ) -> Option<EmitSummary> {
+    fn emit_ir(&self, mut state: EmitCtx) -> EmitSummary {
         use crate::cranelift_bs::*;
-        let or_result = {
-            // case 1: x | 0 = x
-            if self.rs == 0 {
-                state.emit_get_register(fn_builder, self.rt)
-            // case 2: 0 | x = x
-            } else if self.rt == 0 {
-                state.emit_get_register(fn_builder, self.rs)
-            // case 3: x | y = z
-            } else {
-                let rs = state.emit_get_register(fn_builder, self.rs);
-                let rt = state.emit_get_register(fn_builder, self.rt);
-                fn_builder.ins().bor(rt, rs)
-            }
-        };
-        let rd = fn_builder.ins().bnot(or_result);
-        Some(
+        // case 1: x | 0 = x
+        if self.rs == 0 {
+            let (rt, loadrt) = state.emit_get_register(self.rt);
+            let (rd, bnot) = state.inst(|f| f.pure().Unary(Opcode::Bnot, types::I32, rt).0);
+
             EmitSummary::builder()
+                .instructions([now(loadrt), now(bnot)])
                 .register_updates([(self.rd, rd)])
-                .build(&fn_builder),
-        )
+                .build(state.fn_builder)
+        // case 2: 0 | x = x
+        } else if self.rt == 0 {
+            let (rs, loadrs) = state.emit_get_register(self.rs);
+            let (rd, bnot) = state.inst(|f| f.pure().Unary(Opcode::Bnot, types::I32, rs).0);
+
+            EmitSummary::builder()
+                .instructions([now(loadrs), now(bnot)])
+                .register_updates([(self.rd, rd)])
+                .build(state.fn_builder)
+        // case 3: x | y = z
+        } else {
+            let (rs, loadrs) = state.emit_get_register(self.rs);
+            let (rt, loadrt) = state.emit_get_register(self.rt);
+            let (rs_or_rt, bor) =
+                state.inst(|f| f.pure().Binary(Opcode::Bor, types::I32, rs, rt).0);
+            let (rd, bnot) = state.inst(|f| f.pure().Unary(Opcode::Bnot, types::I32, rs_or_rt).0);
+
+            EmitSummary::builder()
+                .instructions([now(loadrs), now(loadrt), now(bor), now(bnot)])
+                .register_updates([(self.rd, rd)])
+                .build(state.fn_builder)
+        }
     }
 }
 
@@ -91,9 +92,8 @@ mod tests {
     use pretty_assertions::assert_eq;
     use rstest::rstest;
 
-    use crate::JitSummary;
-    use crate::cpu::ops::prelude::*;
-    use crate::{Emu, memory::KSEG0Addr, test_utils::emulator};
+    use crate::dynarec::prelude::*;
+    use crate::{Emu, test_utils::emulator};
 
     #[rstest]
     #[case(0x7FFF, 0x7FFF, 0xFFFF_8000)] // i16::MAX | i16::MAX
@@ -111,9 +111,9 @@ mod tests {
         #[case] b: i16,
         #[case] expected: u32,
     ) -> color_eyre::Result<()> {
-        emulator.mem.write_array(
-            KSEG0Addr::from_phys(0),
-            &[addiu(8, 0, a), addiu(9, 0, b), nor(10, 8, 9), OpCode(69420)],
+        emulator.mem.write_many(
+            0x0,
+            &program([addiu(8, 0, a), addiu(9, 0, b), nor(10, 8, 9), OpCode(69420)]),
         );
         let summary = emulator.step_jit_summarize::<JitSummary>()?;
         assert_eq!(emulator.cpu.gpr[10], expected);

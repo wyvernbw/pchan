@@ -1,8 +1,6 @@
 use std::fmt::Display;
 
-use crate::cpu::REG_STR;
-use crate::cpu::ops::prelude::*;
-use crate::cranelift_bs::*;
+use crate::dynarec::prelude::*;
 
 #[derive(Debug, Clone, Copy)]
 pub struct MFHI {
@@ -21,17 +19,12 @@ impl Op for MFHI {
             .set_bits(11..16, self.rd as u32)
     }
 
-    fn emit_ir(
-        &self,
-        mut state: EmitParams,
-        fn_builder: &mut FunctionBuilder,
-    ) -> Option<EmitSummary> {
-        let hi = state.emit_get_hi(fn_builder);
-        Some(
-            EmitSummary::builder()
-                .register_updates([(self.rd, hi)])
-                .build(&fn_builder),
-        )
+    fn emit_ir(&self, mut state: EmitCtx) -> EmitSummary {
+        let (hi, loadhi) = state.emit_get_hi();
+        EmitSummary::builder()
+            .instructions([now(loadhi)])
+            .register_updates([(self.rd, hi)])
+            .build(state.fn_builder)
     }
 }
 
@@ -64,7 +57,7 @@ mod tests {
     use rstest::rstest;
 
     use crate::Emu;
-    use crate::cpu::ops::prelude::*;
+    use crate::dynarec::prelude::*;
     use crate::test_utils::emulator;
 
     #[rstest]
@@ -80,12 +73,9 @@ mod tests {
         #[case] b: u32,
         #[case] expected: u32,
     ) -> color_eyre::Result<()> {
-        use crate::{JitSummary, memory::KSEG0Addr};
-
-        emulator.mem.write_array(
-            KSEG0Addr::from_phys(0),
-            &[multu(8, 9), nop(), mfhi(10), OpCode(69420)],
-        );
+        emulator
+            .mem
+            .write_many(0, &program([multu(8, 9), nop(), mfhi(10), OpCode(69420)]));
         emulator.cpu.gpr[8] = a;
         emulator.cpu.gpr[9] = b;
 

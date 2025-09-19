@@ -1,11 +1,14 @@
-use crate::{BasicBlock, CacheDependency, EntryCache, FnBuilderExt, cranelift_bs::*, jit::JIT};
-use bon::Builder;
+use crate::{
+    FnBuilderExt,
+    cranelift_bs::*,
+    dynarec::{EmitCtx, EmitSummary},
+};
+use cranelift::codegen::entity::EntityList;
 use enum_dispatch::enum_dispatch;
 use pchan_macros::OpCode;
-use petgraph::prelude::*;
-use std::{collections::HashMap, fmt::Display, ops::Range};
+use std::{fmt::Display, ops::Range};
 use thiserror::Error;
-use tracing::{Level, instrument};
+use tracing::instrument;
 
 // alu
 pub mod addiu;
@@ -49,11 +52,13 @@ pub mod lb;
 pub mod lbu;
 pub mod lh;
 pub mod lhu;
+pub mod load;
 pub mod lw;
 
 // stores
 pub mod sb;
 pub mod sh;
+pub mod store;
 pub mod sw;
 
 // cop
@@ -105,9 +110,10 @@ pub mod prelude {
     pub use super::xor::*;
     pub use super::xori::*;
     pub use super::{
-        BoundaryType, CopOp, EmitParams, EmitSummary, MipsOffset, Op, PrimeOp, SecOp,
-        TryFromOpcodeErr,
+        BoundaryType, CopOp, DecodedOp, MipsOffset, Op, PrimeOp, SecOp, TryFromOpcodeErr,
     };
+    pub use crate::cpu::program;
+    pub use crate::dynarec::{EmitCtx, EmitSummary};
 }
 
 use prelude::*;
@@ -330,295 +336,6 @@ pub enum CopOp {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct CachedValue {
-    pub dirty: bool,
-    pub value: Value,
-}
-
-#[derive(Builder)]
-pub struct EmitParams<'a> {
-    ptr_type: types::Type,
-    cache: &'a mut EntryCache,
-    node: NodeIndex,
-    pc: u32,
-    cfg: &'a Graph<BasicBlock, ()>,
-    deps_map: &'a HashMap<Block, CacheDependency>,
-}
-
-impl<'a> EmitParams<'a> {
-    fn block(&self) -> &BasicBlock {
-        &self.cfg[self.node]
-    }
-    fn next_at(&self, idx: usize) -> &BasicBlock {
-        let idx = self
-            .cfg
-            .neighbors_directed(self.node, Direction::Outgoing)
-            .nth(idx)
-            .unwrap();
-        &self.cfg[idx]
-    }
-    fn neighbour_count(&self) -> usize {
-        self.cfg
-            .neighbors_directed(self.node, Direction::Outgoing)
-            .count()
-    }
-    fn emulator_params(&self, fn_builder: &mut FunctionBuilder) -> Vec<BlockArg> {
-        vec![
-            BlockArg::Value(self.cpu(fn_builder)),
-            BlockArg::Value(self.memory(fn_builder)),
-            BlockArg::Value(self.mem_map(fn_builder)),
-        ]
-    }
-    #[instrument(skip(fn_builder, self))]
-    fn out_params(&self, to: Block, fn_builder: &mut FunctionBuilder) -> Vec<BlockArg> {
-        // tracing::trace!("{:#?}", self.deps_map);
-        let next_block_deps: Option<_> = self.deps_map.get(&to).map(|dep| dep.registers);
-        let mut args = self.emulator_params(fn_builder);
-        if let Some(next_block_deps) = next_block_deps {
-            let iter = next_block_deps
-                .iter()
-                .flat_map(|register| self.cache.registers[register as usize])
-                .map(|value| value.value)
-                .map(BlockArg::Value);
-            args.extend(iter);
-        } else {
-            args.extend(
-                self.cache
-                    .registers
-                    .iter()
-                    .flatten()
-                    .cloned()
-                    .map(|value| value.value)
-                    .map(BlockArg::Value),
-            );
-        }
-        args
-    }
-    fn cpu(&self, fn_builder: &mut FunctionBuilder) -> Value {
-        let block = self.block().clif_block();
-        fn_builder.block_params(block)[0]
-    }
-    fn memory(&self, fn_builder: &mut FunctionBuilder) -> Value {
-        let block = self.cfg[self.node].clif_block();
-        fn_builder.block_params(block)[1]
-    }
-    fn mem_map(&self, fn_builder: &mut FunctionBuilder) -> Value {
-        let block = self.block().clif_block();
-        fn_builder.block_params(block)[2]
-    }
-    fn emit_get_one(&mut self, fn_builder: &mut FunctionBuilder) -> Value {
-        match self.cache.const_one {
-            Some(one) => one,
-            None => {
-                let one = fn_builder.ins().iconst(types::I32, 1);
-                self.cache.const_one = Some(one);
-                one
-            }
-        }
-    }
-    fn emit_get_zero_i64(&mut self, fn_builder: &mut FunctionBuilder) -> Value {
-        match self.cache.const_zero_i64 {
-            Some(zero) => zero,
-            None => {
-                let zero = fn_builder.ins().iconst(types::I64, 0);
-                self.cache.const_zero_i64 = Some(zero);
-                zero
-            }
-        }
-    }
-    fn emit_get_zero(&mut self, fn_builder: &mut FunctionBuilder) -> Value {
-        self.emit_get_register(fn_builder, 0)
-    }
-    fn emit_get_hi(&mut self, fn_builder: &mut FunctionBuilder) -> Value {
-        let block = self.block().clif_block();
-        match self.cache.hi {
-            Some(hi) => hi.value,
-            None => {
-                let hi = JIT::emit_load_hi().builder(fn_builder).block(block).call();
-                self.cache.hi = Some(CachedValue {
-                    dirty: false,
-                    value: hi,
-                });
-                hi
-            }
-        }
-    }
-    fn emit_get_lo(&mut self, fn_builder: &mut FunctionBuilder) -> Value {
-        let block = self.block().clif_block();
-        match self.cache.lo {
-            Some(lo) => lo.value,
-            None => {
-                let lo = JIT::emit_load_lo().builder(fn_builder).block(block).call();
-                self.cache.lo = Some(CachedValue {
-                    dirty: false,
-                    value: lo,
-                });
-                lo
-            }
-        }
-    }
-    fn emit_get_register(&mut self, fn_builder: &mut FunctionBuilder, id: usize) -> Value {
-        let block = self.block().clif_block();
-        match self.cache.registers[id] {
-            Some(value) => value.value,
-            None => {
-                let value = JIT::emit_load_reg()
-                    .builder(fn_builder)
-                    .block(block)
-                    .idx(id)
-                    .call();
-                self.cache.registers[id] = Some(CachedValue {
-                    dirty: false,
-                    value,
-                });
-                value
-            }
-        }
-    }
-    fn emit_get_cop_register(
-        &mut self,
-        fn_builder: &mut FunctionBuilder,
-        cop: u8,
-        reg: usize,
-    ) -> Value {
-        JIT::emit_load_cop_reg()
-            .builder(fn_builder)
-            .block(self.block().clif_block())
-            .idx(reg)
-            .cop(cop)
-            .call()
-    }
-    fn update_cache_immediate(&mut self, id: usize, value: Value) {
-        self.cache.registers[id] = Some(CachedValue {
-            dirty: false,
-            value,
-        });
-    }
-    fn emit_map_address_to_host(&self, fn_builder: &mut FunctionBuilder, address: Value) -> Value {
-        let mem_map = self.mem_map(fn_builder);
-        JIT::emit_map_address_to_host()
-            .fn_builder(fn_builder)
-            .ptr_type(self.ptr_type)
-            .address(address)
-            .mem_map_ptr(mem_map)
-            .call()
-    }
-    fn emit_map_address_to_physical(
-        &self,
-        fn_builder: &mut FunctionBuilder,
-        address: Value,
-    ) -> Value {
-        JIT::emit_map_address_to_physical()
-            .fn_builder(fn_builder)
-            .address(address)
-            .call()
-    }
-    fn emit_store_pc(&self, fn_builder: &mut FunctionBuilder, value: Value) {
-        let cpu = self.cpu(fn_builder);
-        JIT::emit_store_pc(fn_builder, value, cpu);
-    }
-    fn emit_store_register(&self, fn_builder: &mut FunctionBuilder, reg: usize, value: Value) {
-        JIT::emit_store_reg()
-            .builder(fn_builder)
-            .block(self.block().clif_block())
-            .idx(reg)
-            .value(value)
-            .call();
-    }
-    fn emit_store_cop_register(
-        &self,
-        fn_builder: &mut FunctionBuilder,
-        cop: u8,
-        reg: usize,
-        value: Value,
-    ) {
-        JIT::emit_store_cop_reg()
-            .builder(fn_builder)
-            .block(self.block().clif_block())
-            .idx(reg)
-            .value(value)
-            .cop(cop)
-            .call();
-    }
-}
-
-#[derive(Builder, Debug, Default)]
-#[builder(finish_fn(vis = "", name = build_internal))]
-pub struct EmitSummary {
-    #[builder(field = Vec::with_capacity(32))]
-    pub register_updates: Vec<(usize, CachedValue)>,
-    #[builder(field = Vec::with_capacity(32))]
-    pub delayed_register_updates: Vec<(usize, CachedValue)>,
-    pub pc_update: Option<u32>,
-    #[builder(with = |value: Value| CachedValue {
-        dirty: true,
-        value
-    })]
-    pub hi: Option<CachedValue>,
-    #[builder(with = |value: Value| CachedValue {
-        dirty: true,
-        value
-    })]
-    pub lo: Option<CachedValue>,
-    #[builder(default)]
-    pub finished_block: bool,
-}
-
-impl<S: emit_summary_builder::State> EmitSummaryBuilder<S> {
-    pub fn register_updates(mut self, values: impl IntoIterator<Item = (usize, Value)>) -> Self {
-        self.register_updates.extend(
-            values
-                .into_iter()
-                .map(|(reg, value)| (reg, CachedValue { dirty: true, value })),
-        );
-        self
-    }
-    pub fn delayed_register_updates(
-        mut self,
-        values: impl IntoIterator<Item = (usize, Value)>,
-    ) -> Self {
-        self.delayed_register_updates.extend(
-            values
-                .into_iter()
-                .map(|(reg, value)| (reg, CachedValue { dirty: true, value })),
-        );
-        self
-    }
-}
-
-impl<S: emit_summary_builder::IsComplete> EmitSummaryBuilder<S> {
-    pub fn build(self, fn_builder: &FunctionBuilder) -> EmitSummary {
-        if cfg!(debug_assertions) {
-            for (_, value) in &self.register_updates {
-                assert_eq!(
-                    fn_builder.type_of(value.value),
-                    types::I32,
-                    "emit summary invalid type for register value"
-                );
-            }
-            for (_, value) in &self.delayed_register_updates {
-                assert_eq!(
-                    fn_builder.type_of(value.value),
-                    types::I32,
-                    "emit summary invalid type for register value"
-                );
-            }
-        }
-        self.build_internal()
-    }
-}
-
-#[derive(Debug, Error)]
-pub enum TryFromOpcodeErr {
-    #[error("invalid header")]
-    InvalidHeader,
-    #[error("unknown instruction")]
-    UnknownInstruction,
-    #[error("found opcode for invalid coprocessor {0:?}")]
-    InvalidCoprocessor(PrimeOp),
-}
-
-#[derive(Debug, Clone, Copy)]
 pub enum MipsOffset {
     RegionJump(u32),
     Relative(i32),
@@ -637,7 +354,14 @@ impl MipsOffset {
 pub enum BoundaryType {
     Block { offset: MipsOffset },
     BlockSplit { lhs: MipsOffset, rhs: MipsOffset },
-    Function { auto_set_pc: bool },
+    Function,
+}
+
+#[derive(Debug, Clone)]
+pub struct Hazard<'a> {
+    pub op: &'a DecodedOp,
+    pub emit: fn(&'a DecodedOp, EmitCtx) -> EmitSummary,
+    pub trigger: u32,
 }
 
 #[enum_dispatch(DecodedOp)]
@@ -647,7 +371,16 @@ pub trait Op: Sized + Display + TryFrom<OpCode> {
     }
     fn is_block_boundary(&self) -> Option<BoundaryType>;
     fn into_opcode(self) -> crate::cpu::ops::OpCode;
-    fn emit_ir(&self, state: EmitParams, fn_builder: &mut FunctionBuilder) -> Option<EmitSummary>;
+    fn emit_ir(&self, ctx: EmitCtx) -> EmitSummary;
+    fn is_function_boundary(&self) -> bool {
+        matches!(
+            self.is_block_boundary(),
+            Some(BoundaryType::Function { .. })
+        )
+    }
+    fn hazard(&self) -> Option<u32> {
+        None
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -662,12 +395,10 @@ impl Op for NOP {
         OpCode::NOP
     }
 
-    fn emit_ir(
-        &self,
-        _state: EmitParams,
-        _fn_builder: &mut FunctionBuilder,
-    ) -> Option<EmitSummary> {
-        None
+    fn emit_ir(&self, ctx: EmitCtx) -> EmitSummary {
+        EmitSummary::builder()
+            .instructions([])
+            .build(ctx.fn_builder)
     }
 }
 
@@ -699,16 +430,36 @@ impl Display for HaltBlock {
 
 impl Op for HaltBlock {
     fn is_block_boundary(&self) -> Option<BoundaryType> {
-        Some(BoundaryType::Function { auto_set_pc: true })
+        Some(BoundaryType::Function)
     }
 
     fn into_opcode(self) -> crate::cpu::ops::OpCode {
         OpCode(69420)
     }
 
-    fn emit_ir(&self, _state: EmitParams, fn_builder: &mut FunctionBuilder) -> Option<EmitSummary> {
-        fn_builder.ins().return_(&[]);
-        None
+    fn hazard(&self) -> Option<u32> {
+        Some(1)
+    }
+
+    fn emit_ir(&self, mut ctx: EmitCtx) -> EmitSummary {
+        use crate::dynarec::*;
+
+        let ret = ctx
+            .fn_builder
+            .pure()
+            .MultiAry(Opcode::Return, types::INVALID, EntityList::new())
+            .0;
+        let write_pc = ctx.emit_store_pc_imm(ctx.pc + 4);
+
+        EmitSummary::builder()
+            .instructions(
+                [
+                    write_pc.map(bottom).as_slice(),
+                    [terminator(bomb(1, ret))].as_slice(),
+                ]
+                .concat(),
+            )
+            .build(ctx.fn_builder)
     }
 }
 
@@ -899,31 +650,24 @@ impl DecodedOp {
     pub fn new(opcode: OpCode) -> Self {
         Self::try_from(opcode).unwrap()
     }
+
+    pub fn is_nop(&self) -> bool {
+        matches!(self, Self::NOP(_))
+    }
 }
 
 #[derive(Debug, Clone, Copy, derive_more::Display)]
 pub struct OpForceBoundary(pub DecodedOp);
 
-impl Op for OpForceBoundary {
-    fn is_block_boundary(&self) -> Option<BoundaryType> {
-        let auto_set_pc =
-            if let Some(BoundaryType::Function { auto_set_pc }) = self.0.is_block_boundary() {
-                auto_set_pc
-            } else {
-                false
-            };
-        Some(BoundaryType::Function { auto_set_pc })
-    }
-
-    fn into_opcode(self) -> crate::cpu::ops::OpCode {
-        self.0.into_opcode()
-    }
-
-    fn emit_ir(&self, state: EmitParams, fn_builder: &mut FunctionBuilder) -> Option<EmitSummary> {
-        self.0.emit_ir(state, fn_builder)
-    }
+#[derive(Debug, Error)]
+pub enum TryFromOpcodeErr {
+    #[error("invalid header")]
+    InvalidHeader,
+    #[error("unknown instruction")]
+    UnknownInstruction,
+    #[error("found opcode for invalid coprocessor {0:?}")]
+    InvalidCoprocessor(PrimeOp),
 }
-
 impl TryFrom<OpCode> for OpForceBoundary {
     type Error = TryFromOpcodeErr;
 
@@ -954,7 +698,7 @@ mod decode_display_tests {
     #[case::addu(DecodedOp::new(addu(8, 9, 10)), "addu $t0 $t1 $t2")]
     #[case::addiu(DecodedOp::new(addiu(8, 9, 123)), "addiu $t0 $t1 123")]
     #[case::subu(DecodedOp::new(subu(8, 9, 10)), "subu $t0 $t1 $t2")]
-    #[case::j(DecodedOp::new(j(0x0040_0000)), "j 0x00400000")]
+    #[case::j(DecodedOp::new(j(0x0000_2000)), "j 0x00002000")]
     #[case::beq(DecodedOp::new(beq(8, 9, 16)), "beq $t0 $t1 0x00000010")]
     #[case::bne(DecodedOp::new(bne(8, 9, 16)), "bne $t0 $t1 0x00000010")]
     #[case::slt(DecodedOp::new(slt(8, 9, 10)), "slt $t0 $t1 $t2")]

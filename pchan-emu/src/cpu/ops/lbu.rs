@@ -1,10 +1,5 @@
+use crate::dynarec::prelude::*;
 use std::fmt::Display;
-
-use crate::cpu::REG_STR;
-use crate::cpu::ops::{self, BoundaryType, EmitSummary, Op, OpCode, TryFromOpcodeErr};
-use crate::cranelift_bs::*;
-
-use super::PrimeOp;
 
 #[derive(Debug, Clone, Copy)]
 #[allow(clippy::upper_case_acronyms)]
@@ -15,14 +10,14 @@ pub struct LBU {
 }
 
 #[inline]
-pub fn lbu(rt: usize, rs: usize, imm: i16) -> ops::OpCode {
+pub fn lbu(rt: usize, rs: usize, imm: i16) -> OpCode {
     LBU { rt, rs, imm }.into_opcode()
 }
 
 impl TryFrom<OpCode> for LBU {
     type Error = TryFromOpcodeErr;
 
-    fn try_from(opcode: ops::OpCode) -> Result<Self, TryFromOpcodeErr> {
+    fn try_from(opcode: OpCode) -> Result<Self, TryFromOpcodeErr> {
         let opcode = opcode.as_primary(PrimeOp::LBU)?;
         Ok(LBU {
             rt: opcode.bits(16..21) as usize,
@@ -33,35 +28,20 @@ impl TryFrom<OpCode> for LBU {
 }
 
 impl Op for LBU {
-    fn emit_ir(
-        &self,
-        mut state: super::EmitParams,
-        fn_builder: &mut FunctionBuilder,
-    ) -> Option<EmitSummary> {
-        // get pointer to memory passed as argument to the function
-        let mem_ptr = state.memory(fn_builder);
+    fn hazard(&self) -> Option<u32> {
+        Some(1)
+    }
 
-        // get cached register if possible, otherwise load it in
-        let rs = state.emit_get_register(fn_builder, self.rs);
-        let rs = state.emit_map_address_to_host(fn_builder, rs);
-        let mem_ptr = fn_builder.ins().iadd(mem_ptr, rs);
-
-        let rt = fn_builder
-            .ins()
-            .uload8(types::I32, MemFlags::new(), mem_ptr, self.imm as i32);
-        Some(
-            EmitSummary::builder()
-                .delayed_register_updates(vec![(self.rt, rt)].into_boxed_slice())
-                .build(&fn_builder),
-        )
+    fn emit_ir(&self, mut ctx: EmitCtx) -> EmitSummary {
+        load!(self, ctx, readu8)
     }
 
     fn is_block_boundary(&self) -> Option<BoundaryType> {
         None
     }
 
-    fn into_opcode(self) -> ops::OpCode {
-        ops::OpCode::default()
+    fn into_opcode(self) -> OpCode {
+        OpCode::default()
             .with_primary(PrimeOp::LBU)
             .set_bits(16..21, self.rt as u32)
             .set_bits(21..26, self.rs as u32)
@@ -84,20 +64,17 @@ mod tests {
     use pchan_utils::setup_tracing;
     use rstest::rstest;
 
-    use crate::{
-        Emu,
-        cpu::ops::{self, DecodedOp, lbu::lbu, nop},
-        memory::{KSEG0Addr, PhysAddr},
-        test_utils::emulator,
-    };
+    use crate::Emu;
+    use crate::dynarec::prelude::*;
+    use crate::memory::ext;
+    use crate::test_utils::emulator;
 
     #[rstest]
     pub fn test_lbu(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
-        emulator.mem.write_all(
-            KSEG0Addr::from_phys(0),
-            [lbu(8, 9, 4), nop(), ops::OpCode(69420)],
-        );
-        let op = emulator.mem.read::<ops::OpCode>(PhysAddr(0));
+        emulator
+            .mem
+            .write_many(0x0, &program([lbu(8, 9, 4), nop(), OpCode(69420)]));
+        let op = emulator.mem.read::<OpCode, ext::NoExt>(0x0);
         tracing::debug!(decoded = ?DecodedOp::try_from(op));
         tracing::debug!("{:08X?}", &emulator.mem.as_ref()[..21]);
         emulator.cpu.gpr[9] = 16;

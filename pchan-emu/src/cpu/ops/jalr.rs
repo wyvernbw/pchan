@@ -1,7 +1,6 @@
 use std::fmt::Display;
 
-use crate::cpu::{REG_STR, ops::prelude::*};
-use crate::cranelift_bs::*;
+use crate::dynarec::prelude::*;
 
 #[derive(Debug, Clone, Copy)]
 #[allow(clippy::upper_case_acronyms)]
@@ -32,7 +31,7 @@ impl Display for JALR {
 
 impl Op for JALR {
     fn is_block_boundary(&self) -> Option<BoundaryType> {
-        Some(BoundaryType::Function { auto_set_pc: false })
+        Some(BoundaryType::Function)
     }
 
     fn into_opcode(self) -> OpCode {
@@ -43,24 +42,46 @@ impl Op for JALR {
             .set_bits(11..16, self.rd as u32)
     }
 
-    fn emit_ir(
-        &self,
-        mut state: EmitParams,
-        fn_builder: &mut FunctionBuilder,
-    ) -> Option<EmitSummary> {
-        tracing::info!("jalr: saving pc 0x{:08X}", state.pc);
-        let rs = state.emit_get_register(fn_builder, self.rs);
-        let rs = state.emit_map_address_to_physical(fn_builder, rs);
+    fn hazard(&self) -> Option<u32> {
+        Some(1)
+    }
 
-        let pc = fn_builder.ins().iconst(types::I32, state.pc as i64 + 8);
-        state.emit_store_pc(fn_builder, rs);
-        state.emit_store_register(fn_builder, self.rd, pc);
-        Some(
-            EmitSummary::builder()
-                .register_updates([(self.rd, pc), (self.rd, pc)])
-                .finished_block(false)
-                .build(fn_builder),
-        )
+    fn emit_ir(&self, mut state: EmitCtx) -> EmitSummary {
+        tracing::info!("jalr: saving pc 0x{:08X}", state.pc);
+        // compute jump address
+        let (rs, loadreg) = state.emit_get_register(self.rs);
+        let (rs, mapaddr) = state.emit_map_address_to_physical(rs);
+
+        // store jump address at pc
+        let storepc = state.emit_store_pc(rs);
+
+        // save old pc in rd
+        let pc = state.pc as i64;
+        let (pc, iconst) = state.inst(|f| {
+            f.pure()
+                .UnaryImm(Opcode::Iconst, types::I32, Imm64::new(pc + 8))
+                .0
+        });
+        let storerd = state.emit_store_register(self.rd, pc);
+
+        // return
+        let ret = state
+            .fn_builder
+            .pure()
+            .MultiAry(Opcode::Return, types::INVALID, ValueList::new())
+            .0;
+
+        EmitSummary::builder()
+            .instructions([
+                now(loadreg),
+                now(mapaddr),
+                now(iconst),
+                now(storepc),
+                now(storerd),
+                terminator(bomb(1, ret)),
+            ])
+            .register_updates([(self.rd, pc)])
+            .build(state.fn_builder)
     }
 }
 
@@ -75,27 +96,26 @@ mod tests {
     use pretty_assertions::assert_eq;
     use rstest::rstest;
 
-    use crate::{Emu, JitSummary, cpu::RA, memory::KSEG0Addr, test_utils::emulator};
+    use crate::{Emu, cpu::RA, dynarec::JitSummary, test_utils::emulator};
 
     #[rstest]
     fn jalr_1(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
         use crate::cpu::ops::prelude::*;
 
-        let program = [
+        let main = program([
+            addiu(9, 0, 0),
             lui(8, 0x8000u16 as i16),
             ori(8, 8, 0x2000),
             jalr(RA, 8),
             nop(),
             addiu(9, 9, 32),
             OpCode(69420),
-        ];
+        ]);
 
-        let function = [addiu(9, 0, 69), nop(), jr(RA)];
+        let function = program([addiu(9, 0, 69), nop(), jr(RA)]);
 
-        emulator
-            .mem
-            .write_all(KSEG0Addr::from_phys(emulator.cpu.pc), program);
-        emulator.mem.write_all(KSEG0Addr(0x8000_2000), function);
+        emulator.mem.write_many(emulator.cpu.pc, &main);
+        emulator.mem.write_many(0x8000_2000, &function);
 
         for i in 0..3 {
             let summary = emulator.step_jit_summarize::<JitSummary>()?;
@@ -112,7 +132,7 @@ mod tests {
     fn jalr_1_delay_hazard(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
         use crate::cpu::ops::prelude::*;
 
-        let program = [
+        let main = program([
             // initialize state
             lui(8, 0x8000u16 as i16),
             ori(8, 8, 0x2000),
@@ -125,19 +145,17 @@ mod tests {
             nop(),
             addiu(9, 9, 32),
             OpCode(69420),
-        ];
+        ]);
 
-        let function = [
+        let function = program([
             // using fucked up state $t0=-69, end result is 0
             addiu(9, 9, 69),
             nop(),
             jr(RA),
-        ];
+        ]);
 
-        emulator
-            .mem
-            .write_all(KSEG0Addr::from_phys(emulator.cpu.pc), program);
-        emulator.mem.write_all(KSEG0Addr(0x8000_2000), function);
+        emulator.mem.write_many(emulator.cpu.pc, &main);
+        emulator.mem.write_many(0x8000_2000, &function);
 
         for i in 0..3 {
             let summary = emulator.step_jit_summarize::<JitSummary>()?;

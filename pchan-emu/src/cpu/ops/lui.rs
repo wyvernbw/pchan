@@ -1,8 +1,6 @@
 use std::fmt::Display;
 
-use crate::cpu::REG_STR;
-use crate::cpu::ops::prelude::*;
-use crate::cranelift_bs::*;
+use crate::dynarec::prelude::*;
 
 #[derive(Debug, Clone, Copy)]
 pub struct LUI {
@@ -40,26 +38,27 @@ impl Op for LUI {
             .set_bits(16..21, self.rt as u32)
     }
 
-    fn emit_ir(
-        &self,
-        mut state: EmitParams,
-        fn_builder: &mut FunctionBuilder,
-    ) -> Option<EmitSummary> {
+    fn emit_ir(&self, mut ctx: EmitCtx) -> EmitSummary {
         if self.imm == 0 {
-            return Some(
-                EmitSummary::builder()
-                    .register_updates([(self.rt, state.emit_get_zero(fn_builder))])
-                    .build(&fn_builder),
-            );
+            let (zero, loadzero) = ctx.emit_get_zero();
+            return EmitSummary::builder()
+                .instructions([now(loadzero)])
+                .register_updates([(self.rt, zero)])
+                .build(ctx.fn_builder);
         }
-        let rt = fn_builder
-            .ins()
-            .iconst(types::I32, ((self.imm as i32) << 16) as i64);
-        Some(
-            EmitSummary::builder()
-                .register_updates([(self.rt, rt)])
-                .build(&fn_builder),
-        )
+        let (rt, iconst) = ctx.inst(|f| {
+            f.pure()
+                .UnaryImm(
+                    Opcode::Iconst,
+                    types::I32,
+                    Imm64::new(((self.imm as i32) << 16) as i64),
+                )
+                .0
+        });
+        EmitSummary::builder()
+            .instructions([now(iconst)])
+            .register_updates([(self.rt, rt)])
+            .build(ctx.fn_builder)
     }
 }
 
@@ -73,7 +72,7 @@ mod tests {
     use rstest::rstest;
 
     use crate::cpu::ops::prelude::*;
-    use crate::{Emu, memory::KSEG0Addr, test_utils::emulator};
+    use crate::{Emu, test_utils::emulator};
 
     #[rstest]
     #[case(8, 0x1234, 0x1234_0000)]
@@ -85,11 +84,11 @@ mod tests {
         #[case] value: i16,
         #[case] expected: u32,
     ) -> color_eyre::Result<()> {
-        use crate::JitSummary;
+        use crate::dynarec::JitSummary;
 
         emulator
             .mem
-            .write_array(KSEG0Addr::from_phys(0), &[lui(reg, value), OpCode(69420)]);
+            .write_many(0x0, &program([lui(reg, value), OpCode(69420)]));
 
         let summary = emulator.step_jit_summarize::<JitSummary>()?;
         tracing::info!(?summary.function);
@@ -100,11 +99,11 @@ mod tests {
 
     #[rstest]
     fn lui_2(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
-        use crate::JitSummary;
+        use crate::dynarec::JitSummary;
 
         emulator
             .mem
-            .write_array(KSEG0Addr::from_phys(0), &[lui(8, 0x1234), OpCode(69420)]);
+            .write_many(0x0, &program([lui(8, 0x1234), OpCode(69420)]));
         emulator.cpu.gpr[8] = 0x1111_1111;
 
         let summary = emulator.step_jit_summarize::<JitSummary>()?;

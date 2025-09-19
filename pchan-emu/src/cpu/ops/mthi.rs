@@ -1,8 +1,5 @@
+use crate::dynarec::prelude::*;
 use std::fmt::Display;
-
-use crate::cpu::REG_STR;
-use crate::cpu::ops::prelude::*;
-use crate::cranelift_bs::*;
 
 #[derive(Debug, Clone, Copy)]
 pub struct MTHI {
@@ -21,13 +18,12 @@ impl Op for MTHI {
             .set_bits(21..26, self.rs as u32)
     }
 
-    fn emit_ir(
-        &self,
-        mut state: EmitParams,
-        fn_builder: &mut FunctionBuilder,
-    ) -> Option<EmitSummary> {
-        let rs = state.emit_get_register(fn_builder, self.rs);
-        Some(EmitSummary::builder().hi(rs).build(&fn_builder))
+    fn emit_ir(&self, mut state: EmitCtx) -> EmitSummary {
+        let (rs, loadreg) = state.emit_get_register(self.rs);
+        EmitSummary::builder()
+            .hi(rs)
+            .instructions([now(loadreg)])
+            .build(state.fn_builder)
     }
 }
 
@@ -60,17 +56,14 @@ mod tests {
     use rstest::rstest;
 
     use crate::Emu;
-    use crate::cpu::ops::prelude::*;
+    use crate::dynarec::prelude::*;
     use crate::test_utils::emulator;
 
     #[rstest]
     pub fn mthi_1(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
-        use crate::{JitSummary, memory::KSEG0Addr};
-
-        emulator.mem.write_array(
-            KSEG0Addr::from_phys(0),
-            &[multu(8, 9), nop(), mthi(10), OpCode(69420)],
-        );
+        emulator
+            .mem
+            .write_many(0, &program([multu(8, 9), nop(), mthi(10), OpCode(69420)]));
         emulator.cpu.gpr[10] = 0x1234;
         emulator.cpu.gpr[8] = 16;
         emulator.cpu.gpr[9] = 16;

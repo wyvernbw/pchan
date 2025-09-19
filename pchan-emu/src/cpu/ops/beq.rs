@@ -1,14 +1,8 @@
 use std::fmt::Display;
 
-use cranelift::prelude::FunctionBuilder;
 use tracing::instrument;
 
-use crate::cpu::{
-    REG_STR,
-    ops::{
-        BoundaryType, EmitParams, EmitSummary, MipsOffset, Op, OpCode, PrimeOp, TryFromOpcodeErr,
-    },
-};
+use crate::dynarec::prelude::*;
 
 #[derive(Debug, Clone, Copy)]
 #[allow(clippy::upper_case_acronyms)]
@@ -62,45 +56,68 @@ impl Op for BEQ {
             .set_bits(0..16, (self.imm >> 2) as i16 as u32)
     }
 
-    #[instrument("beq", skip_all)]
-    fn emit_ir(
-        &self,
-        mut state: EmitParams,
-        fn_builder: &mut FunctionBuilder,
-    ) -> Option<EmitSummary> {
+    fn hazard(&self) -> Option<u32> {
+        Some(1)
+    }
+
+    #[instrument("beq", skip_all, fields(node = ?ctx.node, block = ?ctx.block().clif_block()))]
+    fn emit_ir(&self, mut ctx: EmitCtx) -> EmitSummary {
         use crate::cranelift_bs::*;
 
-        let rs = state.emit_get_register(fn_builder, self.rs);
-        let rt = state.emit_get_register(fn_builder, self.rt);
+        let next = ctx
+            .cfg
+            .neighbors_directed(ctx.node, petgraph::Direction::Outgoing)
+            .collect::<Vec<_>>();
 
-        let then_block = state.next_at(0);
-        let else_block = state.next_at(1);
+        let (rs, load0) = ctx.emit_get_register(self.rs);
+        let (rt, load1) = ctx.emit_get_register(self.rt);
 
-        let then_params = state.out_params(then_block.clif_block(), fn_builder);
-        let else_params = state.out_params(else_block.clif_block(), fn_builder);
+        let (cond, icmp) = ctx.inst(|f| {
+            f.pure()
+                .IntCompare(Opcode::Icmp, types::I32, IntCC::Equal, rs, rt)
+                .0
+        });
 
-        let cond = fn_builder.ins().icmp(IntCC::Equal, rs, rt);
-        tracing::debug!(
-            "branch: then={:?}({} deps) else={:?}({} deps)",
-            then_block.clif_block,
-            then_params.len(),
-            else_block.clif_block,
-            else_params.len()
-        );
+        EmitSummary::builder()
+            .instructions([
+                now(load0),
+                now(load1),
+                now(icmp),
+                terminator(bomb(
+                    1,
+                    lazy_boxed(move |ctx| {
+                        let then_block = ctx.next_at(0);
+                        let then_block_label = ctx.cfg[then_block].clif_block();
+                        let then_params = ctx.out_params(then_block);
+                        let then_block_call = ctx
+                            .fn_builder
+                            .pure()
+                            .data_flow_graph_mut()
+                            .block_call(then_block_label, &then_params);
 
-        fn_builder.ins().brif(
-            cond,
-            then_block.clif_block(),
-            &then_params,
-            else_block.clif_block(),
-            &else_params,
-        );
+                        let else_block = ctx.next_at(1);
+                        let else_block_label = ctx.cfg[else_block].clif_block();
+                        let else_params = ctx.out_params(else_block);
+                        let else_block_call = ctx
+                            .fn_builder
+                            .pure()
+                            .data_flow_graph_mut()
+                            .block_call(else_block_label, &else_params);
 
-        Some(
-            EmitSummary::builder()
-                .finished_block(true)
-                .build(fn_builder),
-        )
+                        ctx.fn_builder
+                            .pure()
+                            .Brif(
+                                Opcode::Brif,
+                                types::INVALID,
+                                then_block_call,
+                                else_block_call,
+                                cond,
+                            )
+                            .0
+                    }),
+                )),
+            ])
+            .build(ctx.fn_builder)
     }
 }
 
@@ -110,13 +127,14 @@ mod tests {
     use pretty_assertions::assert_eq;
     use rstest::rstest;
 
-    use crate::{Emu, JitSummary, memory::KSEG0Addr, test_utils::emulator};
+    use crate::cpu::program;
+    use crate::{Emu, dynarec::JitSummary, test_utils::emulator};
 
     #[rstest]
     fn beq_basic_loop(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
         use crate::cpu::ops::prelude::*;
 
-        let func = [
+        let func = program([
             addiu(8, 0, 0),           // ;  0 $t0 = 0
             addiu(10, 0, 4),          // ;  4 $t2 = 4
             addiu(9, 8, 0x0000_2000), // ;  8 calculate address $t1 = $t0 + 0x0000_2000
@@ -125,15 +143,13 @@ mod tests {
             nop(),                    // ; 20
             addiu(8, 8, 1),           // ; 24 $t0 = $t0 + 1
             nop(),                    // ; 28
-            j(8),                     // ; 32 jump to 8 (return to beginning of loop)
+            j(-24),                   // ; 32 jump to 8 (return to beginning of loop)
             nop(),                    // ; 36
             nop(),                    // ; 40
             OpCode(69420),            // ; 44 halt
-        ];
+        ]);
 
-        emulator
-            .mem
-            .write_all(KSEG0Addr::from_phys(emulator.cpu.pc), func);
+        emulator.mem.write_many(0x0, &func);
 
         let summary = emulator.step_jit_summarize::<JitSummary>()?;
         if let Some(func) = summary.function {
@@ -150,7 +166,7 @@ mod tests {
     fn beq_taken(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
         use crate::cpu::ops::prelude::*;
 
-        let func = [
+        let func = program([
             addiu(8, 0, 5),   // $t0 = 5
             addiu(9, 0, 5),   // $t1 = 5
             beq(8, 9, 8),     // $t0 == $t1, branch taken
@@ -159,11 +175,9 @@ mod tests {
             addiu(11, 0, 99), // executed after branch target
             sb(11, 0, 0x41),  // store 99 at memory[0x41]
             OpCode(69420),    // halt
-        ];
+        ]);
 
-        emulator
-            .mem
-            .write_all(KSEG0Addr::from_phys(emulator.cpu.pc), func);
+        emulator.mem.write_many(emulator.cpu.pc, &func);
 
         emulator.step_jit()?;
 
@@ -177,18 +191,16 @@ mod tests {
     fn beq_not_taken(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
         use crate::cpu::ops::prelude::*;
 
-        let func = [
+        let func = program([
             addiu(8, 0, 1),   // $t0 = 1
             addiu(9, 0, 2),   // $t1 = 2
             beq(8, 9, 8),     // $t0 != $t1, branch not taken
             addiu(10, 0, 42), // executed because branch not taken
             sb(10, 0, 0x30),  // store 42 at memory[0x30]
             OpCode(69420),    // halt
-        ];
+        ]);
 
-        emulator
-            .mem
-            .write_all(KSEG0Addr::from_phys(emulator.cpu.pc), func);
+        emulator.mem.write_many(emulator.cpu.pc, &func);
 
         emulator.step_jit()?;
 

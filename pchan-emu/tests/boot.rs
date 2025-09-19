@@ -1,10 +1,8 @@
+#![allow(unused_variables)]
+
 use std::io::Write;
 
-use pchan_emu::{
-    Emu, JitSummary,
-    cpu::ops::DecodedOp,
-    memory::{KSEG1Addr, PhysAddr, kb, map_physical},
-};
+use pchan_emu::{Emu, dynarec::JitSummary, memory::kb};
 use pchan_utils::setup_tracing;
 use rstest::rstest;
 
@@ -22,8 +20,6 @@ pub fn boot(setup_tracing: ()) -> color_eyre::Result<()> {
     //     }
     // }
     // return Ok(());
-    let first_summary = emu.step_jit_summarize::<JitSummary>()?;
-    tracing::info!(?first_summary.function);
     let result = emu.run();
     if let Err(err) = result {
         tracing::info!(?err);

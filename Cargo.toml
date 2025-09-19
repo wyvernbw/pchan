@@ -12,7 +12,15 @@ tracing-subscriber = { workspace = true }
 
 [workspace]
 resolver = "3"
-members = ["pchan-emu", "pchan-macros", "pchan-utils"]
+members = [
+  "pchan-emu",
+  "pchan-macros",
+  "pchan-utils",
+  "pchan-cranelift-frontend"
+]
+
+[patch.crates-io]
+cranelift-frontend = { path = "./pchan-cranelift-frontend" }
 
 [workspace.dependencies]
 pchan-macros = { path = "./pchan-macros"}
@@ -21,6 +29,7 @@ pchan-emu = { path = "./pchan-emu" }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 color-eyre = "0.6.5"
+slab = "0.4.11"
 
 [profile.bench]
 debug = true

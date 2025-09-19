@@ -1,11 +1,9 @@
 use std::fmt::Display;
-use std::ops::DerefMut;
 
-use crate::cpu::REG_STR;
-use crate::cpu::ops::{self, BoundaryType, EmitSummary, Op, TryFromOpcodeErr};
-use crate::cranelift_bs::*;
+use crate::dynarec::prelude::*;
 
-use super::{OpCode, PrimeOp};
+use super::{EmitCtx, OpCode, PrimeOp};
+use crate::load;
 
 #[derive(Debug, Clone, Copy)]
 pub struct LB {
@@ -14,7 +12,7 @@ pub struct LB {
     imm: i16,
 }
 
-pub fn lb(rt: usize, rs: usize, imm: i16) -> ops::OpCode {
+pub fn lb(rt: usize, rs: usize, imm: i16) -> OpCode {
     LB { rt, rs, imm }.into_opcode()
 }
 
@@ -32,35 +30,20 @@ impl TryFrom<OpCode> for LB {
 }
 
 impl Op for LB {
-    fn emit_ir(
-        &self,
-        mut state: super::EmitParams,
-        fn_builder: &mut FunctionBuilder,
-    ) -> Option<EmitSummary> {
-        // get pointer to memory passed as argument to the function
-        let mem_ptr = state.memory(fn_builder);
-
-        // get cached register if possible, otherwise load it in
-        let rs = state.emit_get_register(fn_builder, self.rs);
-        let rs = state.emit_map_address_to_host(fn_builder, rs);
-        let mem_ptr = fn_builder.ins().iadd(mem_ptr, rs);
-
-        let rt = fn_builder
-            .ins()
-            .sload8(types::I32, MemFlags::new(), mem_ptr, self.imm as i32);
-        Some(
-            EmitSummary::builder()
-                .delayed_register_updates(vec![(self.rt, rt)].into_boxed_slice())
-                .build(&fn_builder),
-        )
+    fn emit_ir(&self, mut ctx: EmitCtx) -> EmitSummary {
+        load!(self, ctx, readi8)
     }
 
     fn is_block_boundary(&self) -> Option<BoundaryType> {
         None
     }
 
-    fn into_opcode(self) -> ops::OpCode {
-        ops::OpCode::default()
+    fn hazard(&self) -> Option<u32> {
+        Some(1)
+    }
+
+    fn into_opcode(self) -> OpCode {
+        OpCode::default()
             .with_primary(PrimeOp::LB)
             .set_bits(16..21, self.rt as u32)
             .set_bits(21..26, self.rs as u32)
@@ -86,7 +69,7 @@ mod tests {
     use crate::{
         Emu,
         cpu::ops::{self},
-        memory::KSEG0Addr,
+        memory::ext,
         test_utils::emulator,
     };
 
@@ -94,11 +77,11 @@ mod tests {
     pub fn test_lb_sign_extension(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
         use crate::cpu::ops::prelude::*;
 
-        emulator.mem.write(KSEG0Addr::from_phys(32), 0xFFu8);
-        emulator.mem.write(KSEG0Addr::from_phys(33), 0x7Fu8);
-        emulator.mem.write_all(
-            KSEG0Addr::from_phys(0),
-            [lb(8, 9, 0), lb(10, 9, 1), nop(), ops::OpCode(69420)],
+        emulator.mem.write(32, 0xFFu8);
+        emulator.mem.write(33, 0x7Fu8);
+        emulator.mem.write_many(
+            0x0,
+            &program([lb(8, 9, 0), lb(10, 9, 1), nop(), ops::OpCode(69420)]),
         );
 
         emulator.cpu.gpr[9] = 32; // base register
@@ -106,10 +89,10 @@ mod tests {
         // Run the block
         emulator.step_jit()?;
 
-        assert_eq!(emulator.cpu.gpr[8], -1i32 as u32);
+        assert_eq!(emulator.cpu.gpr[8], ext::sign::<u8>(0xFFu8) as u32);
 
         // 0x7F should be sign-extended to 0x7F
-        assert_eq!(emulator.cpu.gpr[10], 0x7F);
+        assert_eq!(emulator.cpu.gpr[10], ext::sign::<u8>(0x7Fu8) as u32);
 
         Ok(())
     }

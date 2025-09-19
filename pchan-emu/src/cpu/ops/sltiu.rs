@@ -1,9 +1,5 @@
+use crate::dynarec::prelude::*;
 use std::fmt::Display;
-
-use cranelift::prelude::FunctionBuilder;
-
-use crate::cpu::REG_STR;
-use crate::cpu::ops::{OpCode, prelude::*};
 
 #[derive(Debug, Clone, Copy)]
 pub struct SLTIU {
@@ -52,41 +48,26 @@ impl Op for SLTIU {
             .set_bits(21..26, self.rs as u32)
     }
 
-    fn emit_ir(
-        &self,
-        mut state: EmitParams,
-        fn_builder: &mut FunctionBuilder,
-    ) -> Option<EmitSummary> {
-        use crate::cranelift_bs::*;
-
+    fn emit_ir(&self, mut ctx: EmitCtx) -> EmitSummary {
         // x < 0u64 (u64::MIN) = false
         if self.imm == 0 {
-            return Some(
-                EmitSummary::builder()
-                    .register_updates([(self.rt, state.emit_get_zero(fn_builder))])
-                    .build(&fn_builder),
-            );
+            let (zero, loadzero) = ctx.emit_get_zero();
+            return EmitSummary::builder()
+                .instructions([now(loadzero)])
+                .register_updates([(self.rt, zero)])
+                .build(ctx.fn_builder);
         }
 
         // 0u64 < x = true
         if self.rs == 0 {
-            return Some(
-                EmitSummary::builder()
-                    .register_updates([(self.rt, state.emit_get_one(fn_builder))])
-                    .build(&fn_builder),
-            );
+            let (one, loadone) = ctx.emit_get_one();
+            return EmitSummary::builder()
+                .instructions([now(loadone)])
+                .register_updates([(self.rt, one)])
+                .build(ctx.fn_builder);
         }
 
-        let rs = state.emit_get_register(fn_builder, self.rs);
-        let rt = fn_builder
-            .ins()
-            .icmp_imm(IntCC::UnsignedLessThan, rs, self.imm as i64);
-        let rt = fn_builder.ins().uextend(types::I32, rt);
-        Some(
-            EmitSummary::builder()
-                .register_updates([(self.rt, rt)])
-                .build(&fn_builder),
-        )
+        icmpimm!(self, ctx, IntCC::UnsignedLessThan)
     }
 }
 
@@ -96,16 +77,14 @@ mod tests {
     use pretty_assertions::assert_eq;
     use rstest::rstest;
 
-    use crate::JitSummary;
-    use crate::cpu::ops::prelude::*;
-    use crate::memory::KSEG0Addr;
+    use crate::dynarec::prelude::*;
     use crate::{Emu, test_utils::emulator};
 
     #[rstest]
     fn slti_test(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
-        emulator.mem.write_array(
-            KSEG0Addr::from_phys(0),
-            &[addiu(8, 0, -3), sltiu(9, 8, 32), OpCode(69420)],
+        emulator.mem.write_many(
+            0,
+            &program([addiu(8, 0, -3), sltiu(9, 8, 32), OpCode(69420)]),
         );
         let summary = emulator.step_jit_summarize::<JitSummary>()?;
         tracing::info!(?summary.function);
@@ -117,11 +96,11 @@ mod tests {
     /// $t0 < 0 = false
     #[rstest]
     fn sltiu_2_shortpath(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
-        use crate::JitSummary;
+        use crate::dynarec::JitSummary;
 
         emulator
             .mem
-            .write_array(KSEG0Addr::from_phys(0), &[sltiu(10, 8, 0), OpCode(69420)]);
+            .write_many(0, &program([sltiu(10, 8, 0), OpCode(69420)]));
         emulator.cpu.gpr[8] = 32;
         let summary = emulator.step_jit_summarize::<JitSummary>()?;
         tracing::info!(?summary.function);
@@ -134,11 +113,11 @@ mod tests {
     /// $zero < 8 = true
     #[rstest]
     fn sltiu_3_shortpath(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
-        use crate::JitSummary;
+        use crate::dynarec::JitSummary;
 
         emulator
             .mem
-            .write_array(KSEG0Addr::from_phys(0), &[sltiu(10, 0, 8), OpCode(69420)]);
+            .write_many(0, &program([sltiu(10, 0, 8), OpCode(69420)]));
         emulator.cpu.gpr[8] = 32;
         let summary = emulator.step_jit_summarize::<JitSummary>()?;
         tracing::info!(?summary.function);

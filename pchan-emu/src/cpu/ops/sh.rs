@@ -2,9 +2,9 @@ use std::fmt::Display;
 
 use crate::cpu::REG_STR;
 use crate::cpu::ops::{self, BoundaryType, EmitSummary, Op, TryFromOpcodeErr};
-use crate::cranelift_bs::*;
+use crate::{cranelift_bs::*, store};
 
-use super::{EmitParams, OpCode, PrimeOp};
+use super::{EmitCtx, OpCode, PrimeOp};
 
 #[derive(Debug, Clone, Copy)]
 pub struct SH {
@@ -41,24 +41,12 @@ impl Display for SH {
 }
 
 impl Op for SH {
-    fn emit_ir(
-        &self,
-        mut state: EmitParams,
-        fn_builder: &mut FunctionBuilder,
-    ) -> Option<EmitSummary> {
-        // get pointer to memory passed as argument to the function
-        let mem_ptr = state.memory(fn_builder);
+    fn hazard(&self) -> Option<u32> {
+        Some(1)
+    }
 
-        // get cached register if possible, otherwise load it in
-        let rs = state.emit_get_register(fn_builder, self.rs);
-        let rs = state.emit_map_address_to_host(fn_builder, rs);
-        let rt = state.emit_get_register(fn_builder, self.rt);
-        let mem_ptr = fn_builder.ins().iadd(mem_ptr, rs);
-
-        fn_builder
-            .ins()
-            .istore16(MemFlags::new(), rt, mem_ptr, self.imm as i32);
-        None
+    fn emit_ir(&self, mut ctx: EmitCtx) -> EmitSummary {
+        store!(self, ctx, write16)
     }
 
     fn is_block_boundary(&self) -> Option<BoundaryType> {
@@ -79,22 +67,22 @@ mod tests {
     use pchan_utils::setup_tracing;
     use rstest::rstest;
 
-    use crate::{Emu, cpu::ops::OpCode, memory::KSEG0Addr, test_utils::emulator};
+    use crate::dynarec::prelude::*;
+    use crate::memory::ext;
+    use crate::{Emu, test_utils::emulator};
 
     #[rstest]
     pub fn test_sh(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
-        use crate::cpu::ops::prelude::*;
-
         emulator
             .mem
-            .write_all(KSEG0Addr::from_phys(0), [sh(9, 8, 0), OpCode(69420)]);
+            .write_many(0, &program([sh(9, 8, 0), OpCode(69420)]));
 
         emulator.cpu.gpr[8] = 32; // base register
         emulator.cpu.gpr[9] = 690;
 
         emulator.step_jit()?;
 
-        assert_eq!(emulator.mem.read::<u16>(KSEG0Addr::from_phys(32)), 690);
+        assert_eq!(emulator.mem.read::<u16, ext::Sign>(32), 690);
 
         Ok(())
     }

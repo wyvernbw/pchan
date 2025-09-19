@@ -1,8 +1,6 @@
 use std::fmt::Display;
 
-use crate::cpu::REG_STR;
-use crate::cpu::ops::prelude::*;
-use crate::cranelift_bs::*;
+use crate::dynarec::prelude::*;
 
 #[derive(Debug, Clone, Copy)]
 pub struct MTCn {
@@ -38,14 +36,20 @@ impl Op for MTCn {
             .set_bits(11..16, self.rd as u32)
     }
 
-    fn emit_ir(
-        &self,
-        mut state: EmitParams,
-        fn_builder: &mut FunctionBuilder,
-    ) -> Option<EmitSummary> {
-        let rt = state.emit_get_register(fn_builder, self.rt.into());
-        state.emit_store_cop_register(fn_builder, self.cop, self.rd.into(), rt);
-        None
+    fn emit_ir(&self, mut ctx: EmitCtx) -> EmitSummary {
+        let (rt, loadreg) = ctx.emit_get_register(self.rt.into());
+        let storecopreg = ctx.emit_store_cop_register(self.cop, self.rd.into(), rt);
+        EmitSummary::builder()
+            .instructions([now(loadreg), delayed_maybe(self.hazard(), storecopreg)])
+            .build(ctx.fn_builder)
+    }
+
+    fn hazard(&self) -> Option<u32> {
+        match self.cop {
+            0 => Some(0),
+            2 => Some(2),
+            _ => None,
+        }
     }
 }
 
@@ -69,19 +73,18 @@ pub fn mtc2(rt: u8, rd: u8) -> OpCode {
 
 #[cfg(test)]
 mod tests {
-    use crate::{JitSummary, cpu::ops::prelude::*};
+    use crate::{cpu::ops::prelude::*, dynarec::JitSummary};
     use pchan_utils::setup_tracing;
     use pretty_assertions::assert_eq;
     use rstest::rstest;
 
-    use crate::{Emu, memory::KSEG0Addr, test_utils::emulator};
+    use crate::{Emu, test_utils::emulator};
 
     #[rstest]
     fn mtc_1(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
-        emulator.mem.write_array(
-            KSEG0Addr::from_phys(0x0),
-            &[addiu(8, 0, 69), mtc0(8, 16), OpCode(69420)],
-        );
+        emulator
+            .mem
+            .write_many(0x0, &program([addiu(8, 0, 69), mtc0(8, 16), OpCode(69420)]));
 
         let summary = emulator.step_jit_summarize::<JitSummary>()?;
 

@@ -1,13 +1,5 @@
+use crate::dynarec::prelude::*;
 use std::fmt::Display;
-
-use cranelift::prelude::FunctionBuilder;
-
-use crate::cpu::{
-    REG_STR,
-    ops::{BoundaryType, EmitParams, EmitSummary, Op, OpCode, SecOp, TryFromOpcodeErr},
-};
-
-use super::PrimeOp;
 
 #[derive(Debug, Clone, Copy)]
 #[allow(clippy::upper_case_acronyms)]
@@ -54,20 +46,16 @@ impl Op for SUBU {
             .set_bits(11..16, self.rd as u32)
     }
 
-    fn emit_ir(
-        &self,
-        mut state: EmitParams,
-        fn_builder: &mut FunctionBuilder,
-    ) -> Option<EmitSummary> {
+    fn emit_ir(&self, mut state: EmitCtx) -> EmitSummary {
         use crate::cranelift_bs::*;
-        let rs = state.emit_get_register(fn_builder, self.rs);
-        let rt = state.emit_get_register(fn_builder, self.rt);
-        let rd = fn_builder.ins().isub(rs, rt);
-        Some(
-            EmitSummary::builder()
-                .register_updates([(self.rd, rd)])
-                .build(&fn_builder),
-        )
+        let (rs, loadrs) = state.emit_get_register(self.rs);
+        let (rt, loadrt) = state.emit_get_register(self.rt);
+        let (rd, sub) = state.inst(|f| f.pure().Binary(Opcode::Isub, types::I32, rs, rt).0);
+
+        EmitSummary::builder()
+            .instructions([now(loadrs), now(loadrt), now(sub)])
+            .register_updates([(self.rd, rd)])
+            .build(state.fn_builder)
     }
 }
 
@@ -82,15 +70,13 @@ mod tests {
     use pretty_assertions::assert_eq;
     use rstest::rstest;
 
-    use crate::{Emu, cpu::ops::OpCode, memory::KSEG0Addr, test_utils::emulator};
+    use crate::dynarec::prelude::*;
+    use crate::{Emu, test_utils::emulator};
 
     #[rstest]
     fn addu_1(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
-        use crate::cpu::ops::prelude::*;
-        let program = [subu(10, 8, 9), OpCode(69420)];
-        emulator
-            .mem
-            .write_all(KSEG0Addr::from_phys(emulator.cpu.pc as u32), program);
+        let program = program([subu(10, 8, 9), OpCode(69420)]);
+        emulator.mem.write_many(emulator.cpu.pc, &program);
         emulator.cpu.gpr[8] = 64;
         emulator.cpu.gpr[9] = 32;
         emulator.step_jit()?;
@@ -102,11 +88,8 @@ mod tests {
     }
     #[rstest]
     fn addu_2(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
-        use crate::cpu::ops::prelude::*;
-        let program = [subu(10, 8, 9), OpCode(69420)];
-        emulator
-            .mem
-            .write_all(KSEG0Addr::from_phys(emulator.cpu.pc as u32), program);
+        let program = program([subu(10, 8, 9), OpCode(69420)]);
+        emulator.mem.write_many(emulator.cpu.pc, &program);
         emulator.cpu.gpr[8] = u32::MAX;
         emulator.cpu.gpr[9] = 1;
         emulator.step_jit()?;

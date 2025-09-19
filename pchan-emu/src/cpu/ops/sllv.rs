@@ -1,8 +1,5 @@
+use crate::dynarec::prelude::*;
 use std::fmt::Display;
-
-use crate::cpu::REG_STR;
-use crate::cpu::ops::prelude::*;
-use crate::cranelift_bs::*;
 
 #[derive(Debug, Clone, Copy)]
 pub struct SLLV {
@@ -50,36 +47,8 @@ impl Op for SLLV {
             .set_bits(21..26, self.rs as u32)
     }
 
-    fn emit_ir(
-        &self,
-        mut state: EmitParams,
-        fn_builder: &mut FunctionBuilder,
-    ) -> Option<EmitSummary> {
-        // optimize 0 << x = 0
-        if self.rt == 0 {
-            let rd = state.emit_get_zero(fn_builder);
-            return Some(
-                EmitSummary::builder()
-                    .register_updates([(self.rd, rd)])
-                    .build(&fn_builder),
-            );
-        }
-        // optimize x << 0 = x
-        let rt = state.emit_get_register(fn_builder, self.rt);
-        if self.rs == 0 {
-            return Some(
-                EmitSummary::builder()
-                    .register_updates([(self.rd, rt)])
-                    .build(&fn_builder),
-            );
-        }
-        let rs = state.emit_get_register(fn_builder, self.rs);
-        let rd = fn_builder.ins().ishl(rt, rs);
-        Some(
-            EmitSummary::builder()
-                .register_updates([(self.rd, rd)])
-                .build(&fn_builder),
-        )
+    fn emit_ir(&self, mut ctx: EmitCtx) -> EmitSummary {
+        shift!(self, ctx, Opcode::Ishl)
     }
 }
 
@@ -94,9 +63,8 @@ mod tests {
     use pretty_assertions::assert_eq;
     use rstest::rstest;
 
-    use crate::JitSummary;
-    use crate::cpu::ops::prelude::*;
-    use crate::{Emu, memory::KSEG0Addr, test_utils::emulator};
+    use crate::dynarec::prelude::*;
+    use crate::{Emu, test_utils::emulator};
 
     #[rstest]
     #[case(1, 6, 64)]
@@ -109,14 +77,14 @@ mod tests {
         #[case] b: i16,
         #[case] expected: u32,
     ) -> color_eyre::Result<()> {
-        emulator.mem.write_array(
-            KSEG0Addr::from_phys(0),
-            &[
+        emulator.mem.write_many(
+            0x0,
+            &program([
                 addiu(8, 0, a),
                 addiu(9, 0, b),
                 sllv(10, 8, 9),
                 OpCode(69420),
-            ],
+            ]),
         );
         let summary = emulator.step_jit_summarize::<JitSummary>()?;
         tracing::info!(?summary.function);
@@ -132,9 +100,9 @@ mod tests {
         #[case] value: i16,
         #[case] expected: u32,
     ) -> color_eyre::Result<()> {
-        emulator.mem.write_array(
-            KSEG0Addr::from_phys(0),
-            &[addiu(9, 0, value), sllv(10, 0, 9), OpCode(69420)],
+        emulator.mem.write_many(
+            0x0,
+            &program([addiu(9, 0, value), sllv(10, 0, 9), OpCode(69420)]),
         );
         let summary = emulator.step_jit_summarize::<JitSummary>()?;
         tracing::info!(?summary.function);
