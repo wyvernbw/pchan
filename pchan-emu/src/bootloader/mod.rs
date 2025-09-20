@@ -11,8 +11,9 @@ pub struct Bootloader {
 
 impl Default for Bootloader {
     fn default() -> Self {
+        let bios_path = std::env::var("PCHAN_BIOS").unwrap_or("./SCPH1001.BIN".to_owned());
         Bootloader {
-            bios_path: "./SCPH1001.BIN".into(),
+            bios_path: bios_path.into(),
         }
     }
 }

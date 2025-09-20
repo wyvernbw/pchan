@@ -15,6 +15,7 @@ fn bench_single() {
         _ = emu.step_jit()
     });
 }
+
 #[test]
 fn bench_jit() {
     setup_tracing();
@@ -63,6 +64,48 @@ fn bench_jit() {
     assert_eq!(slice, &[0, 1, 2, 3]);
     // println!("{:#?}", &emu);
     tracing::info!("{:?}", slice);
+    tracing::info!("cache usage: {:?}", emu.jit.cache_usage());
+    tracing::info!("w/ cache: took {average}ms");
+}
+
+#[test]
+fn bench_reset_vector() {
+    setup_tracing();
+    let mut emu = Emu::default();
+    emu.load_bios().unwrap();
+    emu.jump_to_bios();
+
+    let mut average = 0.0;
+    for _ in 0..100 {
+        emu.mem.write_many::<u32>(0x0000_2000, &[0u32, 0u32]);
+        emu.jit.clear_cache();
+        emu.jump_to_bios();
+        emu.cpu.clear_registers();
+        let (_, elapsed) = time(|| {
+            _ = black_box(emu.step_jit());
+        });
+        average += elapsed;
+    }
+    average /= 100.0;
+    // println!("{:#?}", &emu);
+    tracing::info!("cache usage: {:?}", emu.jit.cache_usage());
+    tracing::info!("no cache: took {average}ms");
+
+    let mut average = 0.0;
+    emu.jump_to_bios();
+    _ = black_box(emu.step_jit());
+    emu.jump_to_bios();
+    for _ in 0..100 {
+        emu.mem.write_many::<u32>(0x0000_2000, &[0u32, 0u32]);
+        emu.jump_to_bios();
+        emu.cpu.clear_registers();
+        let (_, elapsed) = time(|| {
+            _ = black_box(emu.step_jit());
+        });
+        average += elapsed;
+    }
+    average /= 100.;
+    // println!("{:#?}", &emu);
     tracing::info!("cache usage: {:?}", emu.jit.cache_usage());
     tracing::info!("w/ cache: took {average}ms");
 }

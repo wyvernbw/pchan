@@ -1,7 +1,7 @@
 use std::sync::LazyLock;
 
 use pchan_utils::hex;
-use tracing::instrument;
+use tracing::{Level, instrument};
 
 use crate::memory::{MEM_MAP, Memory, kb};
 
@@ -92,13 +92,13 @@ impl Memory {
             }
             // memcheck
             None => {
-                let _span = tracing::info_span!("memcheck").entered();
+                let _span = tracing::trace_span!("memcheck").entered();
                 match address {
                     0xfffe0000.. => {
                         let ptr = mem
                             .wrapping_add(offset as usize)
                             .wrapping_add(MEM_MAP.cache_control);
-                        tracing::info!("read in cache control");
+                        tracing::trace!("read in cache control");
                         unsafe { *(ptr as *const T) }
                     }
                     _ => {
@@ -113,7 +113,7 @@ impl Memory {
     /// # Safety
     ///
     /// this is never safe, live fast die young
-    #[instrument(target = "bytecode", skip(mem, address), fields(address = %hex(&address)))]
+    #[instrument(level = Level::TRACE, skip(mem, address), fields(address = %hex(&address)))]
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn read32(mem: *const u8, address: u32) -> i32 {
         unsafe { Memory::read_raw::<i32>(mem, address) }
@@ -123,7 +123,7 @@ impl Memory {
     ///
     /// this is never safe, live fast die young
     #[unsafe(no_mangle)]
-    #[instrument(skip(mem, address), fields(address = %hex(&address)))]
+    #[instrument(level = Level::TRACE, skip(mem, address), fields(address = %hex(&address)))]
     pub unsafe extern "C" fn readi16(mem: *const u8, address: u32) -> i32 {
         unsafe { Memory::read_raw::<i16>(mem, address) as i32 }
     }
@@ -132,7 +132,7 @@ impl Memory {
     ///
     /// this is never safe, live fast die young
     #[unsafe(no_mangle)]
-    #[instrument(skip(mem, address), fields(address = %hex(&address)))]
+    #[instrument(level = Level::TRACE, skip(mem, address), fields(address = %hex(&address)))]
     pub unsafe extern "C" fn readi8(mem: *const u8, address: u32) -> i32 {
         unsafe { Memory::read_raw::<i8>(mem, address) as i32 }
     }
@@ -141,7 +141,7 @@ impl Memory {
     ///
     /// this is never safe, live fast die young
     #[unsafe(no_mangle)]
-    #[instrument(skip(mem, address), fields(address = %hex(&address)))]
+    #[instrument(level = Level::TRACE, skip(mem, address), fields(address = %hex(&address)))]
     pub unsafe extern "C" fn readu16(mem: *const u8, address: u32) -> i32 {
         unsafe { Memory::read_raw::<u16>(mem, address) as u32 as i32 }
     }
@@ -150,7 +150,7 @@ impl Memory {
     ///
     /// this is never safe, live fast die young
     #[unsafe(no_mangle)]
-    #[instrument(skip(mem, address), fields(address = %hex(&address)))]
+    #[instrument(level = Level::TRACE, skip(mem, address), fields(address = %hex(&address)))]
     pub unsafe extern "C" fn readu8(mem: *const u8, address: u32) -> i32 {
         unsafe { Memory::read_raw::<u8>(mem, address) as u32 as i32 }
     }
@@ -198,7 +198,7 @@ impl Memory {
             }
             // memcheck
             None => {
-                let _span = tracing::info_span!("memcheck").entered();
+                let _span = tracing::trace_span!("memcheck").entered();
                 match address {
                     0xfffe0000.. => {
                         let ptr = mem
@@ -220,7 +220,7 @@ impl Memory {
     fn write_to_cache_control<T>(address: u32, value: T) {
         match address {
             0xfffe_0130 => {
-                tracing::info!("side effect");
+                tracing::trace!("side effect");
             }
             _ => {
                 tracing::error!("unsupported cache control address");
@@ -232,7 +232,7 @@ impl Memory {
     ///
     /// this is never safe, live fast die young
     #[unsafe(no_mangle)]
-    #[instrument(skip(mem, address), fields(address = %hex(&address), value = %hex(&value)))]
+    #[instrument(level = Level::TRACE, skip(mem, address), fields(address = %hex(&address), value = %hex(&value)))]
     pub unsafe extern "C" fn write32(mem: *mut u8, address: u32, value: i32) {
         unsafe { Memory::write_raw(mem, address, value) }
     }
@@ -241,7 +241,7 @@ impl Memory {
     ///
     /// this is never safe, live fast die young
     #[unsafe(no_mangle)]
-    #[instrument(skip(mem, address), fields(address = %hex(&address), value = %hex(&value)))]
+    #[instrument(level = Level::TRACE, skip(mem, address), fields(address = %hex(&address), value = %hex(&value)))]
     pub unsafe extern "C" fn write16(mem: *mut u8, address: u32, value: i32) {
         unsafe { Memory::write_raw(mem, address, value as i16) }
     }
@@ -250,7 +250,7 @@ impl Memory {
     ///
     /// this is never safe, live fast die young
     #[unsafe(no_mangle)]
-    #[instrument(skip(mem, address), fields(address = %hex(&address), value = %hex(&value)))]
+    #[instrument(level = Level::TRACE, skip(mem, address), fields(address = %hex(&address), value = %hex(&value)))]
     pub unsafe extern "C" fn write8(mem: *mut u8, address: u32, value: i32) {
         unsafe { Memory::write_raw(mem, address, value as i8) }
     }

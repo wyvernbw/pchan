@@ -105,7 +105,7 @@ impl Default for JIT {
         //     .unwrap();
         // let jit_builder = JITBuilder::with_isa(isa, default_libcall_names());
         let mut jit_builder =
-            JITBuilder::with_flags(&[("opt_level", "none")], default_libcall_names()).unwrap();
+            JITBuilder::with_flags(&[("opt_level", "speed")], default_libcall_names()).unwrap();
         jit_builder
             .symbol("read32", Memory::read32 as *const u8)
             .symbol("readi16", Memory::readi16 as *const u8)
@@ -390,7 +390,7 @@ impl JIT {
             .Load(
                 Opcode::Load,
                 types::I32,
-                MemFlags::new(),
+                MemFlags::new().with_aligned().with_notrap(),
                 Offset32::new(offset),
                 cpu_value,
             )
@@ -411,7 +411,7 @@ impl JIT {
             .Load(
                 Opcode::Load,
                 types::I32,
-                MemFlags::new(),
+                MemFlags::new().with_notrap().with_aligned(),
                 Offset32::new(offset),
                 cpu_ptr,
             )
@@ -480,7 +480,7 @@ impl JIT {
             .Store(
                 Opcode::Store,
                 value_type,
-                MemFlags::new(),
+                MemFlags::new().with_notrap().with_aligned(),
                 Offset32::new(offset),
                 value,
                 cpu_ptr,
@@ -501,7 +501,7 @@ impl JIT {
             .Store(
                 Opcode::Store,
                 vtype,
-                MemFlags::new(),
+                MemFlags::new().with_aligned().with_notrap(),
                 Offset32::new(offset),
                 value,
                 cpu_ptr,
