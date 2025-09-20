@@ -22,7 +22,6 @@
 #![feature(unboxed_closures)]
 #![feature(fn_traits)]
 #![feature(const_ops)]
-#![feature(try_blocks)]
 #![feature(impl_trait_in_assoc_type)]
 #![feature(const_trait_impl)]
 #![feature(debug_closure_helpers)]
@@ -32,6 +31,8 @@
 #![feature(iter_collect_into)]
 #![feature(custom_inner_attributes)]
 #![feature(iter_array_chunks)]
+#![feature(try_blocks)]
+#![feature(box_as_ptr)]
 // allow unused variables in tests to supress the setup tracing warnings
 #![cfg_attr(test, allow(unused_variables))]
 

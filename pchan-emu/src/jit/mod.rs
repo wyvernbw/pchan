@@ -5,7 +5,11 @@ use std::{
 };
 
 use cranelift::codegen::ir::{self, immediates::Offset32};
-use tracing::{Instrument, Level, instrument};
+use cranelift_codegen::{
+    gimli::{self, RunTimeEndian, write::FrameTable},
+    isa::unwind::UnwindInfo,
+};
+use tracing::{Instrument, Level, enabled, instrument};
 
 use crate::{
     FnBuilderExt,
@@ -79,6 +83,8 @@ pub struct FunctionTable {
     write32: FuncId,
     write16: FuncId,
     write8: FuncId,
+
+    handle_rfe: FuncId,
 }
 
 #[derive(derive_more::Debug)]
@@ -92,20 +98,22 @@ pub struct FuncRefTable {
     pub write32: FuncRef,
     pub write16: FuncRef,
     pub write8: FuncRef,
+
+    pub handle_rfe: FuncRef,
 }
 
 impl Default for JIT {
     fn default() -> Self {
         // Set up JIT
-        // let mut flags = settings::builder();
-        // flags.set("opt_level", "none").unwrap();
-        // let isa = cranelift::native::builder()
-        //     .unwrap()
-        //     .finish(settings::Flags::new(flags))
-        //     .unwrap();
-        // let jit_builder = JITBuilder::with_isa(isa, default_libcall_names());
-        let mut jit_builder =
-            JITBuilder::with_flags(&[("opt_level", "speed")], default_libcall_names()).unwrap();
+        let mut flags = settings::builder();
+        flags.set("opt_level", "none").unwrap();
+        flags.set("unwind_info", "true").unwrap();
+
+        let isa = cranelift::native::builder()
+            .unwrap()
+            .finish(settings::Flags::new(flags))
+            .unwrap();
+        let mut jit_builder = JITBuilder::with_isa(isa, default_libcall_names());
         jit_builder
             .symbol("read32", Memory::read32 as *const u8)
             .symbol("readi16", Memory::readi16 as *const u8)
@@ -114,7 +122,8 @@ impl Default for JIT {
             .symbol("readu8", Memory::readu8 as *const u8)
             .symbol("write32", Memory::write32 as *const u8)
             .symbol("write16", Memory::write16 as *const u8)
-            .symbol("write8", Memory::write8 as *const u8);
+            .symbol("write8", Memory::write8 as *const u8)
+            .symbol("handle_rfe", Cpu::handle_rfe as *const u8);
 
         let mut module = JITModule::new(jit_builder);
         let ptr = module.target_config().pointer_type();
@@ -207,6 +216,15 @@ impl Default for JIT {
                 .expect("failed to link write8 function")
         };
 
+        let handle_rfe = {
+            let mut handle_rfe_sig = Signature::new(CallConv::SystemV);
+            handle_rfe_sig.params.push(AbiParam::new(ptr));
+
+            module
+                .declare_function("handle_rfe", Linkage::Import, &handle_rfe_sig)
+                .expect("failed to link handle_rfe function")
+        };
+
         let fn_builder_ctx = FunctionBuilderContext::new();
         let ctx = module.make_context();
         let data_description = DataDescription::new();
@@ -235,6 +253,8 @@ impl Default for JIT {
                 write32,
                 write16,
                 write8,
+
+                handle_rfe,
             },
         }
     }
@@ -300,6 +320,9 @@ impl JIT {
         let write8 = self
             .module
             .declare_func_in_func(self.func_table.write8, func);
+        let handle_rfe = self
+            .module
+            .declare_func_in_func(self.func_table.handle_rfe, func);
         FuncRefTable {
             read32,
             readi16,
@@ -309,6 +332,7 @@ impl JIT {
             write32,
             write16,
             write8,
+            handle_rfe,
         }
     }
 
@@ -354,6 +378,50 @@ impl JIT {
         self.module.define_function(func_id, &mut self.ctx)?;
 
         self.module.finalize_definitions()?;
+
+        unsafe extern "C" {
+            // libunwind import
+            fn __register_frame(fde: *const u8);
+        }
+
+        let compiled_code = &self.ctx.compiled_code().unwrap();
+        let unwind_info = compiled_code.create_unwind_info(self.module.isa()).unwrap();
+        if let Some(info) = unwind_info {
+            match info {
+                UnwindInfo::SystemV(info) => {
+                    let endian = match self.module.isa().endianness() {
+                        cranelift_codegen::ir::Endianness::Little => RunTimeEndian::Little,
+                        cranelift_codegen::ir::Endianness::Big => RunTimeEndian::Big,
+                    };
+                    let mut frame_table = FrameTable::default();
+                    let func_start = self.module.get_finalized_function(func_id);
+                    let fde =
+                        info.to_fde(gimli::write::Address::Constant(func_start as usize as u64)); // Create FDE.
+                    let cie = self.module.isa().create_systemv_cie().unwrap();
+                    let cie_id = frame_table.add_cie(cie);
+                    frame_table.add_fde(cie_id, fde); // Add shared CIE.
+
+                    // Write EH frame bytes.
+                    let mut eh_frame = gimli::write::EhFrame(gimli::write::EndianVec::new(endian));
+                    frame_table.write_eh_frame(&mut eh_frame).unwrap();
+                    let mut eh_frame = eh_frame.0.into_vec();
+
+                    // GCC expects a terminating "empty" length, so write a 0 length at the end of the table.
+                    eh_frame.extend(&[0, 0, 0, 0]);
+
+                    let eh_frame_bytes: &'static [u8] = Box::leak(eh_frame.into_boxed_slice());
+
+                    unsafe {
+                        __register_frame(eh_frame_bytes.as_ptr());
+                    }
+                }
+                UnwindInfo::WindowsX64(_) => {
+                    // FIXME implement this
+                }
+                unwind_info => unimplemented!("{:?}", unwind_info),
+            };
+        }
+
         self.module.clear_context(&mut self.ctx);
         self.ctx.clear();
         Ok(())
@@ -368,7 +436,7 @@ impl JIT {
     }
 
     #[builder]
-    #[instrument(skip(builder, block))]
+    #[instrument(skip(builder))]
     pub fn emit_load_reg(
         builder: &mut FunctionBuilder<'_>,
         block: Block,

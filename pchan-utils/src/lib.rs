@@ -1,5 +1,5 @@
 #![feature(ptr_as_ref_unchecked)]
-use std::{backtrace::Backtrace, cell::Cell};
+use std::{backtrace::Backtrace, cell::Cell, process::exit};
 
 use rstest::*;
 use tracing_subscriber::{
@@ -50,7 +50,6 @@ pub fn setup_tracing() {
         );
         let bt = Backtrace::capture();
         tracing::error!("backtrace: \n\n{}", bt);
-        panic!();
     }));
 }
 

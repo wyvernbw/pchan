@@ -40,6 +40,21 @@ fn generate_page_tables() -> Lut {
         table_write[i + 0xA000] = Some(offset);
     }
 
+    // map 8MB expansion region 1 to ram by default
+
+    for i in 0..(RAM_PAGE_COUNT * 4) {
+        let offset = ((i * PAGE_SIZE) & 0x1FFFFF) as u32;
+        #[allow(clippy::identity_op)]
+        table_read[i + 0x1F00] = Some(offset);
+        table_read[i + 0x9F00] = Some(offset);
+        table_read[i + 0xBF00] = Some(offset);
+
+        #[allow(clippy::identity_op)]
+        table_write[i + 0x1F00] = Some(offset);
+        table_write[i + 0x9F00] = Some(offset);
+        table_write[i + 0xBF00] = Some(offset);
+    }
+
     const BIOS_PAGE_COUNT: usize = kb(512) / PAGE_SIZE;
 
     for i in 0..BIOS_PAGE_COUNT {
@@ -102,8 +117,8 @@ impl Memory {
                         unsafe { *(ptr as *const T) }
                     }
                     _ => {
-                        tracing::error!("unsupported region");
-                        unsafe { std::mem::zeroed() }
+                        panic!("unsupported region!");
+                        // unsafe { std::mem::zeroed() }
                     }
                 }
             }
@@ -115,7 +130,7 @@ impl Memory {
     /// this is never safe, live fast die young
     #[instrument(level = Level::TRACE, skip(mem, address), fields(address = %hex(&address)))]
     #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn read32(mem: *const u8, address: u32) -> i32 {
+    pub unsafe extern "C-unwind" fn read32(mem: *const u8, address: u32) -> i32 {
         unsafe { Memory::read_raw::<i32>(mem, address) }
     }
 
@@ -124,7 +139,7 @@ impl Memory {
     /// this is never safe, live fast die young
     #[unsafe(no_mangle)]
     #[instrument(level = Level::TRACE, skip(mem, address), fields(address = %hex(&address)))]
-    pub unsafe extern "C" fn readi16(mem: *const u8, address: u32) -> i32 {
+    pub unsafe extern "C-unwind" fn readi16(mem: *const u8, address: u32) -> i32 {
         unsafe { Memory::read_raw::<i16>(mem, address) as i32 }
     }
 
@@ -133,7 +148,7 @@ impl Memory {
     /// this is never safe, live fast die young
     #[unsafe(no_mangle)]
     #[instrument(level = Level::TRACE, skip(mem, address), fields(address = %hex(&address)))]
-    pub unsafe extern "C" fn readi8(mem: *const u8, address: u32) -> i32 {
+    pub unsafe extern "C-unwind" fn readi8(mem: *const u8, address: u32) -> i32 {
         unsafe { Memory::read_raw::<i8>(mem, address) as i32 }
     }
 
@@ -142,7 +157,7 @@ impl Memory {
     /// this is never safe, live fast die young
     #[unsafe(no_mangle)]
     #[instrument(level = Level::TRACE, skip(mem, address), fields(address = %hex(&address)))]
-    pub unsafe extern "C" fn readu16(mem: *const u8, address: u32) -> i32 {
+    pub unsafe extern "C-unwind" fn readu16(mem: *const u8, address: u32) -> i32 {
         unsafe { Memory::read_raw::<u16>(mem, address) as u32 as i32 }
     }
 
@@ -151,7 +166,7 @@ impl Memory {
     /// this is never safe, live fast die young
     #[unsafe(no_mangle)]
     #[instrument(level = Level::TRACE, skip(mem, address), fields(address = %hex(&address)))]
-    pub unsafe extern "C" fn readu8(mem: *const u8, address: u32) -> i32 {
+    pub unsafe extern "C-unwind" fn readu8(mem: *const u8, address: u32) -> i32 {
         unsafe { Memory::read_raw::<u8>(mem, address) as u32 as i32 }
     }
 }
@@ -210,7 +225,7 @@ impl Memory {
                         Memory::write_to_cache_control(address, value);
                     }
                     _ => {
-                        tracing::error!("unsupported region");
+                        panic!("unsupported region!");
                     }
                 }
             }
@@ -220,10 +235,10 @@ impl Memory {
     fn write_to_cache_control<T>(address: u32, value: T) {
         match address {
             0xfffe_0130 => {
-                tracing::trace!("side effect");
+                // tracing::trace!("side effect");
             }
             _ => {
-                tracing::error!("unsupported cache control address");
+                // tracing::error!("unsupported cache control address");
             }
         }
     }
@@ -233,7 +248,7 @@ impl Memory {
     /// this is never safe, live fast die young
     #[unsafe(no_mangle)]
     #[instrument(level = Level::TRACE, skip(mem, address), fields(address = %hex(&address), value = %hex(&value)))]
-    pub unsafe extern "C" fn write32(mem: *mut u8, address: u32, value: i32) {
+    pub unsafe extern "C-unwind" fn write32(mem: *mut u8, address: u32, value: i32) {
         unsafe { Memory::write_raw(mem, address, value) }
     }
 
@@ -242,7 +257,7 @@ impl Memory {
     /// this is never safe, live fast die young
     #[unsafe(no_mangle)]
     #[instrument(level = Level::TRACE, skip(mem, address), fields(address = %hex(&address), value = %hex(&value)))]
-    pub unsafe extern "C" fn write16(mem: *mut u8, address: u32, value: i32) {
+    pub unsafe extern "C-unwind" fn write16(mem: *mut u8, address: u32, value: i32) {
         unsafe { Memory::write_raw(mem, address, value as i16) }
     }
 
@@ -251,7 +266,7 @@ impl Memory {
     /// this is never safe, live fast die young
     #[unsafe(no_mangle)]
     #[instrument(level = Level::TRACE, skip(mem, address), fields(address = %hex(&address), value = %hex(&value)))]
-    pub unsafe extern "C" fn write8(mem: *mut u8, address: u32, value: i32) {
+    pub unsafe extern "C-unwind" fn write8(mem: *mut u8, address: u32, value: i32) {
         unsafe { Memory::write_raw(mem, address, value as i8) }
     }
 }

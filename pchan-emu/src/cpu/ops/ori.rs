@@ -6,7 +6,7 @@ use std::fmt::Display;
 pub struct ORI {
     rs: usize,
     rt: usize,
-    imm: i16,
+    imm: u16,
 }
 
 impl TryFrom<OpCode> for ORI {
@@ -17,7 +17,7 @@ impl TryFrom<OpCode> for ORI {
         Ok(ORI {
             rt: opcode.bits(16..21) as usize,
             rs: opcode.bits(21..26) as usize,
-            imm: opcode.bits(0..16) as i16,
+            imm: opcode.bits(0..16) as u16,
         })
     }
 }
@@ -79,7 +79,7 @@ impl Op for ORI {
 }
 
 #[inline]
-pub fn ori(rt: usize, rs: usize, imm: i16) -> OpCode {
+pub fn ori(rt: usize, rs: usize, imm: u16) -> OpCode {
     ORI { rt, rs, imm }.into_opcode()
 }
 
@@ -102,7 +102,7 @@ mod tests {
         setup_tracing: (),
         mut emulator: Emu,
         #[case] a: i16,
-        #[case] b: i16,
+        #[case] b: u16,
         #[case] expected: u32,
     ) -> color_eyre::Result<()> {
         use crate::dynarec::JitSummary;
@@ -118,7 +118,7 @@ mod tests {
     }
     #[rstest]
     #[case(0b11110000)]
-    fn ori_2(setup_tracing: (), mut emulator: Emu, #[case] imm: i16) -> color_eyre::Result<()> {
+    fn ori_2(setup_tracing: (), mut emulator: Emu, #[case] imm: u16) -> color_eyre::Result<()> {
         use crate::dynarec::JitSummary;
 
         emulator

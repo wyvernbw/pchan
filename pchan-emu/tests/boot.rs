@@ -1,7 +1,9 @@
+#![feature(try_blocks)]
 #![allow(unused_variables)]
 
 use std::io::Write;
 
+use inquire::Confirm;
 use pchan_emu::{Emu, dynarec::JitSummary, memory::kb};
 use pchan_utils::setup_tracing;
 use rstest::rstest;
@@ -9,6 +11,10 @@ use rstest::rstest;
 #[rstest]
 pub fn boot(setup_tracing: ()) -> color_eyre::Result<()> {
     let mut emu = Emu::default();
+    let interactive = Confirm::new("run as interactive shell?")
+        .with_default(false)
+        .prompt()
+        .unwrap();
     emu.load_bios()?;
     emu.jump_to_bios();
     // tracing::info!("exception handler code:");
@@ -20,11 +26,26 @@ pub fn boot(setup_tracing: ()) -> color_eyre::Result<()> {
     //     }
     // }
     // return Ok(());
-    let first_summary = emu.step_jit_summarize::<JitSummary>()?;
-    // tracing::info!(?first_summary.function);
-    let second_summary = emu.step_jit_summarize::<JitSummary>()?;
-    tracing::info!(?second_summary.function);
-    let result = emu.run();
+    let result: color_eyre::Result<()> = try {
+        loop {
+            let summary = emu.step_jit_summarize::<JitSummary>()?;
+            if interactive {
+                let prompt = Confirm::new("show dynarec summary?")
+                    .with_default(false)
+                    .prompt();
+                if let Ok(true) = prompt {
+                    tracing::info!(%summary);
+                    let prompt = Confirm::new("continue?")
+                        .with_default(false)
+                        .prompt()
+                        .unwrap();
+                    if !prompt {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+    };
     if let Err(err) = result {
         tracing::info!(?err);
         tracing::info!(?emu.cpu.pc);

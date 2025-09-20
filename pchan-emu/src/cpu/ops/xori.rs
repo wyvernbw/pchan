@@ -6,7 +6,7 @@ use std::fmt::Display;
 pub struct XORI {
     rs: usize,
     rt: usize,
-    imm: i16,
+    imm: u16,
 }
 
 impl TryFrom<OpCode> for XORI {
@@ -17,7 +17,7 @@ impl TryFrom<OpCode> for XORI {
         Ok(XORI {
             rt: opcode.bits(16..21) as usize,
             rs: opcode.bits(21..26) as usize,
-            imm: opcode.bits(0..16) as i16,
+            imm: opcode.bits(0..16) as u16,
         })
     }
 }
@@ -74,7 +74,7 @@ impl Op for XORI {
 }
 
 #[inline]
-pub fn xori(rt: usize, rs: usize, imm: i16) -> OpCode {
+pub fn xori(rt: usize, rs: usize, imm: u16) -> OpCode {
     XORI { rt, rs, imm }.into_opcode()
 }
 
@@ -93,13 +93,13 @@ mod tests {
     #[case(0, 1, 1)]
     #[case(0, 0, 0)]
     #[case(0b11110000, 0b00111100, 0b11001100)]
-    #[case(-1, -1, 0)] // 0xFFFF ^ 0xFFFF = 0
+    #[case(-1, -1i16 as u16, 0)] // 0xFFFF ^ 0xFFFF = 0
     #[case(i16::MIN, 0, i16::MIN as u32)] // -32768 ^ 0 = -32768
     fn xori_1(
         setup_tracing: (),
         mut emulator: Emu,
         #[case] a: i16,
-        #[case] b: i16,
+        #[case] b: u16,
         #[case] expected: u32,
     ) -> color_eyre::Result<()> {
         use crate::dynarec::JitSummary;
@@ -114,7 +114,7 @@ mod tests {
     }
     #[rstest]
     #[case(0b11110000)]
-    fn xori_2(setup_tracing: (), mut emulator: Emu, #[case] imm: i16) -> color_eyre::Result<()> {
+    fn xori_2(setup_tracing: (), mut emulator: Emu, #[case] imm: u16) -> color_eyre::Result<()> {
         use crate::dynarec::JitSummary;
 
         emulator

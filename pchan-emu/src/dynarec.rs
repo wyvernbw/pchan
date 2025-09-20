@@ -1,13 +1,11 @@
-use crate::{
-    IntoInst,
-    cranelift_bs::*,
-    jit::FuncRefTable,
-    memory::{self, ext},
-};
+use crate::{IntoInst, cranelift_bs::*, jit::FuncRefTable, memory::ext};
 use std::{
+    any::Any,
     borrow::Cow,
     collections::HashMap,
+    fmt::Write,
     ops::{Index, IndexMut, Range},
+    panic::{AssertUnwindSafe, catch_unwind},
     rc::Rc,
 };
 
@@ -20,7 +18,6 @@ use petgraph::{
     prelude::*,
     visit::{DfsEvent, depth_first_search},
 };
-use slab::Slab;
 use tracing::{Level, enabled, instrument};
 use tracing::{info_span, trace_span};
 
@@ -49,14 +46,24 @@ use crate::{
     memory::Memory,
 };
 
-#[derive(Debug, Builder, Clone)]
+#[derive(derive_more::Debug, Builder, Clone, derive_more::Display)]
+#[display("{:#?}", self)]
 pub struct JitSummary {
+    #[debug("{}", self.decoded_ops)]
+    pub decoded_ops: String,
     pub function: Option<Function>,
+    #[debug("{}", self.function_panic)]
+    pub function_panic: String,
+    #[debug("{}", self.cpu_state)]
+    pub cpu_state: String,
 }
 
 #[derive(Debug, Builder, Clone)]
 pub struct SummarizeDeps<'a> {
     function: Option<&'a Function>,
+    function_panic: Option<Result<(), String>>,
+    cpu: &'a Cpu,
+    fetch_summary: Option<&'a FetchSummary>,
 }
 
 pub trait SummarizeJit {
@@ -69,8 +76,50 @@ impl SummarizeJit for () {
 
 impl SummarizeJit for JitSummary {
     fn summarize(deps: SummarizeDeps) -> Self {
+        let cpu_state = format!("{:#?}", deps.cpu);
+        let blocks = if let Some(fetch) = deps.fetch_summary {
+            let mut dfs = Dfs::new(&fetch.cfg, fetch.entry);
+            let mut buf = String::with_capacity(320);
+            writeln!(&mut buf, "{{").unwrap();
+            while let Some(node) = dfs.next(&fetch.cfg) {
+                // tracing::trace!(cfg.node = ?fetch.cfg[node].clif_block);
+                writeln!(&mut buf, "  {:?}:", fetch.cfg[node].clif_block()).unwrap();
+                let ops = fetch.ops_for(&fetch.cfg[node]);
+                for op in ops {
+                    writeln!(&mut buf, "    {op}").unwrap();
+                }
+                if ops.is_empty() {
+                    writeln!(&mut buf, "    (empty)").unwrap();
+                }
+                _ = write!(&mut buf, "    => jumps to: ");
+                let mut jumped = false;
+                for n in fetch.cfg.neighbors_directed(node, Direction::Outgoing) {
+                    _ = write!(&mut buf, "{:?}, ", fetch.cfg[n].clif_block());
+                    jumped = true;
+                }
+                if !jumped {
+                    _ = write!(&mut buf, "(none)");
+                }
+                _ = writeln!(&mut buf);
+                writeln!(&mut buf).unwrap();
+            }
+            writeln!(&mut buf, "}}").unwrap();
+            buf
+        } else {
+            "N/A (ops not passed to summarize)".to_string()
+        };
+        let panic = match deps.function_panic {
+            Some(result) => match result {
+                Ok(_) => "no panic. 👍".to_string(),
+                Err(err) => format!("panic: {:?}", err),
+            },
+            None => "N/A (level `trace` required for this information.)".to_string(),
+        };
         Self::builder()
             .maybe_function(deps.function.cloned())
+            .function_panic(panic)
+            .cpu_state(cpu_state)
+            .decoded_ops(blocks)
             .build()
     }
 }
@@ -148,7 +197,9 @@ impl Emu {
             .jit
             .use_cached_function(initial_address, &mut self.cpu, &mut self.mem);
         if cached {
-            return Ok(T::summarize(SummarizeDeps::builder().build()));
+            return Ok(T::summarize(
+                SummarizeDeps::builder().cpu(&self.cpu).build(),
+            ));
         }
 
         // collect blocks in function
@@ -275,17 +326,32 @@ impl Emu {
         fn_builder.seal_all_blocks();
 
         Self::close_function(fn_builder);
-        let summary = T::summarize(SummarizeDeps::builder().function(&func).build());
-        self.jit.finish_function(func_id, func)?;
+        let summary_deps = SummarizeDeps::builder().function(&func);
+        self.jit.finish_function(func_id, func.clone())?;
 
         let function = self.jit.get_func(func_id);
         tracing::info!("compiled function: {:?}", function.0);
-        {
+        let potential_panic = {
             let _span = info_span!("fn", addr = ?function.0).entered();
-            function(&mut self.cpu, &mut self.mem, true);
-        }
+            if enabled!(Level::TRACE) {
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    function(&mut self.cpu, &mut self.mem, true);
+                }))
+                .map_err(|err| panic_message::panic_message(&err).to_string());
+                Some(result)
+            } else {
+                function(&mut self.cpu, &mut self.mem, true);
+                None
+            }
+        };
+
         tracing::trace!("{:#?}", self.cpu);
         self.jit.block_map.insert(initial_address, function);
+        let summary_deps = summary_deps
+            .maybe_function_panic(potential_panic)
+            .fetch_summary(&blocks)
+            .cpu(&self.cpu);
+        let summary = T::summarize(summary_deps.build());
 
         Ok(summary)
     }
@@ -472,7 +538,7 @@ fn fetch(params: FetchParams<'_>) -> color_eyre::Result<FetchSummary> {
             }
 
             if op.is_block_boundary().is_some() && lifetime.is_none() {
-                lifetime = Some(4);
+                lifetime = Some(2);
                 boundary = Some((op, pc));
             }
 

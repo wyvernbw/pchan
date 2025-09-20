@@ -76,6 +76,16 @@ impl Cpu {
     pub fn jump_to_bios(&mut self) {
         self.pc = 0xBFC0_0000;
     }
+
+    #[unsafe(no_mangle)]
+    pub fn handle_rfe(&mut self) {
+        tracing::info!("running rfe");
+        let sr = self.cop0.reg[12];
+        let modified = sr >> 2;
+        let mask = 0b1111;
+        let sr = (sr ^ mask) | (modified & (!mask));
+        self.cop0.reg[12] = sr;
+    }
 }
 
 type Reg = usize;
