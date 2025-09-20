@@ -1,6 +1,6 @@
 use std::fmt::Display;
 
-use pchan_utils::array;
+use pchan_utils::{array, hex};
 
 use crate::cpu::ops::OpCode;
 
@@ -11,14 +11,13 @@ pub mod ops;
 #[derive(Default, derive_more::Debug)]
 #[repr(C)]
 pub struct Cpu {
-    #[debug("{}",
+    #[debug("{:#?}",
         gpr
             .iter()
             .enumerate()
             .filter(|(_, x)| x != &&0)
-            .map(|(i, x)| format!("${}={}", REG_STR[i], x))
-            .intersperse(" ".to_string())
-            .collect::<String>()
+            .map(|(i, x)| format!("${}={}", REG_STR[i], hex(x)))
+            .collect::<Vec<String>>()
     )]
     pub gpr: [u32; 32],
     pub pc: u32,
@@ -81,10 +80,8 @@ impl Cpu {
     pub fn handle_rfe(&mut self) {
         tracing::info!("running rfe");
         let sr = self.cop0.reg[12];
-        let modified = sr >> 2;
-        let mask = 0b1111;
-        let sr = (sr ^ mask) | (modified & (!mask));
-        self.cop0.reg[12] = sr;
+        self.cop0.reg[12] = (sr & !0x3F) | ((sr >> 2) & 0x3F);
+        // panic!("rfe breakpoint");
     }
 }
 

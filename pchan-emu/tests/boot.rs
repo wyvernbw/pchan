@@ -29,7 +29,7 @@ pub fn boot(setup_tracing: ()) -> color_eyre::Result<()> {
     let result: color_eyre::Result<()> = try {
         loop {
             let summary = emu.step_jit_summarize::<JitSummary>()?;
-            if interactive {
+            if interactive || summary.panicked {
                 let prompt = Confirm::new("show dynarec summary?")
                     .with_default(false)
                     .prompt();

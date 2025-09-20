@@ -41,6 +41,7 @@ pub mod xori;
 
 // jumps
 pub mod beq;
+pub mod bgez;
 pub mod bne;
 pub mod j;
 pub mod jal;
@@ -73,6 +74,7 @@ pub mod prelude {
     pub use super::and::*;
     pub use super::andi::*;
     pub use super::beq::*;
+    pub use super::bgez::*;
     pub use super::bne::*;
     pub use super::j::*;
     pub use super::jal::*;
@@ -240,7 +242,7 @@ impl OpCode {
 #[allow(clippy::upper_case_acronyms)]
 pub enum PrimeOp {
     SPECIAL = 0x00,
-    BCONDZ = 0x01,
+    BcondZ = 0x01,
     J = 0x02,
     JAL = 0x03,
     BEQ = 0x04,
@@ -579,6 +581,8 @@ pub enum DecodedOp {
     JR(JR),
     #[strum(transparent)]
     JALR(JALR),
+    #[strum(transparent)]
+    BGEZ(BGEZ),
 
     // cop
     #[strum(transparent)]
@@ -601,7 +605,14 @@ impl TryFrom<OpCode> for DecodedOp {
             return Ok(DecodedOp::NOP(NOP));
         }
 
+        // FIXME: streamline field extraction
+        // maybe make it simd compatible?
+
         match (opcode.primary(), opcode.secondary()) {
+            (PrimeOp::BcondZ, _) => match opcode.bits(16..21) {
+                0b00001 => BGEZ::try_from(opcode).map(Self::BGEZ),
+                _ => Err(TryFromOpcodeErr::UnknownInstruction),
+            },
             (PrimeOp::COP0 | PrimeOp::COP1 | PrimeOp::COP2 | PrimeOp::COP3, _) => {
                 match (opcode.cop(), opcode.bits(0..6)) {
                     (CopOp::MFCn, 0b000000) => MFCn::try_from(opcode).map(Self::MFCn),
@@ -750,6 +761,7 @@ mod decode_display_tests {
     #[case::mtc(DecodedOp::new(mtc0(8, 16)), "mtc0 $t0, $r16")]
     #[case::mfc(DecodedOp::new(mfc0(8, 16)), "mfc0 $t0, $r16")]
     #[case::rfe(DecodedOp::new(rfe()), "rfe")]
+    #[case::bgez(DecodedOp::new(bgez(8, 0x20)), "bgez $t0 0x0020")]
     fn test_display(setup_tracing: (), #[case] op: DecodedOp, #[case] expected: &str) {
         assert_eq!(op.to_string(), expected);
     }

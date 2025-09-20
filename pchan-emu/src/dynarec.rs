@@ -52,6 +52,7 @@ pub struct JitSummary {
     #[debug("{}", self.decoded_ops)]
     pub decoded_ops: String,
     pub function: Option<Function>,
+    pub panicked: bool,
     #[debug("{}", self.function_panic)]
     pub function_panic: String,
     #[debug("{}", self.cpu_state)]
@@ -108,6 +109,11 @@ impl SummarizeJit for JitSummary {
         } else {
             "N/A (ops not passed to summarize)".to_string()
         };
+        let panicked = deps
+            .function_panic
+            .as_ref()
+            .map(|info| info.is_err())
+            .unwrap_or(false);
         let panic = match deps.function_panic {
             Some(result) => match result {
                 Ok(_) => "no panic. 👍".to_string(),
@@ -120,6 +126,7 @@ impl SummarizeJit for JitSummary {
             .function_panic(panic)
             .cpu_state(cpu_state)
             .decoded_ops(blocks)
+            .panicked(panicked)
             .build()
     }
 }
