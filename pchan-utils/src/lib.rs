@@ -17,6 +17,7 @@ pub fn setup_tracing() {
             fmt::layer()
                 .with_ansi(true)
                 .with_file(false)
+                .without_time()
                 .with_line_number(false), // .with_span_events(FmtSpan::CLOSE),
         )
         // .with(

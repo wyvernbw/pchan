@@ -62,6 +62,7 @@ pub mod store;
 pub mod sw;
 
 // cop
+pub mod mfc;
 pub mod mtc;
 
 pub mod prelude {
@@ -82,6 +83,7 @@ pub mod prelude {
     pub use super::lhu::*;
     pub use super::lui::*;
     pub use super::lw::*;
+    pub use super::mfc::*;
     pub use super::mfhi::*;
     pub use super::mflo::*;
     pub use super::mtc::*;
@@ -330,6 +332,7 @@ pub enum SecOp {
 #[allow(clippy::upper_case_acronyms)]
 pub enum CopOp {
     MTCn = 0b00100,
+    MFCn = 0b00000,
 
     #[opcode(default)]
     ILLEGAL,
@@ -568,6 +571,8 @@ pub enum DecodedOp {
     // cop
     #[strum(transparent)]
     MTCn(MTCn),
+    #[strum(transparent)]
+    MFCn(MFCn),
 }
 
 impl TryFrom<OpCode> for DecodedOp {
@@ -583,17 +588,18 @@ impl TryFrom<OpCode> for DecodedOp {
         }
 
         macro_rules! copn {
-            () => {
+            ($inst:pat) => {
                 (
                     PrimeOp::COP0 | PrimeOp::COP1 | PrimeOp::COP2 | PrimeOp::COP3,
                     _,
-                    CopOp::MTCn,
+                    $inst,
                 )
             };
         }
 
         match (opcode.primary(), opcode.secondary(), opcode.cop()) {
-            copn!() => MTCn::try_from(opcode).map(Self::MTCn),
+            copn!(CopOp::MFCn) => MFCn::try_from(opcode).map(Self::MFCn),
+            copn!(CopOp::MTCn) => MTCn::try_from(opcode).map(Self::MTCn),
             (PrimeOp::SPECIAL, SecOp::JALR, _) => JALR::try_from(opcode).map(Self::JALR),
             (PrimeOp::SPECIAL, SecOp::JR, _) => JR::try_from(opcode).map(Self::JR),
             (PrimeOp::JAL, _, _) => JAL::try_from(opcode).map(Self::JAL),
@@ -729,6 +735,7 @@ mod decode_display_tests {
     #[case::jr(DecodedOp::new(jr(8)), "jr $t0")]
     #[case::jalr(DecodedOp::new(jalr(8, 9)), "jalr $t0 $t1")]
     #[case::mtc(DecodedOp::new(mtc0(8, 16)), "mtc0 $t0, $r16")]
+    #[case::mfc(DecodedOp::new(mfc0(8, 16)), "mfc0 $t0, $r16")]
     fn test_display(setup_tracing: (), #[case] op: DecodedOp, #[case] expected: &str) {
         assert_eq!(op.to_string(), expected);
     }

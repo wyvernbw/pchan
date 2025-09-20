@@ -271,7 +271,7 @@ impl Emu {
             _ => {}
         });
 
-        let _span = info_span!("jit_comp", pc = %format!("0x{:08X}", initial_address)).entered();
+        // let _span = info_span!("jit_comp", pc = %format!("0x{:08X}", initial_address)).entered();
         fn_builder.seal_all_blocks();
 
         Self::close_function(fn_builder);
@@ -729,15 +729,11 @@ impl<'a, 'b> EmitCtx<'a, 'b> {
             }
         }
     }
-    pub fn emit_get_cop_register(
-        &mut self,
-        fn_builder: &mut FunctionBuilder,
-        cop: u8,
-        reg: usize,
-    ) -> (Value, Inst) {
+    pub fn emit_get_cop_register(&mut self, cop: u8, reg: usize) -> (Value, Inst) {
+        let block = self.block().clif_block();
         JIT::emit_load_cop_reg()
-            .builder(fn_builder)
-            .block(self.block().clif_block())
+            .builder(self.fn_builder)
+            .block(block)
             .idx(reg)
             .cop(cop)
             .call()

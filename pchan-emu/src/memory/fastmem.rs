@@ -113,7 +113,7 @@ impl Memory {
     /// # Safety
     ///
     /// this is never safe, live fast die young
-    #[instrument(skip(mem, address), fields(address = %hex(&address)))]
+    #[instrument(target = "bytecode", skip(mem, address), fields(address = %hex(&address)))]
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn read32(mem: *const u8, address: u32) -> i32 {
         unsafe { Memory::read_raw::<i32>(mem, address) }
