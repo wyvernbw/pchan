@@ -32,7 +32,7 @@ impl TryFrom<OpCode> for J {
 
 impl Display for J {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "j 0x{:08X}", self.imm << 2)
+        write!(f, "j 0x{:08X}", self.imm)
     }
 }
 
@@ -91,7 +91,7 @@ mod tests {
     fn basic_jump(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
         use crate::cpu::ops::prelude::*;
 
-        let main = program([addiu(8, 0, 32), j(0x0000_2000 - 4), nop()]);
+        let main = program([addiu(8, 0, 32), j((0x0000_2000 - 4) >> 2), nop()]);
 
         let function = program([addiu(9, 0, 69), nop(), OpCode(69420)]);
 
@@ -107,7 +107,7 @@ mod tests {
     fn jump_delay_hazard_1(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
         use crate::cpu::ops::prelude::*;
 
-        let main = program([addiu(8, 0, 32), j(0x0000_2000 - 4), addiu(10, 0, 42)]);
+        let main = program([addiu(8, 0, 32), j((0x0000_2000 - 4) >> 2), addiu(10, 0, 42)]);
 
         let function = program([addiu(9, 0, 69), nop(), OpCode(69420)]);
 

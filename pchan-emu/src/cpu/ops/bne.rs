@@ -153,7 +153,7 @@ mod tests {
             &program([
                 addiu(8, 0, test.a),
                 addiu(9, 0, test.b),
-                bne(8, 9, 16),
+                bne(8, 9, 0x4),
                 nop(),
                 addiu(10, 0, test.otherwise),
                 OpCode(69420),

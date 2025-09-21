@@ -147,7 +147,7 @@ mod tests {
             0x0,
             &program([
                 addiu(9, 0, value),
-                blez(9, 0x20),
+                blez(9, 0x6),
                 nop(),
                 addiu(10, 0, 69),
                 nop(),

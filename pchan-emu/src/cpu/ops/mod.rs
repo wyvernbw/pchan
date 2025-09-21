@@ -697,13 +697,19 @@ impl DecodedOp {
         if op == 0 {
             return OpFields::NOP_FIELDS;
         }
+        if op == 69420 {
+            return OpFields {
+                opcode: 255,
+                ..OpFields::NOP_FIELDS
+            };
+        }
         let opcode_shifted = op >> 26;
         let opcode = opcode_shifted;
         let rs = (op >> 21) & 0x1f;
         let rt = (op >> 16) & 0x1f;
         let rd = (op >> 11) & 0x1f;
         let shamt = (op >> 6) & 0x1f;
-        let funct = op & 0x1f;
+        let funct = op & 0x3f;
         let imm16 = op & 0xFFFF;
         let imm26 = op & 0x3FFFFFF;
         let imm25 = op & 0x1FFFFFF;
@@ -738,7 +744,7 @@ impl DecodedOp {
         let rt = (ops >> 16) & simd_0x1f;
         let rd = (ops >> 11) & simd_0x1f;
         let shamt = (ops >> 6) & simd_0x1f;
-        let funct = ops & simd_0x1f;
+        let funct = ops & Simd::splat(0x3F);
         let imm16 = ops & Simd::splat(0xFFFF);
         let imm26 = ops & Simd::splat(0x3FFFFFF);
         let imm25 = ops & Simd::splat(0x1FFFFFF);
@@ -771,6 +777,9 @@ impl DecodedOp {
         fields.map(|fields| {
             if fields == OpFields::NOP_FIELDS {
                 return Self::NOP(NOP);
+            }
+            if fields.opcode == 255 {
+                return Self::HaltBlock(HaltBlock);
             }
             let OpFields {
                 opcode,

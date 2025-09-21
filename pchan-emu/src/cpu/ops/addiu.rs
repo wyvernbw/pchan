@@ -2,6 +2,7 @@ use std::fmt::Display;
 
 use crate::FnBuilderExt;
 use crate::dynarec::prelude::*;
+use crate::memory::ext;
 
 use super::PrimeOp;
 
@@ -54,7 +55,7 @@ impl Op for ADDIU {
             .with_primary(PrimeOp::ADDIU)
             .set_bits(21..26, self.rs as u32)
             .set_bits(16..21, self.rt as u32)
-            .set_bits(0..16, (self.imm as i32 as i16) as u32)
+            .set_bits(0..16, ext::zero(self.imm))
     }
 
     // #[instrument("addiu", skip_all, fields(node = ?state.node, block = ?state.block().clif_block()))]
@@ -66,7 +67,11 @@ impl Op for ADDIU {
         if self.rs == 0 {
             let (rt, iconst) = state.fn_builder.inst(|f| {
                 f.pure()
-                    .UnaryImm(Opcode::Iconst, types::I32, Imm64::new(self.imm as i64))
+                    .UnaryImm(
+                        Opcode::Iconst,
+                        types::I32,
+                        Imm64::new(ext::sign(self.imm) as i64),
+                    )
                     .0
             });
             return EmitSummary::builder()

@@ -139,11 +139,11 @@ mod tests {
             addiu(10, 0, 4),          // ;  4 $t2 = 4
             addiu(9, 8, 0x0000_2000), // ;  8 calculate address $t1 = $t0 + 0x0000_2000
             sb(8, 9, 0),              // ; 12 store $i at $t1
-            beq(8, 10, 16),           // ; 16 if $t0=$t2(4) jump by 16+8 to reach 40
+            beq(8, 10, 4),            // ; 16 if $t0=$t2(4) jump by 16+8 to reach 40
             nop(),                    // ; 20
             addiu(8, 8, 1),           // ; 24 $t0 = $t0 + 1
             nop(),                    // ; 28
-            j(8),                     // ; 32 jump to 8 (return to beginning of loop)
+            j(2),                     // ; 32 jump to 8 (return to beginning of loop)
             nop(),                    // ; 36
             nop(),                    // ; 40
             OpCode(69420),            // ; 44 halt
@@ -169,7 +169,7 @@ mod tests {
         let func = program([
             addiu(8, 0, 5),   // $t0 = 5
             addiu(9, 0, 5),   // $t1 = 5
-            beq(8, 9, 8),     // $t0 == $t1, branch taken
+            beq(8, 9, 2),     // $t0 == $t1, branch taken
             addiu(10, 0, 42), // skipped
             sb(10, 0, 0x40),  // skipped
             addiu(11, 0, 99), // executed after branch target
@@ -194,7 +194,7 @@ mod tests {
         let func = program([
             addiu(8, 0, 1),   // $t0 = 1
             addiu(9, 0, 2),   // $t1 = 2
-            beq(8, 9, 8),     // $t0 != $t1, branch not taken
+            beq(8, 9, 2),     // $t0 != $t1, branch not taken
             addiu(10, 0, 42), // executed because branch not taken
             sb(10, 0, 0x30),  // store 42 at memory[0x30]
             OpCode(69420),    // halt

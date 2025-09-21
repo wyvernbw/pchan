@@ -56,7 +56,7 @@ impl Op for BGEZ {
             .with_primary(PrimeOp::BcondZ)
             .set_bits(16..21, 0b00001)
             .set_bits(21..26, self.rs as u32)
-            .set_bits(0..16, (self.imm) as u32)
+            .set_bits(0..16, ext::sign(self.imm) as u32)
     }
 
     fn hazard(&self) -> Option<u32> {
@@ -136,6 +136,7 @@ mod tests {
     #[rstest]
     #[case(0, 42)]
     #[case(i16::MAX, 42)]
+    #[case(-1, 69)]
     #[case(i16::MIN, 69)]
     pub fn bgez_test(
         setup_tracing: (),
@@ -147,7 +148,7 @@ mod tests {
             0x0,
             &program([
                 addiu(9, 0, value),
-                bgez(9, 0x20),
+                bgez(9, 0x8),
                 nop(),
                 addiu(10, 0, 69),
                 nop(),

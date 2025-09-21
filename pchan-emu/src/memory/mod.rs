@@ -188,6 +188,34 @@ impl const Extend<Zero> for u16 {
     }
 }
 
+impl const Extend<Sign> for i8 {
+    type Out = i32;
+    fn ext(self) -> Self::Out {
+        self as i32
+    }
+}
+
+impl const Extend<Zero> for i8 {
+    type Out = u32;
+    fn ext(self) -> Self::Out {
+        self as u8 as u32
+    }
+}
+
+impl const Extend<Sign> for i16 {
+    type Out = i32;
+    fn ext(self) -> Self::Out {
+        self as i32
+    }
+}
+
+impl const Extend<Zero> for i16 {
+    type Out = u32;
+    fn ext(self) -> Self::Out {
+        self as u16 as u32
+    }
+}
+
 struct Chunk<El>(PhantomData<El>);
 impl<El> Chunk<El> {
     const LANE_COUNT: usize = MAX_SIMD_WIDTH / size_of::<El>();

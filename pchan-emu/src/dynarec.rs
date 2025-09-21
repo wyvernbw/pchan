@@ -32,6 +32,7 @@ pub mod prelude {
     pub use crate::icmp;
     pub use crate::icmpimm;
     pub use crate::load;
+    pub use crate::memory::ext;
     pub use crate::mult;
     pub use crate::shift;
     pub use crate::shiftimm;
@@ -525,11 +526,17 @@ fn fetch(params: FetchParams<'_>) -> color_eyre::Result<FetchSummary> {
         let mut ops_end = ops.len();
 
         let mut pc = state.start_pc;
+        let breakpoint = std::env::var("PCHAN_BREAKPOINT")
+            .ok()
+            .and_then(|b| b.parse::<u32>().ok());
 
         while pc < u32::MAX {
             let opcode = mem.read::<OpCode, ext::NoExt>(pc);
             let op = DecodedOp::extract_fields(&opcode);
             let op = DecodedOp::decode_one(op);
+            if Some(pc) == breakpoint {
+                panic!("breakpoint!")
+            }
             if enabled!(Level::TRACE) {
                 tracing::trace!("0x{:08X?}  {}", pc, op);
             }
@@ -1139,7 +1146,6 @@ fn collect_instructions(
             node,
         });
 
-        if op.is_nop() {}
         if summary.instructions.is_empty() && !op.is_nop() {
             tracing::warn!("emitted no instructions")
         }

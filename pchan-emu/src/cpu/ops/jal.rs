@@ -100,9 +100,9 @@ mod tests {
 
         let main = program([
             addiu(8, 0, 32),
-            jal(0x0000_2000), // 4
-            nop(),            // 8
-            nop(),            // 12
+            jal(0x0000_2000 >> 2), // 4
+            nop(),                 // 8
+            nop(),                 // 12
         ]);
 
         let function = program([
