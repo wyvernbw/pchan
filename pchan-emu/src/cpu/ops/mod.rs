@@ -6,10 +6,11 @@ use crate::{
 use cranelift::codegen::entity::EntityList;
 use enum_dispatch::enum_dispatch;
 use pchan_macros::OpCode;
+use pchan_utils::array;
 use std::{
     fmt::Display,
     ops::Range,
-    simd::{LaneCount, Simd, SupportedLaneCount, masksizex16},
+    simd::{LaneCount, Simd, SupportedLaneCount},
 };
 use thiserror::Error;
 use tracing::instrument;
@@ -677,7 +678,7 @@ pub struct OpFields {
     shamt: u8,
     funct: u8,
     imm16: i16,
-    imm26: i32,
+    imm26: u32,
     imm25: i32,
     cop: u8,
 }
@@ -697,7 +698,7 @@ impl DecodedOp {
             return OpFields::NOP_FIELDS;
         }
         let opcode_shifted = op >> 26;
-        let opcode = opcode_shifted & 0x3F;
+        let opcode = opcode_shifted;
         let rs = (op >> 21) & 0x1f;
         let rt = (op >> 16) & 0x1f;
         let rd = (op >> 11) & 0x1f;
@@ -716,7 +717,7 @@ impl DecodedOp {
             shamt: shamt as u8,
             funct: funct as u8,
             imm16: imm16 as i16,
-            imm26: imm26 as i32,
+            imm26,
             imm25: imm25 as i32,
             cop: cop as u8,
         }
@@ -753,13 +754,18 @@ impl DecodedOp {
                 shamt: shamt[i] as u8,
                 funct: funct[i] as u8,
                 imm16: imm16[i] as i16,
-                imm26: imm26[i] as i32,
+                imm26: imm26[i],
                 imm25: imm25[i] as i32,
                 cop: cop[i] as u8,
             };
             i += 1;
             fields
         })
+    }
+    #[inline(never)]
+    pub fn decode_one(fields: OpFields) -> Self {
+        let [op] = Self::decode([fields]);
+        op
     }
     pub fn decode<const N: usize>(fields: [OpFields; N]) -> [Self; N] {
         fields.map(|fields| {
@@ -820,6 +826,155 @@ impl DecodedOp {
                 (0x0, _, _, 0x2A) => Self::SLT(SLT::new(rd, rs, rt)),
                 (0x0, _, _, 0x2B) => Self::SLTU(SLTU::new(rd, rs, rt)),
                 (0x0, _, _, 0x2C..) => Self::illegal(),
+
+                // i type
+                (0x1, _, _, _) => match rt {
+                    0x0 => todo!("bltz"),
+                    0x1 => Self::BGEZ(BGEZ::new(rs, imm16)),
+                    0x10 => todo!("bltzal"),
+                    0x11 => todo!("bgezal"),
+                    // TODO: add the bltz and bgez dupes, just to be sure
+                    _ => Self::illegal(),
+                },
+                (0x4, _, _, _) => Self::BEQ(BEQ::new(rs, rt, imm16)),
+                (0x5, _, _, _) => Self::BNE(BNE::new(rs, rt, imm16)),
+                (0x6, _, _, _) => Self::BLEZ(BLEZ::new(rs, imm16)),
+                (0x7, _, _, _) => {
+                    // todo!("bgtz");
+                    Self::illegal()
+                }
+                (0x8 | 0x9, _, _, _) => Self::ADDIU(ADDIU::new(rs, rt, imm16)),
+                (0xA, _, _, _) => Self::SLTI(SLTI::new(rt, rs, imm16)),
+                (0xB, _, _, _) => Self::SLTIU(SLTIU::new(rt, rs, imm16)),
+                (0xC, _, _, _) => Self::ANDI(ANDI::new(rs, rt, imm16 as u16)),
+                (0xD, _, _, _) => Self::ORI(ORI::new(rs, rt, imm16 as u16)),
+                (0xE, _, _, _) => Self::XORI(XORI::new(rs, rt, imm16 as u16)),
+                (0xF, _, _, _) => Self::LUI(LUI::new(rt, imm16)),
+                (0x14..=0x1F, _, _, _) => Self::illegal(),
+                (0x20, _, _, _) => Self::LB(LB::new(rt, rs, imm16)),
+                (0x21, _, _, _) => Self::LH(LH::new(rt, rs, imm16)),
+                (0x22, _, _, _) => todo!("lwl"),
+                (0x23, _, _, _) => Self::LW(LW::new(rt, rs, imm16)),
+                (0x24, _, _, _) => Self::LBU(LBU::new(rt, rs, imm16)),
+                (0x25, _, _, _) => Self::LHU(LHU::new(rt, rs, imm16)),
+                (0x26, _, _, _) => todo!("lwr"),
+                (0x27, _, _, _) => Self::illegal(),
+                (0x28, _, _, _) => Self::SB(SB::new(rt, rs, imm16)),
+                (0x29, _, _, _) => Self::SH(SH::new(rt, rs, imm16)),
+                (0x2A, _, _, _) => todo!("swl"),
+                (0x2B, _, _, _) => Self::SW(SW::new(rt, rs, imm16)),
+                (0x2C..=0x2D, _, _, _) => Self::illegal(),
+                (0x2E, _, _, _) => todo!("swr"),
+                (0x2F, _, _, _) => Self::illegal(),
+                (0x34..=0x37, _, _, _) => Self::illegal(),
+                (0x3C.., _, _, _) => Self::illegal(),
+
+                // j type
+                (0x2, _, _, _) => Self::J(J::new(imm26)),
+                (0x3, _, _, _) => Self::JAL(JAL::new(imm26)),
+
+                // cop reg
+                (_, 0x0, _, 0x0) => Self::MFCn(MFCn::new(cop, rt, rd)),
+                (_, 0x2, _, 0x0) => todo!("cfcn"),
+                (_, 0x4, _, 0x0) => Self::MTCn(MTCn::new(cop, rt, rd)),
+                (_, 0x6, _, 0x0) => todo!("ctcn"),
+                (_, 0x10, _, 0x10) => Self::RFE(RFE),
+
+                // cop imm16
+                (0x10..=0x13, 0x8, 0, _) => todo!("bcnf"),
+                (0x10..=0x13, 0x8, 1, _) => todo!("bcnt"),
+                (0x30..=0x33, _, _, _) => todo!("lwcn"),
+                (0x38..=0x3B, _, _, _) => todo!("swcn"),
+
+                // cop imm25
+                (0x10..=0x13, 0x10.., _, _) => {
+                    // TODO: copn command
+                    // todo!("cop{} imm25", cop);
+                    Self::illegal()
+                }
+                _ => Self::illegal(),
+            }
+        })
+    }
+    pub fn lut_decode<const N: usize>(fields: [OpFields; N]) -> [Self; N] {
+        fields.map(|fields| {
+            if fields == OpFields::NOP_FIELDS {
+                return Self::NOP(NOP);
+            }
+            let OpFields {
+                opcode,
+                rs,
+                rt,
+                rd,
+                shamt,
+                funct,
+                imm16,
+                imm26,
+                imm25,
+                cop,
+            } = fields;
+
+            type RTypeBuilder = fn(u8, u8, u8, u8) -> DecodedOp;
+            static R_TYPE_ILLEGAL: RTypeBuilder = |_, _, _, _| DecodedOp::illegal();
+
+            static R_TYPE_TABLE: [RTypeBuilder; 49] = array![
+                0x0 => |rd, rt, rs, shamt| { DecodedOp::SLL(SLL::new(rd, rt, shamt as i8))},
+                0x1 => R_TYPE_ILLEGAL,
+                0x2 => |rd, rt, rs, shamt| { DecodedOp::SRL(SRL::new(rd, rt, shamt as i8))},
+                0x3 => |rd, rt, rs, shamt| { DecodedOp::SRA(SRA::new(rd, rt, shamt as i8))},
+                0x4 => |rd, rt, rs, shamt| { DecodedOp::SLLV(SLLV::new(rd, rt, rs))},
+                0x5 => R_TYPE_ILLEGAL,
+                0x6 => |rd, rt, rs, shamt| { DecodedOp::SRLV(SRLV::new(rd, rt, rs))},
+                0x7 => |rd, rt, rs, shamt| { DecodedOp::SRAV(SRAV::new(rd, rt, rs))},
+                0x8 => |rd, rt, rs, shamt| { DecodedOp::JR(JR::new(rs))},
+                0x9 => |rd, rt, rs, shamt| { DecodedOp::JALR(JALR::new(rd, rs))},
+                0xA => R_TYPE_ILLEGAL,
+                0xB => R_TYPE_ILLEGAL,
+                0xC => |rd, rt, rs, shamt| {
+                    // TODO: syscall
+                    DecodedOp::illegal()
+                },
+                0xD => |rd, rt, rs, shamt| { todo!("break")},
+                0xE => R_TYPE_ILLEGAL,
+                0xF => R_TYPE_ILLEGAL,
+                0x10 => |rd, rt, rs, shamt| { DecodedOp::MFHI(MFHI::new(rd))},
+                0x11 => |rd, rt, rs, shamt| { DecodedOp::MTHI(MTHI::new(rs))},
+                0x12 => |rd, rt, rs, shamt| { DecodedOp::MFLO(MFLO::new(rd))},
+                0x13 => |rd, rt, rs, shamt| { DecodedOp::MTLO(MTLO::new(rs))},
+                0x14 => R_TYPE_ILLEGAL,
+                0x15 => R_TYPE_ILLEGAL,
+                0x16 => R_TYPE_ILLEGAL,
+                0x17 => R_TYPE_ILLEGAL,
+                0x18 => |rd, rt, rs, shamt| { DecodedOp::MULT(MULT::new(rs, rt))},
+                0x19 => |rd, rt, rs, shamt| { DecodedOp::MULTU(MULTU::new(rs, rt))},
+                0x1A => |rd, rt, rs, shamt| { todo!("div")},
+                0x1B => |rd, rt, rs, shamt| { todo!("div")},
+                0x1C => R_TYPE_ILLEGAL,
+                0x1D => R_TYPE_ILLEGAL,
+                0x1E => R_TYPE_ILLEGAL,
+                0x1F => R_TYPE_ILLEGAL,
+                0x20 => |rd, rt, rs, shamt| { DecodedOp::ADDU(ADDU::new(rd, rs, rt))},
+                0x21 => |rd, rt, rs, shamt| { DecodedOp::ADDU(ADDU::new(rd, rs, rt))},
+                0x22 => |rd, rt, rs, shamt| { DecodedOp::SUBU(SUBU::new(rd, rs, rt))},
+                0x23 => |rd, rt, rs, shamt| { DecodedOp::SUBU(SUBU::new(rd, rs, rt))},
+                0x24 => |rd, rt, rs, shamt| { DecodedOp::AND(AND::new(rd, rs, rt))},
+                0x25 => |rd, rt, rs, shamt| { DecodedOp::OR(OR::new(rd, rs, rt))},
+                0x26 => |rd, rt, rs, shamt| { DecodedOp::XOR(XOR::new(rd, rs, rt))},
+                0x27 => |rd, rt, rs, shamt| { DecodedOp::NOR(NOR::new(rd, rs, rt))},
+                0x24 => |rd, rt, rs, shamt| { DecodedOp::AND(AND::new(rd, rs, rt))},
+                0x25 => |rd, rt, rs, shamt| { DecodedOp::OR(OR::new(rd, rs, rt))},
+                0x26 => |rd, rt, rs, shamt| { DecodedOp::XOR(XOR::new(rd, rs, rt))},
+                0x27 => |rd, rt, rs, shamt| { DecodedOp::NOR(NOR::new(rd, rs, rt))},
+                0x28 => R_TYPE_ILLEGAL,
+                0x29 => R_TYPE_ILLEGAL,
+                0x2A => |rd, rt, rs, shamt| { DecodedOp::SLT(SLT::new(rd, rs, rt))},
+                0x2B => |rd, rt, rs, shamt| { DecodedOp::SLTU(SLTU::new(rd, rs, rt))},
+                0x2C => R_TYPE_ILLEGAL
+            ];
+
+            match (opcode, rs, rt, funct) {
+                // r type
+                (0x0, _, _, _) => R_TYPE_TABLE[funct as usize](rd, rt, rs, shamt),
 
                 // i type
                 (0x1, _, _, _) => match rt {

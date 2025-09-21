@@ -32,7 +32,7 @@ impl TryFrom<OpCode> for BLEZ {
             .check_bits(16..21, 0b00001)?;
         Ok(BLEZ {
             rs: (opcode.bits(21..26)) as u8,
-            imm: (opcode.bits(0..16) as i16) << 2,
+            imm: (opcode.bits(0..16) as i16),
         })
     }
 }
@@ -46,7 +46,7 @@ impl Display for BLEZ {
 impl Op for BLEZ {
     fn is_block_boundary(&self) -> Option<BoundaryType> {
         Some(BoundaryType::BlockSplit {
-            lhs: MipsOffset::Relative(self.imm as i32 + 4),
+            lhs: MipsOffset::Relative(self.imm as i32 * 4 + 4),
             rhs: MipsOffset::Relative(4),
         })
     }
@@ -56,7 +56,7 @@ impl Op for BLEZ {
             .with_primary(PrimeOp::BcondZ)
             .set_bits(16..21, 0b00001)
             .set_bits(21..26, self.rs as u32)
-            .set_bits(0..16, (self.imm >> 2) as u32)
+            .set_bits(0..16, (self.imm) as u32)
     }
 
     fn hazard(&self) -> Option<u32> {

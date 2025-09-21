@@ -528,9 +528,8 @@ fn fetch(params: FetchParams<'_>) -> color_eyre::Result<FetchSummary> {
 
         while pc < u32::MAX {
             let opcode = mem.read::<OpCode, ext::NoExt>(pc);
-            let Ok(op) = DecodedOp::try_from(opcode) else {
-                break;
-            };
+            let op = DecodedOp::extract_fields(&opcode);
+            let op = DecodedOp::decode_one(op);
             if enabled!(Level::TRACE) {
                 tracing::trace!("0x{:08X?}  {}", pc, op);
             }

@@ -31,7 +31,7 @@ impl TryFrom<OpCode> for BNE {
         Ok(BNE {
             rs: (opcode.bits(21..26)) as u8,
             rt: (opcode.bits(16..21)) as u8,
-            imm: (opcode.bits(0..16) as i16) << 2,
+            imm: (opcode.bits(0..16) as i16),
         })
     }
 }
@@ -49,7 +49,7 @@ impl Display for BNE {
 impl Op for BNE {
     fn is_block_boundary(&self) -> Option<BoundaryType> {
         Some(BoundaryType::BlockSplit {
-            lhs: MipsOffset::Relative(self.imm as i32 + 4),
+            lhs: MipsOffset::Relative(self.imm as i32 * 4 + 4),
             rhs: MipsOffset::Relative(4),
         })
     }
@@ -59,7 +59,7 @@ impl Op for BNE {
             .with_primary(PrimeOp::BNE)
             .set_bits(21..26, self.rs as u32)
             .set_bits(16..21, self.rt as u32)
-            .set_bits(0..16, (self.imm >> 2) as i16 as u32)
+            .set_bits(0..16, (self.imm) as u32)
     }
 
     fn hazard(&self) -> Option<u32> {
@@ -69,11 +69,6 @@ impl Op for BNE {
     #[instrument("beq", skip_all, fields(node = ?ctx.node, block = ?ctx.block().clif_block()))]
     fn emit_ir(&self, mut ctx: EmitCtx) -> EmitSummary {
         use crate::cranelift_bs::*;
-
-        let next = ctx
-            .cfg
-            .neighbors_directed(ctx.node, petgraph::Direction::Outgoing)
-            .collect::<Vec<_>>();
 
         let (rs, load0) = ctx.emit_get_register(self.rs);
         let (rt, load1) = ctx.emit_get_register(self.rt);

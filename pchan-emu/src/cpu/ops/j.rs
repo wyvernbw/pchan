@@ -25,28 +25,28 @@ impl TryFrom<OpCode> for J {
     fn try_from(opcode: OpCode) -> Result<Self, TryFromOpcodeErr> {
         let opcode = opcode.as_primary(PrimeOp::J)?;
         Ok(J {
-            imm: opcode.bits(0..26) << 2,
+            imm: opcode.bits(0..26),
         })
     }
 }
 
 impl Display for J {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "j 0x{:08X}", self.imm)
+        write!(f, "j 0x{:08X}", self.imm << 2)
     }
 }
 
 impl Op for J {
     fn is_block_boundary(&self) -> Option<BoundaryType> {
         Some(BoundaryType::Block {
-            offset: MipsOffset::RegionJump(self.imm),
+            offset: MipsOffset::RegionJump(self.imm << 2),
         })
     }
 
     fn into_opcode(self) -> OpCode {
         OpCode::default()
             .with_primary(PrimeOp::J)
-            .set_bits(0..26, self.imm >> 2)
+            .set_bits(0..26, self.imm)
     }
 
     fn hazard(&self) -> Option<u32> {
@@ -68,7 +68,7 @@ impl Op for J {
                         .0
                 }),
             ))])
-            .pc_update(MipsOffset::RegionJump(self.imm).calculate_address(ctx.pc))
+            .pc_update(MipsOffset::RegionJump(self.imm << 2).calculate_address(ctx.pc))
             .build(ctx.fn_builder)
     }
 }
