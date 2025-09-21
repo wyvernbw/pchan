@@ -48,6 +48,7 @@ pub mod xori;
 pub mod beq;
 pub mod bgez;
 pub mod blez;
+pub mod bltz;
 pub mod bne;
 pub mod j;
 pub mod jal;
@@ -82,6 +83,7 @@ pub mod prelude {
     pub use super::beq::*;
     pub use super::bgez::*;
     pub use super::blez::*;
+    pub use super::bltz::*;
     pub use super::bne::*;
     pub use super::j::*;
     pub use super::jal::*;
@@ -589,6 +591,8 @@ pub enum DecodedOp {
     BGEZ(BGEZ),
     #[strum(transparent)]
     BLEZ(BLEZ),
+    #[strum(transparent)]
+    BLTZ(BLTZ),
 
     // cop
     #[strum(transparent)]
@@ -839,7 +843,7 @@ impl DecodedOp {
 
                 // i type
                 (0x1, _, _, _) => match rt {
-                    0x0 => todo!("bltz"),
+                    0x0 => Self::BLTZ(BLTZ::new(rs, imm16)),
                     0x1 => Self::BGEZ(BGEZ::new(rs, imm16)),
                     0x10 => todo!("bltzal"),
                     0x11 => todo!("bgezal"),
