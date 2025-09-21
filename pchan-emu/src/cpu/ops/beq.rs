@@ -7,13 +7,19 @@ use crate::dynarec::prelude::*;
 #[derive(Debug, Clone, Copy)]
 #[allow(clippy::upper_case_acronyms)]
 pub struct BEQ {
-    rs: usize,
-    rt: usize,
-    imm: i32,
+    rs: u8,
+    rt: u8,
+    imm: i16,
+}
+
+impl BEQ {
+    pub const fn new(rs: u8, rt: u8, imm: i16) -> Self {
+        Self { rs, rt, imm }
+    }
 }
 
 #[inline]
-pub fn beq(rs: usize, rt: usize, dest: i32) -> OpCode {
+pub fn beq(rs: u8, rt: u8, dest: i16) -> OpCode {
     BEQ { rs, rt, imm: dest }.into_opcode()
 }
 
@@ -23,9 +29,9 @@ impl TryFrom<OpCode> for BEQ {
     fn try_from(opcode: OpCode) -> Result<Self, TryFromOpcodeErr> {
         let opcode = opcode.as_primary(PrimeOp::BEQ)?;
         Ok(BEQ {
-            rs: (opcode.bits(21..26)) as usize,
-            rt: (opcode.bits(16..21)) as usize,
-            imm: (opcode.bits(0..16) as i16 as i32) << 2,
+            rs: (opcode.bits(21..26)) as u8,
+            rt: (opcode.bits(16..21)) as u8,
+            imm: (opcode.bits(0..16) as i16) << 2,
         })
     }
 }
@@ -35,7 +41,7 @@ impl Display for BEQ {
         write!(
             f,
             "beq ${} ${} 0x{:08X}",
-            REG_STR[self.rs], REG_STR[self.rt], self.imm
+            REG_STR[self.rs as usize], REG_STR[self.rt as usize], self.imm
         )
     }
 }
@@ -43,7 +49,7 @@ impl Display for BEQ {
 impl Op for BEQ {
     fn is_block_boundary(&self) -> Option<BoundaryType> {
         Some(BoundaryType::BlockSplit {
-            lhs: MipsOffset::Relative(self.imm + 4),
+            lhs: MipsOffset::Relative(self.imm as i32 + 4),
             rhs: MipsOffset::Relative(4),
         })
     }

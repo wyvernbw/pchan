@@ -13,7 +13,7 @@ use tracing::{Instrument, Level, enabled, instrument};
 
 use crate::{
     FnBuilderExt,
-    cpu::{Cop0, Cpu, REG_STR},
+    cpu::{Cop0, Cpu, REG_STR, Reg},
     cranelift_bs::*,
     dynarec::{CacheUpdates, EntryCache},
     memory::Memory,
@@ -440,7 +440,7 @@ impl JIT {
     pub fn emit_load_reg(
         builder: &mut FunctionBuilder<'_>,
         block: Block,
-        idx: usize,
+        idx: u8,
     ) -> (Value, Inst) {
         if idx == 0 {
             let inst = builder
@@ -452,7 +452,8 @@ impl JIT {
         }
         let cpu_value = builder.block_params(block)[0];
         let offset = core::mem::offset_of!(Cpu, gpr);
-        let offset = i32::try_from(offset + idx * size_of::<u32>()).expect("offset overflow");
+        let offset =
+            i32::try_from(offset + idx as usize * size_of::<u32>()).expect("offset overflow");
         let load = builder
             .pure()
             .Load(
@@ -526,11 +527,11 @@ impl JIT {
     }
 
     #[builder]
-    #[instrument(skip(builder, block), fields(reg=REG_STR[idx], value))]
+    #[instrument(skip(builder, block), fields(reg=REG_STR[idx as usize], value))]
     pub fn emit_store_reg(
         builder: &mut FunctionBuilder<'_>,
         block: Block,
-        idx: usize,
+        idx: Reg,
         value: Value,
     ) -> Inst {
         let value_type = builder.type_of(value);
@@ -541,7 +542,7 @@ impl JIT {
         }
         const GPR: usize = const { core::mem::offset_of!(Cpu, gpr) };
         let cpu_ptr = builder.block_params(block)[0];
-        let offset = i32::try_from(GPR + idx * size_of::<u32>()).expect("offset overflow");
+        let offset = i32::try_from(GPR + idx as usize * size_of::<u32>()).expect("offset overflow");
 
         builder
             .pure()
@@ -641,8 +642,8 @@ impl JIT {
     pub fn apply_cache_updates(updates: &CacheUpdates, cache: &mut EntryCache) {
         for (id, update) in updates.registers.iter() {
             if let Some(value) = update.try_value() {
-                cache.registers[*id] = Some(value);
-                tracing::trace!("updated ${}={:?}", REG_STR[*id], value.value);
+                cache.registers[*id as usize] = Some(value);
+                tracing::trace!("updated ${}={:?}", REG_STR[*id as usize], value.value);
             }
         }
         // DONE: apply updates to hi and lo
@@ -677,6 +678,7 @@ impl JIT {
             .flat_map(|(idx, value)| value.map(|value| (idx, value)))
             .filter(|(_, value)| value.dirty)
             .map(|(id, value)| {
+                let id = id as u8;
                 debug_assert_eq!(
                     builder.type_of(value.value),
                     types::I32,

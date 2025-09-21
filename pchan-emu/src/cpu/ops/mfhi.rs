@@ -4,7 +4,13 @@ use crate::dynarec::prelude::*;
 
 #[derive(Debug, Clone, Copy)]
 pub struct MFHI {
-    rd: usize,
+    rd: u8,
+}
+
+impl MFHI {
+    pub fn new(rd: u8) -> Self {
+        Self { rd }
+    }
 }
 
 impl Op for MFHI {
@@ -36,18 +42,18 @@ impl TryFrom<OpCode> for MFHI {
             .as_primary(PrimeOp::SPECIAL)?
             .as_secondary(SecOp::MFHI)?;
         Ok(MFHI {
-            rd: value.bits(11..16) as usize,
+            rd: value.bits(11..16) as u8,
         })
     }
 }
 
 impl Display for MFHI {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "mfhi ${}", REG_STR[self.rd])
+        write!(f, "mfhi ${}", REG_STR[self.rd as usize])
     }
 }
 
-pub fn mfhi(rd: usize) -> OpCode {
+pub fn mfhi(rd: u8) -> OpCode {
     MFHI { rd }.into_opcode()
 }
 

@@ -1,9 +1,9 @@
-use crate::dynarec::prelude::*;
+use crate::{cpu::reg_str, dynarec::prelude::*};
 use std::fmt::Display;
 
 #[derive(Debug, Clone, Copy)]
 pub struct MTLO {
-    rs: usize,
+    rs: u8,
 }
 
 impl Op for MTLO {
@@ -35,18 +35,18 @@ impl TryFrom<OpCode> for MTLO {
             .as_primary(PrimeOp::SPECIAL)?
             .as_secondary(SecOp::MTLO)?;
         Ok(MTLO {
-            rs: value.bits(21..26) as usize,
+            rs: value.bits(21..26) as u8,
         })
     }
 }
 
 impl Display for MTLO {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "mtlo ${}", REG_STR[self.rs])
+        write!(f, "mtlo ${}", reg_str(self.rs))
     }
 }
 
-pub fn mtlo(rs: usize) -> OpCode {
+pub fn mtlo(rs: u8) -> OpCode {
     MTLO { rs }.into_opcode()
 }
 

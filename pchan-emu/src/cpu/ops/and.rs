@@ -8,9 +8,15 @@ use super::PrimeOp;
 #[derive(Debug, Clone, Copy)]
 #[allow(clippy::upper_case_acronyms)]
 pub struct AND {
-    rd: usize,
-    rs: usize,
-    rt: usize,
+    rd: u8,
+    rs: u8,
+    rt: u8,
+}
+
+impl AND {
+    pub const fn new(rd: u8, rs: u8, rt: u8) -> Self {
+        Self { rd, rs, rt }
+    }
 }
 
 impl TryFrom<OpCode> for AND {
@@ -18,9 +24,9 @@ impl TryFrom<OpCode> for AND {
     fn try_from(opcode: OpCode) -> Result<Self, TryFromOpcodeErr> {
         let opcode = opcode.as_secondary(SecOp::AND)?;
         Ok(AND {
-            rs: opcode.bits(21..26) as usize,
-            rt: opcode.bits(16..21) as usize,
-            rd: opcode.bits(11..16) as usize,
+            rs: opcode.bits(21..26) as u8,
+            rt: opcode.bits(16..21) as u8,
+            rd: opcode.bits(11..16) as u8,
         })
     }
 }
@@ -30,7 +36,7 @@ impl Display for AND {
         write!(
             f,
             "and ${} ${} ${}",
-            REG_STR[self.rd], REG_STR[self.rs], REG_STR[self.rt]
+            REG_STR[self.rd as usize], REG_STR[self.rs as usize], REG_STR[self.rt as usize]
         )
     }
 }
@@ -74,7 +80,7 @@ impl Op for AND {
 }
 
 #[inline]
-pub fn and(rd: usize, rs: usize, rt: usize) -> OpCode {
+pub fn and(rd: u8, rs: u8, rt: u8) -> OpCode {
     AND { rd, rs, rt }.into_opcode()
 }
 

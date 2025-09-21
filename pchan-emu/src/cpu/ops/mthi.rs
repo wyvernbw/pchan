@@ -3,7 +3,13 @@ use std::fmt::Display;
 
 #[derive(Debug, Clone, Copy)]
 pub struct MTHI {
-    rs: usize,
+    rs: u8,
+}
+
+impl MTHI {
+    pub fn new(rs: u8) -> Self {
+        Self { rs }
+    }
 }
 
 impl Op for MTHI {
@@ -35,18 +41,18 @@ impl TryFrom<OpCode> for MTHI {
             .as_primary(PrimeOp::SPECIAL)?
             .as_secondary(SecOp::MTHI)?;
         Ok(MTHI {
-            rs: value.bits(21..26) as usize,
+            rs: value.bits(21..26) as u8,
         })
     }
 }
 
 impl Display for MTHI {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "mthi ${}", REG_STR[self.rs])
+        write!(f, "mthi ${}", REG_STR[self.rs as usize])
     }
 }
 
-pub fn mthi(rs: usize) -> OpCode {
+pub fn mthi(rs: u8) -> OpCode {
     MTHI { rs }.into_opcode()
 }
 

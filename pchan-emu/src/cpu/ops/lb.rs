@@ -7,12 +7,18 @@ use crate::load;
 
 #[derive(Debug, Clone, Copy)]
 pub struct LB {
-    rt: usize,
-    rs: usize,
+    rt: u8,
+    rs: u8,
     imm: i16,
 }
 
-pub fn lb(rt: usize, rs: usize, imm: i16) -> OpCode {
+impl LB {
+    pub const fn new(rt: u8, rs: u8, imm: i16) -> Self {
+        Self { rt, rs, imm }
+    }
+}
+
+pub fn lb(rt: u8, rs: u8, imm: i16) -> OpCode {
     LB { rt, rs, imm }.into_opcode()
 }
 
@@ -22,8 +28,8 @@ impl TryFrom<OpCode> for LB {
     fn try_from(opcode: OpCode) -> Result<Self, TryFromOpcodeErr> {
         let opcode = opcode.as_primary(PrimeOp::LB)?;
         Ok(LB {
-            rt: opcode.bits(16..21) as usize,
-            rs: opcode.bits(21..26) as usize,
+            rt: opcode.bits(16..21) as u8,
+            rs: opcode.bits(21..26) as u8,
             imm: opcode.bits(0..16) as i16,
         })
     }
@@ -56,7 +62,7 @@ impl Display for LB {
         write!(
             f,
             "lb ${} ${} {}",
-            REG_STR[self.rt], REG_STR[self.rs], self.imm
+            REG_STR[self.rt as usize], REG_STR[self.rs as usize], self.imm
         )
     }
 }

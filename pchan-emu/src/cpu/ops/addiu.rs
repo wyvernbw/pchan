@@ -8,9 +8,15 @@ use super::PrimeOp;
 #[derive(Debug, Clone, Copy)]
 #[allow(clippy::upper_case_acronyms)]
 pub struct ADDIU {
-    rs: usize,
-    rt: usize,
+    rs: u8,
+    rt: u8,
     imm: i16,
+}
+
+impl ADDIU {
+    pub const fn new(rs: u8, rt: u8, imm: i16) -> Self {
+        Self { rs, rt, imm }
+    }
 }
 
 impl TryFrom<OpCode> for ADDIU {
@@ -21,8 +27,8 @@ impl TryFrom<OpCode> for ADDIU {
             .as_primary(PrimeOp::ADDIU)
             .or_else(|_| opcode.as_primary(PrimeOp::ADDI))?;
         Ok(ADDIU {
-            rt: opcode.bits(16..21) as usize,
-            rs: opcode.bits(21..26) as usize,
+            rt: opcode.bits(16..21) as u8,
+            rs: opcode.bits(21..26) as u8,
             imm: opcode.bits(0..16) as i16,
         })
     }
@@ -33,7 +39,7 @@ impl Display for ADDIU {
         write!(
             f,
             "addiu ${} ${} {}",
-            REG_STR[self.rt], REG_STR[self.rs], self.imm
+            REG_STR[self.rt as usize], REG_STR[self.rs as usize], self.imm
         )
     }
 }
@@ -93,7 +99,7 @@ impl Op for ADDIU {
 }
 
 #[inline]
-pub fn addiu(rt: usize, rs: usize, imm: i16) -> OpCode {
+pub fn addiu(rt: u8, rs: u8, imm: i16) -> OpCode {
     ADDIU { rt, rs, imm }.into_opcode()
 }
 

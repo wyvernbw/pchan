@@ -4,9 +4,15 @@ use std::fmt::Display;
 #[derive(Debug, Clone, Copy)]
 #[allow(clippy::upper_case_acronyms)]
 pub struct SRA {
-    rd: usize,
-    rt: usize,
-    imm: i16,
+    rd: u8,
+    rt: u8,
+    imm: i8,
+}
+
+impl SRA {
+    pub fn new(rd: u8, rt: u8, imm: i8) -> Self {
+        Self { rd, rt, imm }
+    }
 }
 
 impl TryFrom<OpCode> for SRA {
@@ -17,9 +23,9 @@ impl TryFrom<OpCode> for SRA {
             .as_primary(PrimeOp::SPECIAL)?
             .as_secondary(SecOp::SRA)?;
         Ok(SRA {
-            rt: opcode.bits(16..21) as usize,
-            rd: opcode.bits(11..16) as usize,
-            imm: opcode.bits(6..11) as i16,
+            rt: opcode.bits(16..21) as u8,
+            rd: opcode.bits(11..16) as u8,
+            imm: opcode.bits(6..11) as i8,
         })
     }
 }
@@ -29,7 +35,7 @@ impl Display for SRA {
         write!(
             f,
             "sra ${} ${} {}",
-            REG_STR[self.rd], REG_STR[self.rt], self.imm
+            REG_STR[self.rd as usize], REG_STR[self.rt as usize], self.imm
         )
     }
 }
@@ -54,7 +60,7 @@ impl Op for SRA {
 }
 
 #[inline]
-pub fn sra(rd: usize, rt: usize, imm: i16) -> OpCode {
+pub fn sra(rd: u8, rt: u8, imm: i8) -> OpCode {
     SRA { rd, rt, imm }.into_opcode()
 }
 
@@ -76,7 +82,7 @@ mod tests {
         setup_tracing: (),
         mut emulator: Emu,
         #[case] a: i16,
-        #[case] b: i16,
+        #[case] b: i8,
         #[case] expected: u32,
     ) -> color_eyre::Result<()> {
         use crate::dynarec::JitSummary;
@@ -93,7 +99,7 @@ mod tests {
     #[rstest]
     #[case(8)]
     #[case(0b00001111)]
-    fn sra_2(setup_tracing: (), mut emulator: Emu, #[case] imm: i16) -> color_eyre::Result<()> {
+    fn sra_2(setup_tracing: (), mut emulator: Emu, #[case] imm: i8) -> color_eyre::Result<()> {
         use crate::dynarec::JitSummary;
 
         emulator

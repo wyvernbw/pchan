@@ -5,7 +5,13 @@ use crate::dynarec::prelude::*;
 #[derive(Debug, Clone, Copy)]
 #[allow(clippy::upper_case_acronyms)]
 pub struct JR {
-    pub rs: usize,
+    pub rs: u8,
+}
+
+impl JR {
+    pub fn new(rs: u8) -> Self {
+        Self { rs }
+    }
 }
 
 impl TryFrom<OpCode> for JR {
@@ -16,14 +22,14 @@ impl TryFrom<OpCode> for JR {
             .as_primary(PrimeOp::SPECIAL)?
             .as_secondary(SecOp::JR)?;
         Ok(JR {
-            rs: opcode.bits(21..26) as usize,
+            rs: opcode.bits(21..26) as u8,
         })
     }
 }
 
 impl Display for JR {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "jr ${}", REG_STR[self.rs])
+        write!(f, "jr ${}", REG_STR[self.rs as usize])
     }
 }
 
@@ -72,7 +78,7 @@ impl Op for JR {
 }
 
 #[inline]
-pub fn jr(rs: usize) -> OpCode {
+pub fn jr(rs: u8) -> OpCode {
     JR { rs }.into_opcode()
 }
 

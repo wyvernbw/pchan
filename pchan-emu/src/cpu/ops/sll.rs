@@ -4,9 +4,15 @@ use std::fmt::Display;
 #[derive(Debug, Clone, Copy)]
 #[allow(clippy::upper_case_acronyms)]
 pub struct SLL {
-    rd: usize,
-    rt: usize,
-    imm: i16,
+    pub rd: u8,
+    pub rt: u8,
+    pub imm: i8,
+}
+
+impl SLL {
+    pub fn new(rd: u8, rt: u8, imm: i8) -> Self {
+        Self { rd, rt, imm }
+    }
 }
 
 impl TryFrom<OpCode> for SLL {
@@ -17,9 +23,9 @@ impl TryFrom<OpCode> for SLL {
             .as_primary(PrimeOp::SPECIAL)?
             .as_secondary(SecOp::SLL)?;
         Ok(SLL {
-            rt: opcode.bits(16..21) as usize,
-            rd: opcode.bits(11..16) as usize,
-            imm: opcode.bits(6..11) as i16,
+            rt: opcode.bits(16..21) as u8,
+            rd: opcode.bits(11..16) as u8,
+            imm: opcode.bits(6..11) as i8,
         })
     }
 }
@@ -29,7 +35,7 @@ impl Display for SLL {
         write!(
             f,
             "sll ${} ${} {}",
-            REG_STR[self.rd], REG_STR[self.rt], self.imm
+            REG_STR[self.rd as usize], REG_STR[self.rt as usize], self.imm
         )
     }
 }
@@ -54,7 +60,7 @@ impl Op for SLL {
 }
 
 #[inline]
-pub fn sll(rd: usize, rt: usize, imm: i16) -> OpCode {
+pub fn sll(rd: u8, rt: u8, imm: i8) -> OpCode {
     SLL { rd, rt, imm }.into_opcode()
 }
 
@@ -75,7 +81,7 @@ mod tests {
         setup_tracing: (),
         mut emulator: Emu,
         #[case] a: i16,
-        #[case] b: i16,
+        #[case] b: i8,
         #[case] expected: u32,
     ) -> color_eyre::Result<()> {
         use crate::dynarec::JitSummary;
@@ -91,7 +97,7 @@ mod tests {
     }
     #[rstest]
     #[case(8)]
-    fn sll_2(setup_tracing: (), mut emulator: Emu, #[case] imm: i16) -> color_eyre::Result<()> {
+    fn sll_2(setup_tracing: (), mut emulator: Emu, #[case] imm: i8) -> color_eyre::Result<()> {
         emulator
             .mem
             .write_many(0, &program([sll(10, 0, imm), OpCode(69420)]));

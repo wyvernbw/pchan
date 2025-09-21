@@ -9,6 +9,12 @@ pub struct MTCn {
     rd: u8,
 }
 
+impl MTCn {
+    pub const fn new(cop: u8, rt: u8, rd: u8) -> Self {
+        Self { cop, rt, rd }
+    }
+}
+
 impl TryFrom<OpCode> for MTCn {
     type Error = TryFromOpcodeErr;
 

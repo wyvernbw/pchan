@@ -6,7 +6,11 @@ use crate::{
 use cranelift::codegen::entity::EntityList;
 use enum_dispatch::enum_dispatch;
 use pchan_macros::OpCode;
-use std::{fmt::Display, ops::Range};
+use std::{
+    fmt::Display,
+    ops::Range,
+    simd::{LaneCount, Simd, SupportedLaneCount},
+};
 use thiserror::Error;
 use tracing::instrument;
 
@@ -382,7 +386,7 @@ pub struct Hazard<'a> {
 }
 
 #[enum_dispatch(DecodedOp)]
-pub trait Op: Sized + Display + TryFrom<OpCode> {
+pub trait Op: Sized + Display {
     fn invalidates_cache_at(&self) -> Option<u32> {
         None
     }
@@ -390,10 +394,7 @@ pub trait Op: Sized + Display + TryFrom<OpCode> {
     fn into_opcode(self) -> crate::cpu::ops::OpCode;
     fn emit_ir(&self, ctx: EmitCtx) -> EmitSummary;
     fn is_function_boundary(&self) -> bool {
-        matches!(
-            self.is_block_boundary(),
-            Some(BoundaryType::Function { .. })
-        )
+        matches!(self.is_block_boundary(), Some(BoundaryType::Function))
     }
     fn hazard(&self) -> Option<u32> {
         None
@@ -591,6 +592,369 @@ pub enum DecodedOp {
     MFCn(MFCn),
     #[strum(transparent)]
     RFE(RFE),
+
+    ILLEGAL(ILLEGAL),
+}
+
+#[derive(Debug, Clone, Copy, derive_more::Display)]
+pub struct ILLEGAL;
+
+impl Op for ILLEGAL {
+    fn is_block_boundary(&self) -> Option<BoundaryType> {
+        None
+    }
+
+    fn into_opcode(self) -> crate::cpu::ops::OpCode {
+        OpCode::default()
+    }
+
+    fn emit_ir(&self, ctx: EmitCtx) -> EmitSummary {
+        EmitSummary::builder()
+            .instructions([])
+            .build(ctx.fn_builder)
+    }
+}
+
+pub enum OpFields {
+    Rtype {
+        funct: u8,
+        shamt: u8,
+        rd: u8,
+        rt: u8,
+        rs: u8,
+        opcode: u8,
+    },
+    Itype {
+        imm: i16,
+        rt: u8,
+        rs: u8,
+        opcode: u8,
+    },
+    Jtype {
+        target: u32,
+        opcode: u8,
+    },
+    CoP(CoPOpFields),
+    Malformed,
+}
+
+pub enum CoPOpFields {
+    Reg {
+        cop: u8,
+        rs: u8,
+        rt: u8,
+        rd: u8,
+        funct: u8,
+    },
+    Imm16 {
+        opcode: u8,
+        cop: u8,
+        rs: u8,
+        rt: u8,
+        imm16: i16,
+    },
+    Imm25 {
+        cop: u8,
+        imm25: i32,
+        opcode: u8,
+    },
+}
+
+impl DecodedOp {
+    pub const fn illegal() -> Self {
+        Self::ILLEGAL(ILLEGAL)
+    }
+    pub fn extract_fields<const N: usize>(ops: &[u32; N]) -> [OpFields; N]
+    where
+        LaneCount<N>: SupportedLaneCount,
+    {
+        let simd_0x1f = Simd::splat(0x1F);
+
+        let ops = Simd::<u32, N>::from_slice(ops);
+        let opcode_shifted = ops >> 26;
+        let opcode = opcode_shifted & Simd::splat(0x3F);
+        let rs = (ops >> 21) & simd_0x1f;
+        let rt = (ops >> 16) & simd_0x1f;
+        let rd = (ops >> 11) & simd_0x1f;
+        let shamt = (ops >> 6) & simd_0x1f;
+        let funct = ops & simd_0x1f;
+        let imm16 = ops & Simd::splat(0xFFFF);
+        let imm26 = ops & Simd::splat(0x3FFFFFF);
+        let imm25 = ops & Simd::splat(0x1FFFFFF);
+        let cop = opcode_shifted & Simd::splat(0x3);
+        let mut i = 0;
+
+        opcode.to_array().map(|op| {
+            let fields = match op {
+                0 => OpFields::Rtype {
+                    funct: funct[i] as u8,
+                    shamt: shamt[i] as u8,
+                    rd: rd[i] as u8,
+                    rt: rt[i] as u8,
+                    rs: rs[i] as u8,
+                    opcode: op as u8,
+                },
+                0x3 | 0x2 => OpFields::Jtype {
+                    target: imm26[i],
+                    opcode: op as u8,
+                },
+                0x1..=0xF | 0x20..=0x27 | 0x28..=0x2F => OpFields::Itype {
+                    imm: imm16[i] as i16,
+                    rt: rt[i] as u8,
+                    rs: rs[i] as u8,
+                    opcode: op as u8,
+                },
+                0x10..=0x13 | 0x30..=0x33 | 0x38..=0x3B => match (op, rs[i], funct[i]) {
+                    (0x10..=0x13, 0x0 | 0x2 | 0x4 | 0x6, _) => OpFields::CoP(CoPOpFields::Reg {
+                        rs: rs[i] as u8,
+                        rt: rt[i] as u8,
+                        rd: rd[i] as u8,
+                        cop: cop[i] as u8,
+                        funct: funct[i] as u8,
+                    }),
+                    (0x10, 0x10, _) => OpFields::CoP(CoPOpFields::Reg {
+                        cop: cop[i] as u8,
+                        rs: rs[i] as u8,
+                        rt: rt[i] as u8,
+                        rd: rd[i] as u8,
+                        funct: funct[i] as u8,
+                    }),
+
+                    (0x10..=0x13, _, _) => OpFields::CoP(CoPOpFields::Imm25 {
+                        opcode: op as u8,
+                        cop: cop[i] as u8,
+                        imm25: imm25[i] as i32,
+                    }),
+
+                    (0x30..=0x33, _, _) => OpFields::CoP(CoPOpFields::Imm16 {
+                        cop: cop[i] as u8,
+                        rs: rs[i] as u8,
+                        rt: rt[i] as u8,
+                        imm16: imm16[i] as i16,
+                        opcode: op as u8,
+                    }),
+
+                    _ => OpFields::Malformed,
+                },
+                _ => OpFields::Malformed,
+            };
+            i += 1;
+            fields
+        })
+    }
+    pub fn decode<const N: usize>(fields: [OpFields; N]) -> [Self; N] {
+        fields.map(|fields| match fields {
+            OpFields::Rtype {
+                funct,
+                shamt,
+                rd,
+                rt,
+                rs,
+                opcode,
+            } => match funct {
+                0x0 => Self::SLL(SLL::new(rd, rt, shamt as i8)),
+                0x1 => Self::illegal(),
+                0x2 => Self::SRL(SRL::new(rd, rt, shamt as i8)),
+                0x3 => Self::SRA(SRA::new(rd, rt, shamt as i8)),
+                0x4 => Self::SLLV(SLLV::new(rd, rt, rs)),
+                0x5 => Self::illegal(),
+                0x6 => Self::SRLV(SRLV::new(rd, rt, rs)),
+                0x7 => Self::SRAV(SRAV::new(rd, rt, rs)),
+                0x8 => Self::JR(JR::new(rs)),
+                0x9 => Self::JALR(JALR::new(rd, rs)),
+                0xA => Self::illegal(),
+                0xB => Self::illegal(),
+                0xC => todo!("syscall"),
+                0xD => todo!("break"),
+                0xE => Self::illegal(),
+                0xF => Self::illegal(),
+                0x10 => Self::MFHI(MFHI::new(rd)),
+                0x11 => Self::MTHI(MTHI::new(rs)),
+                0x12 => Self::MFLO(MFLO::new(rd)),
+                0x13 => todo!("mtlo"),
+                0x14..=0x17 => Self::illegal(),
+                0x18 => Self::MULT(MULT::new(rs, rt)),
+                0x19 => Self::MULTU(MULTU::new(rs, rt)),
+                0x1A => todo!("div"),
+                0x1B => todo!("div"),
+                0x1C..=0x1F => Self::illegal(),
+                0x20 | 0x21 => Self::ADDU(ADDU::new(rd, rs, rt)),
+                0x22 | 0x23 => Self::SUBU(SUBU::new(rd, rs, rt)),
+                0x24 => Self::AND(AND::new(rd, rs, rt)),
+                0x25 => Self::OR(OR::new(rd, rs, rt)),
+                0x26 => Self::XOR(XOR::new(rd, rs, rt)),
+                0x27 => Self::NOR(NOR::new(rd, rs, rt)),
+                0x28..=0x29 => Self::illegal(),
+                0x2A => Self::SLT(SLT::new(rd, rs, rt)),
+                0x2B => Self::SLTU(SLTU::new(rd, rs, rt)),
+                0x2C.. => Self::illegal(),
+            },
+            OpFields::Itype {
+                imm,
+                rt,
+                rs,
+                opcode,
+            } => match opcode {
+                0x0 => Self::illegal(),
+                0x1 => match rt {
+                    0x0 => todo!("bltz"),
+                    0x1 => Self::BGEZ(BGEZ::new(rs, imm)),
+                    0x10 => todo!("bltzal"),
+                    0x11 => todo!("bgezal"),
+                    // TODO: add the bltz and bgez dupes, just to be sure
+                    _ => Self::illegal(),
+                },
+                0x2..=0x3 => Self::illegal(),
+                0x4 => Self::BEQ(BEQ::new(rs, rt, imm)),
+                0x5 => Self::BNE(BNE::new(rs, rt, imm)),
+                0x6 => todo!("blez"),
+                0x7 => todo!("bgtz"),
+                0x8 | 0x9 => Self::ADDIU(ADDIU::new(rs, rt, imm)),
+                0xA => Self::SLTI(SLTI::new(rt, rs, imm)),
+                0xB => Self::SLTIU(SLTIU::new(rt, rs, imm)),
+                0xC => Self::ANDI(ANDI::new(rs, rt, imm as u16)),
+                0xD => Self::ORI(ORI::new(rs, rt, imm as u16)),
+                0xE => Self::XORI(XORI::new(rs, rt, imm as u16)),
+                0xF => Self::LUI(LUI::new(rt, imm)),
+                0x14..=0x1F => Self::illegal(),
+                0x20 => Self::LB(LB::new(rt, rs, imm)),
+                0x21 => Self::LH(LH::new(rt, rs, imm)),
+                0x22 => todo!("lwl"),
+                0x23 => Self::LW(LW::new(rt, rs, imm)),
+                0x24 => Self::LBU(LBU::new(rt, rs, imm)),
+                0x25 => Self::LHU(LHU::new(rt, rs, imm)),
+                0x26 => todo!("lwr"),
+                0x27 => Self::illegal(),
+                0x28 => Self::SB(SB::new(rt, rs, imm)),
+                0x29 => Self::SH(SH::new(rt, rs, imm)),
+                0x2A => todo!("swl"),
+                0x2B => Self::SW(SW::new(rt, rs, imm)),
+                0x2C..=0x2D => Self::illegal(),
+                0x2E => todo!("swr"),
+                0x2F => Self::illegal(),
+                0x30..=0x33 => todo!("lwc"),
+                0x34..=0x37 => Self::illegal(),
+                0x38..=0x3B => todo!("swc"),
+                0x3C.. => Self::illegal(),
+                _ => Self::illegal(),
+            },
+            OpFields::Jtype { target, opcode } => match opcode {
+                0x2 => Self::J(J::new(target)),
+                0x3 => Self::JAL(JAL::new(target)),
+                _ => Self::illegal(),
+            },
+            OpFields::CoP(cop_fields) => match cop_fields {
+                CoPOpFields::Reg {
+                    cop,
+                    rs,
+                    rt,
+                    rd,
+                    funct,
+                } => match (rs, funct) {
+                    (0x0, 0x0) => Self::MFCn(MFCn::new(cop, rt, rd)),
+                    (0x2, 0x0) => todo!("cfcn"),
+                    (0x4, 0x0) => Self::MTCn(MTCn::new(cop, rt, rd)),
+                    (0x6, 0x0) => todo!("ctcn"),
+                    (0x10, 0x10) => Self::RFE(RFE),
+                    _ => Self::illegal(),
+                },
+                CoPOpFields::Imm16 {
+                    cop,
+                    rs,
+                    rt,
+                    imm16,
+                    opcode,
+                } => match (opcode, rt) {
+                    (0x10..=0x13, 0) => todo!("bcnf"),
+                    (0x10..=0x13, 1) => todo!("bcnt"),
+                    (0x30..=0x33, _) => todo!("lwcn"),
+                    (0x38..=0x3B, _) => todo!("swcn"),
+                    _ => Self::illegal(),
+                },
+                CoPOpFields::Imm25 { opcode, cop, imm25 } => todo!("cop imm25"),
+            },
+            OpFields::Malformed => todo!(),
+        })
+    }
+
+    #[deprecated]
+    fn decode_old(opcode: OpCode) -> Result<Self, TryFromOpcodeErr> {
+        if opcode.0 == 69420 {
+            return Ok(DecodedOp::HaltBlock(HaltBlock));
+        }
+        if opcode == OpCode::NOP {
+            return Ok(DecodedOp::NOP(NOP));
+        }
+
+        // FIXME: streamline field extraction
+        // maybe make it simd compatible?
+
+        match (opcode.primary(), opcode.secondary()) {
+            (PrimeOp::BcondZ, _) => match opcode.bits(16..21) {
+                0b00001 => BGEZ::try_from(opcode).map(Self::BGEZ),
+                _ => Err(TryFromOpcodeErr::UnknownInstruction),
+            },
+            (PrimeOp::COP0 | PrimeOp::COP1 | PrimeOp::COP2 | PrimeOp::COP3, _) => {
+                match (opcode.cop(), opcode.bits(0..6)) {
+                    (CopOp::MFCn, 0b000000) => MFCn::try_from(opcode).map(Self::MFCn),
+                    (CopOp::MTCn, 0b000000) => MTCn::try_from(opcode).map(Self::MTCn),
+                    (CopOp::COP0SPEC, 0b010000) => {
+                        tracing::info!("matched rfe");
+                        RFE::try_from(opcode).map(Self::RFE)
+                    }
+                    _ => Err(TryFromOpcodeErr::UnknownInstruction),
+                }
+            }
+            (PrimeOp::SPECIAL, SecOp::JALR) => JALR::try_from(opcode).map(Self::JALR),
+            (PrimeOp::SPECIAL, SecOp::JR) => JR::try_from(opcode).map(Self::JR),
+            (PrimeOp::JAL, _) => JAL::try_from(opcode).map(Self::JAL),
+            (PrimeOp::SPECIAL, SecOp::MTLO) => MTLO::try_from(opcode).map(Self::MTLO),
+            (PrimeOp::SPECIAL, SecOp::MTHI) => MTHI::try_from(opcode).map(Self::MTHI),
+            (PrimeOp::SPECIAL, SecOp::MFHI) => MFHI::try_from(opcode).map(Self::MFHI),
+            (PrimeOp::SPECIAL, SecOp::MFLO) => MFLO::try_from(opcode).map(Self::MFLO),
+            (PrimeOp::SPECIAL, SecOp::MULTU) => MULTU::try_from(opcode).map(Self::MULTU),
+            (PrimeOp::SPECIAL, SecOp::MULT) => MULT::try_from(opcode).map(Self::MULT),
+            (PrimeOp::LUI, _) => LUI::try_from(opcode).map(Self::LUI),
+            (PrimeOp::SPECIAL, SecOp::SRA) => SRA::try_from(opcode).map(Self::SRA),
+            (PrimeOp::SPECIAL, SecOp::SRL) => SRL::try_from(opcode).map(Self::SRL),
+            (PrimeOp::SPECIAL, SecOp::SLL) => SLL::try_from(opcode).map(Self::SLL),
+            (PrimeOp::SPECIAL, SecOp::SRAV) => SRAV::try_from(opcode).map(Self::SRAV),
+            (PrimeOp::SPECIAL, SecOp::SRLV) => SRLV::try_from(opcode).map(Self::SRLV),
+            (PrimeOp::SPECIAL, SecOp::SLLV) => SLLV::try_from(opcode).map(Self::SLLV),
+            (PrimeOp::XORI, _) => XORI::try_from(opcode).map(Self::XORI),
+            (PrimeOp::ORI, _) => ORI::try_from(opcode).map(Self::ORI),
+            (PrimeOp::ANDI, _) => ANDI::try_from(opcode).map(Self::ANDI),
+            (PrimeOp::SPECIAL, SecOp::NOR) => NOR::try_from(opcode).map(Self::NOR),
+            (PrimeOp::SPECIAL, SecOp::XOR) => XOR::try_from(opcode).map(Self::XOR),
+            (PrimeOp::SPECIAL, SecOp::OR) => OR::try_from(opcode).map(Self::OR),
+            (PrimeOp::SPECIAL, SecOp::AND) => AND::try_from(opcode).map(Self::AND),
+            (PrimeOp::SLTIU, _) => SLTIU::try_from(opcode).map(Self::SLTIU),
+            (PrimeOp::SLTI, _) => SLTI::try_from(opcode).map(Self::SLTI),
+            (PrimeOp::SPECIAL, SecOp::SLTU) => SLTU::try_from(opcode).map(Self::SLTU),
+            (PrimeOp::SPECIAL, SecOp::SLT) => SLT::try_from(opcode).map(Self::SLT),
+            (PrimeOp::BEQ, _) => BEQ::try_from(opcode).map(Self::BEQ),
+            (PrimeOp::BNE, _) => BNE::try_from(opcode).map(Self::BNE),
+            (PrimeOp::J, _) => J::try_from(opcode).map(Self::J),
+            (PrimeOp::ADDIU | PrimeOp::ADDI, _) => ADDIU::try_from(opcode).map(Self::ADDIU),
+            (PrimeOp::SPECIAL, SecOp::SUBU | SecOp::SUB) => {
+                // TODO: implement SUB separately from SUBU
+                SUBU::try_from(opcode).map(Self::SUBU)
+            }
+            (PrimeOp::SPECIAL, SecOp::ADDU | SecOp::ADD) => {
+                // TODO: implement ADD separately from ADDU
+                ADDU::try_from(opcode).map(Self::ADDU)
+            }
+            (PrimeOp::SW, _) => SW::try_from(opcode).map(Self::SW),
+            (PrimeOp::SH, _) => SH::try_from(opcode).map(Self::SH),
+            (PrimeOp::SB, _) => SB::try_from(opcode).map(Self::SB),
+            (PrimeOp::LW, _) => LW::try_from(opcode).map(Self::LW),
+            (PrimeOp::LHU, _) => LHU::try_from(opcode).map(Self::LHU),
+            (PrimeOp::LH, _) => LH::try_from(opcode).map(Self::LH),
+            (PrimeOp::LB, _) => LB::try_from(opcode).map(Self::LB),
+            (PrimeOp::LBU, _) => LBU::try_from(opcode).map(Self::LBU),
+            _ => Err(TryFromOpcodeErr::UnknownInstruction),
+        }
+    }
 }
 
 impl TryFrom<OpCode> for DecodedOp {

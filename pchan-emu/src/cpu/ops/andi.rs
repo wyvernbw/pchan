@@ -5,9 +5,15 @@ use crate::dynarec::prelude::*;
 #[derive(Debug, Clone, Copy)]
 #[allow(clippy::upper_case_acronyms)]
 pub struct ANDI {
-    rs: usize,
-    rt: usize,
+    rs: u8,
+    rt: u8,
     imm: u16,
+}
+
+impl ANDI {
+    pub const fn new(rs: u8, rt: u8, imm: u16) -> Self {
+        Self { rs, rt, imm }
+    }
 }
 
 impl TryFrom<OpCode> for ANDI {
@@ -16,8 +22,8 @@ impl TryFrom<OpCode> for ANDI {
     fn try_from(opcode: OpCode) -> Result<Self, TryFromOpcodeErr> {
         let opcode = opcode.as_primary(PrimeOp::ANDI)?;
         Ok(ANDI {
-            rt: opcode.bits(16..21) as usize,
-            rs: opcode.bits(21..26) as usize,
+            rt: opcode.bits(16..21) as u8,
+            rs: opcode.bits(21..26) as u8,
             imm: opcode.bits(0..16) as u16,
         })
     }
@@ -28,7 +34,7 @@ impl Display for ANDI {
         write!(
             f,
             "andi ${} ${} {}",
-            REG_STR[self.rt], REG_STR[self.rs], self.imm
+            REG_STR[self.rt as usize], REG_STR[self.rs as usize], self.imm
         )
     }
 }
@@ -72,7 +78,7 @@ impl Op for ANDI {
 }
 
 #[inline]
-pub fn andi(rt: usize, rs: usize, imm: u16) -> OpCode {
+pub fn andi(rt: u8, rs: u8, imm: u16) -> OpCode {
     ANDI { rt, rs, imm }.into_opcode()
 }
 

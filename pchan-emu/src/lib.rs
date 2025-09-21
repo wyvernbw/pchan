@@ -74,7 +74,7 @@ pub const fn max_simd_width_bytes() -> usize {
     1
 }
 
-const MAX_SIMD_WIDTH: usize = max_simd_width_bytes();
+pub const MAX_SIMD_WIDTH: usize = max_simd_width_bytes();
 
 #[derive(Default, derive_more::Debug)]
 pub struct Emu {

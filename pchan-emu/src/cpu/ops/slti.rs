@@ -3,12 +3,18 @@ use std::fmt::Display;
 
 #[derive(Debug, Clone, Copy)]
 pub struct SLTI {
-    rt: usize,
-    rs: usize,
+    rt: u8,
+    rs: u8,
     imm: i16,
 }
 
-pub fn slti(rt: usize, rs: usize, imm: i16) -> OpCode {
+impl SLTI {
+    pub const fn new(rt: u8, rs: u8, imm: i16) -> Self {
+        Self { rt, rs, imm }
+    }
+}
+
+pub fn slti(rt: u8, rs: u8, imm: i16) -> OpCode {
     SLTI { rs, rt, imm }.into_opcode()
 }
 
@@ -17,7 +23,7 @@ impl Display for SLTI {
         write!(
             f,
             "slti ${} ${} {}",
-            REG_STR[self.rt], REG_STR[self.rs], self.imm
+            REG_STR[self.rt as usize], REG_STR[self.rs as usize], self.imm
         )
     }
 }
@@ -29,8 +35,8 @@ impl TryFrom<OpCode> for SLTI {
         let value = value.as_primary(PrimeOp::SLTI)?;
         Ok(SLTI {
             imm: value.bits(0..16) as i16,
-            rt: value.bits(16..21) as usize,
-            rs: value.bits(21..26) as usize,
+            rt: value.bits(16..21) as u8,
+            rs: value.bits(21..26) as u8,
         })
     }
 }

@@ -1,4 +1,4 @@
-use crate::{IntoInst, cranelift_bs::*, jit::FuncRefTable, memory::ext};
+use crate::{IntoInst, cpu::Reg, cranelift_bs::*, jit::FuncRefTable, memory::ext};
 use std::{
     any::Any,
     borrow::Cow,
@@ -784,9 +784,9 @@ impl<'a, 'b> EmitCtx<'a, 'b> {
             }
         }
     }
-    pub fn emit_get_register(&mut self, id: usize) -> (Value, Inst) {
+    pub fn emit_get_register(&mut self, id: u8) -> (Value, Inst) {
         let block = self.block().clif_block();
-        match self.cache_mut().registers[id] {
+        match self.cache_mut().registers[id as usize] {
             Some(value) => (value.value, self.fn_builder.Nop()),
             None => {
                 let (value, loadreg) = JIT::emit_load_reg()
@@ -794,7 +794,7 @@ impl<'a, 'b> EmitCtx<'a, 'b> {
                     .block(block)
                     .idx(id)
                     .call();
-                self.cache_mut().registers[id] = Some(CachedValue {
+                self.cache_mut().registers[id as usize] = Some(CachedValue {
                     dirty: false,
                     value,
                 });
@@ -811,8 +811,8 @@ impl<'a, 'b> EmitCtx<'a, 'b> {
             .cop(cop)
             .call()
     }
-    pub fn update_cache_immediate(&mut self, id: usize, value: Value) {
-        self.cache_mut().registers[id] = Some(CachedValue { dirty: true, value });
+    pub fn update_cache_immediate(&mut self, id: Reg, value: Value) {
+        self.cache_mut().registers[id as usize] = Some(CachedValue { dirty: true, value });
     }
     pub fn emit_map_address_to_host(&mut self, address: Value) -> (Value, [Inst; 12]) {
         let mem_map = self.mem_map();
@@ -841,7 +841,7 @@ impl<'a, 'b> EmitCtx<'a, 'b> {
         let storepc = JIT::emit_store_pc(self.fn_builder, self.block().clif_block(), pc);
         [createpc, storepc]
     }
-    pub fn emit_store_register(&mut self, reg: usize, value: Value) -> Inst {
+    pub fn emit_store_register(&mut self, reg: Reg, value: Value) -> Inst {
         let block = self.block().clif_block();
         JIT::emit_store_reg()
             .builder(self.fn_builder)
@@ -878,7 +878,7 @@ pub struct EmitSummary {
 impl<S: emit_summary_builder::State> EmitSummaryBuilder<S> {
     pub fn register_updates<U: Into<Update>>(
         mut self,
-        values: impl IntoIterator<Item = (usize, U)>,
+        values: impl IntoIterator<Item = (u8, U)>,
     ) -> Self {
         self.updates
             .registers
@@ -965,7 +965,7 @@ pub const fn updtdelay(by: u32, value: Value) -> Update {
 
 #[derive(Builder, derive_more::Debug, Default)]
 pub struct CacheUpdates {
-    pub registers: Vec<(usize, Update)>,
+    pub registers: Vec<(u8, Update)>,
     pub hi: Option<Update>,
     pub lo: Option<Update>,
 }

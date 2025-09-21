@@ -8,6 +8,12 @@ pub struct JAL {
     pub imm: u32,
 }
 
+impl JAL {
+    pub const fn new(imm: u32) -> Self {
+        Self { imm }
+    }
+}
+
 impl TryFrom<OpCode> for JAL {
     type Error = TryFromOpcodeErr;
 

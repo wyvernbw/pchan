@@ -9,6 +9,12 @@ pub struct MFCn {
     rd: u8,
 }
 
+impl MFCn {
+    pub const fn new(cop: u8, rt: u8, rd: u8) -> Self {
+        Self { cop, rt, rd }
+    }
+}
+
 impl TryFrom<OpCode> for MFCn {
     type Error = TryFromOpcodeErr;
 
@@ -40,7 +46,7 @@ impl Op for MFCn {
         let (rd_data, loadreg) = ctx.emit_get_cop_register(self.cop, self.rd.into());
         EmitSummary::builder()
             .instructions([now(loadreg)])
-            .register_updates([(self.rt as usize, rd_data)])
+            .register_updates([(self.rt, rd_data)])
             .build(ctx.fn_builder)
     }
 

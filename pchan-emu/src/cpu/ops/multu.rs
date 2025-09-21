@@ -3,8 +3,14 @@ use std::fmt::Display;
 
 #[derive(Debug, Clone, Copy)]
 pub struct MULTU {
-    rs: usize,
-    rt: usize,
+    rs: u8,
+    rt: u8,
+}
+
+impl MULTU {
+    pub const fn new(rs: u8, rt: u8) -> Self {
+        Self { rs, rt }
+    }
 }
 
 impl Op for MULTU {
@@ -27,7 +33,11 @@ impl Op for MULTU {
 
 impl Display for MULTU {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "multu ${} ${}", REG_STR[self.rs], REG_STR[self.rt])
+        write!(
+            f,
+            "multu ${} ${}",
+            REG_STR[self.rs as usize], REG_STR[self.rt as usize]
+        )
     }
 }
 
@@ -39,13 +49,13 @@ impl TryFrom<OpCode> for MULTU {
             .as_primary(PrimeOp::SPECIAL)?
             .as_secondary(SecOp::MULTU)?;
         Ok(MULTU {
-            rs: value.bits(21..26) as usize,
-            rt: value.bits(16..21) as usize,
+            rs: value.bits(21..26) as u8,
+            rt: value.bits(16..21) as u8,
         })
     }
 }
 
-pub fn multu(rs: usize, rt: usize) -> OpCode {
+pub fn multu(rs: u8, rt: u8) -> OpCode {
     MULTU { rs, rt }.into_opcode()
 }
 
@@ -92,8 +102,8 @@ mod tests {
     pub fn multu_2_shortpath(
         setup_tracing: (),
         mut emulator: Emu,
-        #[case] a: usize,
-        #[case] b: usize,
+        #[case] a: u8,
+        #[case] b: u8,
         #[case] expected: u64,
     ) -> color_eyre::Result<()> {
         assert!(a == 0 || b == 0);
@@ -102,10 +112,10 @@ mod tests {
             .mem
             .write_many(0, &program([multu(a, b), OpCode(69420)]));
         if a != 0 {
-            emulator.cpu.gpr[a] = 32;
+            emulator.cpu.gpr[a as usize] = 32;
         }
         if b != 0 {
-            emulator.cpu.gpr[b] = 1;
+            emulator.cpu.gpr[b as usize] = 1;
         }
 
         let summary = emulator.step_jit_summarize::<JitSummary>()?;

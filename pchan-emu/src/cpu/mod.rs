@@ -85,11 +85,11 @@ impl Cpu {
     }
 }
 
-type Reg = usize;
+pub type Reg = u8;
 
 const RA: Reg = 31;
 
-pub const REG_STR: &[&str] = &array![
+pub static REG_STR: &[&str] = &array![
      0 => "zero",
      1 => "at",
      2 => "v0",
@@ -123,6 +123,10 @@ pub const REG_STR: &[&str] = &array![
     30 => "fp(s8)",
     31 => "ra"
 ];
+
+pub const fn reg_str(reg: Reg) -> &'static str {
+    REG_STR[reg as usize]
+}
 
 pub fn program<const N: usize>(prog: [OpCode; N]) -> [u32; N] {
     prog.map(|op| op.0)

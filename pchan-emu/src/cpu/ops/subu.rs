@@ -4,9 +4,15 @@ use std::fmt::Display;
 #[derive(Debug, Clone, Copy)]
 #[allow(clippy::upper_case_acronyms)]
 pub struct SUBU {
-    rd: usize,
-    rs: usize,
-    rt: usize,
+    rd: u8,
+    rs: u8,
+    rt: u8,
+}
+
+impl SUBU {
+    pub const fn new(rd: u8, rs: u8, rt: u8) -> Self {
+        Self { rd, rs, rt }
+    }
 }
 
 impl TryFrom<OpCode> for SUBU {
@@ -15,9 +21,9 @@ impl TryFrom<OpCode> for SUBU {
     fn try_from(opcode: OpCode) -> Result<Self, TryFromOpcodeErr> {
         let opcode = opcode.as_secondary(SecOp::SUBU)?;
         Ok(SUBU {
-            rs: opcode.bits(21..26) as usize,
-            rt: opcode.bits(16..21) as usize,
-            rd: opcode.bits(11..16) as usize,
+            rs: opcode.bits(21..26) as u8,
+            rt: opcode.bits(16..21) as u8,
+            rd: opcode.bits(11..16) as u8,
         })
     }
 }
@@ -27,7 +33,7 @@ impl Display for SUBU {
         write!(
             f,
             "subu ${} ${} ${}",
-            REG_STR[self.rd], REG_STR[self.rs], REG_STR[self.rt]
+            REG_STR[self.rd as usize], REG_STR[self.rs as usize], REG_STR[self.rt as usize]
         )
     }
 }
@@ -60,7 +66,7 @@ impl Op for SUBU {
 }
 
 #[inline]
-pub fn subu(rd: usize, rs: usize, rt: usize) -> OpCode {
+pub fn subu(rd: u8, rs: u8, rt: u8) -> OpCode {
     SUBU { rd, rs, rt }.into_opcode()
 }
 

@@ -3,12 +3,18 @@ use std::fmt::Display;
 
 #[derive(Debug, Clone, Copy)]
 pub struct SLT {
-    rd: usize,
-    rs: usize,
-    rt: usize,
+    rd: u8,
+    rs: u8,
+    rt: u8,
 }
 
-pub fn slt(rd: usize, rs: usize, rt: usize) -> OpCode {
+impl SLT {
+    pub const fn new(rd: u8, rs: u8, rt: u8) -> Self {
+        Self { rd, rs, rt }
+    }
+}
+
+pub fn slt(rd: u8, rs: u8, rt: u8) -> OpCode {
     SLT { rd, rs, rt }.into_opcode()
 }
 
@@ -17,7 +23,7 @@ impl Display for SLT {
         write!(
             f,
             "slt ${} ${} ${}",
-            REG_STR[self.rd], REG_STR[self.rs], REG_STR[self.rt]
+            REG_STR[self.rd as usize], REG_STR[self.rs as usize], REG_STR[self.rt as usize]
         )
     }
 }
@@ -30,9 +36,9 @@ impl TryFrom<OpCode> for SLT {
             .as_primary(PrimeOp::SPECIAL)?
             .as_secondary(SecOp::SLT)?;
         Ok(SLT {
-            rd: value.bits(11..16) as usize,
-            rt: value.bits(16..21) as usize,
-            rs: value.bits(21..26) as usize,
+            rd: value.bits(11..16) as u8,
+            rt: value.bits(16..21) as u8,
+            rs: value.bits(21..26) as u8,
         })
     }
 }

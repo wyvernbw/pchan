@@ -5,8 +5,14 @@ use crate::dynarec::prelude::*;
 #[derive(Debug, Clone, Copy)]
 #[allow(clippy::upper_case_acronyms)]
 pub struct JALR {
-    pub rd: usize,
-    pub rs: usize,
+    pub rd: u8,
+    pub rs: u8,
+}
+
+impl JALR {
+    pub fn new(rd: u8, rs: u8) -> Self {
+        Self { rd, rs }
+    }
 }
 
 impl TryFrom<OpCode> for JALR {
@@ -17,15 +23,19 @@ impl TryFrom<OpCode> for JALR {
             .as_primary(PrimeOp::SPECIAL)?
             .as_secondary(SecOp::JALR)?;
         Ok(JALR {
-            rd: opcode.bits(11..16) as usize,
-            rs: opcode.bits(21..26) as usize,
+            rd: opcode.bits(11..16) as u8,
+            rs: opcode.bits(21..26) as u8,
         })
     }
 }
 
 impl Display for JALR {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "jalr ${} ${}", REG_STR[self.rd], REG_STR[self.rs])
+        write!(
+            f,
+            "jalr ${} ${}",
+            REG_STR[self.rd as usize], REG_STR[self.rs as usize]
+        )
     }
 }
 
@@ -86,7 +96,7 @@ impl Op for JALR {
 }
 
 #[inline]
-pub fn jalr(rd: usize, rs: usize) -> OpCode {
+pub fn jalr(rd: u8, rs: u8) -> OpCode {
     JALR { rd, rs }.into_opcode()
 }
 

@@ -13,6 +13,12 @@ pub struct J {
     pub imm: u32,
 }
 
+impl J {
+    pub const fn new(imm: u32) -> Self {
+        Self { imm }
+    }
+}
+
 impl TryFrom<OpCode> for J {
     type Error = TryFromOpcodeErr;
 

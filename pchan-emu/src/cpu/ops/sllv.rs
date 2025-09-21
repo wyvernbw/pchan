@@ -3,9 +3,15 @@ use std::fmt::Display;
 
 #[derive(Debug, Clone, Copy)]
 pub struct SLLV {
-    rd: usize,
-    rt: usize,
-    rs: usize,
+    rd: u8,
+    rt: u8,
+    rs: u8,
+}
+
+impl SLLV {
+    pub fn new(rd: u8, rt: u8, rs: u8) -> Self {
+        Self { rd, rt, rs }
+    }
 }
 
 impl Display for SLLV {
@@ -13,7 +19,7 @@ impl Display for SLLV {
         write!(
             f,
             "sllv ${} ${} ${}",
-            REG_STR[self.rd], REG_STR[self.rt], REG_STR[self.rs]
+            REG_STR[self.rd as usize], REG_STR[self.rt as usize], REG_STR[self.rs as usize]
         )
     }
 }
@@ -26,9 +32,9 @@ impl TryFrom<OpCode> for SLLV {
             .as_primary(PrimeOp::SPECIAL)?
             .as_secondary(SecOp::SLLV)?;
         Ok(SLLV {
-            rd: value.bits(11..16) as usize,
-            rt: value.bits(16..21) as usize,
-            rs: value.bits(21..26) as usize,
+            rd: value.bits(11..16) as u8,
+            rt: value.bits(16..21) as u8,
+            rs: value.bits(21..26) as u8,
         })
     }
 }
@@ -53,7 +59,7 @@ impl Op for SLLV {
 }
 
 #[inline]
-pub fn sllv(rd: usize, rt: usize, rs: usize) -> OpCode {
+pub fn sllv(rd: u8, rt: u8, rs: u8) -> OpCode {
     SLLV { rd, rs, rt }.into_opcode()
 }
 

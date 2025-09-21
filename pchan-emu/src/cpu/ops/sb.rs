@@ -5,12 +5,18 @@ use super::{EmitCtx, OpCode, PrimeOp};
 
 #[derive(Debug, Clone, Copy)]
 pub struct SB {
-    rt: usize,
-    rs: usize,
+    rt: u8,
+    rs: u8,
     imm: i16,
 }
 
-pub fn sb(rt: usize, rs: usize, imm: i16) -> OpCode {
+impl SB {
+    pub const fn new(rt: u8, rs: u8, imm: i16) -> Self {
+        Self { rt, rs, imm }
+    }
+}
+
+pub fn sb(rt: u8, rs: u8, imm: i16) -> OpCode {
     SB { rt, rs, imm }.into_opcode()
 }
 
@@ -20,8 +26,8 @@ impl TryFrom<OpCode> for SB {
     fn try_from(opcode: OpCode) -> Result<Self, TryFromOpcodeErr> {
         let opcode = opcode.as_primary(PrimeOp::SB)?;
         Ok(SB {
-            rt: opcode.bits(16..21) as usize,
-            rs: opcode.bits(21..26) as usize,
+            rt: opcode.bits(16..21) as u8,
+            rs: opcode.bits(21..26) as u8,
             imm: opcode.bits(0..16) as i16,
         })
     }
@@ -32,7 +38,7 @@ impl Display for SB {
         write!(
             f,
             "sb ${} ${} {}",
-            REG_STR[self.rt], REG_STR[self.rs], self.imm
+            REG_STR[self.rt as usize], REG_STR[self.rs as usize], self.imm
         )
     }
 }

@@ -4,13 +4,19 @@ use crate::dynarec::prelude::*;
 
 #[derive(Debug, Clone, Copy)]
 pub struct LUI {
-    rt: usize,
+    rt: u8,
     imm: i16,
+}
+
+impl LUI {
+    pub const fn new(rt: u8, imm: i16) -> Self {
+        Self { rt, imm }
+    }
 }
 
 impl Display for LUI {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "lui ${} {}", REG_STR[self.rt], self.imm)
+        write!(f, "lui ${} {}", REG_STR[self.rt as usize], self.imm)
     }
 }
 
@@ -20,7 +26,7 @@ impl TryFrom<OpCode> for LUI {
     fn try_from(value: OpCode) -> Result<Self, Self::Error> {
         let value = value.as_primary(PrimeOp::LUI)?;
         Ok(LUI {
-            rt: value.bits(16..21) as usize,
+            rt: value.bits(16..21) as u8,
             imm: value.bits(0..16) as i16,
         })
     }
@@ -62,7 +68,7 @@ impl Op for LUI {
     }
 }
 
-pub fn lui(rt: usize, imm: i16) -> OpCode {
+pub fn lui(rt: u8, imm: i16) -> OpCode {
     LUI { rt, imm }.into_opcode()
 }
 
@@ -80,7 +86,7 @@ mod tests {
     fn lui_1(
         setup_tracing: (),
         mut emulator: Emu,
-        #[case] reg: usize,
+        #[case] reg: u8,
         #[case] value: i16,
         #[case] expected: u32,
     ) -> color_eyre::Result<()> {
@@ -92,7 +98,7 @@ mod tests {
 
         let summary = emulator.step_jit_summarize::<JitSummary>()?;
         tracing::info!(?summary.function);
-        assert_eq!(emulator.cpu.gpr[reg], expected);
+        assert_eq!(emulator.cpu.gpr[reg as usize], expected);
 
         Ok(())
     }

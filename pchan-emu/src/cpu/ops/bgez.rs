@@ -12,6 +12,12 @@ pub struct BGEZ {
     imm: i16,
 }
 
+impl BGEZ {
+    pub const fn new(rs: u8, imm: i16) -> Self {
+        Self { rs, imm }
+    }
+}
+
 #[inline]
 pub fn bgez(rs: u8, dest: i16) -> OpCode {
     BGEZ { rs, imm: dest }.into_opcode()
@@ -61,7 +67,7 @@ impl Op for BGEZ {
     fn emit_ir(&self, mut ctx: EmitCtx) -> EmitSummary {
         use crate::cranelift_bs::*;
 
-        let (rs, load0) = ctx.emit_get_register(self.rs as usize);
+        let (rs, load0) = ctx.emit_get_register(self.rs);
 
         let (cond, icmp) = ctx.inst(|f| {
             f.pure()

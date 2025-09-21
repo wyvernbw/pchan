@@ -9,13 +9,19 @@ use super::{EmitCtx, PrimeOp};
 #[derive(Debug, Clone, Copy)]
 #[allow(clippy::upper_case_acronyms)]
 pub struct LHU {
-    rt: usize,
-    rs: usize,
+    rt: u8,
+    rs: u8,
     imm: i16,
 }
 
+impl LHU {
+    pub const fn new(rt: u8, rs: u8, imm: i16) -> Self {
+        Self { rt, rs, imm }
+    }
+}
+
 #[inline]
-pub fn lhu(rt: usize, rs: usize, imm: i16) -> ops::OpCode {
+pub fn lhu(rt: u8, rs: u8, imm: i16) -> ops::OpCode {
     LHU { rt, rs, imm }.into_opcode()
 }
 
@@ -25,8 +31,8 @@ impl TryFrom<OpCode> for LHU {
     fn try_from(opcode: ops::OpCode) -> Result<Self, TryFromOpcodeErr> {
         let opcode = opcode.as_primary(PrimeOp::LHU)?;
         Ok(LHU {
-            rt: opcode.bits(16..21) as usize,
-            rs: opcode.bits(21..26) as usize,
+            rt: opcode.bits(16..21) as u8,
+            rs: opcode.bits(21..26) as u8,
             imm: opcode.bits(0..16) as i16,
         })
     }
@@ -37,7 +43,7 @@ impl Display for LHU {
         write!(
             f,
             "lhu ${} ${} {}",
-            REG_STR[self.rt], REG_STR[self.rs], self.imm
+            REG_STR[self.rt as usize], REG_STR[self.rs as usize], self.imm
         )
     }
 }

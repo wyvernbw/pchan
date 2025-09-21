@@ -4,7 +4,13 @@ use crate::dynarec::prelude::*;
 
 #[derive(Debug, Clone, Copy)]
 pub struct MFLO {
-    rd: usize,
+    rd: u8,
+}
+
+impl MFLO {
+    pub fn new(rd: u8) -> Self {
+        Self { rd }
+    }
 }
 
 impl Op for MFLO {
@@ -36,18 +42,18 @@ impl TryFrom<OpCode> for MFLO {
             .as_primary(PrimeOp::SPECIAL)?
             .as_secondary(SecOp::MFLO)?;
         Ok(MFLO {
-            rd: value.bits(11..16) as usize,
+            rd: value.bits(11..16) as u8,
         })
     }
 }
 
 impl Display for MFLO {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "mflo ${}", REG_STR[self.rd])
+        write!(f, "mflo ${}", REG_STR[self.rd as usize])
     }
 }
 
-pub fn mflo(rd: usize) -> OpCode {
+pub fn mflo(rd: u8) -> OpCode {
     MFLO { rd }.into_opcode()
 }
 
