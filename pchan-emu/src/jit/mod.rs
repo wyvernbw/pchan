@@ -411,8 +411,32 @@ impl JIT {
 
                     let eh_frame_bytes: &'static [u8] = Box::leak(eh_frame.into_boxed_slice());
 
+                    #[cfg(target_os = "macos")]
+                    unsafe {
+                        // On macOS, `__register_frame` takes a pointer to a single FDE
+                        let start = eh_frame_bytes.as_ptr();
+                        let end = start.add(eh_frame_bytes.len());
+                        let mut current = start;
+
+                        // Walk all of the entries in the frame table and register them
+                        while current < end {
+                            let len = std::ptr::read::<u32>(current as *const u32) as usize;
+
+                            // Skip over the CIE
+                            if current != start {
+                                __register_frame(current);
+                            }
+
+                            // Move to the next table entry (+4 because the length itself is not inclusive)
+                            current = current.add(len + 4);
+                        }
+                        tracing::info!("macos: added unwind fde entries");
+                    }
+
+                    #[cfg(not(target_os = "macos"))]
                     unsafe {
                         __register_frame(eh_frame_bytes.as_ptr());
+                        tracing::info!("registered unwind information");
                     }
                 }
                 UnwindInfo::WindowsX64(_) => {
@@ -420,6 +444,8 @@ impl JIT {
                 }
                 unwind_info => unimplemented!("{:?}", unwind_info),
             };
+        } else {
+            tracing::warn!("unable to attach unwind info");
         }
 
         self.module.clear_context(&mut self.ctx);

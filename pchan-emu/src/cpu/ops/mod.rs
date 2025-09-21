@@ -801,6 +801,7 @@ impl DecodedOp {
                 (0x0, _, _, 0xB) => Self::illegal(),
                 (0x0, _, _, 0xC) => {
                     // todo!("syscall");
+                    tracing::error!("syscall not yet implemented");
                     Self::illegal()
                 }
                 (0x0, _, _, 0xD) => todo!("break"),
@@ -890,6 +891,7 @@ impl DecodedOp {
                 (0x10..=0x13, 0x10.., _, _) => {
                     // TODO: copn command
                     // todo!("cop{} imm25", cop);
+                    tracing::error!("cop command not yet implemented");
                     Self::illegal()
                 }
                 _ => Self::illegal(),
