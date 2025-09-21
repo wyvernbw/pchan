@@ -52,6 +52,7 @@ pub mod bgez;
 pub mod blez;
 pub mod bltz;
 pub mod bne;
+pub mod brk;
 pub mod j;
 pub mod jal;
 pub mod jalr;
@@ -87,6 +88,7 @@ pub mod prelude {
     pub use super::blez::*;
     pub use super::bltz::*;
     pub use super::bne::*;
+    pub use super::brk::*;
     pub use super::div::*;
     pub use super::divu::*;
     pub use super::j::*;
@@ -601,6 +603,8 @@ pub enum DecodedOp {
     BLEZ(BLEZ),
     #[strum(transparent)]
     BLTZ(BLTZ),
+    #[strum(transparent)]
+    BREAK(BREAK),
 
     // cop
     #[strum(transparent)]
@@ -825,7 +829,7 @@ impl DecodedOp {
                     tracing::error!("syscall not yet implemented");
                     Self::illegal()
                 }
-                (0x0, _, _, 0xD) => todo!("break"),
+                (0x0, _, _, 0xD) => Self::BREAK(BREAK),
                 (0x0, _, _, 0xE) => Self::illegal(),
                 (0x0, _, _, 0xF) => Self::illegal(),
                 (0x0, _, _, 0x10) => Self::MFHI(MFHI::new(rd)),

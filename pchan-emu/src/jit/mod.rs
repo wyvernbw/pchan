@@ -436,7 +436,7 @@ impl JIT {
                     #[cfg(not(target_os = "macos"))]
                     unsafe {
                         __register_frame(eh_frame_bytes.as_ptr());
-                        tracing::info!("registered unwind information");
+                        // tracing::info!("registered unwind information");
                     }
                 }
                 UnwindInfo::WindowsX64(_) => {

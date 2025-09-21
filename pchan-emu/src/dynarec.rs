@@ -1,6 +1,5 @@
 use crate::{IntoInst, cpu::Reg, cranelift_bs::*, jit::FuncRefTable, memory::ext};
 use std::{
-    any::Any,
     borrow::Cow,
     collections::HashMap,
     fmt::Write,
@@ -11,7 +10,9 @@ use std::{
 
 use bon::{Builder, bon, builder};
 
+use color_eyre::{eyre::eyre, owo_colors::OwoColorize};
 use cranelift::codegen::bitset::ScalarBitSet;
+use pchan_utils::hex;
 use petgraph::{
     algo::is_cyclic_directed,
     dot::{Config, Dot},
@@ -194,6 +195,7 @@ impl Emu {
     pub fn step_jit(&mut self) -> color_eyre::Result<()> {
         self.step_jit_summarize()
     }
+    #[instrument(name = "dynarec", skip_all, fields(pc = %hex(&self.cpu.pc)))]
     pub fn step_jit_summarize<T: SummarizeJit>(&mut self) -> color_eyre::Result<T> {
         let initial_address = self.cpu.pc;
 
@@ -518,7 +520,8 @@ fn fetch(params: FetchParams<'_>) -> color_eyre::Result<FetchSummary> {
 
         if enabled!(Level::TRACE) {
             tracing::trace!(" ---- begin block ---- ");
-            tracing::trace!(" ┗━> address: 0x{:08X?}", state.start_pc);
+            tracing::trace!(" • address: 0x{:08X?}", state.start_pc);
+            tracing::trace!(" • node: {:?}", state.node);
         }
         let mut lifetime: Option<u32> = None;
         let mut boundary: Option<(DecodedOp, u32)> = None;
@@ -527,19 +530,22 @@ fn fetch(params: FetchParams<'_>) -> color_eyre::Result<FetchSummary> {
         let mut ops_end = ops.len();
 
         let mut pc = state.start_pc;
-        let breakpoint = std::env::var("PCHAN_BREAKPOINT")
-            .ok()
-            .and_then(|b| b.parse::<u32>().ok());
 
         while pc < u32::MAX {
             let opcode = mem.read::<OpCode, ext::NoExt>(pc);
             let op = DecodedOp::extract_fields(&opcode);
             let op = DecodedOp::decode_one(op);
-            if Some(pc) == breakpoint {
-                panic!("breakpoint!")
-            }
+            let block_boundary = op.is_block_boundary();
             if enabled!(Level::TRACE) {
-                tracing::trace!("0x{:08X?}  {}", pc, op);
+                tracing::trace!(
+                    "0x{:08X?}  {}",
+                    pc,
+                    if block_boundary.is_none() {
+                        format!("{}", op)
+                    } else {
+                        format!("> {} <", op)
+                    }
+                );
             }
             ops.push(op);
             ops_end = ops.len();
@@ -551,7 +557,7 @@ fn fetch(params: FetchParams<'_>) -> color_eyre::Result<FetchSummary> {
                 }
             }
 
-            if op.is_block_boundary().is_some() && lifetime.is_none() {
+            if block_boundary.is_some() && lifetime.is_none() {
                 lifetime = Some(2);
                 boundary = Some((op, pc));
             }
@@ -1206,10 +1212,6 @@ fn collect_instructions(
             }
         }
 
-        if op.is_function_boundary() {
-            found_fn_boundary = true;
-        }
-
         let _span = trace_span!("(post)",).entered();
 
         // immediate updates take precedence over scheduled ones
@@ -1260,6 +1262,13 @@ fn collect_instructions(
 
         if bomb_signal.is_some() {
             break;
+        }
+
+        if op.is_function_boundary() {
+            if op.hazard().unwrap_or(0) == 0 {
+                break;
+            }
+            found_fn_boundary = true;
         }
     }
 
@@ -1354,7 +1363,7 @@ fn collect_instructions(
     }
 
     let i = fn_builder.func.layout.block_insts(block).count();
-    tracing::trace!("compiled {i} instructions")
+    tracing::trace!("compiled into {i} instructions")
 }
 
 #[derive(Debug, Clone)]

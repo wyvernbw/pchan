@@ -60,8 +60,6 @@ impl Op for JALR {
         tracing::info!("jalr: saving pc 0x{:08X}", state.pc);
         // compute jump address
         let (rs, loadreg) = state.emit_get_register(self.rs);
-        let (rs, mapaddr) = state.emit_map_address_to_physical(rs);
-
         // store jump address at pc
         let storepc = state.emit_store_pc(rs);
 
@@ -84,7 +82,6 @@ impl Op for JALR {
         EmitSummary::builder()
             .instructions([
                 now(loadreg),
-                now(mapaddr),
                 now(iconst),
                 now(storepc),
                 now(storerd),

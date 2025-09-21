@@ -87,6 +87,12 @@ fn generate_page_tables() -> Lut {
 }
 
 impl Memory {
+    pub fn util_fast_map_address(address: u32) -> Option<u32> {
+        let page = address >> 16;
+        let offset = address & 0xFFFF;
+        let lut_ptr = LUT.read[page as usize];
+        lut_ptr.map(|region_ptr| region_ptr + offset)
+    }
     /// # Safety
     ///
     /// this is never safe, live fast die young

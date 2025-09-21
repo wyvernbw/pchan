@@ -66,7 +66,7 @@ impl Op for BNE {
         Some(1)
     }
 
-    #[instrument("beq", skip_all, fields(node = ?ctx.node, block = ?ctx.block().clif_block()))]
+    #[instrument("bne", skip_all, fields(node = ?ctx.node, block = ?ctx.block().clif_block()))]
     fn emit_ir(&self, mut ctx: EmitCtx) -> EmitSummary {
         use crate::cranelift_bs::*;
 

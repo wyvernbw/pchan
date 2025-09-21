@@ -51,7 +51,6 @@ impl Op for JR {
 
     fn emit_ir(&self, mut state: EmitCtx) -> EmitSummary {
         let (rs, loadreg) = state.emit_get_register(self.rs);
-        let (rs, mapaddr) = state.emit_map_address_to_physical(rs);
 
         debug_assert_eq!(
             state.fn_builder.func.dfg.value_type(rs),
@@ -67,12 +66,7 @@ impl Op for JR {
             .0;
 
         EmitSummary::builder()
-            .instructions([
-                now(loadreg),
-                now(mapaddr),
-                now(storers),
-                terminator(bomb(1, ret)),
-            ])
+            .instructions([now(loadreg), now(storers), terminator(bomb(1, ret))])
             .build(state.fn_builder)
     }
 }
