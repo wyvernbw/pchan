@@ -27,6 +27,7 @@ pub mod prelude {
     pub use crate::FnBuilderExt;
     pub use crate::cpu::REG_STR;
     pub use crate::cpu::ops::prelude::*;
+    pub use crate::cpu::reg_str;
     pub use crate::cranelift_bs::*;
     pub use crate::dynarec::JitSummary;
     pub use crate::icmp;
