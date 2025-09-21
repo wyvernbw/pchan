@@ -21,6 +21,7 @@ pub mod addu;
 pub mod and;
 pub mod andi;
 pub mod div;
+pub mod divu;
 pub mod lui;
 pub mod mfhi;
 pub mod mflo;
@@ -87,6 +88,7 @@ pub mod prelude {
     pub use super::bltz::*;
     pub use super::bne::*;
     pub use super::div::*;
+    pub use super::divu::*;
     pub use super::j::*;
     pub use super::jal::*;
     pub use super::jalr::*;
@@ -576,6 +578,8 @@ pub enum DecodedOp {
     #[strum(transparent)]
     DIV(DIV),
     #[strum(transparent)]
+    DIVU(DIVU),
+    #[strum(transparent)]
     MULTU(MULTU),
     #[strum(transparent)]
     MFLO(MFLO),
@@ -832,7 +836,7 @@ impl DecodedOp {
                 (0x0, _, _, 0x18) => Self::MULT(MULT::new(rs, rt)),
                 (0x0, _, _, 0x19) => Self::MULTU(MULTU::new(rs, rt)),
                 (0x0, _, _, 0x1A) => Self::DIV(DIV::new(rs, rt)),
-                (0x0, _, _, 0x1B) => todo!("divu"),
+                (0x0, _, _, 0x1B) => Self::DIVU(DIVU::new(rs, rt)),
                 (0x0, _, _, 0x1C..=0x1F) => Self::illegal(),
                 (0x0, _, _, 0x20 | 0x21) => Self::ADDU(ADDU::new(rd, rs, rt)),
                 (0x0, _, _, 0x22 | 0x23) => Self::SUBU(SUBU::new(rd, rs, rt)),
