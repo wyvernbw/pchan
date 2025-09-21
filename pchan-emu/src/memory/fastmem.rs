@@ -103,7 +103,7 @@ impl Memory {
                     .wrapping_add(region_ptr as usize)
                     .wrapping_add(offset as usize);
 
-                unsafe { *(ptr as *const T) }
+                unsafe { std::ptr::read_unaligned(ptr as *const T) }
             }
             // memcheck
             None => {

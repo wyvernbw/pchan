@@ -6,6 +6,12 @@ pub struct MTLO {
     rs: u8,
 }
 
+impl MTLO {
+    pub const fn new(rs: u8) -> Self {
+        Self { rs }
+    }
+}
+
 impl Op for MTLO {
     fn is_block_boundary(&self) -> Option<BoundaryType> {
         None

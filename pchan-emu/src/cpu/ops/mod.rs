@@ -9,7 +9,7 @@ use pchan_macros::OpCode;
 use std::{
     fmt::Display,
     ops::Range,
-    simd::{LaneCount, Simd, SupportedLaneCount},
+    simd::{LaneCount, Simd, SupportedLaneCount, masksizex16},
 };
 use thiserror::Error;
 use tracing::instrument;
@@ -46,6 +46,7 @@ pub mod xori;
 // jumps
 pub mod beq;
 pub mod bgez;
+pub mod blez;
 pub mod bne;
 pub mod j;
 pub mod jal;
@@ -79,6 +80,7 @@ pub mod prelude {
     pub use super::andi::*;
     pub use super::beq::*;
     pub use super::bgez::*;
+    pub use super::blez::*;
     pub use super::bne::*;
     pub use super::j::*;
     pub use super::jal::*;
@@ -584,6 +586,8 @@ pub enum DecodedOp {
     JALR(JALR),
     #[strum(transparent)]
     BGEZ(BGEZ),
+    #[strum(transparent)]
+    BLEZ(BLEZ),
 
     // cop
     #[strum(transparent)]
@@ -615,62 +619,118 @@ impl Op for ILLEGAL {
     }
 }
 
-pub enum OpFields {
-    Rtype {
-        funct: u8,
-        shamt: u8,
-        rd: u8,
-        rt: u8,
-        rs: u8,
-        opcode: u8,
-    },
-    Itype {
-        imm: i16,
-        rt: u8,
-        rs: u8,
-        opcode: u8,
-    },
-    Jtype {
-        target: u32,
-        opcode: u8,
-    },
-    CoP(CoPOpFields),
-    Malformed,
+// #[derive(Debug, Clone, Copy)]
+// pub enum OpFields {
+//     Nop,
+//     Rtype {
+//         funct: u8,
+//         shamt: u8,
+//         rd: u8,
+//         rt: u8,
+//         rs: u8,
+//         opcode: u8,
+//     },
+//     Itype {
+//         imm: i16,
+//         rt: u8,
+//         rs: u8,
+//         opcode: u8,
+//     },
+//     Jtype {
+//         target: u32,
+//         opcode: u8,
+//     },
+//     CoP(CoPOpFields),
+//     Malformed,
+// }
+
+// #[derive(Debug, Clone, Copy)]
+// pub enum CoPOpFields {
+//     Reg {
+//         cop: u8,
+//         rs: u8,
+//         rt: u8,
+//         rd: u8,
+//         funct: u8,
+//     },
+//     Imm16 {
+//         opcode: u8,
+//         cop: u8,
+//         rs: u8,
+//         rt: u8,
+//         imm16: i16,
+//     },
+//     Imm25 {
+//         cop: u8,
+//         imm25: i32,
+//         opcode: u8,
+//     },
+// }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive_const(Default)]
+pub struct OpFields {
+    opcode: u8,
+    rs: u8,
+    rt: u8,
+    rd: u8,
+    shamt: u8,
+    funct: u8,
+    imm16: i16,
+    imm26: i32,
+    imm25: i32,
+    cop: u8,
 }
 
-pub enum CoPOpFields {
-    Reg {
-        cop: u8,
-        rs: u8,
-        rt: u8,
-        rd: u8,
-        funct: u8,
-    },
-    Imm16 {
-        opcode: u8,
-        cop: u8,
-        rs: u8,
-        rt: u8,
-        imm16: i16,
-    },
-    Imm25 {
-        cop: u8,
-        imm25: i32,
-        opcode: u8,
-    },
+impl OpFields {
+    const NOP_FIELDS: Self = Self::default();
 }
 
 impl DecodedOp {
     pub const fn illegal() -> Self {
         Self::ILLEGAL(ILLEGAL)
     }
-    pub fn extract_fields<const N: usize>(ops: &[u32; N]) -> [OpFields; N]
+    pub fn extract_fields(op: &OpCode) -> OpFields {
+        // let ops = Simd::<u32, N>::from_slice(ops);
+        let op = op.0;
+        if op == 0 {
+            return OpFields::NOP_FIELDS;
+        }
+        let opcode_shifted = op >> 26;
+        let opcode = opcode_shifted & 0x3F;
+        let rs = (op >> 21) & 0x1f;
+        let rt = (op >> 16) & 0x1f;
+        let rd = (op >> 11) & 0x1f;
+        let shamt = (op >> 6) & 0x1f;
+        let funct = op & 0x1f;
+        let imm16 = op & 0xFFFF;
+        let imm26 = op & 0x3FFFFFF;
+        let imm25 = op & 0x1FFFFFF;
+        let cop = opcode_shifted & 0x3;
+
+        OpFields {
+            opcode: opcode as u8,
+            rs: rs as u8,
+            rt: rt as u8,
+            rd: rd as u8,
+            shamt: shamt as u8,
+            funct: funct as u8,
+            imm16: imm16 as i16,
+            imm26: imm26 as i32,
+            imm25: imm25 as i32,
+            cop: cop as u8,
+        }
+    }
+    pub fn extract_fields_simd<const N: usize>(ops: &Simd<u32, N>) -> [OpFields; N]
     where
         LaneCount<N>: SupportedLaneCount,
     {
         let simd_0x1f = Simd::splat(0x1F);
 
-        let ops = Simd::<u32, N>::from_slice(ops);
+        // let ops = Simd::<u32, N>::from_slice(ops);
+        if ops == &Simd::<u32, N>::splat(0x0) {
+            return [OpFields::NOP_FIELDS; N];
+        }
         let opcode_shifted = ops >> 26;
         let opcode = opcode_shifted & Simd::splat(0x3F);
         let rs = (ops >> 21) & simd_0x1f;
@@ -685,195 +745,145 @@ impl DecodedOp {
         let mut i = 0;
 
         opcode.to_array().map(|op| {
-            let fields = match op {
-                0 => OpFields::Rtype {
-                    funct: funct[i] as u8,
-                    shamt: shamt[i] as u8,
-                    rd: rd[i] as u8,
-                    rt: rt[i] as u8,
-                    rs: rs[i] as u8,
-                    opcode: op as u8,
-                },
-                0x3 | 0x2 => OpFields::Jtype {
-                    target: imm26[i],
-                    opcode: op as u8,
-                },
-                0x1..=0xF | 0x20..=0x27 | 0x28..=0x2F => OpFields::Itype {
-                    imm: imm16[i] as i16,
-                    rt: rt[i] as u8,
-                    rs: rs[i] as u8,
-                    opcode: op as u8,
-                },
-                0x10..=0x13 | 0x30..=0x33 | 0x38..=0x3B => match (op, rs[i], funct[i]) {
-                    (0x10..=0x13, 0x0 | 0x2 | 0x4 | 0x6, _) => OpFields::CoP(CoPOpFields::Reg {
-                        rs: rs[i] as u8,
-                        rt: rt[i] as u8,
-                        rd: rd[i] as u8,
-                        cop: cop[i] as u8,
-                        funct: funct[i] as u8,
-                    }),
-                    (0x10, 0x10, _) => OpFields::CoP(CoPOpFields::Reg {
-                        cop: cop[i] as u8,
-                        rs: rs[i] as u8,
-                        rt: rt[i] as u8,
-                        rd: rd[i] as u8,
-                        funct: funct[i] as u8,
-                    }),
-
-                    (0x10..=0x13, _, _) => OpFields::CoP(CoPOpFields::Imm25 {
-                        opcode: op as u8,
-                        cop: cop[i] as u8,
-                        imm25: imm25[i] as i32,
-                    }),
-
-                    (0x30..=0x33, _, _) => OpFields::CoP(CoPOpFields::Imm16 {
-                        cop: cop[i] as u8,
-                        rs: rs[i] as u8,
-                        rt: rt[i] as u8,
-                        imm16: imm16[i] as i16,
-                        opcode: op as u8,
-                    }),
-
-                    _ => OpFields::Malformed,
-                },
-                _ => OpFields::Malformed,
+            let fields = OpFields {
+                opcode: op as u8,
+                rs: rs[i] as u8,
+                rt: rt[i] as u8,
+                rd: rd[i] as u8,
+                shamt: shamt[i] as u8,
+                funct: funct[i] as u8,
+                imm16: imm16[i] as i16,
+                imm26: imm26[i] as i32,
+                imm25: imm25[i] as i32,
+                cop: cop[i] as u8,
             };
             i += 1;
             fields
         })
     }
     pub fn decode<const N: usize>(fields: [OpFields; N]) -> [Self; N] {
-        fields.map(|fields| match fields {
-            OpFields::Rtype {
-                funct,
-                shamt,
+        fields.map(|fields| {
+            if fields == OpFields::NOP_FIELDS {
+                return Self::NOP(NOP);
+            }
+            let OpFields {
+                opcode,
+                rs,
+                rt,
                 rd,
-                rt,
-                rs,
-                opcode,
-            } => match funct {
-                0x0 => Self::SLL(SLL::new(rd, rt, shamt as i8)),
-                0x1 => Self::illegal(),
-                0x2 => Self::SRL(SRL::new(rd, rt, shamt as i8)),
-                0x3 => Self::SRA(SRA::new(rd, rt, shamt as i8)),
-                0x4 => Self::SLLV(SLLV::new(rd, rt, rs)),
-                0x5 => Self::illegal(),
-                0x6 => Self::SRLV(SRLV::new(rd, rt, rs)),
-                0x7 => Self::SRAV(SRAV::new(rd, rt, rs)),
-                0x8 => Self::JR(JR::new(rs)),
-                0x9 => Self::JALR(JALR::new(rd, rs)),
-                0xA => Self::illegal(),
-                0xB => Self::illegal(),
-                0xC => todo!("syscall"),
-                0xD => todo!("break"),
-                0xE => Self::illegal(),
-                0xF => Self::illegal(),
-                0x10 => Self::MFHI(MFHI::new(rd)),
-                0x11 => Self::MTHI(MTHI::new(rs)),
-                0x12 => Self::MFLO(MFLO::new(rd)),
-                0x13 => todo!("mtlo"),
-                0x14..=0x17 => Self::illegal(),
-                0x18 => Self::MULT(MULT::new(rs, rt)),
-                0x19 => Self::MULTU(MULTU::new(rs, rt)),
-                0x1A => todo!("div"),
-                0x1B => todo!("div"),
-                0x1C..=0x1F => Self::illegal(),
-                0x20 | 0x21 => Self::ADDU(ADDU::new(rd, rs, rt)),
-                0x22 | 0x23 => Self::SUBU(SUBU::new(rd, rs, rt)),
-                0x24 => Self::AND(AND::new(rd, rs, rt)),
-                0x25 => Self::OR(OR::new(rd, rs, rt)),
-                0x26 => Self::XOR(XOR::new(rd, rs, rt)),
-                0x27 => Self::NOR(NOR::new(rd, rs, rt)),
-                0x28..=0x29 => Self::illegal(),
-                0x2A => Self::SLT(SLT::new(rd, rs, rt)),
-                0x2B => Self::SLTU(SLTU::new(rd, rs, rt)),
-                0x2C.. => Self::illegal(),
-            },
-            OpFields::Itype {
-                imm,
-                rt,
-                rs,
-                opcode,
-            } => match opcode {
-                0x0 => Self::illegal(),
-                0x1 => match rt {
+                shamt,
+                funct,
+                imm16,
+                imm26,
+                imm25,
+                cop,
+            } = fields;
+
+            match (opcode, rs, rt, funct) {
+                // r type
+                (0x0, _, _, 0x0) => Self::SLL(SLL::new(rd, rt, shamt as i8)),
+                (0x0, _, _, 0x1) => Self::illegal(),
+                (0x0, _, _, 0x2) => Self::SRL(SRL::new(rd, rt, shamt as i8)),
+                (0x0, _, _, 0x3) => Self::SRA(SRA::new(rd, rt, shamt as i8)),
+                (0x0, _, _, 0x4) => Self::SLLV(SLLV::new(rd, rt, rs)),
+                (0x0, _, _, 0x5) => Self::illegal(),
+                (0x0, _, _, 0x6) => Self::SRLV(SRLV::new(rd, rt, rs)),
+                (0x0, _, _, 0x7) => Self::SRAV(SRAV::new(rd, rt, rs)),
+                (0x0, _, _, 0x8) => Self::JR(JR::new(rs)),
+                (0x0, _, _, 0x9) => Self::JALR(JALR::new(rd, rs)),
+                (0x0, _, _, 0xA) => Self::illegal(),
+                (0x0, _, _, 0xB) => Self::illegal(),
+                (0x0, _, _, 0xC) => {
+                    // todo!("syscall");
+                    Self::illegal()
+                }
+                (0x0, _, _, 0xD) => todo!("break"),
+                (0x0, _, _, 0xE) => Self::illegal(),
+                (0x0, _, _, 0xF) => Self::illegal(),
+                (0x0, _, _, 0x10) => Self::MFHI(MFHI::new(rd)),
+                (0x0, _, _, 0x11) => Self::MTHI(MTHI::new(rs)),
+                (0x0, _, _, 0x12) => Self::MFLO(MFLO::new(rd)),
+                (0x0, _, _, 0x13) => Self::MTLO(MTLO::new(rs)),
+                (0x0, _, _, 0x14..=0x17) => Self::illegal(),
+                (0x0, _, _, 0x18) => Self::MULT(MULT::new(rs, rt)),
+                (0x0, _, _, 0x19) => Self::MULTU(MULTU::new(rs, rt)),
+                (0x0, _, _, 0x1A) => todo!("div"),
+                (0x0, _, _, 0x1B) => todo!("div"),
+                (0x0, _, _, 0x1C..=0x1F) => Self::illegal(),
+                (0x0, _, _, 0x20 | 0x21) => Self::ADDU(ADDU::new(rd, rs, rt)),
+                (0x0, _, _, 0x22 | 0x23) => Self::SUBU(SUBU::new(rd, rs, rt)),
+                (0x0, _, _, 0x24) => Self::AND(AND::new(rd, rs, rt)),
+                (0x0, _, _, 0x25) => Self::OR(OR::new(rd, rs, rt)),
+                (0x0, _, _, 0x26) => Self::XOR(XOR::new(rd, rs, rt)),
+                (0x0, _, _, 0x27) => Self::NOR(NOR::new(rd, rs, rt)),
+                (0x0, _, _, 0x28..=0x29) => Self::illegal(),
+                (0x0, _, _, 0x2A) => Self::SLT(SLT::new(rd, rs, rt)),
+                (0x0, _, _, 0x2B) => Self::SLTU(SLTU::new(rd, rs, rt)),
+                (0x0, _, _, 0x2C..) => Self::illegal(),
+
+                // i type
+                (0x1, _, _, _) => match rt {
                     0x0 => todo!("bltz"),
-                    0x1 => Self::BGEZ(BGEZ::new(rs, imm)),
+                    0x1 => Self::BGEZ(BGEZ::new(rs, imm16)),
                     0x10 => todo!("bltzal"),
                     0x11 => todo!("bgezal"),
                     // TODO: add the bltz and bgez dupes, just to be sure
                     _ => Self::illegal(),
                 },
-                0x2..=0x3 => Self::illegal(),
-                0x4 => Self::BEQ(BEQ::new(rs, rt, imm)),
-                0x5 => Self::BNE(BNE::new(rs, rt, imm)),
-                0x6 => todo!("blez"),
-                0x7 => todo!("bgtz"),
-                0x8 | 0x9 => Self::ADDIU(ADDIU::new(rs, rt, imm)),
-                0xA => Self::SLTI(SLTI::new(rt, rs, imm)),
-                0xB => Self::SLTIU(SLTIU::new(rt, rs, imm)),
-                0xC => Self::ANDI(ANDI::new(rs, rt, imm as u16)),
-                0xD => Self::ORI(ORI::new(rs, rt, imm as u16)),
-                0xE => Self::XORI(XORI::new(rs, rt, imm as u16)),
-                0xF => Self::LUI(LUI::new(rt, imm)),
-                0x14..=0x1F => Self::illegal(),
-                0x20 => Self::LB(LB::new(rt, rs, imm)),
-                0x21 => Self::LH(LH::new(rt, rs, imm)),
-                0x22 => todo!("lwl"),
-                0x23 => Self::LW(LW::new(rt, rs, imm)),
-                0x24 => Self::LBU(LBU::new(rt, rs, imm)),
-                0x25 => Self::LHU(LHU::new(rt, rs, imm)),
-                0x26 => todo!("lwr"),
-                0x27 => Self::illegal(),
-                0x28 => Self::SB(SB::new(rt, rs, imm)),
-                0x29 => Self::SH(SH::new(rt, rs, imm)),
-                0x2A => todo!("swl"),
-                0x2B => Self::SW(SW::new(rt, rs, imm)),
-                0x2C..=0x2D => Self::illegal(),
-                0x2E => todo!("swr"),
-                0x2F => Self::illegal(),
-                0x30..=0x33 => todo!("lwc"),
-                0x34..=0x37 => Self::illegal(),
-                0x38..=0x3B => todo!("swc"),
-                0x3C.. => Self::illegal(),
+                (0x4, _, _, _) => Self::BEQ(BEQ::new(rs, rt, imm16)),
+                (0x5, _, _, _) => Self::BNE(BNE::new(rs, rt, imm16)),
+                (0x6, _, _, _) => Self::BLEZ(BLEZ::new(rs, imm16)),
+                (0x7, _, _, _) => {
+                    // todo!("bgtz");
+                    Self::illegal()
+                }
+                (0x8 | 0x9, _, _, _) => Self::ADDIU(ADDIU::new(rs, rt, imm16)),
+                (0xA, _, _, _) => Self::SLTI(SLTI::new(rt, rs, imm16)),
+                (0xB, _, _, _) => Self::SLTIU(SLTIU::new(rt, rs, imm16)),
+                (0xC, _, _, _) => Self::ANDI(ANDI::new(rs, rt, imm16 as u16)),
+                (0xD, _, _, _) => Self::ORI(ORI::new(rs, rt, imm16 as u16)),
+                (0xE, _, _, _) => Self::XORI(XORI::new(rs, rt, imm16 as u16)),
+                (0xF, _, _, _) => Self::LUI(LUI::new(rt, imm16)),
+                (0x14..=0x1F, _, _, _) => Self::illegal(),
+                (0x20, _, _, _) => Self::LB(LB::new(rt, rs, imm16)),
+                (0x21, _, _, _) => Self::LH(LH::new(rt, rs, imm16)),
+                (0x22, _, _, _) => todo!("lwl"),
+                (0x23, _, _, _) => Self::LW(LW::new(rt, rs, imm16)),
+                (0x24, _, _, _) => Self::LBU(LBU::new(rt, rs, imm16)),
+                (0x25, _, _, _) => Self::LHU(LHU::new(rt, rs, imm16)),
+                (0x26, _, _, _) => todo!("lwr"),
+                (0x27, _, _, _) => Self::illegal(),
+                (0x28, _, _, _) => Self::SB(SB::new(rt, rs, imm16)),
+                (0x29, _, _, _) => Self::SH(SH::new(rt, rs, imm16)),
+                (0x2A, _, _, _) => todo!("swl"),
+                (0x2B, _, _, _) => Self::SW(SW::new(rt, rs, imm16)),
+                (0x2C..=0x2D, _, _, _) => Self::illegal(),
+                (0x2E, _, _, _) => todo!("swr"),
+                (0x2F, _, _, _) => Self::illegal(),
+                (0x34..=0x37, _, _, _) => Self::illegal(),
+                (0x3C.., _, _, _) => Self::illegal(),
+
+                // j type
+                (0x2, _, _, _) => Self::J(J::new(imm26 as u32)),
+                (0x3, _, _, _) => Self::JAL(JAL::new(imm26 as u32)),
+
+                // cop reg
+                (_, 0x0, _, 0x0) => Self::MFCn(MFCn::new(cop, rt, rd)),
+                (_, 0x2, _, 0x0) => todo!("cfcn"),
+                (_, 0x4, _, 0x0) => Self::MTCn(MTCn::new(cop, rt, rd)),
+                (_, 0x6, _, 0x0) => todo!("ctcn"),
+                (_, 0x10, _, 0x10) => Self::RFE(RFE),
+
+                // cop imm16
+                (0x10..=0x13, 0x8, 0, _) => todo!("bcnf"),
+                (0x10..=0x13, 0x8, 1, _) => todo!("bcnt"),
+                (0x30..=0x33, _, _, _) => todo!("lwcn"),
+                (0x38..=0x3B, _, _, _) => todo!("swcn"),
+
+                // cop imm25
+                (0x10..=0x13, 0x10.., _, _) => todo!("cop imm25"),
                 _ => Self::illegal(),
-            },
-            OpFields::Jtype { target, opcode } => match opcode {
-                0x2 => Self::J(J::new(target)),
-                0x3 => Self::JAL(JAL::new(target)),
-                _ => Self::illegal(),
-            },
-            OpFields::CoP(cop_fields) => match cop_fields {
-                CoPOpFields::Reg {
-                    cop,
-                    rs,
-                    rt,
-                    rd,
-                    funct,
-                } => match (rs, funct) {
-                    (0x0, 0x0) => Self::MFCn(MFCn::new(cop, rt, rd)),
-                    (0x2, 0x0) => todo!("cfcn"),
-                    (0x4, 0x0) => Self::MTCn(MTCn::new(cop, rt, rd)),
-                    (0x6, 0x0) => todo!("ctcn"),
-                    (0x10, 0x10) => Self::RFE(RFE),
-                    _ => Self::illegal(),
-                },
-                CoPOpFields::Imm16 {
-                    cop,
-                    rs,
-                    rt,
-                    imm16,
-                    opcode,
-                } => match (opcode, rt) {
-                    (0x10..=0x13, 0) => todo!("bcnf"),
-                    (0x10..=0x13, 1) => todo!("bcnt"),
-                    (0x30..=0x33, _) => todo!("lwcn"),
-                    (0x38..=0x3B, _) => todo!("swcn"),
-                    _ => Self::illegal(),
-                },
-                CoPOpFields::Imm25 { opcode, cop, imm25 } => todo!("cop imm25"),
-            },
-            OpFields::Malformed => todo!(),
+            }
         })
     }
 
