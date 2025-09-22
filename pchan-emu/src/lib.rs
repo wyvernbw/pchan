@@ -37,7 +37,11 @@
 #![cfg_attr(test, allow(unused_variables))]
 
 use crate::{
-    bootloader::Bootloader, cpu::Cpu, dynarec::prelude::PureInstBuilder, jit::JIT, memory::Memory,
+    bootloader::Bootloader,
+    cpu::Cpu,
+    dynarec::prelude::PureInstBuilder,
+    jit::{JIT, JitCache},
+    memory::Memory,
 };
 
 pub mod cranelift_bs {
@@ -82,6 +86,7 @@ pub struct Emu {
     pub mem: Memory,
     pub cpu: Cpu,
     pub jit: JIT,
+    pub jit_cache: JitCache,
     pub boot: Bootloader,
 }
 

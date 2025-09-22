@@ -1,17 +1,21 @@
-use crate::{IntoInst, cpu::Reg, cranelift_bs::*, jit::FuncRefTable, memory::ext};
+use crate::{
+    IntoInst,
+    cpu::Reg,
+    cranelift_bs::*,
+    jit::{FuncRefTable, FunctionMap, JitCache},
+    memory::ext,
+};
 use std::{
     borrow::Cow,
     collections::HashMap,
     fmt::Write,
-    ops::{Index, IndexMut, Range},
+    ops::Range,
     panic::{AssertUnwindSafe, catch_unwind},
     rc::Rc,
 };
 
 use bon::{Builder, bon, builder};
 
-use color_eyre::{eyre::eyre, owo_colors::OwoColorize};
-use cranelift::codegen::bitset::ScalarBitSet;
 use pchan_utils::hex;
 use petgraph::{
     algo::is_cyclic_directed,
@@ -45,7 +49,7 @@ pub mod builder;
 use crate::{
     Emu, FnBuilderExt,
     cpu::{Cpu, ops::prelude::*},
-    jit::{BlockPage, JIT},
+    jit::{FunctionPage, JIT},
     memory::Memory,
 };
 
@@ -146,40 +150,21 @@ pub struct EntryCache {
     pub lo: Option<CachedValue>,
 }
 
-#[derive(Default, Clone, derive_more::Debug)]
-pub struct CacheDependency {
-    #[debug("{:032b}", self.registers.0)]
-    pub registers: ScalarBitSet<u32>,
-    pub hi: bool,
-    pub lo: bool,
-    pub const_one: bool,
-    pub const_zero_i64: bool,
-}
+impl EntryCache {
+    fn iter(&self) -> impl Iterator<Item = CachedValue> {
+        let EntryCache {
+            registers,
+            const_one: _,
+            const_zero_i64: _,
+            hi,
+            lo,
+        } = self;
 
-impl CacheDependency {
-    fn new() -> Self {
-        CacheDependency {
-            registers: ScalarBitSet::default(),
-            hi: false,
-            lo: false,
-            const_one: false,
-            const_zero_i64: false,
-        }
-    }
-    fn from_cache_entry(entry: &EntryCache) -> Self {
-        let mut set = ScalarBitSet::default();
-        for (idx, value) in entry.registers.iter().enumerate() {
-            if value.is_some() {
-                set.insert(idx as u8);
-            }
-        }
-        CacheDependency {
-            registers: set,
-            hi: entry.hi.is_some(),
-            lo: entry.lo.is_some(),
-            const_one: entry.const_one.is_some(),
-            const_zero_i64: entry.const_zero_i64.is_some(),
-        }
+        registers
+            .iter()
+            .flatten()
+            .cloned()
+            .chain([hi, lo].into_iter().flatten().cloned())
     }
 }
 
@@ -201,12 +186,12 @@ impl Emu {
 
         let ptr_type = self.jit.pointer_type();
 
-        self.jit.apply_dirty_pages(initial_address);
+        self.jit_cache.apply_dirty_pages(initial_address);
 
         // try cache first
-        let cached = self
-            .jit
-            .use_cached_function(initial_address, &mut self.cpu, &mut self.mem);
+        let cached =
+            self.jit_cache
+                .use_cached_function(initial_address, &mut self.cpu, &mut self.mem);
         if cached {
             return Ok(T::summarize(
                 SummarizeDeps::builder().cpu(&self.cpu).build(),
@@ -235,8 +220,8 @@ impl Emu {
             let block = &blocks.cfg[node];
             for op in blocks.ops_for(block).iter() {
                 if let Some(address) = op.invalidates_cache_at() {
-                    let page = BlockPage::new(address);
-                    self.jit.dirty_pages.insert(page);
+                    let page = FunctionPage::new(address);
+                    self.jit_cache.dirty_pages.insert(page);
                 }
             }
         }
@@ -248,65 +233,14 @@ impl Emu {
         let mut dfs = Dfs::new(&blocks.cfg, blocks.entry);
         while let Some(node) = dfs.next(&blocks.cfg) {
             blocks.cfg[node].clif_block = Some(fn_builder.create_block());
-
-            // if tracing::enabled!(Level::TRACE) {
-            //     let _span = trace_span!("trace_cfg").entered();
-            //     tracing::trace!(cfg.node = ?blocks.cfg[node].clif_block);
-            //     for op in blocks.cfg[node].ops.iter() {
-            //         tracing::trace!("    {op}");
-            //     }
-
-            //     tracing::trace!(
-            //         to = ?&blocks.cfg
-            //             .neighbors_directed(node, Direction::Outgoing)
-            //             .map(|n| blocks.cfg[n].clif_block)
-            //             .collect::<Vec<_>>(),
-            //         "    branch"
-            //     );
-            // };
         }
 
-        let mut state_map = BlockStateMap::new(&blocks.cfg);
         let entry_idx = blocks.entry;
-        state_map.insert(
-            entry_idx,
-            BlockState {
-                cache: EntryCache::default(),
-                deps: None,
-                basic_block: blocks.cfg[entry_idx].clone(),
-                node: entry_idx,
-                ptr_type,
-            },
-        );
-        let mut prev_node = entry_idx;
 
-        depth_first_search(&blocks.cfg, Some(entry_idx), |event| match event {
-            DfsEvent::TreeEdge(a, _) => {
-                prev_node = a;
-            }
-            DfsEvent::BackEdge(_, b) => {
-                prev_node = b;
-            }
-            DfsEvent::Discover(node, _) => {
+        depth_first_search(&blocks.cfg, Some(entry_idx), |event| {
+            if let DfsEvent::Discover(node, _) = event {
                 let basic_block = &blocks.cfg[node];
                 let cranelift_block = basic_block.clif_block();
-
-                let prev_state = state_map.get(prev_node).unwrap();
-                let prev_deps = state_map
-                    .get(node)
-                    .and_then(|node| node.deps.as_ref())
-                    .map(Cow::Borrowed);
-                let state = state_map.get(node).unwrap_or(prev_state).clone();
-                let state = BlockState {
-                    basic_block: basic_block.clone(),
-                    deps: prev_deps
-                        .or(Some(Cow::Owned(CacheDependency::from_cache_entry(
-                            &prev_state.cache,
-                        ))))
-                        .map(|cow| cow.into_owned()),
-                    node,
-                    ..state
-                };
 
                 if enabled!(Level::TRACE) {
                     tracing::trace!(
@@ -317,12 +251,18 @@ impl Emu {
                     );
                 }
 
-                state_map.insert(node, state);
+                let mut state = BlockState {
+                    cache: EntryCache::default(),
+                    basic_block: basic_block.clone(),
+                    ptr_type,
+                    node,
+                };
 
                 let _ = Self::emit_block()
-                    .state_map(&mut state_map)
+                    .state(&mut state)
                     .fn_builder(&mut fn_builder)
                     .cpu(&mut self.cpu)
+                    .jit_cache(&self.jit_cache)
                     .ptr_type(ptr_type)
                     .node(node)
                     .cfg(&blocks.cfg)
@@ -330,7 +270,6 @@ impl Emu {
                     .func_ref_table(&func_ref_table)
                     .call();
             }
-            _ => {}
         });
 
         // let _span = info_span!("jit_comp", pc = %format!("0x{:08X}", initial_address)).entered();
@@ -344,7 +283,7 @@ impl Emu {
         tracing::info!("compiled function: {:?}", function.0);
         let potential_panic = {
             let _span = info_span!("fn", addr = ?function.0).entered();
-            if enabled!(Level::TRACE) {
+            if std::env::var("PCHAN_UNWIND").is_ok() {
                 let result = catch_unwind(AssertUnwindSafe(|| {
                     function(&mut self.cpu, &mut self.mem, true);
                 }))
@@ -357,7 +296,7 @@ impl Emu {
         };
 
         tracing::trace!("{:#?}", self.cpu);
-        self.jit.block_map.insert(initial_address, function);
+        self.jit_cache.fn_map.insert(initial_address, function);
         let summary_deps = summary_deps
             .maybe_function_panic(potential_panic)
             .fetch_summary(&blocks)
@@ -370,36 +309,42 @@ impl Emu {
         tracing::trace!("closing function");
         fn_builder.finalize();
     }
+
+    #[instrument(level = Level::TRACE, skip(fn_builder, ptr_type))]
+    pub fn init_block(fn_builder: &mut FunctionBuilder, block: Block, ptr_type: types::Type) {
+        // insert base function parameters (ptr to cpu, mem, etc.)
+        for _ in 0..JIT::FN_PARAMS {
+            fn_builder.append_block_param(block, ptr_type);
+        }
+    }
+
     #[builder]
     pub fn emit_block<'a, 'b>(
         ops: &[DecodedOp],
-        state_map: &'a mut BlockStateMap,
+        state: &'a mut BlockState,
         fn_builder: &'a mut FunctionBuilder<'b>,
         func_ref_table: &'a FuncRefTable,
         ptr_type: types::Type,
         cfg: &'a Graph<BasicBlock, ()>,
         node: NodeIndex,
         cpu: &mut Cpu,
+        jit_cache: &JitCache,
     ) -> EmitBlockSummary {
-        let block_state = &mut state_map[node];
-        let cranelift_block = block_state.basic_block.clif_block();
+        let cranelift_block = state.basic_block.clif_block();
         fn_builder.switch_to_block(cranelift_block);
 
-        fn_builder.append_block_param(cranelift_block, ptr_type);
-        fn_builder.append_block_param(cranelift_block, ptr_type);
-        fn_builder.append_block_param(cranelift_block, ptr_type);
-        for reg in block_state.deps.as_ref().unwrap().registers.iter() {
-            let reg = reg as usize;
-            let dirty = block_state.cache.registers[reg]
-                .map(|reg| reg.dirty)
-                .unwrap_or(false);
-            block_state.cache.registers[reg] = Some(CachedValue {
-                value: fn_builder.append_block_param(cranelift_block, types::I32),
-                dirty,
-            });
-        }
+        Self::init_block(fn_builder, cranelift_block, ptr_type);
 
-        collect_instructions(node, fn_builder, func_ref_table, state_map, cfg, ops, cpu);
+        collect_instructions()
+            .node(node)
+            .state(state)
+            .fn_builder(fn_builder)
+            .func_ref_table(func_ref_table)
+            .cfg(cfg)
+            .ops(ops)
+            .cpu(cpu)
+            .function_map(&jit_cache.fn_map)
+            .call();
 
         EmitBlockSummary
     }
@@ -512,9 +457,9 @@ fn fetch(params: FetchParams<'_>) -> color_eyre::Result<FetchSummary> {
     let mut ops = Vec::<DecodedOp>::with_capacity(512);
 
     while let Some(state) = stack.pop() {
-        if mapped.contains_key(&state.start_pc) {
-            continue;
-        }
+        // if mapped.contains_key(&state.start_pc) {
+        //     continue;
+        // }
         mapped.to_mut().insert(state.start_pc, state.node);
         cfg[state.node].address = state.start_pc;
 
@@ -530,6 +475,7 @@ fn fetch(params: FetchParams<'_>) -> color_eyre::Result<FetchSummary> {
         let mut ops_end = ops.len();
 
         let mut pc = state.start_pc;
+        let mut nop_sequence = 0;
 
         while pc < u32::MAX {
             let opcode = mem.read::<OpCode, ext::NoExt>(pc);
@@ -547,8 +493,16 @@ fn fetch(params: FetchParams<'_>) -> color_eyre::Result<FetchSummary> {
                     }
                 );
             }
-            ops.push(op);
-            ops_end = ops.len();
+            if op.is_nop() {
+                nop_sequence += 1;
+            } else {
+                nop_sequence = 0;
+            }
+
+            if !(op.is_nop() && nop_sequence > 4) {
+                ops.push(op);
+                ops_end = ops.len();
+            }
 
             if let Some(lifetime) = lifetime.as_mut() {
                 *lifetime = lifetime.saturating_sub(1);
@@ -591,7 +545,9 @@ fn fetch(params: FetchParams<'_>) -> color_eyre::Result<FetchSummary> {
                 });
             }
             Some(BoundaryType::BlockSplit { lhs, rhs }) => {
+                tracing::trace!(" ! branch: {:?} / {:?}", lhs, rhs);
                 for offset in [rhs, lhs] {
+                    tracing::trace!(?offset);
                     let new_address = offset.calculate_address(pc);
 
                     if let Some(next) = mapped.get(&new_address) {
@@ -629,11 +585,13 @@ pub struct CachedValue {
 pub struct EmitCtx<'a, 'b> {
     pub fn_builder: &'a mut FunctionBuilder<'b>,
     pub func_ref_table: &'a FuncRefTable,
-    pub state_map: &'a mut BlockStateMap,
+    pub state: &'a mut BlockState,
     pub ptr_type: types::Type,
     pub node: NodeIndex,
     pub pc: u32,
     pub cfg: &'a Graph<BasicBlock, ()>,
+    pub function_map: &'a FunctionMap,
+    pub function_sig_ref: Option<SigRef>,
 }
 
 impl<'a, 'b> EmitCtx<'a, 'b> {
@@ -649,11 +607,11 @@ impl<'a, 'b> EmitCtx<'a, 'b> {
     }
 
     pub fn state(&self) -> &BlockState {
-        &self.state_map[self.node]
+        self.state
     }
 
     pub fn state_mut(&mut self) -> &mut BlockState {
-        &mut self.state_map[self.node]
+        self.state
     }
 
     pub fn cache(&self) -> &EntryCache {
@@ -666,31 +624,7 @@ impl<'a, 'b> EmitCtx<'a, 'b> {
 
     #[instrument(skip(self))]
     pub fn out_params(&self, to: NodeIndex) -> Vec<BlockArg> {
-        // tracing::trace!("{:#?}", self.deps_map);
-        let next_block_deps: Option<_> =
-            self.state_map.get(to).and_then(|state| state.deps.as_ref());
-
-        let mut args = self.emulator_params();
-        if let Some(next_block_deps) = next_block_deps {
-            let iter = next_block_deps
-                .registers
-                .iter()
-                .flat_map(|register| self.cache().registers[register as usize])
-                .map(|value| value.value)
-                .map(BlockArg::Value);
-            args.extend(iter);
-        } else {
-            args.extend(
-                self.cache()
-                    .registers
-                    .iter()
-                    .flatten()
-                    .cloned()
-                    .map(|value| value.value)
-                    .map(BlockArg::Value),
-            );
-        }
-        args
+        self.emulator_params()
     }
 
     pub fn block_call(&mut self, node: NodeIndex) -> (Vec<BlockArg>, BlockCall) {
@@ -703,18 +637,41 @@ impl<'a, 'b> EmitCtx<'a, 'b> {
             .block_call(then_block_label, &then_params);
         (then_params, then_block_call)
     }
-
+    pub fn try_fn_call(&mut self, address: u32) -> Option<[Inst; 2]> {
+        match self.function_map.get(address).cloned() {
+            Some(func) => {
+                let sig_ref = self.function_sig_ref.unwrap_or_else(|| {
+                    let mut sig = Signature::new(CallConv::SystemV);
+                    sig.params.push(AbiParam::new(self.ptr_type));
+                    sig.params.push(AbiParam::new(self.ptr_type));
+                    sig.params.push(AbiParam::new(self.ptr_type));
+                    let sig_ref = self.fn_builder.import_signature(sig);
+                    self.function_sig_ref = Some(sig_ref);
+                    sig_ref
+                });
+                let ptr_type = self.ptr_type;
+                let (callee, iconst) = self.inst(|f| {
+                    f.pure()
+                        .UnaryImm(Opcode::Iconst, ptr_type, Imm64::new(func.0 as usize as i64))
+                        .0
+                });
+                let args = self.emulator_params_raw();
+                let call = self.fn_builder.pure().call_indirect(sig_ref, callee, &args);
+                Some([iconst, call])
+            }
+            None => None,
+        }
+    }
     pub fn neighbour_count(&self) -> usize {
         self.cfg
             .neighbors_directed(self.node, Direction::Outgoing)
             .count()
     }
+    pub fn emulator_params_raw(&self) -> [Value; 2] {
+        [self.cpu(), self.memory()]
+    }
     pub fn emulator_params(&self) -> Vec<BlockArg> {
-        vec![
-            BlockArg::Value(self.cpu()),
-            BlockArg::Value(self.memory()),
-            BlockArg::Value(self.mem_map()),
-        ]
+        self.emulator_params_raw().map(BlockArg::Value).to_vec()
     }
 
     pub fn cpu(&self) -> Value {
@@ -724,10 +681,6 @@ impl<'a, 'b> EmitCtx<'a, 'b> {
     pub fn memory(&self) -> Value {
         let block = self.cfg[self.node].clif_block();
         self.fn_builder.block_params(block)[1]
-    }
-    pub fn mem_map(&self) -> Value {
-        let block = self.block().clif_block();
-        self.fn_builder.block_params(block)[2]
     }
     pub fn inst<R: IntoInst>(&mut self, f: impl Fn(&mut FunctionBuilder) -> R) -> (Value, Inst) {
         self.fn_builder.inst(f)
@@ -826,15 +779,6 @@ impl<'a, 'b> EmitCtx<'a, 'b> {
     }
     pub fn update_cache_immediate(&mut self, id: Reg, value: Value) {
         self.cache_mut().registers[id as usize] = Some(CachedValue { dirty: true, value });
-    }
-    pub fn emit_map_address_to_host(&mut self, address: Value) -> (Value, [Inst; 12]) {
-        let mem_map = self.mem_map();
-        JIT::emit_map_address_to_host()
-            .fn_builder(self.fn_builder)
-            .ptr_type(self.ptr_type)
-            .address(address)
-            .mem_map_ptr(mem_map)
-            .call()
     }
     pub fn emit_map_address_to_physical(&mut self, address: Value) -> (Value, Inst) {
         JIT::emit_map_address_to_physical()
@@ -1111,43 +1055,47 @@ impl ClifInstructionQueueType {
 #[derive(derive_more::Debug, Clone)]
 pub struct BlockState {
     cache: EntryCache,
-    deps: Option<CacheDependency>,
     #[debug(skip)]
     basic_block: BasicBlock,
     ptr_type: types::Type,
     node: NodeIndex,
 }
 
+#[builder]
 fn collect_instructions(
     node: NodeIndex,
-    fn_builder: &mut FunctionBuilder,
+    fn_builder: &mut FunctionBuilder<'_>,
     func_ref_table: &FuncRefTable,
-    state_map: &mut BlockStateMap,
+    state: &mut BlockState,
+    function_map: &FunctionMap,
     cfg: &Graph<BasicBlock, ()>,
     ops: &[DecodedOp],
     cpu: &mut Cpu,
 ) {
-    let mut queue = Vec::with_capacity(64);
+    // TODO: replace vecs with an ordered arena
+    // avoid reordering elements on remove
+    let mut instruction_queue = Vec::with_capacity(64);
     let mut updates_queue = Vec::with_capacity(64);
     let mut final_instruction = None;
 
-    let ptr_type = state_map[node].ptr_type;
-    let address = state_map[node].basic_block.address;
-    let block = state_map[node].basic_block.clif_block();
+    let ptr_type = state.ptr_type;
+    let address = state.basic_block.address;
+    let block = state.basic_block.clif_block();
 
     let mut bomb_signal = None;
     let mut queued_bomb = None;
-    let mut found_fn_boundary = false;
     for (idx, op) in ops.iter().enumerate() {
         let len = ops.len();
         let _span_1 = trace_span!("emit", "%" = %format!("[{}/{len}]", idx+1),  %op, ).entered();
         let pc = address + idx as u32 * 4;
 
         let summary = op.emit_ir(EmitCtx {
+            function_sig_ref: None,
+            function_map,
             fn_builder,
             func_ref_table,
             ptr_type,
-            state_map,
+            state,
             pc,
             cfg,
             node,
@@ -1157,9 +1105,9 @@ fn collect_instructions(
             tracing::warn!("emitted no instructions")
         }
 
-        let len = summary.instructions.len();
-        for (count, inst) in summary.instructions.into_iter().enumerate() {
+        for inst in summary.instructions.into_iter() {
             let _span = trace_span!("(inst)",).entered();
+
             if cfg!(debug_assertions) {
                 if matches!(
                     inst.queue_type,
@@ -1173,13 +1121,16 @@ fn collect_instructions(
                     );
                 }
             }
+
             match inst.queue_type {
                 ClifInstructionQueueType::Now => {
                     let i = inst.instruction(EmitCtx {
+                        function_map,
+                        function_sig_ref: None,
                         fn_builder,
                         func_ref_table,
                         ptr_type,
-                        state_map,
+                        state,
                         pc,
                         cfg,
                         node,
@@ -1189,9 +1140,11 @@ fn collect_instructions(
                 ClifInstructionQueueType::Seal => {
                     let i = inst.instruction(EmitCtx {
                         fn_builder,
+                        function_sig_ref: None,
+                        function_map,
                         func_ref_table,
                         ptr_type,
-                        state_map,
+                        state,
                         pc,
                         cfg,
                         node,
@@ -1200,14 +1153,14 @@ fn collect_instructions(
                     final_instruction = Some(inst);
                 }
                 ClifInstructionQueueType::Bottom => {
-                    queue.push(inst);
+                    instruction_queue.push(inst);
                 }
                 ClifInstructionQueueType::Delayed(_) => {
-                    queue.push(inst);
+                    instruction_queue.push(inst);
                 }
                 ClifInstructionQueueType::Bomb(_) => {
                     queued_bomb = Some(inst.clone());
-                    queue.push(inst.clone());
+                    instruction_queue.push(inst.clone());
                 }
             }
         }
@@ -1218,7 +1171,7 @@ fn collect_instructions(
         if summary.updates.ready() {
             JIT::apply_cache_updates()
                 .updates(&summary.updates)
-                .cache(&mut state_map[node].cache)
+                .cache(&mut state.cache)
                 .call();
         } else {
             updates_queue.push(summary.updates);
@@ -1228,12 +1181,12 @@ fn collect_instructions(
             let res = !updates.tick();
             JIT::apply_cache_updates()
                 .updates(updates)
-                .cache(&mut state_map[node].cache)
+                .cache(&mut state.cache)
                 .call();
             res
         });
 
-        queue.retain_mut(|inst: &mut ClifInstruction| {
+        instruction_queue.retain_mut(|inst: &mut ClifInstruction| {
             let tick = inst.queue_type.tick();
             if tick.bomb_went_off {
                 bomb_signal = Some(inst.clone());
@@ -1242,9 +1195,11 @@ fn collect_instructions(
             if tick.ready {
                 let i = inst.instruction(EmitCtx {
                     fn_builder,
+                    function_sig_ref: None,
+                    function_map,
                     func_ref_table,
                     ptr_type,
-                    state_map,
+                    state,
                     pc,
                     cfg,
                     node,
@@ -1263,13 +1218,6 @@ fn collect_instructions(
         if bomb_signal.is_some() {
             break;
         }
-
-        if op.is_function_boundary() {
-            if op.hazard().unwrap_or(0) == 0 {
-                break;
-            }
-            found_fn_boundary = true;
-        }
     }
 
     let _span = trace_span!("emit(closing)").entered();
@@ -1279,39 +1227,38 @@ fn collect_instructions(
             let res = !updates.tick();
             JIT::apply_cache_updates()
                 .updates(updates)
-                .cache(&mut state_map[node].cache)
+                .cache(&mut state.cache)
                 .call();
             res
         });
     }
 
-    if found_fn_boundary {
-        let updates = JIT::emit_updates()
-            .cache(&mut state_map[node].cache)
-            .builder(fn_builder)
-            .block(block)
-            .call();
-        for inst in updates {
-            let inst = bottom(inst);
-            let _span = trace_span!("emit(updates)", ?inst).entered();
-            queue.push(inst);
-        }
+    let updates = JIT::emit_updates()
+        .cache(&state.cache)
+        .builder(fn_builder)
+        .block(block)
+        .call();
+    for inst in updates {
+        let inst = bottom(inst);
+        let _span = trace_span!("emit(updates)", ?inst).entered();
+        instruction_queue.push(inst);
     }
 
     let pc = address + ops.len() as u32 * 4;
-    if !queue.is_empty() {
-        queue.sort_by(|a, b| a.queue_type.remaining().cmp(&b.queue_type.remaining()));
+    if !instruction_queue.is_empty() {
+        instruction_queue.sort_by(|a, b| a.queue_type.remaining().cmp(&b.queue_type.remaining()));
         // emit remaining delayed instructions
-        queue
+        instruction_queue
             .iter()
             .filter(|inst| matches!(inst.queue_type, ClifInstructionQueueType::Delayed(_)))
             .for_each(|inst| {
-                // fn_builder.append_inst(inst.instruction, inst.terminator);
                 let i = inst.instruction(EmitCtx {
                     fn_builder,
+                    function_sig_ref: None,
+                    function_map,
                     func_ref_table,
                     ptr_type,
-                    state_map,
+                    state,
                     pc,
                     cfg,
                     node,
@@ -1319,15 +1266,17 @@ fn collect_instructions(
                 fn_builder.append_inst(i, inst.terminator);
             });
         // emit all bottom instructions
-        queue
+        instruction_queue
             .iter()
             .filter(|inst| matches!(inst.queue_type, ClifInstructionQueueType::Bottom))
             .for_each(|inst| {
                 let i = inst.instruction(EmitCtx {
                     fn_builder,
+                    function_sig_ref: None,
+                    function_map,
                     func_ref_table,
                     ptr_type,
-                    state_map,
+                    state,
                     pc,
                     cfg,
                     node,
@@ -1339,9 +1288,11 @@ fn collect_instructions(
     if let Some(bomb) = bomb_signal.or(queued_bomb) {
         let i = bomb.instruction(EmitCtx {
             fn_builder,
+            function_sig_ref: None,
+            function_map,
             func_ref_table,
             ptr_type,
-            state_map,
+            state,
             pc,
             cfg,
             node,
@@ -1350,57 +1301,23 @@ fn collect_instructions(
     } else if let Some(final_instruction) = final_instruction {
         let i = final_instruction.instruction(EmitCtx {
             fn_builder,
+            function_sig_ref: None,
             func_ref_table,
+            function_map,
             ptr_type,
-            state_map,
+            state,
             pc,
             cfg,
             node,
         });
         fn_builder.append_inst(i, final_instruction.terminator);
     } else {
-        fn_builder.ins().return_(&[]);
+        // fn_builder.ins().return_(&[]);
+        tracing::error!("block did not emit a terminator!")
     }
 
     let i = fn_builder.func.layout.block_insts(block).count();
     tracing::trace!("compiled into {i} instructions")
-}
-
-#[derive(Debug, Clone)]
-pub struct BlockStateMap {
-    pub inner: Vec<Option<BlockState>>,
-}
-
-impl BlockStateMap {
-    pub fn new<T, E>(graph: &Graph<T, E>) -> Self {
-        let nodes = graph.node_count();
-        BlockStateMap {
-            inner: vec![None; nodes],
-        }
-    }
-    pub fn get(&self, index: NodeIndex) -> Option<&BlockState> {
-        self.inner[index.index()].as_ref()
-    }
-    pub fn get_mut(&mut self, index: NodeIndex) -> Option<&mut BlockState> {
-        self.inner[index.index()].as_mut()
-    }
-    pub fn insert(&mut self, index: NodeIndex, value: BlockState) {
-        self.inner[index.index()] = Some(value);
-    }
-}
-
-impl Index<NodeIndex> for BlockStateMap {
-    type Output = BlockState;
-
-    fn index(&self, index: NodeIndex) -> &Self::Output {
-        self.get(index).unwrap()
-    }
-}
-
-impl IndexMut<NodeIndex> for BlockStateMap {
-    fn index_mut(&mut self, index: NodeIndex) -> &mut BlockState {
-        self.get_mut(index).unwrap()
-    }
 }
 
 #[inline]

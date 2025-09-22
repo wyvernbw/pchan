@@ -54,11 +54,21 @@ impl Op for J {
     }
 
     #[instrument("j", skip_all, fields(node = ?ctx.node, block = ?ctx.block().clif_block()))]
-    fn emit_ir(&self, ctx: EmitCtx) -> EmitSummary {
+    fn emit_ir(&self, mut ctx: EmitCtx) -> EmitSummary {
+        let jump_address = MipsOffset::RegionJump(self.imm << 2).calculate_address(ctx.pc);
+
+        let cached_call = ctx.try_fn_call(jump_address);
+        if let Some([create_address, call]) = cached_call {
+            return EmitSummary::builder()
+                .instructions([now(create_address), terminator(bomb(1, call))])
+                .pc_update(jump_address)
+                .build(ctx.fn_builder);
+        };
+
         EmitSummary::builder()
             .instructions([terminator(bomb(
                 1,
-                lazy(|mut ctx: EmitCtx| {
+                lazy(move |mut ctx: EmitCtx| {
                     debug_assert_eq!(ctx.neighbour_count(), 1);
                     let (_, block_call) = ctx.block_call(ctx.next_at(0));
 
@@ -68,7 +78,7 @@ impl Op for J {
                         .0
                 }),
             ))])
-            .pc_update(MipsOffset::RegionJump(self.imm << 2).calculate_address(ctx.pc))
+            .pc_update(jump_address)
             .build(ctx.fn_builder)
     }
 }

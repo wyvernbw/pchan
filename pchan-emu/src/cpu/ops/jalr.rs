@@ -57,7 +57,7 @@ impl Op for JALR {
     }
 
     fn emit_ir(&self, mut state: EmitCtx) -> EmitSummary {
-        tracing::info!("jalr: saving pc 0x{:08X}", state.pc);
+        // tracing::info!("jalr: saving pc 0x{:08X}", state.pc);
         // compute jump address
         let (rs, loadreg) = state.emit_get_register(self.rs);
         // store jump address at pc
@@ -82,8 +82,8 @@ impl Op for JALR {
         EmitSummary::builder()
             .instructions([
                 now(loadreg),
-                now(iconst),
                 now(storepc),
+                now(iconst),
                 now(storerd),
                 terminator(bomb(1, ret)),
             ])

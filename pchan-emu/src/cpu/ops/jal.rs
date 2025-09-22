@@ -49,17 +49,31 @@ impl Op for JAL {
     }
 
     fn emit_ir(&self, mut ctx: EmitCtx) -> EmitSummary {
-        tracing::info!("jal: saving pc 0x{:08X}", ctx.pc);
+        // tracing::info!("jal: saving pc 0x{:08X}", ctx.pc);
+        let jump_address = MipsOffset::RegionJump(self.imm << 2).calculate_address(ctx.pc);
         debug_assert_eq!(ctx.neighbour_count(), 1);
+
         let pc = ctx.pc as i64;
         let (pc, iconst) = ctx.inst(|f| {
             f.pure()
                 .UnaryImm(Opcode::Iconst, types::I32, Imm64::new(pc + 8))
                 .0
         });
-        ctx.update_cache_immediate(RA, pc);
+        // ctx.update_cache_immediate(RA, pc);
+
+        // not only does this avoid compiling the next block,
+        // it also avoids the allocation in `lazy_boxed` :)
+        let cached_call = ctx.try_fn_call(jump_address);
+        if let Some([create_address, call]) = cached_call {
+            return EmitSummary::builder()
+                .register_updates([(RA, pc)])
+                .instructions([now(iconst), now(create_address), terminator(bomb(1, call))])
+                .pc_update(jump_address)
+                .build(ctx.fn_builder);
+        };
 
         EmitSummary::builder()
+            .register_updates([(RA, pc)])
             .instructions([
                 now(iconst),
                 terminator(bomb(
@@ -76,7 +90,7 @@ impl Op for JAL {
                     }),
                 )),
             ])
-            .pc_update(MipsOffset::RegionJump(self.imm << 2).calculate_address(ctx.pc))
+            .pc_update(jump_address)
             .build(ctx.fn_builder)
     }
 }

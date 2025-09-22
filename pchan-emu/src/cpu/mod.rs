@@ -78,10 +78,10 @@ impl Cpu {
 
     #[unsafe(no_mangle)]
     pub fn handle_rfe(&mut self) {
-        tracing::info!("running rfe");
+        // tracing::info!("running rfe");
         let sr = self.cop0.reg[12];
         self.cop0.reg[12] = (sr & !0x3F) | ((sr >> 2) & 0x3F);
-        // panic!("rfe breakpoint");
+        panic!("rfe breakpoint");
     }
 }
 

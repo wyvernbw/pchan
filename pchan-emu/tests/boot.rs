@@ -34,7 +34,7 @@ pub fn boot(setup_tracing: ()) -> color_eyre::Result<()> {
                     .with_default(false)
                     .prompt();
                 if let Ok(true) = prompt {
-                    tracing::info!(%summary);
+                    tracing::info!("{:?}", summary);
                     let prompt = Confirm::new("continue?")
                         .with_default(false)
                         .prompt()

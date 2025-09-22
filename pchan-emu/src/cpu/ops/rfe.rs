@@ -34,16 +34,15 @@ impl Op for RFE {
             .with_cop(CopOp::COP0SPEC)
     }
 
-    fn emit_ir(&self, mut ctx: EmitCtx) -> EmitSummary {
+    fn emit_ir(&self, ctx: EmitCtx) -> EmitSummary {
         tracing::info!("emitting rfe!");
         let cpu = ctx.cpu();
         let handle_rfe = ctx
             .fn_builder
             .pure()
             .call(ctx.func_ref_table.handle_rfe, &[cpu]);
-        let storepc = ctx.emit_store_pc_imm(ctx.pc + 4);
         EmitSummary::builder()
-            .instructions([now(handle_rfe), now(storepc[0]), now(storepc[1])])
+            .instructions([now(handle_rfe)])
             .build(ctx.fn_builder)
     }
 }

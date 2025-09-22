@@ -39,17 +39,54 @@ pub struct JIT {
     pub module: JITModule,
     #[debug(skip)]
     pub basic_sig: Signature,
-    pub block_map: BlockMap,
-    pub dirty_pages: HashSet<BlockPage>,
     pub func_idx: usize,
     pub func_table: FunctionTable,
 }
 
+#[derive(derive_more::Debug, Default)]
+pub struct JitCache {
+    pub fn_map: FunctionMap,
+    pub dirty_pages: HashSet<FunctionPage>,
+}
+
+impl JitCache {
+    pub fn clear_cache(&mut self) {
+        self.dirty_pages.clear();
+        self.fn_map.0.clear();
+    }
+
+    pub fn apply_dirty_pages(&mut self, address: u32) {
+        let page = FunctionPage::new(address);
+        if self.dirty_pages.remove(&page)
+            && let Some(page) = self.fn_map.0.get_mut(&page)
+        {
+            page.clear();
+        }
+    }
+
+    pub fn cache_usage(&self) -> (usize, usize) {
+        (
+            self.fn_map.0.len(),
+            self.fn_map.0.values().map(|page| page.len()).sum(),
+        )
+    }
+
+    pub fn use_cached_function(&self, address: u32, cpu: &mut Cpu, mem: &mut Memory) -> bool {
+        if let Some(function) = self.fn_map.get(address) {
+            tracing::trace!("invoking cached function {function:?}");
+            function(cpu, mem, false);
+            true
+        } else {
+            false
+        }
+    }
+}
+
 #[derive(derive_more::Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Hash)]
 #[debug("Page#{}", self.0)]
-pub struct BlockPage(u32);
+pub struct FunctionPage(u32);
 
-impl BlockPage {
+impl FunctionPage {
     const SHIFT: u32 = 8;
 
     pub fn new(address: u32) -> Self {
@@ -59,15 +96,15 @@ impl BlockPage {
 
 /// TODO: make it store a module function ref as well
 #[derive(Debug, Clone, Default)]
-pub struct BlockMap(HashMap<BlockPage, HashMap<u32, BlockFn>>);
+pub struct FunctionMap(HashMap<FunctionPage, HashMap<u32, BlockFn>>);
 
-impl BlockMap {
+impl FunctionMap {
     pub fn insert(&mut self, address: u32, func: BlockFn) -> Option<BlockFn> {
-        let page = BlockPage::new(address);
+        let page = FunctionPage::new(address);
         self.0.entry(page).or_default().insert(address, func)
     }
     pub fn get(&self, address: u32) -> Option<&BlockFn> {
-        let page = BlockPage::new(address);
+        let page = FunctionPage::new(address);
         self.0.get(&page).and_then(|map| map.get(&address))
     }
 }
@@ -232,7 +269,7 @@ impl Default for JIT {
         let mut sig = Signature::new(CallConv::SystemV);
         sig.params.push(AbiParam::new(ptr));
         sig.params.push(AbiParam::new(ptr));
-        sig.params.push(AbiParam::new(ptr));
+        // sig.params.push(AbiParam::new(ptr));
 
         Self {
             module,
@@ -240,9 +277,7 @@ impl Default for JIT {
             data_description,
             ctx,
             basic_sig: sig,
-            block_map: BlockMap::default(),
             func_idx: 1,
-            dirty_pages: HashSet::default(),
             func_table: FunctionTable {
                 read32,
                 readi16,
@@ -262,6 +297,8 @@ impl Default for JIT {
 
 #[bon::bon]
 impl JIT {
+    pub const FN_PARAMS: usize = 2;
+
     #[inline]
     pub fn pointer_type(&self) -> ir::Type {
         self.module.target_config().pointer_type()
@@ -339,30 +376,6 @@ impl JIT {
     #[inline]
     pub fn create_fn_builder<'a>(&'a mut self, func: &'a mut Function) -> FunctionBuilder<'a> {
         FunctionBuilder::new(func, &mut self.fn_builder_ctx)
-    }
-
-    pub fn clear_cache(&mut self) {
-        self.dirty_pages.clear();
-        self.block_map.0.clear();
-    }
-
-    pub fn apply_dirty_pages(&mut self, address: u32) {
-        let page = BlockPage::new(address);
-        if self.dirty_pages.remove(&page)
-            && let Some(page) = self.block_map.0.get_mut(&page)
-        {
-            page.clear();
-        }
-    }
-
-    pub fn use_cached_function(&self, address: u32, cpu: &mut Cpu, mem: &mut Memory) -> bool {
-        if let Some(function) = self.block_map.get(address) {
-            tracing::trace!("invoking cached function {function:?}");
-            function(cpu, mem, false);
-            true
-        } else {
-            false
-        }
     }
 
     pub fn finish_function(
@@ -690,7 +703,7 @@ impl JIT {
     pub fn emit_updates(
         builder: &mut FunctionBuilder<'_>,
         block: Block,
-        cache: Option<&mut EntryCache>,
+        cache: Option<&EntryCache>,
     ) -> Vec<Inst> {
         let Some(cache) = cache else {
             return vec![];
@@ -773,13 +786,6 @@ impl JIT {
         // tracing::info!("write to pc");
 
         JIT::emit_store_to_cpu(fn_builder, block, pc, offset_of!(Cpu, pc) as i32)
-    }
-
-    pub fn cache_usage(&self) -> (usize, usize) {
-        (
-            self.block_map.0.len(),
-            self.block_map.0.values().map(|page| page.len()).sum(),
-        )
     }
 }
 
