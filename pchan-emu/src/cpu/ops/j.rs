@@ -59,8 +59,13 @@ impl Op for J {
 
         let cached_call = ctx.try_fn_call(jump_address);
         if let Some([create_address, call]) = cached_call {
+            let ret = ctx.fn_builder.pure().return_(&[]);
             return EmitSummary::builder()
-                .instructions([now(create_address), terminator(bomb(1, call))])
+                .instructions([
+                    now(create_address),
+                    delayed(1, call),
+                    terminator(bomb(1, ret)),
+                ])
                 .pc_update(jump_address)
                 .build(ctx.fn_builder);
         };

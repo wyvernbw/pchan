@@ -533,10 +533,12 @@ fn fetch(params: FetchParams<'_>) -> color_eyre::Result<FetchSummary> {
             Some(BoundaryType::Block { offset }) => {
                 let new_address = offset.calculate_address(pc);
 
-                if let Some(next) = mapped.get(&new_address) {
-                    tracing::trace!(" ! link: {:?} -> {:?}", state.node, next);
-                    cfg.add_edge(state.node, *next, ());
-                    continue;
+                if new_address != initial_pc {
+                    if let Some(next) = mapped.get(&new_address) {
+                        tracing::trace!(" ! link: {:?} -> {:?}", state.node, next);
+                        cfg.add_edge(state.node, *next, ());
+                        continue;
+                    }
                 }
 
                 let new_node = cfg.add_node(BasicBlock::default());
@@ -553,12 +555,13 @@ fn fetch(params: FetchParams<'_>) -> color_eyre::Result<FetchSummary> {
                     tracing::trace!(?offset);
                     let new_address = offset.calculate_address(pc);
 
-                    if let Some(next) = mapped.get(&new_address) {
-                        tracing::trace!(" ! link: {:?} -> {:?}", state.node, next);
-                        cfg.add_edge(state.node, *next, ());
-                        continue;
+                    if new_address != initial_pc {
+                        if let Some(next) = mapped.get(&new_address) {
+                            tracing::trace!(" ! link: {:?} -> {:?}", state.node, next);
+                            cfg.add_edge(state.node, *next, ());
+                            continue;
+                        }
                     }
-
                     let new_node = cfg.add_node(BasicBlock::default());
                     cfg.add_edge(state.node, new_node, ());
 
@@ -645,7 +648,6 @@ impl<'a, 'b> EmitCtx<'a, 'b> {
             Some(func) => {
                 let sig_ref = self.function_sig_ref.unwrap_or_else(|| {
                     let mut sig = Signature::new(CallConv::SystemV);
-                    sig.params.push(AbiParam::new(self.ptr_type));
                     sig.params.push(AbiParam::new(self.ptr_type));
                     sig.params.push(AbiParam::new(self.ptr_type));
                     let sig_ref = self.fn_builder.import_signature(sig);

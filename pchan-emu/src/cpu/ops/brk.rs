@@ -22,11 +22,11 @@ impl Op for BREAK {
     }
 
     fn emit_ir(&self, ctx: EmitCtx) -> EmitSummary {
-        // let ret = ctx.fn_builder.pure().return_(&[]);
+        let ret = ctx.fn_builder.pure().return_(&[]);
         EmitSummary::builder()
             .pc_update(0xbfc00180)
-            .instructions([])
-            // .instructions([terminator(seal(ret))])
+            // .instructions([])
+            .instructions([terminator(bomb(0, ret))])
             .build(ctx.fn_builder)
     }
 }
