@@ -2,6 +2,7 @@ use crate::{
     IntoInst,
     cpu::Reg,
     cranelift_bs::*,
+    dynarec::sparse_queue::SparseQueue,
     jit::{FuncRefTable, FunctionMap, JitCache},
     memory::ext,
 };
@@ -45,6 +46,8 @@ pub mod prelude {
     pub use crate::store;
 }
 pub mod builder;
+#[path = "sparse-queue.rs"]
+pub mod sparse_queue;
 
 use crate::{
     Emu, FnBuilderExt,
@@ -1079,8 +1082,8 @@ fn collect_instructions(
 ) {
     // TODO: replace vecs with an ordered arena
     // avoid reordering elements on remove
-    let mut instruction_queue = Vec::with_capacity(64);
-    let mut updates_queue = Vec::with_capacity(64);
+    let mut instruction_queue = SparseQueue::with_capacity(64);
+    let mut updates_queue = SparseQueue::with_capacity(64);
     let mut final_instruction = None;
 
     let ptr_type = state.ptr_type;
@@ -1116,7 +1119,7 @@ fn collect_instructions(
             if cfg!(debug_assertions) {
                 if matches!(
                     inst.queue_type,
-                    ClifInstructionQueueType::Bomb(_) | ClifInstructionQueueType::Delayed(_)
+                    ClifInstructionQueueType::Bomb(1..) | ClifInstructionQueueType::Delayed(1..)
                 ) && op.hazard().is_none()
                 {
                     tracing::warn!(
@@ -1227,16 +1230,14 @@ fn collect_instructions(
 
     let _span = trace_span!("emit(closing)").entered();
 
-    while !updates_queue.is_empty() {
-        updates_queue.retain_mut(|updates: &mut CacheUpdates| {
-            let res = !updates.tick();
-            JIT::apply_cache_updates()
-                .updates(updates)
-                .cache(&mut state.cache)
-                .call();
-            res
-        });
-    }
+    updates_queue.decay(|updates: &mut CacheUpdates| {
+        let res = !updates.tick();
+        JIT::apply_cache_updates()
+            .updates(updates)
+            .cache(&mut state.cache)
+            .call();
+        res
+    });
 
     let updates = JIT::emit_updates()
         .cache(&state.cache)
@@ -1251,7 +1252,11 @@ fn collect_instructions(
 
     let pc = address + ops.len() as u32 * 4;
     if !instruction_queue.is_empty() {
-        instruction_queue.sort_by(|a, b| a.queue_type.remaining().cmp(&b.queue_type.remaining()));
+        instruction_queue.as_vec_mut().sort_by(|a, b| {
+            a.as_ref()
+                .map(|a| a.queue_type.remaining())
+                .cmp(&b.as_ref().map(|b| b.queue_type.remaining()))
+        });
         // emit remaining delayed instructions
         instruction_queue
             .iter()
