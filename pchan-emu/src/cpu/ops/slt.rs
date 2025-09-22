@@ -72,7 +72,7 @@ mod tests {
 
     #[rstest]
     fn basic_slt(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
-        emulator.mem.write_many(
+        emulator.write_many(
             0x0,
             &program([
                 addiu(8, 0, 16),

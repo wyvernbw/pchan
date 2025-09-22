@@ -92,8 +92,8 @@ mod tests {
 
         let function = program([addiu(9, 0, 69), nop(), OpCode(69420)]);
 
-        emulator.mem.write_many(emulator.cpu.pc, &main);
-        emulator.mem.write_many(0x8000_2000, &function);
+        emulator.write_many(emulator.cpu.pc, &main);
+        emulator.write_many(0x8000_2000, &function);
 
         for i in 0..2 {
             let summary = emulator.step_jit_summarize::<JitSummary>()?;

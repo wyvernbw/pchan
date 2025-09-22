@@ -67,9 +67,7 @@ mod tests {
 
     #[rstest]
     pub fn mtlo_1(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
-        emulator
-            .mem
-            .write_many(0, &program([multu(8, 9), nop(), mtlo(10), OpCode(69420)]));
+        emulator.write_many(0, &program([multu(8, 9), nop(), mtlo(10), OpCode(69420)]));
         emulator.cpu.gpr[10] = 0x1234;
         emulator.cpu.gpr[8] = 16;
         emulator.cpu.gpr[9] = 16;

@@ -66,7 +66,7 @@ mod tests {
         use crate::Emu;
 
         let mut emu = Emu::default();
-        emu.mem.write_many(
+        emu.write_many(
             0x0,
             &program([
                 addiu(8, 0, a),

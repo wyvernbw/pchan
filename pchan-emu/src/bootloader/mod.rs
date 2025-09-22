@@ -2,7 +2,10 @@ use std::{fs, io::Read, path::PathBuf};
 
 use thiserror::Error;
 
-use crate::memory::{Memory, buffer, from_kb, kb};
+use crate::{
+    cpu::Cpu,
+    memory::{Memory, buffer, from_kb, kb},
+};
 
 #[derive(derive_more::Debug)]
 pub struct Bootloader {
@@ -27,7 +30,7 @@ pub enum BootError {
 }
 
 impl Bootloader {
-    pub fn load_bios(&self, mem: &mut Memory) -> Result<(), BootError> {
+    pub fn load_bios(&self, mem: &mut Memory, cpu: &Cpu) -> Result<(), BootError> {
         let mut bios_file =
             fs::File::open(&self.bios_path).map_err(BootError::BiosFileOpenError)?;
         let mut bios = buffer(kb(524));
@@ -36,7 +39,7 @@ impl Bootloader {
             .map_err(BootError::BiosReadError)?;
         let bios_slice = &bios[..kb(512)];
 
-        mem.write_many(0xBFC0_0000, bios_slice);
+        mem.write_many(cpu, 0xBFC0_0000, bios_slice);
         tracing::info!("loaded bios: {}kb", from_kb(bios_slice.len()));
 
         Ok(())

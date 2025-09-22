@@ -4,20 +4,23 @@
 use criterion::{Criterion, criterion_group, criterion_main};
 use pchan_emu::{
     Emu,
-    cpu::ops::{DecodedOp, NOP, OpCode},
+    cpu::{
+        Cpu,
+        ops::{DecodedOp, NOP, OpCode},
+    },
     memory::{Memory, ext},
 };
 use rayon::{ThreadPool, ThreadPoolBuilder, iter::ParallelBridge};
 use std::{hint::black_box, simd::Simd};
 
-fn scalar_decode(n: usize, mem: &Memory) -> color_eyre::Result<()> {
+fn scalar_decode(n: usize, mem: &Memory, cpu: &Cpu) -> color_eyre::Result<()> {
     let mut sink = Vec::with_capacity(n);
     for address in (black_box(0xBFC0_0000..))
         .take(black_box(10))
         .cycle()
         .take(black_box(n))
     {
-        let op = mem.read::<u32, ext::NoExt>(address);
+        let op = mem.read::<u32, ext::NoExt>(cpu, address);
         let op = OpCode(op);
         let op = DecodedOp::try_from(op).unwrap_or(DecodedOp::NOP(NOP));
         sink.push(op);
@@ -26,7 +29,7 @@ fn scalar_decode(n: usize, mem: &Memory) -> color_eyre::Result<()> {
     Ok(())
 }
 
-fn vector_decode(n: usize, mem: &Memory) {
+fn vector_decode(n: usize, mem: &Memory, cpu: &Cpu) {
     const WIDTH: usize = pchan_emu::MAX_SIMD_WIDTH / size_of::<u32>();
     let mut sink = Vec::with_capacity(n);
     for address in (black_box(0xBFC0_0000..))
@@ -35,7 +38,7 @@ fn vector_decode(n: usize, mem: &Memory) {
         .step_by(black_box(WIDTH))
         .take(black_box(n / WIDTH))
     {
-        let ops = mem.read::<Simd<u32, WIDTH>, ext::NoExt>(address);
+        let ops = mem.read::<Simd<u32, WIDTH>, ext::NoExt>(cpu, address);
         let ops = DecodedOp::extract_fields_simd(&ops);
         let ops = DecodedOp::decode(ops);
         sink.extend_from_slice(&ops);
@@ -43,14 +46,14 @@ fn vector_decode(n: usize, mem: &Memory) {
     }
 }
 
-fn scalar_new_decode(n: usize, mem: &Memory) {
+fn scalar_new_decode(n: usize, mem: &Memory, cpu: &Cpu) {
     let mut sink = Vec::with_capacity(n);
     for address in (black_box(0xBFC0_0000..))
         .take(black_box(10))
         .cycle()
         .take(black_box(n))
     {
-        let op = mem.read::<u32, ext::NoExt>(address);
+        let op = mem.read::<u32, ext::NoExt>(cpu, address);
         let op = OpCode(op);
         let op = DecodedOp::extract_fields(&op);
         let op = DecodedOp::decode([op]);
@@ -59,7 +62,7 @@ fn scalar_new_decode(n: usize, mem: &Memory) {
     }
 }
 
-fn scalar_new_parallel(n: usize, mem: &Memory, pool: &ThreadPool) {
+fn scalar_new_parallel(n: usize, mem: &Memory, cpu: &Cpu, pool: &ThreadPool) {
     let (tx, rx) = crossbeam::channel::bounded(n);
     pool.scope_fifo(move |scope| {
         let tx = tx.clone();
@@ -72,7 +75,7 @@ fn scalar_new_parallel(n: usize, mem: &Memory, pool: &ThreadPool) {
             let tx = tx.clone();
             scope.spawn_fifo(move |_| {
                 let chunk = address_chunk.map(|address| {
-                    let op = mem.read::<u32, ext::NoExt>(address);
+                    let op = mem.read::<u32, ext::NoExt>(cpu, address);
                     let op = OpCode(op);
                     let op = DecodedOp::extract_fields(&op);
                     let [op] = DecodedOp::decode([op]);
@@ -88,14 +91,14 @@ fn scalar_new_parallel(n: usize, mem: &Memory, pool: &ThreadPool) {
     black_box(sink);
 }
 
-fn scalar_new_lut(n: usize, mem: &Memory) {
+fn scalar_new_lut(n: usize, mem: &Memory, cpu: &Cpu) {
     let mut sink = Vec::with_capacity(n);
     for address in (black_box(0xBFC0_0000..))
         .take(black_box(10))
         .cycle()
         .take(black_box(n))
     {
-        let op = mem.read::<u32, ext::NoExt>(address);
+        let op = mem.read::<u32, ext::NoExt>(cpu, address);
         let op = OpCode(op);
         let op = DecodedOp::extract_fields(&op);
         let op = DecodedOp::lut_decode([op]);
@@ -109,22 +112,22 @@ fn decode_800(c: &mut Criterion) -> color_eyre::Result<()> {
     emu.load_bios()?;
 
     c.bench_function("scalar_decode_800 (chopped)", |b| {
-        b.iter(|| scalar_decode(black_box(800), &emu.mem))
+        b.iter(|| scalar_decode(black_box(800), &emu.mem, &emu.cpu))
     });
     c.bench_function("vector_decode_800", |b| {
-        b.iter(|| vector_decode(black_box(800), &emu.mem))
+        b.iter(|| vector_decode(black_box(800), &emu.mem, &emu.cpu))
     });
     c.bench_function("scalar_new_decode_800", |b| {
-        b.iter(|| scalar_new_decode(black_box(800), &emu.mem))
+        b.iter(|| scalar_new_decode(black_box(800), &emu.mem, &emu.cpu))
     });
     let pool = ThreadPoolBuilder::new().num_threads(8).build().unwrap();
     c.bench_function("scalar_new_parallel_800 (ass)", |b| {
         b.iter(|| {
-            scalar_new_parallel(black_box(800), &emu.mem, &pool);
+            scalar_new_parallel(black_box(800), &emu.mem, &emu.cpu, &pool);
         })
     });
     c.bench_function("scalar_new_lut_800", |b| {
-        b.iter(|| scalar_new_lut(800, &emu.mem))
+        b.iter(|| scalar_new_lut(800, &emu.mem, &emu.cpu))
     });
     Ok(())
 }

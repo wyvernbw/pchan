@@ -49,25 +49,7 @@ impl Op for SW {
     }
 
     fn emit_ir(&self, mut ctx: EmitCtx) -> EmitSummary {
-        {
-            use crate::dynarec::prelude::*;
-
-            let mem_ptr = ctx.memory();
-            let (rs, loadrs) = ctx.emit_get_register(self.rs);
-            let (rt, loadrt) = ctx.emit_get_register(self.rt);
-            let (address, add) = ctx.inst(|f| {
-                f.pure()
-                    .BinaryImm64(Opcode::IaddImm, types::I32, Imm64::new(self.imm as i64), rs)
-                    .0
-            });
-            let storeinst = ctx
-                .fn_builder
-                .pure()
-                .call(ctx.func_ref_table.write32, &[mem_ptr, address, rt]);
-            EmitSummary::builder()
-                .instructions([now(loadrs), now(loadrt), now(add), delayed(1, storeinst)])
-                .build(ctx.fn_builder)
-        }
+        store!(self, ctx, write32)
     }
 
     fn is_block_boundary(&self) -> Option<BoundaryType> {
@@ -94,16 +76,14 @@ mod tests {
 
     #[rstest]
     pub fn test_sw(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
-        emulator
-            .mem
-            .write_many(0x0, &program([sw(9, 8, 0), lw(10, 8, 0), OpCode(69420)]));
+        emulator.write_many(0x0, &program([sw(9, 8, 0), lw(10, 8, 0), OpCode(69420)]));
 
         emulator.cpu.gpr[8] = 32; // base register
         emulator.cpu.gpr[9] = u32::MAX;
 
         emulator.step_jit()?;
 
-        assert_eq!(emulator.mem.read::<u32, ext::NoExt>(32), u32::MAX);
+        assert_eq!(emulator.read::<u32, ext::NoExt>(32), u32::MAX);
 
         Ok(())
     }

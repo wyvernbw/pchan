@@ -43,7 +43,7 @@ impl Op for MTCn {
     }
 
     fn emit_ir(&self, mut ctx: EmitCtx) -> EmitSummary {
-        let (rt, loadreg) = ctx.emit_get_register(self.rt.into());
+        let (rt, loadreg) = ctx.emit_get_register(self.rt);
         let storecopreg = ctx.emit_store_cop_register(self.cop, self.rd.into(), rt);
         EmitSummary::builder()
             .instructions([now(loadreg), delayed_maybe(self.hazard(), storecopreg)])
@@ -88,9 +88,7 @@ mod tests {
 
     #[rstest]
     fn mtc_1(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
-        emulator
-            .mem
-            .write_many(0x0, &program([addiu(8, 0, 69), mtc0(8, 16), OpCode(69420)]));
+        emulator.write_many(0x0, &program([addiu(8, 0, 69), mtc0(8, 16), OpCode(69420)]));
 
         let summary = emulator.step_jit_summarize::<JitSummary>()?;
 

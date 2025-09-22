@@ -4,6 +4,7 @@ macro_rules! load {
         use $crate::dynarec::prelude::*;
 
         let mem_ptr = $ctx.memory();
+        let cpu_ptr = $ctx.cpu();
         // let ptr_type = $ctx.ptr_type;
         let (rs, loadreg) = $ctx.emit_get_register($self.rs);
         let (rs, addinst) = $ctx.inst(|f| {
@@ -16,8 +17,10 @@ macro_rules! load {
                 )
                 .0
         });
-        let (rt, readinst) =
-            $ctx.inst(|f| f.pure().call($ctx.func_ref_table.$func, &[mem_ptr, rs]));
+        let (rt, readinst) = $ctx.inst(|f| {
+            f.pure()
+                .call($ctx.func_ref_table.$func, &[mem_ptr, cpu_ptr, rs])
+        });
 
         EmitSummary::builder()
             .instructions([now(loadreg), now(addinst), delayed(1, readinst)])

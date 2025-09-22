@@ -104,7 +104,7 @@ mod tests {
         #[case] b: i16,
         #[case] expected: u32,
     ) -> color_eyre::Result<()> {
-        emulator.mem.write_many(
+        emulator.write_many(
             0x0,
             &program([addiu(8, 0, a), addiu(9, 0, b), xor(10, 8, 9), OpCode(69420)]),
         );

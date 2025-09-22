@@ -46,7 +46,7 @@ mod tests {
     #[rstest]
     fn break_1(setup_tracing: ()) {
         let mut emu = Emu::default();
-        emu.mem.write_many(0x0, &program([brk()]));
+        emu.write_many(0x0, &program([brk()]));
 
         let summary = emu.step_jit_summarize::<JitSummary>().unwrap();
         tracing::info!(?summary);

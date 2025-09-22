@@ -149,14 +149,14 @@ mod tests {
             OpCode(69420),            // ; 44 halt
         ]);
 
-        emulator.mem.write_many(0x0, &func);
+        emulator.write_many(0x0, &func);
 
         let summary = emulator.step_jit_summarize::<JitSummary>()?;
         if let Some(func) = summary.function {
             tracing::info!(%func);
         }
 
-        let slice = &emulator.mem.as_ref()[0x0000_2000..(0x000_2000 + 4)];
+        let slice = &emulator.mem.buf.as_ref()[0x0000_2000..(0x000_2000 + 4)];
         assert_eq!(slice, &[0, 1, 2, 3]);
         assert_eq!(emulator.cpu.pc, 48);
 
@@ -177,11 +177,11 @@ mod tests {
             OpCode(69420),    // halt
         ]);
 
-        emulator.mem.write_many(emulator.cpu.pc, &func);
+        emulator.write_many(emulator.cpu.pc, &func);
 
         emulator.step_jit()?;
 
-        let slice = &emulator.mem.as_ref()[0x41..0x42];
+        let slice = &emulator.mem.buf.as_ref()[0x41..0x42];
         assert_eq!(slice, &[99]);
 
         Ok(())
@@ -200,11 +200,11 @@ mod tests {
             OpCode(69420),    // halt
         ]);
 
-        emulator.mem.write_many(emulator.cpu.pc, &func);
+        emulator.write_many(emulator.cpu.pc, &func);
 
         emulator.step_jit()?;
 
-        let slice = &emulator.mem.as_ref()[0x30..0x31];
+        let slice = &emulator.mem.buf.as_ref()[0x30..0x31];
         assert_eq!(slice, &[42]);
 
         Ok(())

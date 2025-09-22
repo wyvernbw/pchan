@@ -5,7 +5,10 @@ use std::{
 
 use thiserror::Error;
 
-use crate::{MAX_SIMD_WIDTH, cpu::ops};
+use crate::{
+    MAX_SIMD_WIDTH,
+    cpu::{Cpu, ops},
+};
 
 pub mod fastmem;
 
@@ -25,18 +28,9 @@ pub type Buffer = Box<[u8]>;
 
 #[derive(derive_more::Debug)]
 #[debug("memory:{}kb", MEM_SIZE/1024)]
-pub struct Memory(Buffer);
-
-impl AsRef<[u8]> for Memory {
-    fn as_ref(&self) -> &[u8] {
-        &self.0
-    }
-}
-
-impl AsMut<[u8]> for Memory {
-    fn as_mut(&mut self) -> &mut [u8] {
-        &mut self.0
-    }
+pub struct Memory {
+    pub buf: Buffer,
+    pub cache: Buffer,
 }
 
 pub struct MemMap {
@@ -65,7 +59,10 @@ static MEM_KB: usize = from_kb(MEM_SIZE) + 1;
 
 impl Default for Memory {
     fn default() -> Self {
-        Memory(buffer(MEM_SIZE))
+        Memory {
+            buf: buffer(MEM_SIZE),
+            cache: buffer(4096),
+        }
     }
 }
 
@@ -216,27 +213,27 @@ impl const Extend<Zero> for i16 {
     }
 }
 
-struct Chunk<El>(PhantomData<El>);
+pub struct Chunk<El>(PhantomData<El>);
 impl<El> Chunk<El> {
-    const LANE_COUNT: usize = MAX_SIMD_WIDTH / size_of::<El>();
+    pub const LANE_COUNT: usize = MAX_SIMD_WIDTH / size_of::<El>();
 }
 
 impl Memory {
-    pub fn read<T, E>(&self, address: u32) -> T::Out
+    pub fn read<T, E>(&self, cpu: &Cpu, address: u32) -> T::Out
     where
         T: Extend<E> + Copy,
     {
-        let read = unsafe { Memory::read_raw(self.0.as_ptr(), address) };
+        let read = unsafe { self.read_raw(cpu, address) };
         T::ext(read)
     }
 
-    pub fn write<T: Copy>(&mut self, address: u32, value: T) {
+    pub fn write<T: Copy>(&mut self, cpu: &Cpu, address: u32, value: T) {
         unsafe {
-            Memory::write_raw(self.0.as_mut_ptr(), address, value);
+            self.write_raw(cpu, address, value);
         }
     }
 
-    pub fn write_many<T: SimdElement>(&mut self, address: u32, values: &[T])
+    pub fn write_many<T: SimdElement>(&mut self, cpu: &Cpu, address: u32, values: &[T])
     where
         LaneCount<{ Chunk::<T>::LANE_COUNT }>: SupportedLaneCount,
     {
@@ -246,14 +243,14 @@ impl Memory {
 
         let mut ptr = 0;
         for el in data {
-            self.write(address + ptr, el);
+            self.write(cpu, address + ptr, el);
 
             let offset = size_of_val(&el) as u32;
             ptr += offset;
         }
 
         for el in remaining.iter().cloned() {
-            self.write(address + ptr, el);
+            self.write(cpu, address + ptr, el);
 
             let offset = size_of_val(&el) as u32;
             ptr += offset;

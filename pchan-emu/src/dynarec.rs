@@ -171,7 +171,7 @@ impl EntryCache {
 #[bon]
 impl Emu {
     pub fn load_bios(&mut self) -> color_eyre::Result<()> {
-        self.boot.load_bios(&mut self.mem)?;
+        self.boot.load_bios(&mut self.mem, &self.cpu)?;
         Ok(())
     }
     pub fn jump_to_bios(&mut self) {
@@ -204,6 +204,7 @@ impl Emu {
             FetchParams::builder()
                 .pc(self.cpu.pc)
                 .mem(&self.mem)
+                .cpu(&self.cpu)
                 .cfg(cfg)
                 .build(),
         )?;
@@ -375,6 +376,7 @@ impl FetchSummary {
 struct FetchParams<'a> {
     pc: u32,
     mem: &'a Memory,
+    cpu: &'a Cpu,
     #[builder(default)]
     cfg: Graph<BasicBlock, ()>,
     #[builder(default)]
@@ -436,6 +438,7 @@ fn fetch(params: FetchParams<'_>) -> color_eyre::Result<FetchSummary> {
     let FetchParams {
         pc: initial_pc,
         mem,
+        cpu,
         mut cfg,
         mut mapped,
     } = params;
@@ -478,7 +481,7 @@ fn fetch(params: FetchParams<'_>) -> color_eyre::Result<FetchSummary> {
         let mut nop_sequence = 0;
 
         while pc < u32::MAX {
-            let opcode = mem.read::<OpCode, ext::NoExt>(pc);
+            let opcode = mem.read::<OpCode, ext::NoExt>(cpu, pc);
             let op = DecodedOp::extract_fields(&opcode);
             let op = DecodedOp::decode_one(op);
             let block_boundary = op.is_block_boundary();

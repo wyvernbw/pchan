@@ -83,9 +83,9 @@ mod tests {
     pub fn test_lb_sign_extension(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
         use crate::cpu::ops::prelude::*;
 
-        emulator.mem.write(32, 0xFFu8);
-        emulator.mem.write(33, 0x7Fu8);
-        emulator.mem.write_many(
+        emulator.write(32, 0xFFu8);
+        emulator.write(33, 0x7Fu8);
+        emulator.write_many(
             0x0,
             &program([lb(8, 9, 0), lb(10, 9, 1), nop(), ops::OpCode(69420)]),
         );

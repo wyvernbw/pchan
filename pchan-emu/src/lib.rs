@@ -36,12 +36,14 @@
 // allow unused variables in tests to supress the setup tracing warnings
 #![cfg_attr(test, allow(unused_variables))]
 
+use std::simd::{LaneCount, SimdElement, SupportedLaneCount};
+
 use crate::{
     bootloader::Bootloader,
     cpu::Cpu,
     dynarec::prelude::PureInstBuilder,
     jit::{JIT, JitCache},
-    memory::Memory,
+    memory::{Chunk, Memory},
 };
 
 pub mod cranelift_bs {
@@ -88,6 +90,28 @@ pub struct Emu {
     pub jit: JIT,
     pub jit_cache: JitCache,
     pub boot: Bootloader,
+}
+
+use memory::Extend;
+
+impl Emu {
+    pub fn read<T, E>(&self, address: u32) -> T::Out
+    where
+        T: Extend<E> + Copy,
+    {
+        self.mem.read::<T, E>(&self.cpu, address)
+    }
+
+    pub fn write<T: Copy>(&mut self, address: u32, value: T) {
+        self.mem.write(&mut self.cpu, address, value);
+    }
+
+    pub fn write_many<T: SimdElement>(&mut self, address: u32, values: &[T])
+    where
+        LaneCount<{ Chunk::<T>::LANE_COUNT }>: SupportedLaneCount,
+    {
+        self.mem.write_many(&self.cpu, address, values);
+    }
 }
 
 use cranelift::{

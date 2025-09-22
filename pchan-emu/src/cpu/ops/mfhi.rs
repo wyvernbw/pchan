@@ -79,9 +79,7 @@ mod tests {
         #[case] b: u32,
         #[case] expected: u32,
     ) -> color_eyre::Result<()> {
-        emulator
-            .mem
-            .write_many(0, &program([multu(8, 9), nop(), mfhi(10), OpCode(69420)]));
+        emulator.write_many(0, &program([multu(8, 9), nop(), mfhi(10), OpCode(69420)]));
         emulator.cpu.gpr[8] = a;
         emulator.cpu.gpr[9] = b;
 

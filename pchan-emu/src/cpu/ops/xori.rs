@@ -113,9 +113,7 @@ mod tests {
         use crate::dynarec::JitSummary;
 
         tracing::info!(op = %DecodedOp::new(xori(10, 8, b)));
-        emulator
-            .mem
-            .write_many(0, &program([addiu(8, 0, a), xori(10, 8, b), OpCode(69420)]));
+        emulator.write_many(0, &program([addiu(8, 0, a), xori(10, 8, b), OpCode(69420)]));
         let summary = emulator.step_jit_summarize::<JitSummary>()?;
         tracing::info!(?summary);
         assert_eq!(emulator.cpu.gpr[10], expected);
@@ -126,9 +124,7 @@ mod tests {
     fn xori_2(setup_tracing: (), mut emulator: Emu, #[case] imm: u16) -> color_eyre::Result<()> {
         use crate::dynarec::JitSummary;
 
-        emulator
-            .mem
-            .write_many(0, &program([xori(10, 0, imm), OpCode(69420)]));
+        emulator.write_many(0, &program([xori(10, 0, imm), OpCode(69420)]));
         let summary = emulator.step_jit_summarize::<JitSummary>()?;
         tracing::info!(?summary);
         assert_eq!(emulator.cpu.gpr[10], imm as u32);

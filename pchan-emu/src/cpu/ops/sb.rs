@@ -76,16 +76,14 @@ mod tests {
 
     #[rstest]
     pub fn test_sb(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
-        emulator
-            .mem
-            .write_many(0, &program([sb(9, 8, 0), OpCode(69420)]));
+        emulator.write_many(0, &program([sb(9, 8, 0), OpCode(69420)]));
 
         emulator.cpu.gpr[8] = 32; // base register
         emulator.cpu.gpr[9] = 69;
 
         emulator.step_jit()?;
 
-        assert_eq!(emulator.mem.read::<u8, ext::Sign>(32), 69);
+        assert_eq!(emulator.read::<u8, ext::Sign>(32), 69);
 
         Ok(())
     }

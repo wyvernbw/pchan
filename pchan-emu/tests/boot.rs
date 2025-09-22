@@ -51,7 +51,7 @@ pub fn boot(setup_tracing: ()) -> color_eyre::Result<()> {
         tracing::info!(?emu.cpu.pc);
     }
 
-    let memory = &emu.mem.as_ref()[0..kb(2048 + 8192)];
+    let memory = &emu.mem.buf.as_ref()[0..kb(2048 + 8192)];
     let mut file = std::fs::File::create("../mem.dump")?;
     file.write_all(memory)?;
 

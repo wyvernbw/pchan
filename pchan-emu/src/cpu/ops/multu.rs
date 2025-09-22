@@ -81,9 +81,7 @@ mod tests {
     ) -> color_eyre::Result<()> {
         use crate::dynarec::JitSummary;
 
-        emulator
-            .mem
-            .write_many(0, &program([multu(8, 9), OpCode(69420)]));
+        emulator.write_many(0, &program([multu(8, 9), OpCode(69420)]));
         emulator.cpu.gpr[8] = a;
         emulator.cpu.gpr[9] = b;
 
@@ -108,9 +106,7 @@ mod tests {
     ) -> color_eyre::Result<()> {
         assert!(a == 0 || b == 0);
 
-        emulator
-            .mem
-            .write_many(0, &program([multu(a, b), OpCode(69420)]));
+        emulator.write_many(0, &program([multu(a, b), OpCode(69420)]));
         if a != 0 {
             emulator.cpu.gpr[a as usize] = 32;
         }

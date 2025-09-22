@@ -87,7 +87,7 @@ mod tests {
     ) -> color_eyre::Result<()> {
         use crate::dynarec::JitSummary;
 
-        emulator.mem.write_many(
+        emulator.write_many(
             0x0,
             &program([addiu(8, 0, a), sra(10, 8, b), OpCode(69420)]),
         );
@@ -102,9 +102,7 @@ mod tests {
     fn sra_2(setup_tracing: (), mut emulator: Emu, #[case] imm: i8) -> color_eyre::Result<()> {
         use crate::dynarec::JitSummary;
 
-        emulator
-            .mem
-            .write_many(0x0, &program([sra(10, 0, imm), OpCode(69420)]));
+        emulator.write_many(0x0, &program([sra(10, 0, imm), OpCode(69420)]));
         let summary = emulator.step_jit_summarize::<JitSummary>()?;
         tracing::info!(?summary.function);
         assert_eq!(emulator.cpu.gpr[10], 0);

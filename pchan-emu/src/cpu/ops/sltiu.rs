@@ -88,7 +88,7 @@ mod tests {
 
     #[rstest]
     fn slti_test(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
-        emulator.mem.write_many(
+        emulator.write_many(
             0,
             &program([addiu(8, 0, -3), sltiu(9, 8, 32), OpCode(69420)]),
         );
@@ -104,9 +104,7 @@ mod tests {
     fn sltiu_2_shortpath(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
         use crate::dynarec::JitSummary;
 
-        emulator
-            .mem
-            .write_many(0, &program([sltiu(10, 8, 0), OpCode(69420)]));
+        emulator.write_many(0, &program([sltiu(10, 8, 0), OpCode(69420)]));
         emulator.cpu.gpr[8] = 32;
         let summary = emulator.step_jit_summarize::<JitSummary>()?;
         tracing::info!(?summary.function);
@@ -121,9 +119,7 @@ mod tests {
     fn sltiu_3_shortpath(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
         use crate::dynarec::JitSummary;
 
-        emulator
-            .mem
-            .write_many(0, &program([sltiu(10, 0, 8), OpCode(69420)]));
+        emulator.write_many(0, &program([sltiu(10, 0, 8), OpCode(69420)]));
         emulator.cpu.gpr[8] = 32;
         let summary = emulator.step_jit_summarize::<JitSummary>()?;
         tracing::info!(?summary.function);

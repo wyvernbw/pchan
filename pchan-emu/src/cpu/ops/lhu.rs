@@ -81,17 +81,15 @@ mod tests {
     pub fn test_lhu(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
         use crate::cpu::ops::prelude::*;
 
-        emulator
-            .mem
-            .write_many(0x0, &program([lhu(8, 9, 4), nop(), OpCode(69420)]));
+        emulator.write_many(0x0, &program([lhu(8, 9, 4), nop(), OpCode(69420)]));
 
-        let op = emulator.mem.read::<OpCode, ext::NoExt>(0);
+        let op = emulator.read::<OpCode, ext::NoExt>(0);
         tracing::debug!(decoded = ?DecodedOp::try_from(op));
-        tracing::debug!("{:08X?}", &emulator.mem.as_ref()[..22]);
+        tracing::debug!("{:08X?}", &emulator.mem.buf.as_ref()[..22]);
 
         emulator.cpu.gpr[9] = 16;
 
-        emulator.mem.write::<u16>(20, 0xABCD);
+        emulator.write::<u16>(20, 0xABCD);
 
         emulator.step_jit()?;
 

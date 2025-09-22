@@ -26,7 +26,7 @@ pub fn write_test_program(emu: &mut Emu) {
         OpCode(69420),            // ; 44 halt
     ]);
 
-    emu.mem.write_many::<u32>(emu.cpu.pc, &main);
+    emu.write_many::<u32>(emu.cpu.pc, &main);
 }
 pub fn time<F, T>(f: F) -> (T, f64)
 where

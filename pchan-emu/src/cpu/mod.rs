@@ -20,6 +20,7 @@ pub struct Cpu {
             .collect::<Vec<String>>()
     )]
     pub gpr: [u32; 32],
+    #[debug("{}", hex(&self.pc))]
     pub pc: u32,
     pub hilo: u64,
     pub cop0: Cop0,
@@ -30,15 +31,15 @@ pub struct Cpu {
 }
 
 #[derive(derive_more::Debug)]
+#[repr(C)]
 pub struct Cop0 {
-    #[debug("{}",
+    #[debug("{:#?}",
         reg
             .iter()
             .enumerate()
             .filter(|(_, x)| x != &&0)
-            .map(|(i, x)| format!("$cop0r{}={}", i, x))
-            .intersperse(" ".to_string())
-            .collect::<String>()
+            .map(|(i, x)| format!("${}={}", REG_STR[i], hex(x)))
+            .collect::<Vec<String>>()
     )]
     pub reg: [u32; 64],
 }
@@ -75,10 +76,13 @@ impl Cpu {
     pub fn jump_to_bios(&mut self) {
         self.pc = 0xBFC0_0000;
     }
+    pub fn cache_isolation_enabled(&self) -> bool {
+        (self.cop0.reg[12] & (1 << 16)) != 0
+    }
 
     #[unsafe(no_mangle)]
     pub fn handle_rfe(&mut self) {
-        // tracing::info!("running rfe");
+        tracing::info!("running rfe");
         let sr = self.cop0.reg[12];
         self.cop0.reg[12] = (sr & !0x3F) | ((sr >> 2) & 0x3F);
         panic!("rfe breakpoint");

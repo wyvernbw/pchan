@@ -53,7 +53,7 @@ fn write_to_address(setup_tracing: (), #[case] base: u32) -> color_eyre::Result<
         nop(),
         OpCode(69420),
     ]);
-    emu.mem.write_many::<u32>(0xBFC0_0000, &main);
+    emu.write_many::<u32>(0xBFC0_0000, &main);
     let summary = emu.step_jit_summarize::<JitSummary>()?;
     tracing::info!(?summary.function);
 
@@ -63,7 +63,7 @@ fn write_to_address(setup_tracing: (), #[case] base: u32) -> color_eyre::Result<
     tracing::info!(?base);
     let mut address = base;
     for i in 0..16 {
-        let value = emu.mem.read::<u32, ext::NoExt>(address);
+        let value = emu.read::<u32, ext::NoExt>(address);
         tracing::info!(?value);
         assert_eq!(value, i * 4);
         address += 4;

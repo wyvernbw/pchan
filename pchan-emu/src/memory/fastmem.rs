@@ -3,7 +3,10 @@ use std::sync::LazyLock;
 use pchan_utils::hex;
 use tracing::{Level, instrument};
 
-use crate::memory::{MEM_MAP, Memory, kb};
+use crate::{
+    cpu::Cpu,
+    memory::{MEM_MAP, Memory, kb},
+};
 
 const PAGE_COUNT: usize = 0x10000;
 const PAGE_SIZE: usize = kb(64);
@@ -96,11 +99,21 @@ impl Memory {
     /// # Safety
     ///
     /// this is never safe, live fast die young
-    pub unsafe fn read_raw<T: Copy>(mem: *const u8, address: u32) -> T {
+    pub unsafe fn read_raw<T: Copy>(&self, cpu: &Cpu, address: u32) -> T {
+        if cpu.cache_isolation_enabled() {
+            tracing::info!("read with cache isolation!");
+            let address = address & 0xFFF;
+            unsafe {
+                let ptr = self.cache.as_ptr().add(address as usize);
+                let ptr = ptr as *const T;
+                return std::ptr::read_unaligned(ptr);
+            }
+        }
         let page = address >> 16;
         let offset = address & 0xFFFF;
 
         let lut_ptr = LUT.read[page as usize];
+        let mem = self.buf.as_ptr();
 
         match lut_ptr {
             // fastmem
@@ -119,7 +132,7 @@ impl Memory {
                         let ptr = mem
                             .wrapping_add(offset as usize)
                             .wrapping_add(MEM_MAP.cache_control);
-                        tracing::trace!("read in cache control");
+                        tracing::info!("read in cache control");
                         unsafe { *(ptr as *const T) }
                     }
                     _ => {
@@ -134,46 +147,46 @@ impl Memory {
     /// # Safety
     ///
     /// this is never safe, live fast die young
-    #[instrument(level = Level::TRACE, skip(mem, address), fields(address = %hex(&address)))]
     #[unsafe(no_mangle)]
-    pub unsafe extern "C-unwind" fn read32(mem: *const u8, address: u32) -> i32 {
-        unsafe { Memory::read_raw::<i32>(mem, address) }
+    #[instrument(level = Level::TRACE, skip(cpu, self, address), fields(address = %hex(&address)))]
+    pub unsafe extern "C-unwind" fn read32(&self, cpu: &Cpu, address: u32) -> i32 {
+        unsafe { self.read_raw::<i32>(cpu, address) }
     }
 
     /// # Safety
     ///
     /// this is never safe, live fast die young
     #[unsafe(no_mangle)]
-    #[instrument(level = Level::TRACE, skip(mem, address), fields(address = %hex(&address)))]
-    pub unsafe extern "C-unwind" fn readi16(mem: *const u8, address: u32) -> i32 {
-        unsafe { Memory::read_raw::<i16>(mem, address) as i32 }
+    #[instrument(level = Level::TRACE, skip(self, address, cpu), fields(address = %hex(&address)))]
+    pub unsafe extern "C-unwind" fn readi16(&self, cpu: &Cpu, address: u32) -> i32 {
+        unsafe { self.read_raw::<i16>(cpu, address) as i32 }
     }
 
     /// # Safety
     ///
     /// this is never safe, live fast die young
     #[unsafe(no_mangle)]
-    #[instrument(level = Level::TRACE, skip(mem, address), fields(address = %hex(&address)))]
-    pub unsafe extern "C-unwind" fn readi8(mem: *const u8, address: u32) -> i32 {
-        unsafe { Memory::read_raw::<i8>(mem, address) as i32 }
+    #[instrument(level = Level::TRACE, skip(self, address, cpu), fields(address = %hex(&address)))]
+    pub unsafe extern "C-unwind" fn readi8(&self, cpu: &Cpu, address: u32) -> i32 {
+        unsafe { self.read_raw::<i8>(cpu, address) as i32 }
     }
 
     /// # Safety
     ///
     /// this is never safe, live fast die young
     #[unsafe(no_mangle)]
-    #[instrument(level = Level::TRACE, skip(mem, address), fields(address = %hex(&address)))]
-    pub unsafe extern "C-unwind" fn readu16(mem: *const u8, address: u32) -> i32 {
-        unsafe { Memory::read_raw::<u16>(mem, address) as u32 as i32 }
+    #[instrument(level = Level::TRACE, skip(self, address, cpu), fields(address = %hex(&address)))]
+    pub unsafe extern "C-unwind" fn readu16(&self, cpu: &Cpu, address: u32) -> i32 {
+        unsafe { self.read_raw::<u16>(cpu, address) as u32 as i32 }
     }
 
     /// # Safety
     ///
     /// this is never safe, live fast die young
     #[unsafe(no_mangle)]
-    #[instrument(level = Level::TRACE, skip(mem, address), fields(address = %hex(&address)))]
-    pub unsafe extern "C-unwind" fn readu8(mem: *const u8, address: u32) -> i32 {
-        unsafe { Memory::read_raw::<u8>(mem, address) as u32 as i32 }
+    #[instrument(level = Level::TRACE, skip(self, address, cpu), fields(address = %hex(&address)))]
+    pub unsafe extern "C-unwind" fn readu8(&self, cpu: &Cpu, address: u32) -> i32 {
+        unsafe { self.read_raw::<u8>(cpu, address) as u32 as i32 }
     }
 }
 
@@ -201,11 +214,21 @@ impl Memory {
     /// # SAFETY
     ///
     /// here be segfaults... should be fine tho
-    pub unsafe fn write_raw<T: Copy>(mem: *mut u8, address: u32, value: T) {
+    pub unsafe fn write_raw<T: Copy>(&mut self, cpu: &Cpu, address: u32, value: T) {
+        if cpu.cache_isolation_enabled() {
+            let address = address & 0xFFF;
+            tracing::info!("read with cache isolation!");
+            unsafe {
+                let ptr = self.cache.as_mut_ptr().add(address as usize);
+                Memory::write_impl(ptr, value);
+                return;
+            }
+        }
         let page = address >> 16;
         let offset = address & 0x0000_FFFF;
 
         let lut_ptr = LUT.read[page as usize];
+        let mem = self.buf.as_mut_ptr();
 
         match lut_ptr {
             // fastmem
@@ -253,26 +276,26 @@ impl Memory {
     ///
     /// this is never safe, live fast die young
     #[unsafe(no_mangle)]
-    #[instrument(level = Level::TRACE, skip(mem, address), fields(address = %hex(&address), value = %hex(&value)))]
-    pub unsafe extern "C-unwind" fn write32(mem: *mut u8, address: u32, value: i32) {
-        unsafe { Memory::write_raw(mem, address, value) }
+    #[instrument(level = Level::TRACE, skip(self, address, cpu), fields(address = %hex(&address), value = %hex(&value)))]
+    pub unsafe extern "C-unwind" fn write32(&mut self, cpu: &Cpu, address: u32, value: i32) {
+        unsafe { self.write_raw(cpu, address, value) }
     }
 
     /// # Safety
     ///
     /// this is never safe, live fast die young
     #[unsafe(no_mangle)]
-    #[instrument(level = Level::TRACE, skip(mem, address), fields(address = %hex(&address), value = %hex(&value)))]
-    pub unsafe extern "C-unwind" fn write16(mem: *mut u8, address: u32, value: i32) {
-        unsafe { Memory::write_raw(mem, address, value as i16) }
+    #[instrument(level = Level::TRACE, skip(self, address, cpu), fields(address = %hex(&address), value = %hex(&value)))]
+    pub unsafe extern "C-unwind" fn write16(&mut self, cpu: &Cpu, address: u32, value: i32) {
+        unsafe { self.write_raw(cpu, address, value as i16) }
     }
 
     /// # Safety
     ///
     /// this is never safe, live fast die young
     #[unsafe(no_mangle)]
-    #[instrument(level = Level::TRACE, skip(mem, address), fields(address = %hex(&address), value = %hex(&value)))]
-    pub unsafe extern "C-unwind" fn write8(mem: *mut u8, address: u32, value: i32) {
-        unsafe { Memory::write_raw(mem, address, value as i8) }
+    #[instrument(level = Level::TRACE, skip(self, address, cpu), fields(address = %hex(&address), value = %hex(&value)))]
+    pub unsafe extern "C-unwind" fn write8(&mut self, cpu: &Cpu, address: u32, value: i32) {
+        unsafe { self.write_raw(cpu, address, value as i8) }
     }
 }

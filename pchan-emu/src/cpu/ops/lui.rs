@@ -92,9 +92,7 @@ mod tests {
     ) -> color_eyre::Result<()> {
         use crate::dynarec::JitSummary;
 
-        emulator
-            .mem
-            .write_many(0x0, &program([lui(reg, value), OpCode(69420)]));
+        emulator.write_many(0x0, &program([lui(reg, value), OpCode(69420)]));
 
         let summary = emulator.step_jit_summarize::<JitSummary>()?;
         tracing::info!(?summary.function);
@@ -107,9 +105,7 @@ mod tests {
     fn lui_2(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
         use crate::dynarec::JitSummary;
 
-        emulator
-            .mem
-            .write_many(0x0, &program([lui(8, 0x1234), OpCode(69420)]));
+        emulator.write_many(0x0, &program([lui(8, 0x1234), OpCode(69420)]));
         emulator.cpu.gpr[8] = 0x1111_1111;
 
         let summary = emulator.step_jit_summarize::<JitSummary>()?;

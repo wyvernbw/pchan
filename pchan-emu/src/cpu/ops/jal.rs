@@ -127,8 +127,8 @@ mod tests {
             OpCode(69420),
         ]);
 
-        emulator.mem.write_many(emulator.cpu.pc, &main);
-        emulator.mem.write_many(0x0000_2000, &function);
+        emulator.write_many(emulator.cpu.pc, &main);
+        emulator.write_many(0x0000_2000, &function);
 
         let summary = emulator.step_jit_summarize::<JitSummary>()?;
         tracing::info!(?summary.function);

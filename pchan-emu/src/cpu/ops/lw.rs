@@ -81,11 +81,9 @@ mod tests {
 
     #[rstest]
     pub fn test_lw(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
-        emulator.mem.write::<u32>(32, 0xDEAD_BEEF); // -32768
+        emulator.write::<u32>(32, 0xDEAD_BEEF); // -32768
 
-        emulator
-            .mem
-            .write_many(0, &program([lw(8, 9, 0), nop(), ops::OpCode(69420)]));
+        emulator.write_many(0, &program([lw(8, 9, 0), nop(), ops::OpCode(69420)]));
 
         emulator.cpu.gpr[9] = 32; // base register
 
@@ -99,9 +97,9 @@ mod tests {
 
     #[rstest]
     pub fn load_delay_hazard_1(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
-        emulator.mem.write::<u32>(32, 0xDEAD_BEEF);
+        emulator.write::<u32>(32, 0xDEAD_BEEF);
 
-        emulator.mem.write_many(
+        emulator.write_many(
             0,
             &program([
                 addiu(8, 0, 0),
@@ -125,9 +123,9 @@ mod tests {
 
     #[rstest]
     pub fn load_delay_hazard_2(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
-        emulator.mem.write::<u32>(32, 0xDEAD_BEEF);
+        emulator.write::<u32>(32, 0xDEAD_BEEF);
 
-        emulator.mem.write_many(
+        emulator.write_many(
             0,
             &program([lw(8, 9, 0), nop(), sb(8, 10, 0), ops::OpCode(69420)]),
         );
@@ -139,7 +137,7 @@ mod tests {
         emulator.step_jit()?;
 
         assert_eq!(emulator.cpu.gpr[8], 0xDEAD_BEEF);
-        assert_ne!(emulator.mem.read::<u32, ext::NoExt>(36), 0);
+        assert_ne!(emulator.read::<u32, ext::NoExt>(36), 0);
 
         Ok(())
     }

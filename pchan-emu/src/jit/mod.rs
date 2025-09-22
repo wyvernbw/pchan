@@ -168,6 +168,7 @@ impl Default for JIT {
         let read32 = {
             let mut read32_sig = Signature::new(CallConv::SystemV);
             read32_sig.params.push(AbiParam::new(ptr));
+            read32_sig.params.push(AbiParam::new(ptr));
             read32_sig.params.push(AbiParam::new(types::I32));
             read32_sig.returns.push(AbiParam::new(types::I32));
 
@@ -178,6 +179,7 @@ impl Default for JIT {
 
         let readi16 = {
             let mut readi16_sig = Signature::new(CallConv::SystemV);
+            readi16_sig.params.push(AbiParam::new(ptr));
             readi16_sig.params.push(AbiParam::new(ptr));
             readi16_sig.params.push(AbiParam::new(types::I32));
             readi16_sig.returns.push(AbiParam::new(types::I32));
@@ -190,6 +192,7 @@ impl Default for JIT {
         let readi8 = {
             let mut readi8_sig = Signature::new(CallConv::SystemV);
             readi8_sig.params.push(AbiParam::new(ptr));
+            readi8_sig.params.push(AbiParam::new(ptr));
             readi8_sig.params.push(AbiParam::new(types::I32));
             readi8_sig.returns.push(AbiParam::new(types::I32));
 
@@ -200,6 +203,7 @@ impl Default for JIT {
 
         let readu16 = {
             let mut readu16_sig = Signature::new(CallConv::SystemV);
+            readu16_sig.params.push(AbiParam::new(ptr));
             readu16_sig.params.push(AbiParam::new(ptr));
             readu16_sig.params.push(AbiParam::new(types::I32));
             readu16_sig.returns.push(AbiParam::new(types::I32));
@@ -212,6 +216,7 @@ impl Default for JIT {
         let readu8 = {
             let mut readu8_sig = Signature::new(CallConv::SystemV);
             readu8_sig.params.push(AbiParam::new(ptr));
+            readu8_sig.params.push(AbiParam::new(ptr));
             readu8_sig.params.push(AbiParam::new(types::I32));
             readu8_sig.returns.push(AbiParam::new(types::I32));
 
@@ -222,6 +227,7 @@ impl Default for JIT {
 
         let write32 = {
             let mut write32_sig = Signature::new(CallConv::SystemV);
+            write32_sig.params.push(AbiParam::new(ptr));
             write32_sig.params.push(AbiParam::new(ptr));
             write32_sig.params.push(AbiParam::new(types::I32));
             write32_sig.params.push(AbiParam::new(types::I32));
@@ -234,6 +240,7 @@ impl Default for JIT {
         let write16 = {
             let mut write16_sig = Signature::new(CallConv::SystemV);
             write16_sig.params.push(AbiParam::new(ptr));
+            write16_sig.params.push(AbiParam::new(ptr));
             write16_sig.params.push(AbiParam::new(types::I32));
             write16_sig.params.push(AbiParam::new(types::I32));
 
@@ -244,6 +251,7 @@ impl Default for JIT {
 
         let write8 = {
             let mut write8_sig = Signature::new(CallConv::SystemV);
+            write8_sig.params.push(AbiParam::new(ptr));
             write8_sig.params.push(AbiParam::new(ptr));
             write8_sig.params.push(AbiParam::new(types::I32));
             write8_sig.params.push(AbiParam::new(types::I32));
@@ -618,7 +626,7 @@ impl JIT {
     }
 
     #[builder]
-    #[instrument(skip(builder, block), fields(reg=idx, value))]
+    #[instrument(skip(builder, block, idx), fields(reg=idx, value))]
     pub fn emit_store_cop_reg(
         builder: &mut FunctionBuilder<'_>,
         block: Block,
@@ -638,6 +646,7 @@ impl JIT {
         let offset = i32::try_from(COP0 + COP_SIZE * cop as usize + idx * size_of::<u32>())
             .expect("offset overflow");
 
+        tracing::info!(?offset, "write to coprocessor");
         JIT::emit_store_to_cpu(builder, block, value, offset)
     }
 
@@ -791,7 +800,7 @@ impl JIT {
 
 #[derive(Debug, Clone, Copy)]
 #[repr(transparent)]
-pub struct BlockFn(pub fn(*mut Cpu, *mut u8));
+pub struct BlockFn(pub fn(*mut Cpu, *mut Memory));
 
 type BlockFnArgs<'a> = (&'a mut Cpu, &'a mut Memory, bool);
 
@@ -800,9 +809,9 @@ impl BlockFn {
         if args.2 {
             self.0
                 .instrument(tracing::info_span!("fn", addr = ?self.0))
-                .inner()(ptr::from_mut(args.0), args.1.as_mut().as_mut_ptr())
+                .inner()(ptr::from_mut(args.0), ptr::from_mut(args.1))
         } else {
-            self.0(ptr::from_mut(args.0), args.1.as_mut().as_mut_ptr())
+            self.0(ptr::from_mut(args.0), ptr::from_mut(args.1))
         }
     }
 }

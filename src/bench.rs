@@ -25,7 +25,7 @@ fn bench_jit() {
 
     let mut average = 0.0;
     for _ in 0..100 {
-        emu.mem.write_many::<u32>(0x0000_2000, &[0u32, 0u32]);
+        emu.write_many::<u32>(0x0000_2000, &[0u32, 0u32]);
         emu.jit_cache.clear_cache();
         emu.cpu.pc = 0;
         emu.cpu.clear_registers();
@@ -33,11 +33,11 @@ fn bench_jit() {
             _ = black_box(emu.step_jit());
         });
         average += elapsed;
-        let slice = &emu.mem.as_ref()[0x0000_2000..(0x000_2000 + 4)];
+        let slice = &emu.mem.buf.as_ref()[0x0000_2000..(0x000_2000 + 4)];
         assert_eq!(slice, &[0, 1, 2, 3]);
     }
     average /= 100.0;
-    let slice = &emu.mem.as_ref()[0x0000_2000..(0x000_2000 + 4)];
+    let slice = &emu.mem.buf.as_ref()[0x0000_2000..(0x000_2000 + 4)];
     assert_eq!(slice, &[0, 1, 2, 3]);
     // println!("{:#?}", &emu);
     tracing::info!("{:?}", slice);
@@ -49,18 +49,18 @@ fn bench_jit() {
     _ = black_box(emu.step_jit());
     emu.cpu.pc = 0;
     for _ in 0..100 {
-        emu.mem.write_many::<u32>(0x0000_2000, &[0u32, 0u32]);
+        emu.write_many::<u32>(0x0000_2000, &[0u32, 0u32]);
         emu.cpu.pc = 0;
         emu.cpu.clear_registers();
         let (_, elapsed) = time(|| {
             _ = black_box(emu.step_jit());
         });
         average += elapsed;
-        let slice = &emu.mem.as_ref()[0x0000_2000..(0x000_2000 + 4)];
+        let slice = &emu.mem.buf.as_ref()[0x0000_2000..(0x000_2000 + 4)];
         assert_eq!(slice, &[0, 1, 2, 3]);
     }
     average /= 100.;
-    let slice = &emu.mem.as_ref()[0x0000_2000..(0x000_2000 + 4)];
+    let slice = &emu.mem.buf.as_ref()[0x0000_2000..(0x000_2000 + 4)];
     assert_eq!(slice, &[0, 1, 2, 3]);
     // println!("{:#?}", &emu);
     tracing::info!("{:?}", slice);
@@ -77,7 +77,7 @@ fn bench_reset_vector() {
 
     let mut average = 0.0;
     for _ in 0..100 {
-        emu.mem.write_many::<u32>(0x0000_2000, &[0u32, 0u32]);
+        emu.write_many::<u32>(0x0000_2000, &[0u32, 0u32]);
         emu.jit_cache.clear_cache();
         emu.jump_to_bios();
         emu.cpu.clear_registers();
@@ -96,7 +96,7 @@ fn bench_reset_vector() {
     _ = black_box(emu.step_jit());
     emu.jump_to_bios();
     for _ in 0..100 {
-        emu.mem.write_many::<u32>(0x0000_2000, &[0u32, 0u32]);
+        emu.write_many::<u32>(0x0000_2000, &[0u32, 0u32]);
         emu.jump_to_bios();
         emu.cpu.clear_registers();
         let (_, elapsed) = time(|| {

@@ -109,7 +109,7 @@ mod tests {
     ) -> color_eyre::Result<()> {
         use crate::cpu::program;
 
-        emulator.mem.write_many(
+        emulator.write_many(
             0x0,
             &program([addiu(8, 0, a), addiu(9, 0, b), and(10, 8, 9), OpCode(69420)]),
         );
