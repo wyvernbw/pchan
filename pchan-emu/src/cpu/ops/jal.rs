@@ -54,40 +54,40 @@ impl Op for JAL {
         debug_assert_eq!(ctx.neighbour_count(), 1);
 
         let pc = ctx.pc as i64;
-        let (pc, iconst) = ctx.inst(|f| {
+        let (new_ra, create_ra) = ctx.inst(|f| {
             f.pure()
                 .UnaryImm(Opcode::Iconst, types::I32, Imm64::new(pc + 8))
                 .0
         });
-        // ctx.update_cache_immediate(RA, pc);
+        let [create_new_pc, store_new_pc] = ctx.emit_store_pc_imm(jump_address);
+        // ctx.update_cache_immediate(RA, new_ra);
 
-        // not only does this avoid compiling the next block,
-        // it also avoids the allocation in `lazy_boxed` :)
         let cached_call = ctx.try_fn_call(jump_address);
         if let Some([create_address, call]) = cached_call {
             let ret = ctx.fn_builder.pure().return_(&[]);
             return EmitSummary::builder()
-                .register_updates([(RA, pc)])
+                .register_updates([(RA, new_ra)])
                 .instructions([
-                    now(iconst),
+                    now(create_ra),
+                    now(create_new_pc),
+                    now(store_new_pc),
                     now(create_address),
                     delayed(1, call),
                     terminator(bomb(1, ret)),
                 ])
-                .pc_update(jump_address)
                 .build(ctx.fn_builder);
         };
 
         EmitSummary::builder()
-            .register_updates([(RA, pc)])
+            .register_updates([(RA, new_ra)])
             .instructions([
-                now(iconst),
+                now(create_ra),
+                now(create_new_pc),
+                now(store_new_pc),
                 terminator(bomb(
                     1,
                     lazy(|mut ctx| {
-                        let (params, block_call) = ctx.block_call(ctx.next_at(0));
-
-                        tracing::debug!("jumping with {} dependencies", params.len());
+                        let (_, block_call) = ctx.block_call(ctx.next_at(0));
 
                         ctx.fn_builder
                             .pure()
@@ -96,7 +96,6 @@ impl Op for JAL {
                     }),
                 )),
             ])
-            .pc_update(jump_address)
             .build(ctx.fn_builder)
     }
 }

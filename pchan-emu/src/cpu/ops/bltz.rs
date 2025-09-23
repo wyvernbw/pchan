@@ -25,7 +25,7 @@ pub fn bltz(rs: u8, dest: i16) -> OpCode {
 
 impl Display for BLTZ {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "bltz ${} {}", REG_STR[self.rs as usize], hex(&self.imm))
+        write!(f, "bltz ${} {}", REG_STR[self.rs as usize], hex(self.imm))
     }
 }
 

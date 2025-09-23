@@ -6,8 +6,21 @@ edition = "2024"
 [dependencies]
 rstest = "*"
 tracing-subscriber = { workspace = true }
+derive_more = { version = "2.0.1", features = ["add", "debug", "display"] }
 color-eyre = { workspace = true }
 tracing = { workspace = true }
 tracing-panic = "0.1.2"
 const-hex.workspace = true
 heapless = "0.9.1"
+tracing-indicatif = "0.3.13"
+
+[dev-dependencies]
+pretty_assertions = {version = "1.4.1", features = ["unstable"]}
+rstest = "*"
+color-eyre = "*" 
+criterion = { version = "0.5", features = ["html_reports"] }
+
+
+[[bench]]
+name = "hex"
+harness = false

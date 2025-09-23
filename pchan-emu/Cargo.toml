@@ -3,12 +3,6 @@ name = "pchan-emu"
 version = "0.1.0"
 edition = "2024"
 
-[profile.dev]
-panic = "unwind"
-
-[profile.release]
-panic = "unwind"
-
 [dependencies]
 bon = "3.7.2"
 color-eyre = "*"
@@ -37,8 +31,6 @@ tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
 pretty_assertions = {version = "1.4.1", features = ["unstable"]}
-test-log = {version = "0.2", default-features = false, features = ["trace"]}
-tracing-test = "0.1"
 rstest = "*"
 color-eyre = "*" 
 criterion = { version = "0.5", features = ["html_reports"] }

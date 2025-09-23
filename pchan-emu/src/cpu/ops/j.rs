@@ -57,33 +57,39 @@ impl Op for J {
     fn emit_ir(&self, mut ctx: EmitCtx) -> EmitSummary {
         let jump_address = MipsOffset::RegionJump(self.imm << 2).calculate_address(ctx.pc);
 
+        let [create_new_pc, store_new_pc] = ctx.emit_store_pc_imm(jump_address);
+
         let cached_call = ctx.try_fn_call(jump_address);
         if let Some([create_address, call]) = cached_call {
             let ret = ctx.fn_builder.pure().return_(&[]);
             return EmitSummary::builder()
                 .instructions([
+                    now(create_new_pc),
+                    now(store_new_pc),
                     now(create_address),
                     delayed(1, call),
                     terminator(bomb(1, ret)),
                 ])
-                .pc_update(jump_address)
                 .build(ctx.fn_builder);
         };
 
         EmitSummary::builder()
-            .instructions([terminator(bomb(
-                1,
-                lazy(move |mut ctx: EmitCtx| {
-                    debug_assert_eq!(ctx.neighbour_count(), 1);
-                    let (_, block_call) = ctx.block_call(ctx.next_at(0));
+            .instructions([
+                now(create_new_pc),
+                now(store_new_pc),
+                terminator(bomb(
+                    1,
+                    lazy(move |mut ctx: EmitCtx| {
+                        debug_assert_eq!(ctx.neighbour_count(), 1);
+                        let (_, block_call) = ctx.block_call(ctx.next_at(0));
 
-                    ctx.fn_builder
-                        .pure()
-                        .Jump(Opcode::Jump, types::INVALID, block_call)
-                        .0
-                }),
-            ))])
-            .pc_update(jump_address)
+                        ctx.fn_builder
+                            .pure()
+                            .Jump(Opcode::Jump, types::INVALID, block_call)
+                            .0
+                    }),
+                )),
+            ])
             .build(ctx.fn_builder)
     }
 }

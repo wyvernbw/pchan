@@ -3,12 +3,10 @@ use std::{
     simd::{LaneCount, Simd, SimdElement, SupportedLaneCount},
 };
 
+use pchan_utils::MAX_SIMD_WIDTH;
 use thiserror::Error;
 
-use crate::{
-    MAX_SIMD_WIDTH,
-    cpu::{Cpu, ops},
-};
+use crate::cpu::{Cpu, ops};
 
 pub mod fastmem;
 
@@ -21,7 +19,7 @@ pub const fn from_kb(value: usize) -> usize {
 }
 
 pub fn buffer(size: usize) -> Box<[u8]> {
-    vec![0u8; size].into_boxed_slice()
+    vec![0xCu8; size].into_boxed_slice()
 }
 
 pub type Buffer = Box<[u8]>;

@@ -49,17 +49,18 @@ impl Op for JR {
         Some(1)
     }
 
-    fn emit_ir(&self, mut state: EmitCtx) -> EmitSummary {
-        let (rs, loadreg) = state.emit_get_register(self.rs);
+    fn emit_ir(&self, mut ctx: EmitCtx) -> EmitSummary {
+        let (rs, loadreg) = ctx.emit_get_register(self.rs);
 
         debug_assert_eq!(
-            state.fn_builder.func.dfg.value_type(rs),
+            ctx.fn_builder.func.dfg.value_type(rs),
             types::I32,
             "expected i32 value"
         );
 
-        let storers = state.emit_store_pc(rs);
-        let ret = state
+        let storers = ctx.emit_store_pc(rs);
+
+        let ret = ctx
             .fn_builder
             .pure()
             .MultiAry(Opcode::Return, types::INVALID, ValueList::new())
@@ -67,7 +68,7 @@ impl Op for JR {
 
         EmitSummary::builder()
             .instructions([now(loadreg), now(storers), terminator(bomb(1, ret))])
-            .build(state.fn_builder)
+            .build(ctx.fn_builder)
     }
 }
 

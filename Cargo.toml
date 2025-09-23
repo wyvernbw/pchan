@@ -17,7 +17,8 @@ members = [
   "pchan-emu",
   "pchan-macros",
   "pchan-utils",
-  "pchan-cranelift-frontend"
+  "pchan-cranelift-frontend",
+  "pchan-debug"
 ]
 
 [patch.crates-io]
@@ -38,3 +39,9 @@ debug = true
 
 [profile.release]
 lto = "thin"
+panic = "unwind"
+
+[profile.dev]
+panic = "unwind"
+
+

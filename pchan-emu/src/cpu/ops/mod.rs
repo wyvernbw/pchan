@@ -49,6 +49,7 @@ pub mod xori;
 // jumps
 pub mod beq;
 pub mod bgez;
+pub mod bgtz;
 pub mod blez;
 pub mod bltz;
 pub mod bne;
@@ -85,6 +86,7 @@ pub mod prelude {
     pub use super::andi::*;
     pub use super::beq::*;
     pub use super::bgez::*;
+    pub use super::bgtz::*;
     pub use super::blez::*;
     pub use super::bltz::*;
     pub use super::bne::*;
@@ -604,6 +606,8 @@ pub enum DecodedOp {
     #[strum(transparent)]
     BLTZ(BLTZ),
     #[strum(transparent)]
+    BGTZ(BGTZ),
+    #[strum(transparent)]
     BREAK(BREAK),
 
     // cop
@@ -825,9 +829,9 @@ impl DecodedOp {
                 (0x0, _, _, 0xA) => Self::illegal(),
                 (0x0, _, _, 0xB) => Self::illegal(),
                 (0x0, _, _, 0xC) => {
-                    // todo!("syscall");
-                    tracing::error!("syscall not yet implemented");
-                    Self::illegal()
+                    todo!("syscall");
+                    // tracing::error!("syscall not yet implemented");
+                    // Self::illegal()
                 }
                 (0x0, _, _, 0xD) => Self::BREAK(BREAK),
                 (0x0, _, _, 0xE) => Self::illegal(),
@@ -859,16 +863,18 @@ impl DecodedOp {
                     0x1 => Self::BGEZ(BGEZ::new(rs, imm16)),
                     0x10 => todo!("bltzal"),
                     0x11 => todo!("bgezal"),
+                    other if other & 0b110 != 0 => match other & 1 {
+                        0 => todo!("bltz dupe"),
+                        1 => todo!("bgez dupe"),
+                        _ => unreachable!(),
+                    },
                     // TODO: add the bltz and bgez dupes, just to be sure
                     _ => Self::illegal(),
                 },
                 (0x4, _, _, _) => Self::BEQ(BEQ::new(rs, rt, imm16)),
                 (0x5, _, _, _) => Self::BNE(BNE::new(rs, rt, imm16)),
                 (0x6, _, _, _) => Self::BLEZ(BLEZ::new(rs, imm16)),
-                (0x7, _, _, _) => {
-                    // todo!("bgtz");
-                    Self::illegal()
-                }
+                (0x7, _, _, _) => Self::BGTZ(BGTZ::new(rs, imm16)),
                 (0x8 | 0x9, _, _, _) => Self::ADDIU(ADDIU::new(rs, rt, imm16)),
                 (0xA, _, _, _) => Self::SLTI(SLTI::new(rt, rs, imm16)),
                 (0xB, _, _, _) => Self::SLTIU(SLTIU::new(rt, rs, imm16)),
@@ -915,9 +921,9 @@ impl DecodedOp {
                 // cop imm25
                 (0x10..=0x13, 0x10.., _, _) => {
                     // TODO: copn command
-                    // todo!("cop{} imm25", cop);
-                    tracing::error!("cop command not yet implemented");
-                    Self::illegal()
+                    todo!("cop{} imm25", cop);
+                    // tracing::error!("cop command not yet implemented");
+                    // Self::illegal()
                 }
                 _ => Self::illegal(),
             }
@@ -1239,6 +1245,10 @@ impl DecodedOp {
 
     pub fn is_nop(&self) -> bool {
         matches!(self, Self::NOP(_))
+    }
+
+    pub fn is_illegal(&self) -> bool {
+        matches!(self, Self::ILLEGAL(_))
     }
 }
 

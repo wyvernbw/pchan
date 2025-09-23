@@ -183,7 +183,7 @@ impl Emu {
     pub fn step_jit(&mut self) -> color_eyre::Result<()> {
         self.step_jit_summarize()
     }
-    #[instrument(name = "dynarec", skip_all, fields(pc = %hex(&self.cpu.pc)))]
+    #[instrument(name = "dynarec", skip_all, fields(pc = %hex(self.cpu.pc)))]
     pub fn step_jit_summarize<T: SummarizeJit>(&mut self) -> color_eyre::Result<T> {
         let initial_address = self.cpu.pc;
 
@@ -192,12 +192,15 @@ impl Emu {
         self.jit_cache.apply_dirty_pages(initial_address);
 
         // try cache first
-        let cached =
-            self.jit_cache
-                .use_cached_function(initial_address, &mut self.cpu, &mut self.mem);
-        if cached {
+        let cached = self.jit_cache.use_cached_function(initial_address);
+        if let Some(cached) = cached {
+            cached(&mut self.cpu, &mut self.mem, false);
+            tracing::info!("{:?} fn invoked", cached.fn_ptr);
             return Ok(T::summarize(
-                SummarizeDeps::builder().cpu(&self.cpu).build(),
+                SummarizeDeps::builder()
+                    .cpu(&self.cpu)
+                    .function(&cached.func)
+                    .build(),
             ));
         }
 
@@ -280,13 +283,12 @@ impl Emu {
         fn_builder.seal_all_blocks();
 
         Self::close_function(fn_builder);
-        let summary_deps = SummarizeDeps::builder().function(&func);
         self.jit.finish_function(func_id, func.clone())?;
 
-        let function = self.jit.get_func(func_id);
-        tracing::info!("compiled function: {:?}", function.0);
+        let function = self.jit.get_func(func_id, func);
+        tracing::info!("{:?} fn compiled", function.fn_ptr);
         let potential_panic = {
-            let _span = info_span!("fn", addr = ?function.0).entered();
+            let _span = info_span!("fn", addr = ?function.fn_ptr).entered();
             if std::env::var("PCHAN_UNWIND").is_ok() {
                 let result = catch_unwind(AssertUnwindSafe(|| {
                     function(&mut self.cpu, &mut self.mem, true);
@@ -300,12 +302,14 @@ impl Emu {
         };
 
         tracing::trace!("{:#?}", self.cpu);
-        self.jit_cache.fn_map.insert(initial_address, function);
+        let summary_deps = SummarizeDeps::builder().function(&function.func);
         let summary_deps = summary_deps
             .maybe_function_panic(potential_panic)
             .fetch_summary(&blocks)
             .cpu(&self.cpu);
         let summary = T::summarize(summary_deps.build());
+
+        self.jit_cache.fn_map.insert(initial_address, function);
 
         Ok(summary)
     }
@@ -489,15 +493,19 @@ fn fetch(params: FetchParams<'_>) -> color_eyre::Result<FetchSummary> {
             let op = DecodedOp::decode_one(op);
             let block_boundary = op.is_block_boundary();
             if enabled!(Level::TRACE) {
-                tracing::trace!(
-                    "0x{:08X?}  {}",
-                    pc,
-                    if block_boundary.is_none() {
-                        format!("{}", op)
-                    } else {
-                        format!("> {} <", op)
-                    }
-                );
+                if op.is_illegal() {
+                    tracing::trace!("0x{:08X?} illegal {:?}", pc, opcode);
+                } else {
+                    tracing::trace!(
+                        "0x{:08X?}  {}",
+                        pc,
+                        if block_boundary.is_none() {
+                            format!("{}", op)
+                        } else {
+                            format!("> {} <", op)
+                        }
+                    );
+                }
             }
             if op.is_nop() {
                 nop_sequence += 1;
@@ -660,7 +668,11 @@ impl<'a, 'b> EmitCtx<'a, 'b> {
                 let ptr_type = self.ptr_type;
                 let (callee, iconst) = self.inst(|f| {
                     f.pure()
-                        .UnaryImm(Opcode::Iconst, ptr_type, Imm64::new(func.0 as usize as i64))
+                        .UnaryImm(
+                            Opcode::Iconst,
+                            ptr_type,
+                            Imm64::new(func.fn_ptr as usize as i64),
+                        )
                         .0
                 });
                 let args = self.emulator_params_raw();
@@ -836,8 +848,6 @@ pub struct EmitSummary {
     #[debug(skip)]
     #[builder(into)]
     pub instructions: Vec<ClifInstruction>,
-
-    pub pc_update: Option<u32>,
 }
 
 impl<S: emit_summary_builder::State> EmitSummaryBuilder<S> {
@@ -970,6 +980,7 @@ pub struct ClifInstruction {
     pub queue_type: ClifInstructionQueueType,
     pub instruction: ValidInst,
     pub terminator: bool,
+    pub pc: u32,
 }
 
 impl ClifInstruction {
@@ -979,6 +990,9 @@ impl ClifInstruction {
             ValidInst::Lazy(cb) => cb(ctx),
             ValidInst::LazyBoxed(cb) => cb(ctx),
         }
+    }
+    pub fn with_pc(self, pc: u32) -> Self {
+        Self { pc, ..self }
     }
 }
 
@@ -1078,7 +1092,7 @@ fn collect_instructions(
     function_map: &FunctionMap,
     cfg: &Graph<BasicBlock, ()>,
     ops: &[DecodedOp],
-    cpu: &mut Cpu,
+    _cpu: &mut Cpu,
 ) {
     // TODO: replace vecs with an ordered arena
     // avoid reordering elements on remove
@@ -1114,12 +1128,13 @@ fn collect_instructions(
         }
 
         for inst in summary.instructions.into_iter() {
+            let inst = inst.with_pc(pc);
             let _span = trace_span!("(inst)",).entered();
 
             if cfg!(debug_assertions) {
                 if matches!(
                     inst.queue_type,
-                    ClifInstructionQueueType::Bomb(1..) | ClifInstructionQueueType::Delayed(1..)
+                    ClifInstructionQueueType::Bomb(2..) | ClifInstructionQueueType::Delayed(2..)
                 ) && op.hazard().is_none()
                 {
                     tracing::warn!(
@@ -1219,10 +1234,6 @@ fn collect_instructions(
             }
         });
 
-        if let Some(pc) = summary.pc_update {
-            cpu.pc = pc;
-        }
-
         if bomb_signal.is_some() {
             break;
         }
@@ -1250,7 +1261,6 @@ fn collect_instructions(
         instruction_queue.push(inst);
     }
 
-    let pc = address + ops.len() as u32 * 4;
     if !instruction_queue.is_empty() {
         instruction_queue.as_vec_mut().sort_by(|a, b| {
             a.as_ref()
@@ -1269,7 +1279,7 @@ fn collect_instructions(
                     func_ref_table,
                     ptr_type,
                     state,
-                    pc,
+                    pc: inst.pc,
                     cfg,
                     node,
                 });
@@ -1287,7 +1297,7 @@ fn collect_instructions(
                     func_ref_table,
                     ptr_type,
                     state,
-                    pc,
+                    pc: inst.pc,
                     cfg,
                     node,
                 });
@@ -1303,7 +1313,7 @@ fn collect_instructions(
             func_ref_table,
             ptr_type,
             state,
-            pc,
+            pc: bomb.pc,
             cfg,
             node,
         });
@@ -1316,7 +1326,7 @@ fn collect_instructions(
             function_map,
             ptr_type,
             state,
-            pc,
+            pc: final_instruction.pc,
             cfg,
             node,
         });
@@ -1336,6 +1346,7 @@ pub const fn now(inst: impl const Into<ValidInst>) -> ClifInstruction {
         instruction: inst.into(),
         queue_type: ClifInstructionQueueType::Now,
         terminator: false,
+        pc: 0,
     }
 }
 
@@ -1345,6 +1356,7 @@ pub const fn delayed(by: u32, inst: impl const Into<ValidInst>) -> ClifInstructi
         instruction: inst.into(),
         queue_type: ClifInstructionQueueType::Delayed(by + 1),
         terminator: false,
+        pc: 0,
     }
 }
 
@@ -1355,11 +1367,13 @@ pub const fn delayed_maybe(by: Option<u32>, inst: impl const Into<ValidInst>) ->
             instruction: inst.into(),
             queue_type: ClifInstructionQueueType::Delayed(by + 1),
             terminator: false,
+            pc: 0,
         },
         None => ClifInstruction {
             instruction: inst.into(),
             queue_type: ClifInstructionQueueType::Now,
             terminator: false,
+            pc: 0,
         },
     }
 }
@@ -1370,6 +1384,7 @@ pub const fn bomb(by: u32, inst: impl const Into<ValidInst>) -> ClifInstruction 
         instruction: inst.into(),
         queue_type: ClifInstructionQueueType::Bomb(by + 1),
         terminator: false,
+        pc: 0,
     }
 }
 
@@ -1379,6 +1394,7 @@ pub const fn seal(inst: impl const Into<ValidInst>) -> ClifInstruction {
         queue_type: ClifInstructionQueueType::Seal,
         instruction: inst.into(),
         terminator: false,
+        pc: 0,
     }
 }
 
@@ -1388,6 +1404,7 @@ pub const fn bottom(inst: impl const Into<ValidInst>) -> ClifInstruction {
         queue_type: ClifInstructionQueueType::Bottom,
         instruction: inst.into(),
         terminator: false,
+        pc: 0,
     }
 }
 

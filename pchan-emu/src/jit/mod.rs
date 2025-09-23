@@ -2,6 +2,7 @@ use std::{
     collections::{HashMap, HashSet},
     mem::offset_of,
     ptr,
+    sync::Arc,
 };
 
 use cranelift::codegen::ir::{self, immediates::Offset32};
@@ -71,13 +72,11 @@ impl JitCache {
         )
     }
 
-    pub fn use_cached_function(&self, address: u32, cpu: &mut Cpu, mem: &mut Memory) -> bool {
+    pub fn use_cached_function(&self, address: u32) -> Option<&BlockFn> {
         if let Some(function) = self.fn_map.get(address) {
-            tracing::trace!("invoking cached function {function:?}");
-            function(cpu, mem, false);
-            true
+            Some(function)
         } else {
-            false
+            None
         }
     }
 }
@@ -107,6 +106,9 @@ impl FunctionMap {
         let page = FunctionPage::new(address);
         self.0.get(&page).and_then(|map| map.get(&address))
     }
+    pub fn functions(&self) -> impl Iterator<Item = (&u32, &BlockFn)> {
+        self.0.values().flat_map(|page| page.iter())
+    }
 }
 
 #[derive(derive_more::Debug)]
@@ -122,6 +124,7 @@ pub struct FunctionTable {
     write8: FuncId,
 
     handle_rfe: FuncId,
+    handle_break: FuncId,
 }
 
 #[derive(derive_more::Debug)]
@@ -137,6 +140,7 @@ pub struct FuncRefTable {
     pub write8: FuncRef,
 
     pub handle_rfe: FuncRef,
+    pub handle_break: FuncRef,
 }
 
 impl Default for JIT {
@@ -160,7 +164,8 @@ impl Default for JIT {
             .symbol("write32", Memory::write32 as *const u8)
             .symbol("write16", Memory::write16 as *const u8)
             .symbol("write8", Memory::write8 as *const u8)
-            .symbol("handle_rfe", Cpu::handle_rfe as *const u8);
+            .symbol("handle_rfe", Cpu::handle_rfe as *const u8)
+            .symbol("handle_break", Cpu::handle_rfe as *const u8);
 
         let mut module = JITModule::new(jit_builder);
         let ptr = module.target_config().pointer_type();
@@ -270,6 +275,15 @@ impl Default for JIT {
                 .expect("failed to link handle_rfe function")
         };
 
+        let handle_break = {
+            let mut handle_break_sig = Signature::new(CallConv::SystemV);
+            handle_break_sig.params.push(AbiParam::new(ptr));
+
+            module
+                .declare_function("handle_break", Linkage::Import, &handle_break_sig)
+                .expect("failed to link handle_break function")
+        };
+
         let fn_builder_ctx = FunctionBuilderContext::new();
         let ctx = module.make_context();
         let data_description = DataDescription::new();
@@ -298,6 +312,7 @@ impl Default for JIT {
                 write8,
 
                 handle_rfe,
+                handle_break,
             },
         }
     }
@@ -312,9 +327,13 @@ impl JIT {
         self.module.target_config().pointer_type()
     }
 
-    pub fn get_func(&self, id: FuncId) -> BlockFn {
+    pub fn get_func(&self, id: FuncId, func: Function) -> BlockFn {
         let code_ptr = self.module.get_finalized_function(id);
-        unsafe { std::mem::transmute::<*const u8, BlockFn>(code_ptr) }
+        let ptr = unsafe { std::mem::transmute::<*const u8, BlockFnPtr>(code_ptr) };
+        BlockFn {
+            fn_ptr: ptr,
+            func: Arc::new(func),
+        }
     }
 
     pub fn create_signature(&self) -> Signature {
@@ -368,6 +387,9 @@ impl JIT {
         let handle_rfe = self
             .module
             .declare_func_in_func(self.func_table.handle_rfe, func);
+        let handle_break = self
+            .module
+            .declare_func_in_func(self.func_table.handle_break, func);
         FuncRefTable {
             read32,
             readi16,
@@ -378,6 +400,7 @@ impl JIT {
             write16,
             write8,
             handle_rfe,
+            handle_break,
         }
     }
 
@@ -798,20 +821,25 @@ impl JIT {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-#[repr(transparent)]
-pub struct BlockFn(pub fn(*mut Cpu, *mut Memory));
+type BlockFnPtr = fn(*mut Cpu, *mut Memory);
+#[derive(derive_more::Debug, Clone)]
+#[debug("{:?}", self.fn_ptr)]
+pub struct BlockFn {
+    pub fn_ptr: BlockFnPtr,
+    #[debug(skip)]
+    pub func: Arc<Function>,
+}
 
 type BlockFnArgs<'a> = (&'a mut Cpu, &'a mut Memory, bool);
 
 impl BlockFn {
     fn call_block(&self, args: BlockFnArgs) {
         if args.2 {
-            self.0
-                .instrument(tracing::info_span!("fn", addr = ?self.0))
+            (self.fn_ptr)
+                .instrument(tracing::info_span!("fn", addr = ?self.fn_ptr))
                 .inner()(ptr::from_mut(args.0), ptr::from_mut(args.1))
         } else {
-            self.0(ptr::from_mut(args.0), ptr::from_mut(args.1))
+            (self.fn_ptr)(ptr::from_mut(args.0), ptr::from_mut(args.1))
         }
     }
 }

@@ -39,7 +39,7 @@ impl TryFrom<OpCode> for BLEZ {
 
 impl Display for BLEZ {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "blez ${} {}", REG_STR[self.rs as usize], hex(&self.imm))
+        write!(f, "blez ${} {}", REG_STR[self.rs as usize], hex(self.imm))
     }
 }
 

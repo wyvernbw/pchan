@@ -7,43 +7,41 @@ use crate::dynarec::prelude::*;
 
 #[derive(Debug, Clone, Copy)]
 #[allow(clippy::upper_case_acronyms)]
-pub struct BGEZ {
+pub struct BGTZ {
     rs: u8,
     imm: i16,
 }
 
-impl BGEZ {
+impl BGTZ {
     pub const fn new(rs: u8, imm: i16) -> Self {
         Self { rs, imm }
     }
 }
 
 #[inline]
-pub fn bgez(rs: u8, dest: i16) -> OpCode {
-    BGEZ { rs, imm: dest }.into_opcode()
+pub fn bgtz(rs: u8, dest: i16) -> OpCode {
+    BGTZ { rs, imm: dest }.into_opcode()
 }
 
-impl TryFrom<OpCode> for BGEZ {
+impl TryFrom<OpCode> for BGTZ {
     type Error = TryFromOpcodeErr;
 
     fn try_from(opcode: OpCode) -> Result<Self, TryFromOpcodeErr> {
-        let opcode = opcode
-            .as_primary(PrimeOp::BcondZ)?
-            .check_bits(16..21, 0b00001)?;
-        Ok(BGEZ {
+        let opcode = opcode.as_primary(PrimeOp::BGTZ)?;
+        Ok(BGTZ {
             rs: (opcode.bits(21..26)) as u8,
             imm: (opcode.bits(0..16) as i16),
         })
     }
 }
 
-impl Display for BGEZ {
+impl Display for BGTZ {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "bgez ${} {}", REG_STR[self.rs as usize], hex(self.imm))
+        write!(f, "bgtz ${} {}", REG_STR[self.rs as usize], hex(self.imm))
     }
 }
 
-impl Op for BGEZ {
+impl Op for BGTZ {
     fn is_block_boundary(&self) -> Option<BoundaryType> {
         Some(BoundaryType::BlockSplit {
             lhs: MipsOffset::Relative(self.imm as i32 * 4 + 4),
@@ -53,8 +51,7 @@ impl Op for BGEZ {
 
     fn into_opcode(self) -> crate::cpu::ops::OpCode {
         OpCode::default()
-            .with_primary(PrimeOp::BcondZ)
-            .set_bits(16..21, 0b00001)
+            .with_primary(PrimeOp::BGTZ)
             .set_bits(21..26, self.rs as u32)
             .set_bits(0..16, ext::sign(self.imm) as u32)
     }
@@ -63,7 +60,7 @@ impl Op for BGEZ {
         Some(1)
     }
 
-    #[instrument("beq", skip_all, fields(node = ?ctx.node, block = ?ctx.block().clif_block()))]
+    #[instrument("bgtz", skip_all, fields(node = ?ctx.node, block = ?ctx.block().clif_block()))]
     fn emit_ir(&self, mut ctx: EmitCtx) -> EmitSummary {
         use crate::cranelift_bs::*;
 
@@ -74,7 +71,7 @@ impl Op for BGEZ {
                 .IntCompareImm(
                     Opcode::IcmpImm,
                     types::I32,
-                    IntCC::SignedGreaterThanOrEqual,
+                    IntCC::SignedGreaterThan,
                     Imm64::new(0),
                     rs,
                 )
@@ -134,11 +131,11 @@ mod tests {
     use crate::{Emu, dynarec::JitSummary};
 
     #[rstest]
-    #[case(0, 42)]
+    #[case(0, 69)]
     #[case(i16::MAX, 42)]
     #[case(-1, 69)]
     #[case(i16::MIN, 69)]
-    pub fn bgez_test(
+    pub fn bgtz_test(
         setup_tracing: (),
         #[case] value: i16,
         #[case] expected: i16,
@@ -148,7 +145,7 @@ mod tests {
             0x0,
             &program([
                 addiu(9, 0, value),
-                bgez(9, 0x8),
+                bgtz(9, 0x8),
                 nop(),
                 addiu(10, 0, 69),
                 nop(),

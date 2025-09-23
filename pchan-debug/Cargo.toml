@@ -1,0 +1,16 @@
+[package]
+name = "pchan-debug"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+inquire = "0.9.1"
+derive_more = { version = "2.0.1", features = ["add", "debug", "display"] }
+strum = { version = "0.27.2", features = ["derive"] }
+pchan-macros = { workspace = true }
+pchan-utils = { workspace = true }
+pchan-emu = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+const-hex = { workspace = true, features = ["alloc"] }
+color-eyre = { workspace = true } 

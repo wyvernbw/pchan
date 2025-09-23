@@ -16,11 +16,11 @@ pub struct Cpu {
             .iter()
             .enumerate()
             .filter(|(_, x)| x != &&0)
-            .map(|(i, x)| format!("${}={}", REG_STR[i], hex(x)))
+            .map(|(i, x)| format!("${}={}", REG_STR[i], hex(*x)))
             .collect::<Vec<String>>()
     )]
     pub gpr: [u32; 32],
-    #[debug("{}", hex(&self.pc))]
+    #[debug("{}", hex(self.pc))]
     pub pc: u32,
     pub hilo: u64,
     pub cop0: Cop0,
@@ -38,7 +38,7 @@ pub struct Cop0 {
             .iter()
             .enumerate()
             .filter(|(_, x)| x != &&0)
-            .map(|(i, x)| format!("${}={}", REG_STR[i], hex(x)))
+            .map(|(i, x)| format!("${}={}", REG_STR[i], hex(*x)))
             .collect::<Vec<String>>()
     )]
     pub reg: [u32; 64],
@@ -47,6 +47,12 @@ pub struct Cop0 {
 impl Default for Cop0 {
     fn default() -> Self {
         Self { reg: [0u32; 64] }
+    }
+}
+
+impl Cop0 {
+    pub fn bev(&self) -> bool {
+        self.reg[12] & (1 << 22) != 0
     }
 }
 
@@ -85,7 +91,21 @@ impl Cpu {
         tracing::info!("running rfe");
         let sr = self.cop0.reg[12];
         self.cop0.reg[12] = (sr & !0x3F) | ((sr >> 2) & 0x3F);
-        panic!("rfe breakpoint");
+        // panic!("rfe breakpoint");
+    }
+
+    #[unsafe(no_mangle)]
+    pub fn handle_break(&mut self) {
+        tracing::info!("running break");
+        let cause = self.cop0.reg[13];
+        let cause = cause & !(0b0011111);
+        let cause = cause | (0x09 << 2);
+        self.cop0.reg[13] = cause;
+        self.cop0.reg[14] = self.pc;
+        self.pc = match self.cop0.bev() {
+            false => 0x8000_0080,
+            true => 0xbfc0_0180,
+        }
     }
 }
 

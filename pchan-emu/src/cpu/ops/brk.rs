@@ -21,12 +21,21 @@ impl Op for BREAK {
             .with_secondary(SecOp::BREAK)
     }
 
-    fn emit_ir(&self, ctx: EmitCtx) -> EmitSummary {
+    fn emit_ir(&self, mut ctx: EmitCtx) -> EmitSummary {
+        let cpu = ctx.cpu();
+        let [create_pc, store_pc] = ctx.emit_store_pc_imm(ctx.pc);
+        let handle_break = ctx
+            .fn_builder
+            .pure()
+            .call(ctx.func_ref_table.handle_break, &[cpu]);
         let ret = ctx.fn_builder.pure().return_(&[]);
         EmitSummary::builder()
-            .pc_update(0xbfc00180)
-            // .instructions([])
-            .instructions([terminator(bomb(0, ret))])
+            .instructions([
+                now(create_pc),
+                now(store_pc),
+                now(handle_break),
+                terminator(bomb(0, ret)),
+            ])
             .build(ctx.fn_builder)
     }
 }
