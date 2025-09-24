@@ -71,18 +71,6 @@ fn generate_page_tables() -> Lut {
         // thats it, bios is not writeable
     }
 
-    // DONE: make sure to increase emulator memory to use a 64kb scratch
-    // this is so we can map scratch with fastmem
-    const SCRATCH_OFFSET: u32 = MEM_MAP.scratch as u32;
-
-    #[allow(clippy::identity_op)]
-    table_read[0x1F80] = Some(SCRATCH_OFFSET);
-    table_read[0x9F80] = Some(SCRATCH_OFFSET);
-    // scratch cannot be accesed from kseg1
-    #[allow(clippy::identity_op)]
-    table_write[0x1F80] = Some(SCRATCH_OFFSET);
-    table_write[0x9F80] = Some(SCRATCH_OFFSET);
-
     Lut {
         read: table_read,
         write: table_write,
@@ -100,14 +88,6 @@ impl Memory {
     ///
     /// this is never safe, live fast die young
     pub unsafe fn read_raw<T: Copy>(&self, cpu: &Cpu, address: u32) -> T {
-        if cpu.cache_isolation_enabled() {
-            let address = address & 0xFFF;
-            unsafe {
-                let ptr = self.cache.as_ptr().add(address as usize);
-                let ptr = ptr as *const T;
-                return std::ptr::read_unaligned(ptr);
-            }
-        }
         let page = address >> 16;
         let offset = address & 0xFFFF;
 
@@ -117,6 +97,15 @@ impl Memory {
         match lut_ptr {
             // fastmem
             Some(region_ptr) => {
+                if cpu.cache_isolation_enabled() {
+                    let address = address & 0xFFF;
+                    unsafe {
+                        let ptr = self.cache.as_ptr().add(address as usize);
+                        let ptr = ptr as *const T;
+                        return std::ptr::read_unaligned(ptr);
+                    }
+                }
+
                 let ptr = mem
                     .wrapping_add(region_ptr as usize)
                     .wrapping_add(offset as usize);
@@ -126,6 +115,7 @@ impl Memory {
             // memcheck
             None => {
                 let _span = tracing::trace_span!("memcheck").entered();
+                let address = address & 0x1fff_ffff;
                 match address {
                     0xfffe0000.. => {
                         let ptr = mem
@@ -134,6 +124,28 @@ impl Memory {
                         // tracing::trace!("read in cache control");
                         unsafe { *(ptr as *const T) }
                     }
+                    0x1f801000..0x1f803000 => {
+                        let ptr = mem.wrapping_add(offset as usize).wrapping_add(MEM_MAP.io);
+                        match address {
+                            0x1f801800..0x1f801804 => {
+                                todo!("read from cdrom mapped memory");
+                            }
+                            0x1f801810..=0x1f801814 => {
+                                todo!("read from gpu mapped memory");
+                            }
+                            0x1f801100..=0x1f801108
+                            | 0x1f801110..=0x1f801118
+                            | 0x1f801120..=0x1f801128 => {
+                                tracing::trace!("read to timer registers");
+                                unsafe { *(ptr as *const T) }
+                            }
+                            _ => unsafe {
+                                tracing::error!("read from unsupported io mapped region");
+                                *(ptr as *const T)
+                            },
+                        }
+                    }
+
                     _ => {
                         panic!("unsupported region!");
                         // unsafe { std::mem::zeroed() }
@@ -215,14 +227,6 @@ impl Memory {
     ///
     /// here be segfaults... should be fine tho
     pub unsafe fn write_raw<T: Copy>(&mut self, cpu: &Cpu, address: u32, value: T) {
-        if cpu.cache_isolation_enabled() {
-            let address = address & 0xFFF;
-            unsafe {
-                let ptr = self.cache.as_mut_ptr().add(address as usize);
-                Memory::write_impl(ptr, value);
-                return;
-            }
-        }
         let page = address >> 16;
         let offset = address & 0x0000_FFFF;
 
@@ -232,6 +236,17 @@ impl Memory {
         match lut_ptr {
             // fastmem
             Some(region_ptr) => {
+                // FIXME: cache isolation check on fast path is stupid
+                // also not all addresses are cached, so this is straight wrong
+                if cpu.cache_isolation_enabled() {
+                    let address = address & 0xFFF;
+                    unsafe {
+                        let ptr = self.cache.as_mut_ptr().add(address as usize);
+                        Memory::write_impl(ptr, value);
+                        return;
+                    }
+                }
+
                 let ptr = mem
                     .wrapping_add(region_ptr as usize)
                     .wrapping_add(offset as usize);
@@ -242,8 +257,9 @@ impl Memory {
             // memcheck
             None => {
                 let _span = tracing::trace_span!("memcheck").entered();
+                let address = address & 0x1fff_ffff;
                 match address {
-                    0xfffe0000.. => {
+                    0x1ffe0000.. => {
                         let ptr = mem
                             .wrapping_add(offset as usize)
                             .wrapping_add(MEM_MAP.cache_control);
@@ -251,6 +267,39 @@ impl Memory {
                             Memory::write_impl(ptr, value);
                         };
                         Memory::write_to_cache_control(address, value);
+                    }
+                    0x1f801000..0x1f803000 => {
+                        let ptr = mem.wrapping_add(offset as usize).wrapping_add(MEM_MAP.io);
+
+                        match address {
+                            0x1F801070 => {
+                                // I_STAT
+                                debug_assert_eq!(size_of::<T>(), 4);
+                                unsafe {
+                                    Memory::write_impl(ptr, value);
+                                }
+                            }
+
+                            0x1F801074 => {
+                                // I_MASK
+                                unsafe {
+                                    Memory::write_impl(ptr, value);
+                                }
+                                // Maybe check if any pending interrupts should now fire
+                            }
+
+                            0x1f801800..0x1f801804 => {
+                                todo!("write to cdrom mapped memory")
+                            }
+
+                            0x1f801810..=0x1f801814 => {
+                                todo!("write to gpu mapped memory");
+                            }
+
+                            _ => unsafe {
+                                Memory::write_impl(ptr, value);
+                            },
+                        }
                     }
                     _ => {
                         panic!("unsupported region!");

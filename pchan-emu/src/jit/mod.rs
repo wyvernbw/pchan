@@ -17,6 +17,7 @@ use crate::{
     cpu::{Cop0, Cpu, REG_STR, Reg},
     cranelift_bs::*,
     dynarec::{CacheUpdates, EntryCache},
+    io::IO,
     memory::Memory,
 };
 
@@ -560,6 +561,29 @@ impl JIT {
         (value, load)
     }
 
+    #[inline]
+    pub fn emit_any_load_from_cpu(
+        builder: &mut FunctionBuilder<'_>,
+        block: Block,
+        type_: types::Type,
+        offset: i32,
+    ) -> (Value, Inst) {
+        let cpu_ptr = builder.block_params(block)[0];
+        let load = builder
+            .pure()
+            .Load(
+                Opcode::Load,
+                type_,
+                MemFlags::new().with_notrap().with_aligned(),
+                Offset32::new(offset),
+                cpu_ptr,
+            )
+            .0;
+        let value = builder.single_result(load);
+
+        (value, load)
+    }
+
     #[builder]
     #[instrument(skip(builder, block))]
     #[inline]
@@ -736,6 +760,7 @@ impl JIT {
         builder: &mut FunctionBuilder<'_>,
         block: Block,
         cache: Option<&EntryCache>,
+        delta_cycles: u64,
     ) -> Vec<Inst> {
         let Some(cache) = cache else {
             return vec![];
@@ -775,6 +800,25 @@ impl JIT {
         {
             instructions.push(JIT::emit_store_lo(builder, block, lo.value));
         }
+
+        const D_CLOCK_OFFSET: i32 = offset_of!(Cpu, d_clock) as i32;
+        let (dcycles, loadcycles) =
+            JIT::emit_any_load_from_cpu(builder, block, types::I64, D_CLOCK_OFFSET);
+        let (dcycles, addcycles) = builder.inst(|f| {
+            f.pure()
+                .BinaryImm64(
+                    Opcode::IaddImm,
+                    types::I64,
+                    Imm64::new(delta_cycles as i64),
+                    dcycles,
+                )
+                .0
+        });
+        let store_clock = JIT::emit_store_to_cpu(builder, block, dcycles, D_CLOCK_OFFSET);
+        instructions.push(loadcycles);
+        instructions.push(addcycles);
+        instructions.push(store_clock);
+
         instructions
     }
 
@@ -822,6 +866,16 @@ impl JIT {
 }
 
 type BlockFnPtr = fn(*mut Cpu, *mut Memory);
+
+/// # BlockFn
+///
+/// compiled basic block of emulation.
+///
+/// side effects:
+/// - will update pc
+/// - will reset cpu's delta clock before running
+/// - will update cpu's delta clock
+/// - may trigger interrupts
 #[derive(derive_more::Debug, Clone)]
 #[debug("{:?}", self.fn_ptr)]
 pub struct BlockFn {
@@ -833,14 +887,19 @@ pub struct BlockFn {
 type BlockFnArgs<'a> = (&'a mut Cpu, &'a mut Memory, bool);
 
 impl BlockFn {
-    fn call_block(&self, args: BlockFnArgs) {
-        if args.2 {
+    fn call_block(&self, (cpu, memory, instrument): BlockFnArgs) {
+        // reset delta clock before running
+        cpu.d_clock = 0;
+
+        if instrument {
             (self.fn_ptr)
                 .instrument(tracing::info_span!("fn", addr = ?self.fn_ptr))
-                .inner()(ptr::from_mut(args.0), ptr::from_mut(args.1))
+                .inner()(ptr::from_mut(cpu), ptr::from_mut(memory))
         } else {
-            (self.fn_ptr)(ptr::from_mut(args.0), ptr::from_mut(args.1))
-        }
+            (self.fn_ptr)(ptr::from_mut(cpu), ptr::from_mut(memory))
+        };
+
+        IO::run_timer_pipeline(cpu, memory);
     }
 }
 

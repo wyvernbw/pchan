@@ -403,6 +403,9 @@ pub trait Op: Sized + Display {
     fn invalidates_cache_at(&self) -> Option<u32> {
         None
     }
+    fn cycles(&self) -> u64 {
+        1
+    }
     fn is_block_boundary(&self) -> Option<BoundaryType>;
     fn into_opcode(self) -> crate::cpu::ops::OpCode;
     fn emit_ir(&self, ctx: EmitCtx) -> EmitSummary;

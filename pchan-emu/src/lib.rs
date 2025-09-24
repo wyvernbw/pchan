@@ -54,9 +54,12 @@ pub mod cranelift_bs {
     pub use cranelift::prelude::isa::*;
     pub use cranelift::prelude::*;
 }
+
 pub mod bootloader;
 pub mod cpu;
 pub mod dynarec;
+#[path = "./io/io.rs"]
+pub mod io;
 pub mod jit;
 pub mod memory;
 

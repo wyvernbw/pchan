@@ -4,9 +4,8 @@ use std::{
 };
 
 use pchan_utils::MAX_SIMD_WIDTH;
-use thiserror::Error;
 
-use crate::cpu::{Cpu, ops};
+use crate::cpu::Cpu;
 
 pub mod fastmem;
 
@@ -19,7 +18,7 @@ pub const fn from_kb(value: usize) -> usize {
 }
 
 pub fn buffer(size: usize) -> Box<[u8]> {
-    vec![0xCu8; size].into_boxed_slice()
+    vec![0x0; size].into_boxed_slice()
 }
 
 pub type Buffer = Box<[u8]>;
@@ -61,80 +60,6 @@ impl Default for Memory {
             buf: buffer(MEM_SIZE),
             cache: buffer(4096),
         }
-    }
-}
-
-// cost of dynamic dispatch doesnt matter since we are
-// on the cold path anyways
-type PrintableAddress = Box<dyn core::fmt::Debug>;
-
-#[derive(Error, Debug)]
-pub enum MemReadError {
-    #[error("read from unmapped address 0x{0:08X?}")]
-    UnmappedRead(PrintableAddress),
-    #[error(transparent)]
-    DerefErr(DerefError),
-    #[error("out of bounds read at address 0x{0:08X}")]
-    OutOfBoundsRead(u32),
-}
-
-impl MemReadError {
-    fn unmapped(addr: impl core::fmt::Debug + 'static) -> Self {
-        MemReadError::UnmappedRead(Box::new(addr) as Box<_>)
-    }
-}
-
-#[derive(Error, Debug)]
-pub enum MemWriteError {
-    #[error("write to unmapped address {0:?}")]
-    UnmappedWrite(PrintableAddress),
-    #[error(transparent)]
-    DerefErr(DerefError),
-    #[error("partial write into buffer {0:?} (size: {1}) from buffer {2:?} (size:{3})")]
-    MismatchedBuffers(*const u8, usize, *const u8, usize),
-    #[error("out of bounds write at address 0x{0:08X}")]
-    OutOfBoundsWrite(u32),
-}
-
-impl MemWriteError {
-    fn unmapped(addr: impl core::fmt::Debug + 'static) -> Self {
-        MemWriteError::UnmappedWrite(Box::new(addr) as Box<_>)
-    }
-}
-
-#[derive(Debug, Error)]
-#[error("error dereferencing slice")]
-pub struct DerefError;
-
-pub trait MemRead: Sized {
-    fn from_slice(buf: &[u8]) -> Result<Self, DerefError>;
-}
-
-impl MemRead for u8 {
-    #[inline]
-    fn from_slice(buf: &[u8]) -> Result<u8, DerefError> {
-        Ok(buf[0])
-    }
-}
-
-impl MemRead for u16 {
-    fn from_slice(buf: &[u8]) -> Result<u16, DerefError> {
-        let buf = buf.as_array().ok_or(DerefError)?;
-        Ok(u16::from_le_bytes(*buf))
-    }
-}
-
-impl MemRead for u32 {
-    fn from_slice(buf: &[u8]) -> Result<u32, DerefError> {
-        let buf = buf.as_array().ok_or(DerefError)?;
-        Ok(u32::from_le_bytes(*buf))
-    }
-}
-
-impl MemRead for ops::OpCode {
-    fn from_slice(buf: &[u8]) -> Result<Self, DerefError> {
-        let buf = buf.as_array().ok_or(DerefError)?;
-        Ok(ops::OpCode(u32::from_le_bytes(*buf)))
     }
 }
 

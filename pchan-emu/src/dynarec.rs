@@ -1106,10 +1106,12 @@ fn collect_instructions(
 
     let mut bomb_signal = None;
     let mut queued_bomb = None;
+    let mut cycles_used = 0;
     for (idx, op) in ops.iter().enumerate() {
         let len = ops.len();
         let _span_1 = trace_span!("emit", "%" = %format!("[{}/{len}]", idx+1),  %op, ).entered();
         let pc = address + idx as u32 * 4;
+        cycles_used += op.cycles();
 
         let summary = op.emit_ir(EmitCtx {
             function_sig_ref: None,
@@ -1254,6 +1256,7 @@ fn collect_instructions(
         .cache(&state.cache)
         .builder(fn_builder)
         .block(block)
+        .delta_cycles(cycles_used)
         .call();
     for inst in updates {
         let inst = bottom(inst);

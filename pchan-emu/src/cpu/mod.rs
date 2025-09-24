@@ -1,5 +1,6 @@
 use std::fmt::Display;
 
+use bitfield::bitfield;
 use pchan_utils::{array, hex};
 
 use crate::cpu::ops::OpCode;
@@ -23,6 +24,7 @@ pub struct Cpu {
     #[debug("{}", hex(self.pc))]
     pub pc: u32,
     pub hilo: u64,
+    pub d_clock: u16,
     pub cop0: Cop0,
     #[debug(skip)]
     pub _pad_cop1: [u64; 32],
@@ -75,7 +77,37 @@ impl Display for Cpu {
     }
 }
 
+bitfield! {
+    #[derive(Clone, Copy)]
+    pub struct CauseRegister(u32);
+
+    excode, set_excode: 6, 2;
+    interrupt_pending, set_interrupt_pending: 15, 8;
+    cop_number, set_cop_number: 29, 28;
+    branch_delay, set_branch_delay: 31;
+}
+
+#[repr(u8)]
+pub enum Exception {
+    Interrupt = 0x0,
+    Break = 0x9,
+}
+
 impl Cpu {
+    pub fn handle_exception(&mut self, exception: Exception) {
+        let cause = self.cop0.reg[13];
+        let mut cause = CauseRegister(cause);
+        cause.set_excode(exception as u32);
+        self.cop0.reg[13] = cause.0;
+
+        self.cop0.reg[14] = self.pc;
+
+        self.pc = match self.cop0.bev() {
+            false => 0x8000_0080,
+            true => 0xbfc0_0180,
+        }
+    }
+
     pub fn clear_registers(&mut self) {
         self.gpr = [0u32; 32];
     }
@@ -97,15 +129,7 @@ impl Cpu {
     #[unsafe(no_mangle)]
     pub fn handle_break(&mut self) {
         tracing::info!("running break");
-        let cause = self.cop0.reg[13];
-        let cause = cause & !(0b0011111);
-        let cause = cause | (0x09 << 2);
-        self.cop0.reg[13] = cause;
-        self.cop0.reg[14] = self.pc;
-        self.pc = match self.cop0.bev() {
-            false => 0x8000_0080,
-            true => 0xbfc0_0180,
-        }
+        self.handle_exception(Exception::Break);
     }
 }
 

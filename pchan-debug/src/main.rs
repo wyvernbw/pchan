@@ -6,6 +6,7 @@ use std::collections::HashSet;
 use color_eyre::eyre::OptionExt;
 use color_eyre::owo_colors::*;
 use inquire::{Confirm, Select};
+use pchan_emu::memory::ext;
 use pchan_emu::{Emu, dynarec::JitSummary};
 use pchan_utils::hex;
 use pchan_utils::setup_tracing;
@@ -92,6 +93,9 @@ fn debug_menu(
             StepCommand::AddBreakpoint => {
                 _ = add_breakpoint(breakpoints);
             }
+            StepCommand::InspectMemory => {
+                _ = inspect_memory(emu);
+            }
             StepCommand::Exit => return Ok(DebugMenuCommand::Exit),
             StepCommand::Run => {
                 *running = true;
@@ -113,6 +117,8 @@ pub enum StepCommand {
     ViewFunction,
     #[display("add breakpoint")]
     AddBreakpoint,
+    #[display("inspect memory")]
+    InspectMemory,
     #[display("exit")]
     Exit,
 }
@@ -147,15 +153,25 @@ fn view_function(emu: &Emu) -> color_eyre::Result<()> {
     Ok(())
 }
 
-fn add_breakpoint(breakpoints: &mut HashSet<u32>) -> color_eyre::Result<()> {
-    let breakpoint = inquire::Text::new("type an address")
+fn prompt_for_address() -> color_eyre::Result<u32> {
+    let address = inquire::Text::new("type an address")
         .with_placeholder("0xbfc00180")
         .with_help_message("this will not pause exection mid function")
         .prompt()?;
-    let address = breakpoint
-        .strip_prefix("0x")
-        .ok_or_eyre("invalid address")?;
+    let address = address.strip_prefix("0x").ok_or_eyre("invalid address")?;
     let address = u32::from_str_radix(address, 16)?;
+    Ok(address)
+}
+
+fn add_breakpoint(breakpoints: &mut HashSet<u32>) -> color_eyre::Result<()> {
+    let address = prompt_for_address()?;
     breakpoints.insert(address);
+    Ok(())
+}
+
+fn inspect_memory(emu: &Emu) -> color_eyre::Result<()> {
+    let address = prompt_for_address()?;
+    let value = emu.read::<u32, ext::NoExt>(address);
+    tracing::info!("value at {}: {}", hex(address), value);
     Ok(())
 }

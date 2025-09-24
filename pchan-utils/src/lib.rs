@@ -1,6 +1,6 @@
 #![feature(ptr_as_ref_unchecked)]
 
-use std::{backtrace::Backtrace, cell::Cell, time::Duration};
+use std::{backtrace::Backtrace, cell::Cell, fmt::Debug, time::Duration};
 
 use rstest::*;
 use tracing_indicatif::IndicatifLayer;
