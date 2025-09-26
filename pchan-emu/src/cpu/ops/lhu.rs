@@ -1,5 +1,7 @@
 use std::fmt::Display;
 
+use pchan_utils::hex;
+
 use crate::cpu::REG_STR;
 use crate::cpu::ops::{self, BoundaryType, EmitSummary, Op, OpCode, TryFromOpcodeErr};
 use crate::{cranelift_bs::*, load};
@@ -43,7 +45,9 @@ impl Display for LHU {
         write!(
             f,
             "lhu ${} ${} {}",
-            REG_STR[self.rt as usize], REG_STR[self.rs as usize], self.imm
+            REG_STR[self.rt as usize],
+            REG_STR[self.rs as usize],
+            hex(self.imm)
         )
     }
 }
@@ -84,7 +88,7 @@ mod tests {
         emulator.write_many(0x0, &program([lhu(8, 9, 4), nop(), OpCode(69420)]));
 
         let op = emulator.read::<OpCode, ext::NoExt>(0);
-        tracing::debug!(decoded = ?DecodedOp::try_from(op));
+        tracing::debug!(decoded = ?DecodedOp::new(op));
         tracing::debug!("{:08X?}", &emulator.mem.buf.as_ref()[..22]);
 
         emulator.cpu.gpr[9] = 16;

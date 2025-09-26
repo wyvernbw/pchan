@@ -60,11 +60,7 @@ impl Op for JR {
 
         let storers = ctx.emit_store_pc(rs);
 
-        let ret = ctx
-            .fn_builder
-            .pure()
-            .MultiAry(Opcode::Return, types::INVALID, ValueList::new())
-            .0;
+        let ret = ctx.fn_builder.pure().return_(&[]);
 
         EmitSummary::builder()
             .instructions([now(loadreg), now(storers), terminator(bomb(1, ret))])

@@ -2,6 +2,7 @@ use std::fmt::Display;
 
 use bitfield::bitfield;
 use pchan_utils::{array, hex};
+use tracing::instrument;
 
 use crate::cpu::ops::OpCode;
 
@@ -87,6 +88,7 @@ bitfield! {
     branch_delay, set_branch_delay: 31;
 }
 
+#[derive(Debug, Clone, Copy)]
 #[repr(u8)]
 pub enum Exception {
     Interrupt = 0x0,
@@ -94,6 +96,7 @@ pub enum Exception {
 }
 
 impl Cpu {
+    #[instrument(ret)]
     pub fn handle_exception(&mut self, exception: Exception) {
         let cause = self.cop0.reg[13];
         let mut cause = CauseRegister(cause);
@@ -136,6 +139,7 @@ impl Cpu {
 pub type Reg = u8;
 
 const RA: Reg = 31;
+const SP: Reg = 29;
 
 pub static REG_STR: &[&str] = &array![
      0 => "zero",

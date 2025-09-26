@@ -40,8 +40,10 @@ impl Display for BNE {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "bne ${} ${} 0x{:08X}",
-            REG_STR[self.rs as usize], REG_STR[self.rt as usize], self.imm
+            "bne ${} ${} {}",
+            REG_STR[self.rs as usize],
+            REG_STR[self.rt as usize],
+            hex(self.imm as i32 * 4 + 4)
         )
     }
 }

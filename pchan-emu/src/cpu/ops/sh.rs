@@ -1,5 +1,7 @@
 use std::fmt::Display;
 
+use pchan_utils::hex;
+
 use crate::cpu::REG_STR;
 use crate::cpu::ops::{self, BoundaryType, EmitSummary, Op, TryFromOpcodeErr};
 use crate::{cranelift_bs::*, store};
@@ -41,7 +43,9 @@ impl Display for SH {
         write!(
             f,
             "sh ${} ${} {}",
-            REG_STR[self.rt as usize], REG_STR[self.rs as usize], self.imm
+            REG_STR[self.rt as usize],
+            REG_STR[self.rs as usize],
+            hex(self.imm)
         )
     }
 }

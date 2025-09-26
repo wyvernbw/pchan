@@ -40,8 +40,10 @@ impl Display for BEQ {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "beq ${} ${} 0x{:08X}",
-            REG_STR[self.rs as usize], REG_STR[self.rt as usize], self.imm
+            "beq ${} ${} {}",
+            REG_STR[self.rs as usize],
+            REG_STR[self.rt as usize],
+            hex(self.imm)
         )
     }
 }

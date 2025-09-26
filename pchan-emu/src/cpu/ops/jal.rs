@@ -27,7 +27,7 @@ impl TryFrom<OpCode> for JAL {
 
 impl Display for JAL {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "jal 0x{:08X}", self.imm)
+        write!(f, "jal {}", hex(self.imm << 2))
     }
 }
 
@@ -60,7 +60,6 @@ impl Op for JAL {
                 .0
         });
         let [create_new_pc, store_new_pc] = ctx.emit_store_pc_imm(jump_address);
-        // ctx.update_cache_immediate(RA, new_ra);
 
         let cached_call = ctx.try_fn_call(jump_address);
         if let Some([create_address, call]) = cached_call {
@@ -111,7 +110,12 @@ mod tests {
     use pretty_assertions::assert_eq;
     use rstest::rstest;
 
-    use crate::{Emu, cpu::RA, dynarec::JitSummary, test_utils::emulator};
+    use crate::{
+        Emu,
+        cpu::{RA, SP},
+        dynarec::JitSummary,
+        test_utils::emulator,
+    };
 
     #[rstest]
     fn jal_1(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
@@ -138,6 +142,43 @@ mod tests {
         let summary = emulator.step_jit_summarize::<JitSummary>()?;
         tracing::info!(?summary.function);
         assert_eq!(emulator.cpu.gpr[10], 12);
+
+        Ok(())
+    }
+
+    #[rstest]
+    fn jal_2(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
+        use crate::dynarec::prelude::*;
+
+        let main = program([
+            addiu(8, 0, 4), // counter = 4
+            jal(0x00002000 >> 2),
+            nop(),
+            OpCode(69420),
+        ]);
+
+        let recursive_fn = program([
+            addiu(SP, SP, -24), // allocate stack
+            sw(RA, SP, 20),     // save return address
+            sw(8, SP, 16),      // save counter
+            addiu(8, 8, -1),    // counter--
+            blez(8, 0x2),
+            nop(),
+            jal(0x00002000 >> 2), // recursive call
+            nop(),
+            // base_case:
+            lw(8, SP, 16),     // restore counter
+            lw(RA, SP, 20),    // restore return address
+            addiu(SP, SP, 24), // deallocate stack
+            jr(RA),            // return
+        ]);
+
+        emulator.cpu.gpr[SP as usize] = 0x801ffce0;
+        emulator.write_many(emulator.cpu.pc, &main);
+        emulator.write_many(0x00002000, &recursive_fn);
+
+        let summary = emulator.step_jit_summarize::<JitSummary>()?;
+        tracing::info!(?summary.function);
 
         Ok(())
     }

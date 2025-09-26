@@ -1,0 +1,96 @@
+Some(JitSummary { decoded_ops: {
+  block0:
+    0xbfc0691c:    jal 0x0fc0db50
+    0xbfc06920:    addu $a0 $zero $zero
+    0xbfc06924:    jal 0x0fc0db60
+    => jumps to: block1, 
+
+  block1:
+    0xbfc0db50:    addiu $t2 $zero 0x00c0
+    0xbfc0db54:    jr $t2
+    0xbfc0db58:    addiu $t1 $zero 0x0001
+    0xbfc0db5c:    nop
+    => jumps to: (none)
+
+}
+, function: Some(function u97:97(i64, i64) system_v {
+    sig0 = (i64, i64, i32) -> i32 system_v
+    sig1 = (i64, i64, i32) -> i32 system_v
+    sig2 = (i64, i64, i32) -> i32 system_v
+    sig3 = (i64, i64, i32) -> i32 system_v
+    sig4 = (i64, i64, i32) -> i32 system_v
+    sig5 = (i64, i64, i32, i32) system_v
+    sig6 = (i64, i64, i32, i32) system_v
+    sig7 = (i64, i64, i32, i32) system_v
+    sig8 = (i64) system_v
+    sig9 = (i64) system_v
+    fn0 = u0:0 sig0
+    fn1 = u0:1 sig1
+    fn2 = u0:2 sig2
+    fn3 = u0:3 sig3
+    fn4 = u0:4 sig4
+    fn5 = u0:5 sig5
+    fn6 = u0:6 sig6
+    fn7 = u0:7 sig7
+    fn8 = u0:8 sig8
+    fn9 = u0:9 sig9
+
+block0(v0: i64, v1: i64):
+    v2 = iconst.i32 -1077909212
+    v3 = iconst.i32 -1077879984
+    store notrap aligned v3, v0+128  ; v3 = -1077879984
+    v4 = iconst.i32 0
+    store notrap aligned v4, v0+16  ; v4 = 0
+    store notrap aligned v2, v0+124  ; v2 = -1077909212
+    v5 = load.i64 notrap aligned v0+144
+    v6 = iadd_imm v5, 2
+    store notrap aligned v6, v0+144
+    jump block1(v0, v1)
+
+block1(v7: i64, v8: i64):
+    v9 = iconst.i32 192
+    nop 
+    store notrap aligned v9, v7+128  ; v9 = 192
+    v10 = iconst.i32 1
+    store notrap aligned v10, v7+36  ; v10 = 1
+    store notrap aligned v9, v7+40  ; v9 = 192
+    v11 = load.i64 notrap aligned v7+144
+    v12 = iadd_imm v11, 3
+    store notrap aligned v12, v7+144
+    return
+}
+), panicked: false, function_panic: no panic. 👍, cpu_state: Cpu {
+    gpr: [
+        "$at=0xa0000000",
+        "$v0=0x00000020",
+        "$v1=0xa000e004",
+        "$a1=0x00000020",
+        "$a2=0x00000020",
+        "$a3=0x0000002a",
+        "$t0=0xa000e000",
+        "$t1=0x00000001",
+        "$t2=0x000000c0",
+        "$t3=0x00000024",
+        "$t4=0x00000009",
+        "$t5=0x00000024",
+        "$t6=0xa0010004",
+        "$t7=0xa0010004",
+        "$s2=0xa000b940",
+        "$s3=0x801ffbbc",
+        "$t8=0xa000e000",
+        "$t9=0x00000001",
+        "$k0=0xbfc0193c",
+        "$k1=0x00000f1c",
+        "$gp=0xa0010ff0",
+        "$sp=0x801ff970",
+        "$fp(s8)=0xbfc0ddb0",
+        "$ra=0xbfc06924",
+    ],
+    pc: 0x000000c0,
+    hilo: 0,
+    d_clock: 5,
+    cop0: Cop0 {
+        reg: [],
+    },
+    ..
+} })

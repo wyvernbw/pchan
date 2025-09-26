@@ -16,7 +16,7 @@ impl LUI {
 
 impl Display for LUI {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "lui ${} {}", REG_STR[self.rt as usize], self.imm)
+        write!(f, "lui ${} {}", REG_STR[self.rt as usize], hex(self.imm))
     }
 }
 

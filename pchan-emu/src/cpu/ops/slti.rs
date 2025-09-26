@@ -23,7 +23,9 @@ impl Display for SLTI {
         write!(
             f,
             "slti ${} ${} {}",
-            REG_STR[self.rt as usize], REG_STR[self.rs as usize], self.imm
+            REG_STR[self.rt as usize],
+            REG_STR[self.rs as usize],
+            hex(self.imm)
         )
     }
 }

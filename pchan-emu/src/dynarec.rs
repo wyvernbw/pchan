@@ -44,6 +44,7 @@ pub mod prelude {
     pub use crate::shift;
     pub use crate::shiftimm;
     pub use crate::store;
+    pub use pchan_utils::hex;
 }
 pub mod builder;
 #[path = "sparse-queue.rs"]
@@ -96,8 +97,10 @@ impl SummarizeJit for JitSummary {
                 // tracing::trace!(cfg.node = ?fetch.cfg[node].clif_block);
                 writeln!(&mut buf, "  {:?}:", fetch.cfg[node].clif_block()).unwrap();
                 let ops = fetch.ops_for(&fetch.cfg[node]);
+                let mut address = fetch.cfg[node].address;
                 for op in ops {
-                    writeln!(&mut buf, "    {op}").unwrap();
+                    writeln!(&mut buf, "    {}:    {op}", hex(address)).unwrap();
+                    address += 4;
                 }
                 if ops.is_empty() {
                     writeln!(&mut buf, "    (empty)").unwrap();
@@ -205,10 +208,10 @@ impl Emu {
         }
 
         // collect blocks in function
-        let cfg = Graph::with_capacity(20, 0);
+        let cfg = Graph::with_capacity(256, 0);
         let mut blocks = fetch(
             FetchParams::builder()
-                .pc(self.cpu.pc)
+                .pc(initial_address)
                 .mem(&self.mem)
                 .cpu(&self.cpu)
                 .cfg(cfg)
@@ -441,6 +444,7 @@ fn find_first_value(than: u32, mapped: &HashMap<u32, NodeIndex>) -> Option<u32> 
     mapped.keys().filter(|addr| addr < &&than).max().cloned()
 }
 
+#[instrument(skip_all)]
 fn fetch(params: FetchParams<'_>) -> color_eyre::Result<FetchSummary> {
     let FetchParams {
         pc: initial_pc,
@@ -475,7 +479,7 @@ fn fetch(params: FetchParams<'_>) -> color_eyre::Result<FetchSummary> {
 
         if enabled!(Level::TRACE) {
             tracing::trace!(" ---- begin block ---- ");
-            tracing::trace!(" • address: 0x{:08X?}", state.start_pc);
+            tracing::trace!(" • address: {}", hex(state.start_pc));
             tracing::trace!(" • node: {:?}", state.node);
         }
         let mut lifetime: Option<u32> = None;
@@ -489,8 +493,7 @@ fn fetch(params: FetchParams<'_>) -> color_eyre::Result<FetchSummary> {
 
         while pc < u32::MAX {
             let opcode = mem.read::<OpCode, ext::NoExt>(cpu, pc);
-            let op = DecodedOp::extract_fields(&opcode);
-            let op = DecodedOp::decode_one(op);
+            let op = DecodedOp::new(opcode);
             let block_boundary = op.is_block_boundary();
             if enabled!(Level::TRACE) {
                 if op.is_illegal() {
@@ -533,10 +536,9 @@ fn fetch(params: FetchParams<'_>) -> color_eyre::Result<FetchSummary> {
             pc += 4;
         }
 
-        let padded_ops_end = ops_end + 4;
         let (boundary, pc) = boundary.unwrap();
 
-        cfg[state.node].ops = OpsHandle::from_usize(ops_start..padded_ops_end);
+        cfg[state.node].ops = OpsHandle::from_usize(ops_start..ops_end);
 
         match boundary.is_block_boundary() {
             None => {}

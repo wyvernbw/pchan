@@ -34,7 +34,9 @@ impl Display for XORI {
         write!(
             f,
             "xori ${} ${} {}",
-            REG_STR[self.rt as usize], REG_STR[self.rs as usize], self.imm
+            REG_STR[self.rt as usize],
+            REG_STR[self.rs as usize],
+            hex(self.imm)
         )
     }
 }

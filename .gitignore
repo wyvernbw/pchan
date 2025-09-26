@@ -1,4 +1,5 @@
 .cargo/config.toml
 /target
+bios-decomp/
 
 *.BIN

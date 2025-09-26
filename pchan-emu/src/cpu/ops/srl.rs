@@ -35,7 +35,9 @@ impl Display for SRL {
         write!(
             f,
             "srl ${} ${} {}",
-            REG_STR[self.rd as usize], REG_STR[self.rt as usize], self.imm
+            REG_STR[self.rd as usize],
+            REG_STR[self.rt as usize],
+            hex(self.imm)
         )
     }
 }

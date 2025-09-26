@@ -19,20 +19,9 @@ impl J {
     }
 }
 
-impl TryFrom<OpCode> for J {
-    type Error = TryFromOpcodeErr;
-
-    fn try_from(opcode: OpCode) -> Result<Self, TryFromOpcodeErr> {
-        let opcode = opcode.as_primary(PrimeOp::J)?;
-        Ok(J {
-            imm: opcode.bits(0..26),
-        })
-    }
-}
-
 impl Display for J {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "j 0x{:08X}", self.imm)
+        write!(f, "j {}", hex(self.imm << 2))
     }
 }
 

@@ -60,6 +60,6 @@ mod tests {
         let summary = emu.step_jit_summarize::<JitSummary>().unwrap();
         tracing::info!(?summary);
 
-        assert_eq!(emu.cpu.pc, 0xbfc00180);
+        assert_eq!(emu.cpu.pc, 0x8000_0080);
     }
 }

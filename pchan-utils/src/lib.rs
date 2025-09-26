@@ -1,6 +1,6 @@
 #![feature(ptr_as_ref_unchecked)]
 
-use std::{backtrace::Backtrace, cell::Cell, fmt::Debug, time::Duration};
+use std::{backtrace::Backtrace, cell::Cell};
 
 use rstest::*;
 use tracing_indicatif::IndicatifLayer;
@@ -146,6 +146,6 @@ pub fn hex<T>(mut x: T) -> &'static str {
 fn test_hex_encode() {
     let number = 0xDEAD_BEEFu32;
     let fmt = format!("0x{number:x}");
-    let hex = hex(&number);
+    let hex = hex(number);
     assert_eq!(hex, fmt);
 }

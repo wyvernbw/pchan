@@ -33,7 +33,9 @@ impl Display for ORI {
         write!(
             f,
             "ori ${} ${} {}",
-            REG_STR[self.rt as usize], REG_STR[self.rs as usize], self.imm
+            REG_STR[self.rt as usize],
+            REG_STR[self.rs as usize],
+            hex(self.imm)
         )
     }
 }

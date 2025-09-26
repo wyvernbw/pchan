@@ -60,7 +60,9 @@ impl Display for LBU {
         write!(
             f,
             "lbu ${} ${} {}",
-            REG_STR[self.rt as usize], REG_STR[self.rs as usize], self.imm
+            REG_STR[self.rt as usize],
+            REG_STR[self.rs as usize],
+            hex(self.imm)
         )
     }
 }
@@ -79,7 +81,7 @@ mod tests {
     pub fn test_lbu(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
         emulator.write_many(0x0, &program([lbu(8, 9, 4), nop(), OpCode(69420)]));
         let op = emulator.read::<OpCode, ext::NoExt>(0x0);
-        tracing::debug!(decoded = ?DecodedOp::try_from(op));
+        tracing::debug!(decoded = ?DecodedOp::new(op));
         tracing::debug!("{:08X?}", &emulator.mem.buf.as_ref()[..21]);
         emulator.cpu.gpr[9] = 16;
         emulator.mem.buf.as_mut()[20] = 69;

@@ -122,7 +122,13 @@ mod tests {
 
         let op_count = summary.function.unwrap().dfg.num_insts();
 
-        assert!(op_count <= 3 + 2 + 1);
+        assert!(
+            op_count
+                <= 3
+            + 2
+            + 1 // return
+            + 3 // cycle counting
+        );
 
         Ok(())
     }

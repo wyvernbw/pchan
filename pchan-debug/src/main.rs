@@ -10,6 +10,7 @@ use pchan_emu::memory::ext;
 use pchan_emu::{Emu, dynarec::JitSummary};
 use pchan_utils::hex;
 use pchan_utils::setup_tracing;
+use std::io::Write;
 use strum::IntoEnumIterator;
 
 pub fn main() -> color_eyre::Result<()> {
@@ -44,7 +45,7 @@ pub fn main() -> color_eyre::Result<()> {
             if running {
                 continue;
             }
-            let dbg_cmd = debug_menu(&emu, &mut breakpoints, &mut running, Some(summary))?;
+            let dbg_cmd = debug_menu(&emu, old_pc, &mut breakpoints, &mut running, Some(summary))?;
             match dbg_cmd {
                 DebugMenuCommand::Exit => break 'outer,
                 DebugMenuCommand::Step => {}
@@ -66,6 +67,7 @@ pub enum DebugMenuCommand {
 
 fn debug_menu(
     emu: &Emu,
+    pc: u32,
     breakpoints: &mut HashSet<u32>,
     running: &mut bool,
     summary: Option<JitSummary>,
@@ -87,6 +89,15 @@ fn debug_menu(
         match action {
             StepCommand::Step => return Ok(DebugMenuCommand::Step),
             StepCommand::ShowSummary => tracing::info!("{:?}", summary),
+            StepCommand::ShowOps => {
+                tracing::info!(
+                    "{}",
+                    &summary
+                        .as_ref()
+                        .map(|s| s.decoded_ops.as_str())
+                        .unwrap_or("None")
+                )
+            }
             StepCommand::ViewFunction => {
                 _ = view_function(emu);
             }
@@ -101,6 +112,12 @@ fn debug_menu(
                 *running = true;
                 return Ok(DebugMenuCommand::Step);
             }
+            StepCommand::DumpSummary => {
+                let path = format!("pchan-dump-{}.text", hex(pc));
+                let mut file = std::fs::File::create(&path)?;
+                write!(file, "{:?}", summary)?;
+                tracing::info!("file written to {}", path);
+            }
         }
     }
 }
@@ -113,6 +130,10 @@ pub enum StepCommand {
     Run,
     #[display("show summary")]
     ShowSummary,
+    #[display("show summary(ops)")]
+    ShowOps,
+    #[display("dump summary")]
+    DumpSummary,
     #[display("view function")]
     ViewFunction,
     #[display("add breakpoint")]

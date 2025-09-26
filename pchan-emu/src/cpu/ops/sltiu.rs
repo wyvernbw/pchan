@@ -23,7 +23,9 @@ impl Display for SLTIU {
         write!(
             f,
             "sltiu ${} ${} {}",
-            REG_STR[self.rt as usize], REG_STR[self.rs as usize], self.imm
+            REG_STR[self.rt as usize],
+            REG_STR[self.rs as usize],
+            hex(self.imm)
         )
     }
 }
@@ -110,7 +112,7 @@ mod tests {
         tracing::info!(?summary.function);
         assert_eq!(emulator.cpu.gpr[10], 0);
         let op_count = summary.function.unwrap().dfg.num_insts();
-        assert!(op_count <= 5);
+        assert!(op_count <= 5 + 3);
         Ok(())
     }
 
@@ -125,7 +127,7 @@ mod tests {
         tracing::info!(?summary.function);
         assert_eq!(emulator.cpu.gpr[10], 1);
         let op_count = summary.function.unwrap().dfg.num_insts();
-        assert!(op_count <= 5);
+        assert!(op_count <= 5 + 3);
         Ok(())
     }
 }

@@ -166,7 +166,7 @@ impl Default for JIT {
             .symbol("write16", Memory::write16 as *const u8)
             .symbol("write8", Memory::write8 as *const u8)
             .symbol("handle_rfe", Cpu::handle_rfe as *const u8)
-            .symbol("handle_break", Cpu::handle_rfe as *const u8);
+            .symbol("handle_break", Cpu::handle_break as *const u8);
 
         let mut module = JITModule::new(jit_builder);
         let ptr = module.target_config().pointer_type();
@@ -481,7 +481,6 @@ impl JIT {
                     #[cfg(not(target_os = "macos"))]
                     unsafe {
                         __register_frame(eh_frame_bytes.as_ptr());
-                        // tracing::info!("registered unwind information");
                     }
                 }
                 UnwindInfo::WindowsX64(_) => {

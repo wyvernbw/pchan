@@ -40,7 +40,9 @@ impl Display for ADDIU {
         write!(
             f,
             "addiu ${} ${} {}",
-            REG_STR[self.rt as usize], REG_STR[self.rs as usize], self.imm
+            REG_STR[self.rt as usize],
+            REG_STR[self.rs as usize],
+            hex(self.imm)
         )
     }
 }
@@ -138,7 +140,14 @@ mod tests {
         tracing::info!(?summary.function);
         assert_eq!(emulator.cpu.gpr[10], 32);
         let op_count = summary.function.unwrap().dfg.num_insts();
-        assert!(op_count <= 5);
+        assert!(
+            op_count
+                <= 1 // addiu constant
+            + 2 // stores to registers ($t2 and internal pc)
+            + 1 // pc constant 
+            + 3 // clock delta calculations
+            + 1 // return
+        );
         Ok(())
     }
     #[rstest]
@@ -153,7 +162,7 @@ mod tests {
         tracing::info!(?summary.function);
         assert_eq!(emulator.cpu.gpr[10], 21);
         let op_count = summary.function.unwrap().dfg.num_insts();
-        assert!(op_count <= 7);
+        assert!(op_count <= 11);
         Ok(())
     }
 }
