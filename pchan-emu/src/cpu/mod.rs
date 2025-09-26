@@ -47,15 +47,32 @@ pub struct Cop0 {
     pub reg: [u32; 64],
 }
 
+bitfield! {
+    pub struct Cop0StatusReg(u32);
+
+    // TODO: other fields
+    bev, set_bev: 22;
+    isc, set_isc: 16;
+}
+
 impl Default for Cop0 {
     fn default() -> Self {
-        Self { reg: [0u32; 64] }
+        let mut reg = [0u32; 64];
+
+        let mut r12 = Cop0StatusReg(0);
+        r12.set_bev(true);
+        reg[12] = r12.0;
+
+        Self { reg }
     }
 }
 
 impl Cop0 {
     pub fn bev(&self) -> bool {
         self.reg[12] & (1 << 22) != 0
+    }
+    pub fn isc(&self) -> bool {
+        Cop0StatusReg(self.reg[12]).isc()
     }
 }
 
@@ -117,8 +134,8 @@ impl Cpu {
     pub fn jump_to_bios(&mut self) {
         self.pc = 0xBFC0_0000;
     }
-    pub fn cache_isolation_enabled(&self) -> bool {
-        (self.cop0.reg[12] & (1 << 16)) != 0
+    pub fn isc(&self) -> bool {
+        self.cop0.isc()
     }
 
     #[unsafe(no_mangle)]
