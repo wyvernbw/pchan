@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -7,20 +5,22 @@ use color_eyre::eyre::{Result, eyre};
 use flume::{Receiver, Sender};
 use pchan_emu::Emu;
 use pchan_emu::jit::JIT;
-use ratatui::crossterm::event::KeyEvent;
-use ratatui::layout::Flex;
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, BorderType, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType};
 use ratatui::{DefaultTerminal, crossterm::event};
-use tui_input::Input;
-use tui_input::backend::crossterm::EventHandler;
 
 use crate::AppConfig;
+use crate::app::first_time_setup::{FirstTimeSetup, FirstTimeSetupState};
+use crate::app::modeline::{Command, Mode, Modeline, ModelineState};
 
+pub mod first_time_setup;
+pub mod modeline;
+
+#[macro_export]
 macro_rules! key {
     // Variant with no arguments, e.g. Enter, Esc
     ($code:ident, $kind:ident) => {
-        KeyEvent {
+        ratatui::crossterm::event::KeyEvent {
             code: ratatui::crossterm::event::KeyCode::$code,
             kind: ratatui::crossterm::event::KeyEventKind::$kind,
             ..
@@ -28,7 +28,7 @@ macro_rules! key {
     };
     // Variant with arguments, e.g. Char('x'), Char(_)
     ($code:ident ( $($arg:tt)* ), $kind:ident) => {
-        KeyEvent {
+        ratatui::crossterm::event::KeyEvent {
             code: ratatui::crossterm::event::KeyCode::$code($($arg)*),
             kind: ratatui::crossterm::event::KeyEventKind::$kind,
             ..
@@ -44,27 +44,6 @@ trait Component: StatefulWidget {
         event: event::Event,
         state: &mut Self::ComponentState,
     ) -> Result<Self::ComponentSummary>;
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct App {}
-
-pub struct AppState {
-    app_config: AppConfig,
-    config_tx: Sender<AppConfig>,
-    exit: bool,
-    error: Option<color_eyre::Report>,
-
-    focused: AppFocus,
-    modeline_state: ModelineState,
-    first_time_setup_state: FirstTimeSetupState,
-}
-
-#[derive(Default, PartialEq, Eq)]
-enum AppFocus {
-    #[default]
-    None,
-    FirstTimeSetupBiosInput,
 }
 
 pub fn run(config: AppConfig, mut terminal: DefaultTerminal) -> Result<()> {
@@ -84,6 +63,11 @@ pub fn run(config: AppConfig, mut terminal: DefaultTerminal) -> Result<()> {
         modeline_state: ModelineState { mode: Mode::Normal },
         first_time_setup_state: FirstTimeSetupState::default(),
     };
+
+    if !app_state.app_config.initialized() {
+        app_state.first_time_setup_state.bios_path_input_active = true;
+        app_state.focused = AppFocus::FirstTimeSetupBiosInput;
+    }
 
     loop {
         terminal.draw(|frame| frame.render_stateful_widget(app, frame.area(), &mut app_state))?;
@@ -120,81 +104,25 @@ fn emu_thread(emu: Arc<RwLock<Emu>>, config_rx: Receiver<AppConfig>) -> Result<(
     Ok(())
 }
 
-struct Modeline;
-enum Mode {
-    Normal,
-    Command(ModeCommandState),
+#[derive(Debug, Clone, Copy)]
+pub struct App {}
+
+pub struct AppState {
+    app_config: AppConfig,
+    config_tx: Sender<AppConfig>,
+    exit: bool,
+    error: Option<color_eyre::Report>,
+
+    focused: AppFocus,
+    modeline_state: ModelineState,
+    first_time_setup_state: FirstTimeSetupState,
 }
-struct ModeCommandState {
-    input: Input,
-}
-struct ModelineState {
-    mode: Mode,
-}
-enum Command {
+
+#[derive(Default, PartialEq, Eq)]
+enum AppFocus {
+    #[default]
     None,
-    Quit,
-}
-
-impl FromStr for Command {
-    type Err = color_eyre::Report;
-
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        match s {
-            "q" | "quit" => Ok(Command::Quit),
-            _ => Err(eyre!("invalid command")),
-        }
-    }
-}
-
-impl StatefulWidget for Modeline {
-    type State = ModelineState;
-
-    fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
-        let [_, bottom] = Layout::vertical([Constraint::Min(1), Constraint::Max(1)]).areas(area);
-        match &state.mode {
-            Mode::Normal => {
-                Paragraph::new("  NORM  ").render(bottom, buf);
-            }
-            Mode::Command(mode_command_state) => {
-                let text = format!("  CMD: {}  ", mode_command_state.input.value());
-                Paragraph::new(text).render(bottom, buf);
-            }
-        }
-    }
-}
-
-impl Component for Modeline {
-    type ComponentState = ModelineState;
-    type ComponentSummary = Command;
-
-    fn handle_input(&mut self, event: event::Event, state: &mut ModelineState) -> Result<Command> {
-        if let Mode::Command(state) = &mut state.mode {
-            state.input.handle_event(&event);
-        }
-
-        if let event::Event::Key(key_event) = event {
-            match (&mut state.mode, key_event) {
-                (Mode::Normal, key!(Char(':'), Press)) => {
-                    state.mode = Mode::Command(ModeCommandState {
-                        input: Input::default(),
-                    });
-                }
-                (Mode::Command(cmd), key!(Enter, Press)) => {
-                    let cmd = cmd.input.value();
-                    let cmd = Command::from_str(cmd);
-                    state.mode = Mode::Normal;
-                    return cmd;
-                }
-                (Mode::Command(_), key!(Esc, Press)) => {
-                    state.mode = Mode::Normal;
-                }
-                _ => {}
-            }
-        };
-
-        Ok(Command::None)
-    }
+    FirstTimeSetupBiosInput,
 }
 
 impl StatefulWidget for App {
@@ -260,6 +188,7 @@ impl Component for App {
                     TypingAction::Pending => {}
                     TypingAction::Submit(path) => {
                         state.app_config.bios_path = Some(path);
+                        state.config_tx.send(state.app_config.clone())?;
                     }
                 }
             }
@@ -275,80 +204,14 @@ impl Component for App {
             true => {}
             _ => {}
         }
-
-        if state.app_config.initialized() {
-            state.config_tx.send(state.app_config.clone())?;
-        }
         Ok(())
     }
 }
-
-struct FirstTimeSetup;
-#[derive(Default)]
-struct FirstTimeSetupState {
-    bios_path_input: Input,
-    bios_path_input_active: bool,
-}
-
-impl StatefulWidget for FirstTimeSetup {
-    type State = FirstTimeSetupState;
-
-    fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
-        let [area] = Layout::horizontal([Constraint::Ratio(1, 3)])
-            .flex(Flex::Center)
-            .areas(area);
-        let [header, bios_path_input] =
-            Layout::vertical([Constraint::Max(4), Constraint::Length(3)])
-                .flex(Flex::Center)
-                .areas(area);
-        Paragraph::new(
-            "Welcome to the P-chan debugger!\n\nPlease provide the information required to run the debugger.",
-        )
-        .wrap(Wrap { trim: false })
-        .centered()
-        .render(header, buf);
-        Paragraph::new(state.bios_path_input.value())
-            .block(
-                Block::bordered()
-                    .title("path to bios file:")
-                    .border_type(BorderType::Rounded)
-                    .border_style(match state.bios_path_input_active {
-                        true => Style::new().green(),
-                        false => Style::new(),
-                    }),
-            )
-            .render(bios_path_input, buf);
-    }
-}
-
-enum TypingAction<T> {
+pub enum TypingAction<T> {
     Escape,
     Pending,
     Submit(T),
 }
 
-impl Component for FirstTimeSetup {
-    type ComponentState = FirstTimeSetupState;
-
-    type ComponentSummary = TypingAction<PathBuf>;
-
-    fn handle_input(
-        &mut self,
-        event: event::Event,
-        state: &mut Self::ComponentState,
-    ) -> Result<Self::ComponentSummary> {
-        state.bios_path_input_active = true;
-        state.bios_path_input.handle_event(&event);
-        if let event::Event::Key(key) = event {
-            match key {
-                key!(Enter, Press) if !state.bios_path_input.value().is_empty() => {
-                    state.bios_path_input_active = false;
-                    let path = state.bios_path_input.value().to_string();
-                    return Ok(TypingAction::Submit(path.into()));
-                }
-                _ => {}
-            }
-        }
-        Ok(TypingAction::Pending)
-    }
-}
+pub struct MainPage;
+pub struct MainPageState;
