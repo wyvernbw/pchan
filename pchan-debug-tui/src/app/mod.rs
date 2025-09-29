@@ -1,242 +1,354 @@
-use std::{str::FromStr, time::Duration};
+use std::path::PathBuf;
+use std::str::FromStr;
+use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
-use color_eyre::{Result, eyre::eyre};
-use flume::Sender;
-use ratatui::crossterm::event::{self, KeyCode, KeyEvent, KeyEventKind};
-use ratatui::{
-    DefaultTerminal,
-    prelude::*,
-    widgets::{Paragraph, Tabs},
-};
-use tui_input::{Input, backend::crossterm::EventHandler};
-use tui_logger::TuiLoggerSmartWidget;
+use color_eyre::eyre::{Result, eyre};
+use flume::{Receiver, Sender};
+use pchan_emu::Emu;
+use pchan_emu::jit::JIT;
+use ratatui::crossterm::event::KeyEvent;
+use ratatui::layout::Flex;
+use ratatui::prelude::*;
+use ratatui::widgets::{Block, BorderType, Paragraph, Wrap};
+use ratatui::{DefaultTerminal, crossterm::event};
+use tui_input::Input;
+use tui_input::backend::crossterm::EventHandler;
 
-pub struct State {
-    logs_open: bool,
-    event_tx: Sender<AppEvent>,
-    error: Option<color_eyre::Report>,
-    cursor_position: Option<Position>,
-    mode: Mode,
-    exit: bool,
-}
-
-impl State {
-    pub fn with_mode(self, mode: Mode) -> Self {
-        State { mode, ..self }
-    }
-}
-
-#[derive(derive_more::Display)]
-pub enum Mode {
-    #[display("NORM")]
-    Normal,
-    #[display("CMD")]
-    Command { input: Input },
-}
-
-pub enum AppEvent {
-    None,
-    Key(KeyEvent),
-    MoveCursor(Position),
-}
+use crate::AppConfig;
 
 macro_rules! key {
     // Variant with no arguments, e.g. Enter, Esc
     ($code:ident, $kind:ident) => {
         KeyEvent {
-            code: KeyCode::$code,
-            kind: KeyEventKind::$kind,
+            code: ratatui::crossterm::event::KeyCode::$code,
+            kind: ratatui::crossterm::event::KeyEventKind::$kind,
             ..
         }
     };
     // Variant with arguments, e.g. Char('x'), Char(_)
     ($code:ident ( $($arg:tt)* ), $kind:ident) => {
         KeyEvent {
-            code: KeyCode::$code($($arg)*),
-            kind: KeyEventKind::$kind,
+            code: ratatui::crossterm::event::KeyCode::$code($($arg)*),
+            kind: ratatui::crossterm::event::KeyEventKind::$kind,
             ..
         }
     };
 }
 
-impl State {
-    #[must_use]
-    fn handle_event(self, event: AppEvent) -> State {
-        match (&self.mode, event) {
-            // pressing ':' enters command mode
-            (Mode::Normal, AppEvent::Key(key!(Char(_), Press))) => State {
-                mode: Mode::Command {
-                    input: Input::new("".to_string()),
-                },
-                ..self
-            },
-
-            (Mode::Command { input }, AppEvent::Key(key!(Enter, Press))) => {
-                let command = Command::from_str(input.value());
-                match command {
-                    Ok(command) => command.reduce(self).with_mode(Mode::Normal),
-                    Err(err) => State {
-                        mode: Mode::Normal,
-                        error: Some(err),
-                        ..self
-                    },
-                }
-            }
-            (Mode::Command { .. }, AppEvent::Key(key!(Esc, Press))) => self.with_mode(Mode::Normal),
-            (Mode::Command { input }, AppEvent::Key(key_event)) => {
-                let mut input = input.clone();
-                input.handle_event(&event::Event::Key(key_event));
-                self.with_mode(Mode::Command { input })
-            }
-
-            (_, AppEvent::MoveCursor(pos)) => Self {
-                cursor_position: Some(pos),
-                ..self
-            },
-
-            _ => self,
-        }
-    }
+trait Component: StatefulWidget {
+    type ComponentState;
+    type ComponentSummary = ();
+    fn handle_input(
+        &mut self,
+        event: event::Event,
+        state: &mut Self::ComponentState,
+    ) -> Result<Self::ComponentSummary>;
 }
 
 #[derive(Debug, Clone, Copy)]
-pub enum Command {
-    Quit,
+pub struct App {}
+
+pub struct AppState {
+    app_config: AppConfig,
+    config_tx: Sender<AppConfig>,
+    exit: bool,
+    error: Option<color_eyre::Report>,
+
+    focused: AppFocus,
+    modeline_state: ModelineState,
+    first_time_setup_state: FirstTimeSetupState,
 }
 
-impl Command {
-    pub fn reduce(self, state: State) -> State {
-        match (&state, self) {
-            (_, Command::Quit) => State {
-                exit: true,
-                ..state
-            },
+#[derive(Default, PartialEq, Eq)]
+enum AppFocus {
+    #[default]
+    None,
+    FirstTimeSetupBiosInput,
+}
+
+pub fn run(config: AppConfig, mut terminal: DefaultTerminal) -> Result<()> {
+    let emu = Arc::new(RwLock::new(Emu::default()));
+    let (config_tx, config_rx) = flume::unbounded();
+
+    emu_thread(emu, config_rx)?;
+
+    let mut app = App {};
+    let mut app_state = AppState {
+        app_config: config,
+        exit: false,
+        config_tx,
+        error: None,
+
+        focused: AppFocus::None,
+        modeline_state: ModelineState { mode: Mode::Normal },
+        first_time_setup_state: FirstTimeSetupState::default(),
+    };
+
+    loop {
+        terminal.draw(|frame| frame.render_stateful_widget(app, frame.area(), &mut app_state))?;
+        if let Ok(true) = event::poll(Duration::from_millis(0)) {
+            let event = event::read()?;
+            app.handle_input(event, &mut app_state)?;
+        }
+        if app_state.exit {
+            return Ok(());
         }
     }
+}
+
+fn emu_thread(emu: Arc<RwLock<Emu>>, config_rx: Receiver<AppConfig>) -> Result<()> {
+    std::thread::spawn(move || -> Result<()> {
+        let mut jit = JIT::default();
+        let Ok(mut config) = config_rx.recv() else {
+            return Err(eyre!("emu thread received config with no bios path"));
+        };
+        {
+            let mut emu = emu.write().unwrap();
+            emu.boot.set_bios_path(config.bios_path.unwrap());
+            emu.load_bios()?;
+            emu.jump_to_bios();
+        }
+        loop {
+            if let Ok(new_config) = config_rx.try_recv() {
+                config = new_config;
+            }
+            emu.write().unwrap().step_jit(&mut jit)?;
+        }
+    });
+
+    Ok(())
+}
+
+struct Modeline;
+enum Mode {
+    Normal,
+    Command(ModeCommandState),
+}
+struct ModeCommandState {
+    input: Input,
+}
+struct ModelineState {
+    mode: Mode,
+}
+enum Command {
+    None,
+    Quit,
 }
 
 impl FromStr for Command {
     type Err = color_eyre::Report;
 
-    fn from_str(s: &str) -> Result<Self> {
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s {
-            "q" | "quit" => Ok(Self::Quit),
-            _ => Err(eyre!("not a command")),
+            "q" | "quit" => Ok(Command::Quit),
+            _ => Err(eyre!("invalid command")),
         }
     }
 }
 
-pub fn run(mut terminal: DefaultTerminal) -> Result<()> {
-    // for later
-    let (tx, rx) = flume::unbounded::<AppEvent>();
+impl StatefulWidget for Modeline {
+    type State = ModelineState;
 
-    let mut state = State {
-        logs_open: true,
-        error: None,
-        event_tx: tx.clone(),
-        mode: Mode::Normal,
-        exit: false,
-        cursor_position: None,
-    };
-
-    loop {
-        if let Ok(event) = input() {
-            state = state.handle_event(event);
-        }
-        if let Ok(event) = rx.try_recv() {
-            state = state.handle_event(event);
-        }
-
-        if state.exit {
-            return Ok(());
-        }
-
-        terminal.draw(|frame| {
-            if let Some(cursor_position) = state.cursor_position {
-                frame.set_cursor_position(cursor_position);
-                state.cursor_position = None;
-            }
-            render(frame, &state)
-        })?;
-
-        // 60fps (i think)
-        std::thread::sleep(Duration::from_millis(16));
-    }
-}
-
-pub fn render(frame: &mut Frame, state: &State) {
-    frame.render_widget(MainWidget { app_state: state }, frame.area());
-}
-
-fn input() -> Result<AppEvent> {
-    let true = event::poll(Duration::from_secs(0))? else {
-        return Ok(AppEvent::None);
-    };
-    let event = event::read()?;
-
-    match event {
-        event::Event::FocusGained => Ok(AppEvent::None),
-        event::Event::FocusLost => Ok(AppEvent::None),
-        event::Event::Key(key_event) => Ok(AppEvent::Key(key_event)),
-        event::Event::Mouse(_) => Ok(AppEvent::None),
-        event::Event::Paste(_) => Ok(AppEvent::None),
-        event::Event::Resize(_, _) => Ok(AppEvent::None),
-    }
-}
-
-pub struct MainWidget<'a> {
-    app_state: &'a State,
-}
-
-impl<'a> Widget for MainWidget<'a> {
-    fn render(self, area: Rect, buf: &mut Buffer)
-    where
-        Self: Sized,
-    {
-        let bottom_layout = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(10), Constraint::Length(2)])
-            .spacing(1)
-            .split(area);
-
-        let layout = match self.app_state.logs_open {
-            true => Layout::horizontal([Constraint::Min(100), Constraint::Fill(1)]),
-            false => todo!(),
-        };
-        let layout = layout.split(bottom_layout[0]);
-
-        TuiLoggerSmartWidget::default()
-            .style_error(Style::default().fg(Color::Red))
-            .style_debug(Style::default().fg(Color::Green))
-            .style_warn(Style::default().fg(Color::Yellow))
-            .style_trace(Style::default().fg(Color::Magenta))
-            .style_info(Style::default().fg(Color::Cyan))
-            .output_target(true)
-            .output_file(true)
-            .output_line(true)
-            .render(layout[0], buf);
-        Tabs::new(vec!["Mem"]);
-
-        match &self.app_state.mode {
+    fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
+        let [_, bottom] = Layout::vertical([Constraint::Min(1), Constraint::Max(1)]).areas(area);
+        match &state.mode {
             Mode::Normal => {
-                Line::from(vec![Span::from(format!(" {}", self.app_state.mode))])
-                    .render(bottom_layout[1], buf);
+                Paragraph::new("  NORM  ").render(bottom, buf);
             }
-            Mode::Command { input } => {
-                let text = format!(" CMD: {}", input.value());
-                _ = self
-                    .app_state
-                    .event_tx
-                    .send(AppEvent::MoveCursor(Position::new(
-                        bottom_layout[1].x + text.len() as u16,
-                        bottom_layout[1].y,
-                    )))
-                    .inspect_err(|err| tracing::error!(%err));
-
-                let text_area =
-                    Paragraph::new(text).style(Style::new().add_modifier(Modifier::RAPID_BLINK));
-                text_area.render(bottom_layout[1], buf);
+            Mode::Command(mode_command_state) => {
+                let text = format!("  CMD: {}  ", mode_command_state.input.value());
+                Paragraph::new(text).render(bottom, buf);
             }
         }
+    }
+}
+
+impl Component for Modeline {
+    type ComponentState = ModelineState;
+    type ComponentSummary = Command;
+
+    fn handle_input(&mut self, event: event::Event, state: &mut ModelineState) -> Result<Command> {
+        if let Mode::Command(state) = &mut state.mode {
+            state.input.handle_event(&event);
+        }
+
+        if let event::Event::Key(key_event) = event {
+            match (&mut state.mode, key_event) {
+                (Mode::Normal, key!(Char(':'), Press)) => {
+                    state.mode = Mode::Command(ModeCommandState {
+                        input: Input::default(),
+                    });
+                }
+                (Mode::Command(cmd), key!(Enter, Press)) => {
+                    let cmd = cmd.input.value();
+                    let cmd = Command::from_str(cmd);
+                    state.mode = Mode::Normal;
+                    return cmd;
+                }
+                (Mode::Command(_), key!(Esc, Press)) => {
+                    state.mode = Mode::Normal;
+                }
+                _ => {}
+            }
+        };
+
+        Ok(Command::None)
+    }
+}
+
+impl StatefulWidget for App {
+    type State = AppState;
+
+    fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
+        let main = Block::bordered()
+            .border_type(BorderType::Rounded)
+            .title("🐗 Pーちゃん debugger");
+        let main_area = main.inner(area);
+        main.render(area, buf);
+        let area = main_area;
+
+        Modeline.render(area, buf, &mut state.modeline_state);
+
+        match state.app_config.initialized() {
+            false => {
+                FirstTimeSetup.render(area, buf, &mut state.first_time_setup_state);
+            }
+            true => todo!(),
+        }
+    }
+}
+
+impl Component for App {
+    type ComponentState = AppState;
+
+    type ComponentSummary = ();
+
+    fn handle_input(
+        &mut self,
+        event: event::Event,
+        state: &mut Self::ComponentState,
+    ) -> Result<Self::ComponentSummary> {
+        if state.focused == AppFocus::None {
+            let cmd = match Modeline.handle_input(event.clone(), &mut state.modeline_state) {
+                Ok(cmd) => cmd,
+                Err(err) => {
+                    state.error = Some(err);
+                    return Ok(());
+                }
+            };
+            match cmd {
+                Command::None => {}
+                Command::Quit => state.exit = true,
+            };
+        }
+        match state.app_config.initialized() {
+            // typing bios path and focused on the input
+            false if state.focused == AppFocus::FirstTimeSetupBiosInput => {
+                let action =
+                    match FirstTimeSetup.handle_input(event, &mut state.first_time_setup_state) {
+                        Ok(action) => action,
+                        Err(err) => {
+                            state.error = Some(err);
+                            return Ok(());
+                        }
+                    };
+                match action {
+                    TypingAction::Escape => {
+                        state.focused = AppFocus::None;
+                    }
+                    TypingAction::Pending => {}
+                    TypingAction::Submit(path) => {
+                        state.app_config.bios_path = Some(path);
+                    }
+                }
+            }
+
+            // not focused
+            false => {
+                if let event::Event::Key(key!(Enter, Press)) = event {
+                    state.focused = AppFocus::FirstTimeSetupBiosInput;
+                    state.first_time_setup_state.bios_path_input_active = true;
+                }
+            }
+
+            true => {}
+            _ => {}
+        }
+
+        if state.app_config.initialized() {
+            state.config_tx.send(state.app_config.clone())?;
+        }
+        Ok(())
+    }
+}
+
+struct FirstTimeSetup;
+#[derive(Default)]
+struct FirstTimeSetupState {
+    bios_path_input: Input,
+    bios_path_input_active: bool,
+}
+
+impl StatefulWidget for FirstTimeSetup {
+    type State = FirstTimeSetupState;
+
+    fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
+        let [area] = Layout::horizontal([Constraint::Ratio(1, 3)])
+            .flex(Flex::Center)
+            .areas(area);
+        let [header, bios_path_input] =
+            Layout::vertical([Constraint::Max(4), Constraint::Length(3)])
+                .flex(Flex::Center)
+                .areas(area);
+        Paragraph::new(
+            "Welcome to the P-chan debugger!\n\nPlease provide the information required to run the debugger.",
+        )
+        .wrap(Wrap { trim: false })
+        .centered()
+        .render(header, buf);
+        Paragraph::new(state.bios_path_input.value())
+            .block(
+                Block::bordered()
+                    .title("path to bios file:")
+                    .border_type(BorderType::Rounded)
+                    .border_style(match state.bios_path_input_active {
+                        true => Style::new().green(),
+                        false => Style::new(),
+                    }),
+            )
+            .render(bios_path_input, buf);
+    }
+}
+
+enum TypingAction<T> {
+    Escape,
+    Pending,
+    Submit(T),
+}
+
+impl Component for FirstTimeSetup {
+    type ComponentState = FirstTimeSetupState;
+
+    type ComponentSummary = TypingAction<PathBuf>;
+
+    fn handle_input(
+        &mut self,
+        event: event::Event,
+        state: &mut Self::ComponentState,
+    ) -> Result<Self::ComponentSummary> {
+        state.bios_path_input_active = true;
+        state.bios_path_input.handle_event(&event);
+        if let event::Event::Key(key) = event {
+            match key {
+                key!(Enter, Press) if !state.bios_path_input.value().is_empty() => {
+                    state.bios_path_input_active = false;
+                    let path = state.bios_path_input.value().to_string();
+                    return Ok(TypingAction::Submit(path.into()));
+                }
+                _ => {}
+            }
+        }
+        Ok(TypingAction::Pending)
     }
 }
