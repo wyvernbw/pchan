@@ -414,8 +414,8 @@ impl JIT {
         &mut self,
         func_id: FuncId,
         func: Function,
-    ) -> Result<(), Box<ModuleError>> {
-        self.ctx.func = func;
+    ) -> Result<BlockFn, Box<ModuleError>> {
+        self.ctx.func = func.clone();
         if let Err(err) = self.ctx.replace_redundant_loads() {
             tracing::warn!(%err);
         };
@@ -494,7 +494,9 @@ impl JIT {
 
         self.module.clear_context(&mut self.ctx);
         self.ctx.clear();
-        Ok(())
+
+        let res = self.get_func(func_id, func);
+        Ok(res)
     }
 
     pub fn init_block(builder: &mut FunctionBuilder) -> Block {

@@ -3,7 +3,7 @@ use std::fmt::Display;
 
 use super::{EmitCtx, OpCode, PrimeOp};
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Hash)]
 pub struct SB {
     rt: u8,
     rs: u8,

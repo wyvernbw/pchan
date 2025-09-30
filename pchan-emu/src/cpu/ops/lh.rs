@@ -3,7 +3,7 @@ use std::fmt::Display;
 
 use super::{OpCode, PrimeOp};
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Hash)]
 pub struct LH {
     rt: u8,
     rs: u8,

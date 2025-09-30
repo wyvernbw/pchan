@@ -1,4 +1,8 @@
-use std::{fs, io::Read, path::PathBuf};
+use std::{
+    fs,
+    io::Read,
+    path::{Path, PathBuf},
+};
 
 use thiserror::Error;
 
@@ -30,6 +34,9 @@ pub enum BootError {
 }
 
 impl Bootloader {
+    pub fn set_bios_path(&mut self, path: impl AsRef<Path>) {
+        self.bios_path = path.as_ref().to_path_buf();
+    }
     pub fn load_bios(&self, mem: &mut Memory, cpu: &Cpu) -> Result<(), BootError> {
         let mut bios_file =
             fs::File::open(&self.bios_path).map_err(BootError::BiosFileOpenError)?;

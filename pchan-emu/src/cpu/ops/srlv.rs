@@ -1,7 +1,7 @@
 use crate::dynarec::prelude::*;
 use std::fmt::Display;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Hash)]
 pub struct SRLV {
     rd: u8,
     rt: u8,

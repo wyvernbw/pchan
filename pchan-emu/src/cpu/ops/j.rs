@@ -7,7 +7,7 @@ use crate::cpu::ops::{
     BoundaryType, EmitCtx, EmitSummary, MipsOffset, Op, OpCode, PrimeOp, TryFromOpcodeErr,
 };
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Hash)]
 #[allow(clippy::upper_case_acronyms)]
 pub struct J {
     pub imm: u32,

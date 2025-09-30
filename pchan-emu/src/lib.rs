@@ -57,6 +57,7 @@ pub mod cranelift_bs {
 
 pub mod bootloader;
 pub mod cpu;
+#[path = "./dynarec/dynarec.rs"]
 pub mod dynarec;
 #[path = "./io/io.rs"]
 pub mod io;
@@ -90,7 +91,6 @@ pub struct Emu {
     #[debug(skip)]
     pub mem: Memory,
     pub cpu: Cpu,
-    pub jit: JIT,
     pub jit_cache: JitCache,
     pub boot: Bootloader,
 }

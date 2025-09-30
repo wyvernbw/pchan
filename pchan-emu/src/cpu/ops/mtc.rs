@@ -2,7 +2,7 @@ use std::fmt::Display;
 
 use crate::dynarec::prelude::*;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Hash)]
 pub struct MTCn {
     cop: u8,
     rt: u8,

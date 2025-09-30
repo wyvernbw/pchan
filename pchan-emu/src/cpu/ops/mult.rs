@@ -2,7 +2,7 @@ use crate::dynarec::prelude::*;
 use crate::mult;
 use std::fmt::Display;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Hash)]
 pub struct MULT {
     rs: u8,
     rt: u8,

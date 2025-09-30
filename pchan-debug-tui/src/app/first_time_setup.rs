@@ -19,10 +19,18 @@ pub struct FirstTimeSetupState {
     pub bios_path_input_active: bool,
 }
 
-impl StatefulWidget for FirstTimeSetup {
-    type State = FirstTimeSetupState;
+impl<'props> Component<'props> for FirstTimeSetup {
+    type ComponentState = FirstTimeSetupState;
 
-    fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
+    type ComponentSummary = TypingAction<PathBuf>;
+
+    fn render(
+        &mut self,
+        area: Rect,
+        buf: &mut Buffer,
+        state: &mut Self::ComponentState,
+        _: &mut (),
+    ) -> Result<()> {
         let [area] = Layout::horizontal([Constraint::Ratio(1, 3)])
             .flex(Flex::Center)
             .areas(area);
@@ -56,13 +64,8 @@ impl StatefulWidget for FirstTimeSetup {
         Paragraph::new("<Esc> cancel input\n<Enter> start typing")
             .centered()
             .render(bios_path_input_help, buf);
+        Ok(())
     }
-}
-
-impl Component for FirstTimeSetup {
-    type ComponentState = FirstTimeSetupState;
-
-    type ComponentSummary = TypingAction<PathBuf>;
 
     fn handle_input(
         &mut self,

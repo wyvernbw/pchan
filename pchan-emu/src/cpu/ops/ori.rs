@@ -1,7 +1,7 @@
 use crate::{FnBuilderExt, dynarec::prelude::*};
 use std::fmt::Display;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Hash)]
 #[allow(clippy::upper_case_acronyms)]
 pub struct ORI {
     rs: u8,

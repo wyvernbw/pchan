@@ -8,7 +8,7 @@ use crate::{cranelift_bs::*, store};
 
 use super::{EmitCtx, OpCode, PrimeOp};
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Hash)]
 pub struct SH {
     rt: u8,
     rs: u8,

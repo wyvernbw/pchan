@@ -1,5 +1,3 @@
-use cranelift_codegen::ir;
-
 use crate::dynarec::prelude::*;
 
 /// Implementation of the [`InstBuilder`] that has

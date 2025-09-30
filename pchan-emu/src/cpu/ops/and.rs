@@ -5,7 +5,7 @@ use crate::dynarec::prelude::*;
 
 use super::PrimeOp;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Hash)]
 #[allow(clippy::upper_case_acronyms)]
 pub struct AND {
     rd: u8,

@@ -38,10 +38,17 @@ impl FromStr for Command {
     }
 }
 
-impl StatefulWidget for Modeline {
-    type State = ModelineState;
+impl<'props> Component<'props> for Modeline {
+    type ComponentState = ModelineState;
+    type ComponentSummary = Command;
 
-    fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
+    fn render(
+        &mut self,
+        area: Rect,
+        buf: &mut Buffer,
+        state: &mut Self::ComponentState,
+        _: &mut (),
+    ) -> Result<()> {
         let [_, bottom] = Layout::vertical([Constraint::Min(1), Constraint::Max(1)]).areas(area);
         match &state.mode {
             Mode::Normal => {
@@ -52,12 +59,8 @@ impl StatefulWidget for Modeline {
                 Paragraph::new(text).render(bottom, buf);
             }
         }
+        Ok(())
     }
-}
-
-impl Component for Modeline {
-    type ComponentState = ModelineState;
-    type ComponentSummary = Command;
 
     fn handle_input(&mut self, event: event::Event, state: &mut ModelineState) -> Result<Command> {
         if let Mode::Command(state) = &mut state.mode {

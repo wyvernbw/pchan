@@ -8,7 +8,7 @@ use crate::{cranelift_bs::*, load};
 
 use super::{EmitCtx, PrimeOp};
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Hash)]
 #[allow(clippy::upper_case_acronyms)]
 pub struct LHU {
     rt: u8,

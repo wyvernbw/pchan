@@ -5,7 +5,7 @@ use tracing::instrument;
 
 use crate::dynarec::prelude::*;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Hash)]
 #[allow(clippy::upper_case_acronyms)]
 pub struct BLTZ {
     rs: u8,

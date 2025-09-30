@@ -1,4 +1,5 @@
 #![feature(associated_type_defaults)]
+#![feature(iter_intersperse)]
 
 use std::path::PathBuf;
 
@@ -7,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use tui_logger::TuiTracingSubscriberLayer;
 
+#[path = "./app/app.rs"]
 pub mod app;
 
 #[derive(Clone, Serialize, Deserialize, Default)]
