@@ -1,3 +1,4 @@
+#![allow(clippy::collapsible_if)]
 #![feature(impl_trait_in_assoc_type)]
 #![feature(associated_type_defaults)]
 #![feature(iter_intersperse)]
@@ -11,6 +12,7 @@ use tui_logger::TuiTracingSubscriberLayer;
 
 #[path = "./app/app.rs"]
 pub mod app;
+pub mod utils;
 
 #[derive(Clone, Serialize, Deserialize, Default)]
 pub struct AppConfig {

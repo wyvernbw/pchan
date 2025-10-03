@@ -1,20 +1,23 @@
 use std::borrow::Cow;
 use std::hash::Hasher;
 use std::hash::{DefaultHasher, Hash};
+use std::iter::Peekable;
 use std::ops::Shr;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use color_eyre::eyre::{Result, eyre};
+use color_eyre::owo_colors::OwoColorize;
 use flume::{Receiver, Sender};
 use pchan_emu::Emu;
 use pchan_emu::cpu::ops::Op;
 use pchan_emu::dynarec::{FetchParams, FetchSummary};
 use pchan_emu::jit::JIT;
 use pchan_utils::hex;
+use ratatui::crossterm::event::KeyModifiers;
 use ratatui::layout::Flex;
 use ratatui::prelude::*;
-use ratatui::style::Stylize;
+use ratatui::style::{Styled, Stylize};
 use ratatui::widgets::{Block, BorderType, List, ListState, Padding, Paragraph, Wrap};
 use ratatui::{DefaultTerminal, crossterm::event};
 
@@ -23,6 +26,7 @@ use crate::app::component::Component;
 use crate::app::first_time_setup::{FirstTimeSetup, FirstTimeSetupState};
 use crate::app::focus::{Focus, FocusProp, FocusProvider};
 use crate::app::modeline::{Command, Mode, Modeline, ModelineState};
+use crate::utils::InsertBetweenExt;
 
 pub mod component;
 pub mod first_time_setup;
@@ -36,6 +40,7 @@ macro_rules! key {
         ratatui::crossterm::event::KeyEvent {
             code: ratatui::crossterm::event::KeyCode::$code,
             kind: ratatui::crossterm::event::KeyEventKind::$kind,
+            modifiers: ratatui::crossterm::event::KeyModifiers::NONE,
             ..
         }
     };
@@ -44,6 +49,24 @@ macro_rules! key {
         ratatui::crossterm::event::KeyEvent {
             code: ratatui::crossterm::event::KeyCode::$code($($arg)*),
             kind: ratatui::crossterm::event::KeyEventKind::$kind,
+            modifiers: ratatui::crossterm::event::KeyModifiers::NONE,
+            ..
+        }
+    };
+    // Variant with no arguments and optional modifiers
+    ($code:ident, $kind:ident, $mods:expr ) => {
+        ratatui::crossterm::event::KeyEvent {
+            code: ratatui::crossterm::event::KeyCode::$code,
+            kind: ratatui::crossterm::event::KeyEventKind::$kind,
+            modifiers: $mods,
+            ..
+        }
+    };
+    ($code:ident ( $($arg:tt)* ), $kind:ident, $mods:pat) => {
+        ratatui::crossterm::event::KeyEvent {
+            code: ratatui::crossterm::event::KeyCode::$code($($arg)*),
+            kind: ratatui::crossterm::event::KeyEventKind::$kind,
+            modifiers: $mods,
             ..
         }
     };
@@ -310,35 +333,45 @@ pub struct OpsListState {
 
 impl OpsListData {
     pub fn from_fetch(summary: &FetchSummary) -> Self {
-        let decoded_ops = summary
+        let mut decoded_ops = summary
             .cfg
             .node_weights()
-            .map(|node| {
+            .flat_map(|node| {
                 summary
                     .ops_for(node)
                     .iter()
                     .enumerate()
-                    .map(|(offset, op)| (node.ops.0.start + offset as u32 * 4, op))
-                    .map(|(address, op)| {
-                        Line::from(vec![
-                            format!("{}   ", hex(address)).dim(),
-                            if op.is_block_boundary().is_some() {
-                                format!("{}", op).red()
-                            } else {
-                                format!("{}", op).into()
-                            },
-                        ])
-                        .style(if address.shr(2) % 2u32 == 0u32 {
-                            Style::new().fg(Color::Rgb(250 - 15, 250 - 15, 250 - 15))
-                        } else {
-                            Style::new()
-                        })
-                    })
-                    .collect::<Vec<Line>>()
+                    .map(|(offset, op)| (node.address + node.ops.0.start + offset as u32 * 4, op))
             })
-            .intersperse(vec![Line::from("...")])
-            .flatten()
             .collect::<Vec<_>>();
+        decoded_ops.sort_by(|a, b| a.0.cmp(&b.0));
+        decoded_ops.dedup_by(|a, b| a.0 == b.0);
+        let decoded_ops = decoded_ops
+            .iter()
+            .map(|(address, op)| {
+                (
+                    address,
+                    Line::from(vec![
+                        format!("{}   ", hex(*address)).dim(),
+                        if op.is_block_boundary().is_some() {
+                            format!("{}", op).red()
+                        } else {
+                            format!("{}", op).into()
+                        },
+                    ])
+                    .style(if address.shr(2) % 2u32 == 0u32 {
+                        Style::new().fg(Color::Rgb(250 - 15, 250 - 15, 250 - 15))
+                    } else {
+                        Style::new()
+                    }),
+                )
+            })
+            .insert_between(
+                |a, b| a.0.abs_diff(*b.0).ge(&8),
+                || (&0u32, Line::from("...").style(Style::new().dim())),
+            )
+            .map(|(_, line)| line)
+            .collect::<Vec<Line>>();
         let mut hasher = DefaultHasher::new();
         decoded_ops.hash(&mut hasher);
         Self {
@@ -363,12 +396,32 @@ impl Component for OpsList {
         if !self.1.is_focused() {
             return Ok(());
         }
+        let screen_height = ratatui::crossterm::terminal::size()?.1;
         match event {
+            event::Event::Key(key!(Char('g'), Press)) => {
+                state.list_state.select_first();
+            }
+            event::Event::Key(key!(Char('G'), Press, KeyModifiers::SHIFT)) => {
+                state.list_state.select_last();
+            }
             event::Event::Key(key!(Char('j'), Press)) => {
                 state.list_state.select_next();
             }
             event::Event::Key(key!(Char('k'), Press)) => {
                 state.list_state.select_previous();
+            }
+            event::Event::Key(key!(Char('J'), Press, KeyModifiers::SHIFT)) => {
+                let selected =
+                    state.list_state.selected().unwrap_or(0) + screen_height as usize - 4;
+                state.list_state.select(Some(selected));
+            }
+            event::Event::Key(key!(Char('K'), Press, KeyModifiers::SHIFT)) => {
+                let selected = state
+                    .list_state
+                    .selected()
+                    .unwrap_or(0)
+                    .saturating_sub(screen_height as usize - 4);
+                state.list_state.select(Some(selected));
             }
             _ => {}
         };
