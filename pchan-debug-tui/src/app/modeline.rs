@@ -9,9 +9,10 @@ use tui_input::Input;
 use tui_input::backend::crossterm::EventHandler;
 
 use crate::app::Component;
+use crate::app::focus::{Focus, FocusProp};
 use crate::key;
 
-pub struct Modeline;
+pub struct Modeline(pub FocusProp<Modeline>);
 pub enum Mode {
     Normal,
     Command(ModeCommandState),
@@ -23,6 +24,7 @@ pub struct ModelineState {
     pub mode: Mode,
 }
 pub enum Command {
+    Escape,
     None,
     Quit,
 }
@@ -38,17 +40,13 @@ impl FromStr for Command {
     }
 }
 
-impl<'props> Component<'props> for Modeline {
+impl Focus for Modeline {}
+
+impl Component for Modeline {
     type ComponentState = ModelineState;
     type ComponentSummary = Command;
 
-    fn render(
-        &mut self,
-        area: Rect,
-        buf: &mut Buffer,
-        state: &mut Self::ComponentState,
-        _: &mut (),
-    ) -> Result<()> {
+    fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::ComponentState) -> Result<()> {
         let [_, bottom] = Layout::vertical([Constraint::Min(1), Constraint::Max(1)]).areas(area);
         match &state.mode {
             Mode::Normal => {
@@ -63,25 +61,29 @@ impl<'props> Component<'props> for Modeline {
     }
 
     fn handle_input(&mut self, event: event::Event, state: &mut ModelineState) -> Result<Command> {
-        if let Mode::Command(state) = &mut state.mode {
-            state.input.handle_event(&event);
-        }
-
         if let event::Event::Key(key_event) = event {
             match (&mut state.mode, key_event) {
                 (Mode::Normal, key!(Char(':'), Press)) => {
                     state.mode = Mode::Command(ModeCommandState {
                         input: Input::default(),
                     });
+                    self.0.push_focus();
                 }
                 (Mode::Command(cmd), key!(Enter, Press)) => {
+                    self.0.unfocus();
                     let cmd = cmd.input.value();
                     let cmd = Command::from_str(cmd);
                     state.mode = Mode::Normal;
                     return cmd;
                 }
                 (Mode::Command(_), key!(Esc, Press)) => {
+                    self.0.unfocus();
                     state.mode = Mode::Normal;
+                }
+                (Mode::Command(_), _) => {
+                    if let Mode::Command(state) = &mut state.mode {
+                        state.input.handle_event(&event);
+                    }
                 }
                 _ => {}
             }

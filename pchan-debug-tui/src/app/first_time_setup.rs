@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use color_eyre::eyre::Result;
 
+use color_eyre::owo_colors::OwoColorize;
 use ratatui::crossterm::event;
 use ratatui::layout::Flex;
 use ratatui::prelude::*;
@@ -9,28 +10,24 @@ use ratatui::widgets::{Block, BorderType, Paragraph, Wrap};
 use tui_input::Input;
 use tui_input::backend::crossterm::EventHandler;
 
+use crate::app::focus::{Focus, FocusProp};
 use crate::app::{Component, TypingAction};
 use crate::key;
 
-pub struct FirstTimeSetup;
+pub struct FirstTimeSetup(pub FocusProp<Self>);
 #[derive(Default)]
 pub struct FirstTimeSetupState {
     pub bios_path_input: Input,
-    pub bios_path_input_active: bool,
 }
 
-impl<'props> Component<'props> for FirstTimeSetup {
+impl Focus for FirstTimeSetup {}
+
+impl Component for FirstTimeSetup {
     type ComponentState = FirstTimeSetupState;
 
     type ComponentSummary = TypingAction<PathBuf>;
 
-    fn render(
-        &mut self,
-        area: Rect,
-        buf: &mut Buffer,
-        state: &mut Self::ComponentState,
-        _: &mut (),
-    ) -> Result<()> {
+    fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::ComponentState) -> Result<()> {
         let [area] = Layout::horizontal([Constraint::Ratio(1, 3)])
             .flex(Flex::Center)
             .areas(area);
@@ -54,7 +51,7 @@ impl<'props> Component<'props> for FirstTimeSetup {
                 Block::bordered()
                     .title("path to bios file:")
                     .border_type(BorderType::Rounded)
-                    .border_style(match state.bios_path_input_active {
+                    .border_style(match self.0.is_focused() {
                         true => Style::new().green(),
                         false => Style::new(),
                     }),
@@ -72,21 +69,24 @@ impl<'props> Component<'props> for FirstTimeSetup {
         event: event::Event,
         state: &mut Self::ComponentState,
     ) -> Result<Self::ComponentSummary> {
-        state.bios_path_input_active = true;
-        state.bios_path_input.handle_event(&event);
-        if let event::Event::Key(key) = event {
-            match key {
-                key!(Enter, Press) if !state.bios_path_input.value().is_empty() => {
-                    state.bios_path_input_active = false;
-                    let path = state.bios_path_input.value().to_string();
-                    return Ok(TypingAction::Submit(path.into()));
+        if self.0.is_focused() {
+            state.bios_path_input.handle_event(&event);
+            if let event::Event::Key(key) = event {
+                match key {
+                    key!(Enter, Press) if !state.bios_path_input.value().is_empty() => {
+                        let path = state.bios_path_input.value().to_string();
+                        return Ok(TypingAction::Submit(path.into()));
+                    }
+                    key!(Esc, Press) => {
+                        self.0.unfocus();
+                        return Ok(TypingAction::Escape);
+                    }
+                    _ => {}
                 }
-                key!(Esc, Press) => {
-                    state.bios_path_input_active = false;
-                    return Ok(TypingAction::Escape);
-                }
-                _ => {}
             }
+        } else if let event::Event::Key(key!(Enter, Press)) = event {
+            self.0.push_focus();
+            return Ok(TypingAction::Enter);
         }
         Ok(TypingAction::Pending)
     }

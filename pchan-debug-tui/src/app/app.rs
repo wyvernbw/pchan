@@ -1,7 +1,6 @@
 use std::borrow::Cow;
 use std::hash::Hasher;
 use std::hash::{DefaultHasher, Hash};
-use std::marker::PhantomData;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -19,10 +18,14 @@ use ratatui::widgets::{Block, BorderType, List, ListState, Padding, Paragraph, W
 use ratatui::{DefaultTerminal, crossterm::event};
 
 use crate::AppConfig;
+use crate::app::component::{Component, ComponentWidget};
 use crate::app::first_time_setup::{FirstTimeSetup, FirstTimeSetupState};
+use crate::app::focus::{FocusProp, FocusProvider};
 use crate::app::modeline::{Command, Mode, Modeline, ModelineState};
 
+pub mod component;
 pub mod first_time_setup;
+pub mod focus;
 pub mod modeline;
 
 #[macro_export]
@@ -45,54 +48,6 @@ macro_rules! key {
     };
 }
 
-pub trait Component<'props> {
-    type ComponentState;
-    type ComponentSummary = ();
-    type Props = ();
-    fn handle_input(
-        &mut self,
-        event: event::Event,
-        state: &mut Self::ComponentState,
-    ) -> Result<Self::ComponentSummary>;
-    fn render(
-        &mut self,
-        area: Rect,
-        buf: &mut Buffer,
-        state: &mut Self::ComponentState,
-        props: &mut Self::Props,
-    ) -> Result<()>;
-}
-
-pub struct ComponentWidget<'a, T> {
-    inner: T,
-    _lifetime: PhantomData<&'a mut ()>,
-}
-
-impl<'a, T> ComponentWidget<'a, T> {
-    pub fn new(inner: T) -> Self {
-        Self {
-            inner,
-            _lifetime: PhantomData,
-        }
-    }
-}
-
-impl<'a, T> StatefulWidget for ComponentWidget<'a, T>
-where
-    T: Component<'a>,
-    <T as Component<'a>>::ComponentState: 'a,
-    <T as Component<'a>>::Props: 'a,
-{
-    type State = (&'a mut T::ComponentState, &'a mut T::Props);
-
-    fn render(mut self, area: Rect, buf: &mut Buffer, (state, props): &mut Self::State) {
-        match self.inner.render(area, buf, state, props) {
-            Ok(()) => {}
-            Err(err) => tracing::error!(%err),
-        }
-    }
-}
-
 pub fn run(config: AppConfig, mut terminal: DefaultTerminal) -> Result<()> {
     let emu = Arc::new(RwLock::new(Emu::default()));
     let (config_tx, config_rx) = flume::unbounded();
@@ -102,39 +57,44 @@ pub fn run(config: AppConfig, mut terminal: DefaultTerminal) -> Result<()> {
 
     emu_thread(emu, config_rx, emu_cmd_rx, emu_info_tx)?;
 
-    let mut app = App {};
     let mut app_state = AppState {
+        screen: if config.initialized() {
+            Screen::Main
+        } else {
+            Screen::FirstTimeSetup
+        },
         app_config: config,
         exit: false,
         config_tx,
         error: None,
+        focus: FocusProvider::default(),
 
-        focused: AppFocus::None,
         modeline_state: ModelineState { mode: Mode::Normal },
         first_time_setup_state: FirstTimeSetupState::default(),
         main_page_state: MainPageState {
             fetch_summary: None,
             emu_state: EmuState::Uninitialized,
             ops_list_state: OpsListState::default(),
+            focus: MainPageFocus::default(),
         },
     };
 
-    if !app_state.app_config.initialized() {
-        app_state.first_time_setup_state.bios_path_input_active = true;
-        app_state.focused = AppFocus::FirstTimeSetupBiosInput;
-    }
-
     loop {
+        let mut app = App(app_state.focus.props());
         terminal.draw(|frame| {
-            frame.render_stateful_widget(
-                ComponentWidget::new(app),
-                frame.area(),
-                &mut (&mut app_state, &mut ()),
-            )
+            let result = app
+                .clone()
+                .render(frame.area(), frame.buffer_mut(), &mut app_state);
+            if let Err(err) = result {
+                app_state.error = Some(err);
+            }
         })?;
         if let Ok(true) = event::poll(Duration::from_millis(0)) {
             let event = event::read()?;
-            app.handle_input(event, &mut app_state)?;
+            let result = app.handle_input(event, &mut app_state);
+            if let Err(err) = result {
+                app_state.error = Some(err);
+            }
         }
         if let Ok(info) = emu_info_rx.try_recv() {
             match info {
@@ -147,6 +107,7 @@ pub fn run(config: AppConfig, mut terminal: DefaultTerminal) -> Result<()> {
         if app_state.exit {
             return Ok(());
         }
+        app_state.focus.process();
     }
 }
 
@@ -219,29 +180,28 @@ fn emu_thread(
     Ok(())
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct App {}
+pub enum Screen {
+    Main,
+    FirstTimeSetup,
+}
+
+#[derive(Debug, Clone)]
+pub struct App(FocusProp<App>);
 
 pub struct AppState {
     app_config: AppConfig,
+    screen: Screen,
     config_tx: Sender<AppConfig>,
     exit: bool,
     error: Option<color_eyre::Report>,
 
-    focused: AppFocus,
     modeline_state: ModelineState,
     first_time_setup_state: FirstTimeSetupState,
     main_page_state: MainPageState,
+    focus: FocusProvider,
 }
 
-#[derive(Default, PartialEq, Eq)]
-enum AppFocus {
-    #[default]
-    None,
-    FirstTimeSetupBiosInput,
-}
-
-impl<'a> Component<'a> for App {
+impl Component for App {
     type ComponentState = AppState;
 
     type ComponentSummary = ();
@@ -251,64 +211,37 @@ impl<'a> Component<'a> for App {
         event: event::Event,
         state: &mut Self::ComponentState,
     ) -> Result<Self::ComponentSummary> {
-        if state.focused == AppFocus::None {
-            let cmd = match Modeline.handle_input(event.clone(), &mut state.modeline_state) {
-                Ok(cmd) => cmd,
-                Err(err) => {
-                    state.error = Some(err);
-                    return Ok(());
-                }
-            };
-            match cmd {
-                Command::None => {}
-                Command::Quit => state.exit = true,
-            };
-        }
-        match state.app_config.initialized() {
-            // typing bios path and focused on the input
-            false if state.focused == AppFocus::FirstTimeSetupBiosInput => {
-                let action =
-                    match FirstTimeSetup.handle_input(event, &mut state.first_time_setup_state) {
-                        Ok(action) => action,
-                        Err(err) => {
-                            state.error = Some(err);
-                            return Ok(());
-                        }
-                    };
+        let cmd = Modeline(self.0.clone().prop())
+            .handle_input(event.clone(), &mut state.modeline_state)?;
+        match cmd {
+            Command::Escape => {}
+            Command::None => {}
+            Command::Quit => state.exit = true,
+        };
+
+        match state.screen {
+            Screen::FirstTimeSetup => {
+                let action = FirstTimeSetup(self.0.prop())
+                    .handle_input(event, &mut state.first_time_setup_state)?;
                 match action {
-                    TypingAction::Escape => {
-                        state.focused = AppFocus::None;
-                    }
+                    TypingAction::Escape => {}
                     TypingAction::Pending => {}
                     TypingAction::Submit(path) => {
-                        state.focused = AppFocus::None;
                         state.app_config.bios_path = Some(path);
                         state.config_tx.send(state.app_config.clone())?;
                     }
+                    TypingAction::Enter => {}
                 }
             }
-
-            // not focused
-            false => {
-                if let event::Event::Key(key!(Enter, Press)) = event {
-                    state.focused = AppFocus::FirstTimeSetupBiosInput;
-                    state.first_time_setup_state.bios_path_input_active = true;
-                }
+            Screen::Main => {
+                MainPage(self.0.prop()).handle_input(event, &mut state.main_page_state)?;
             }
-
-            true => {}
-            _ => {}
         }
+
         Ok(())
     }
 
-    fn render(
-        &mut self,
-        area: Rect,
-        buf: &mut Buffer,
-        state: &mut Self::ComponentState,
-        _: &mut (),
-    ) -> Result<()> {
+    fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::ComponentState) -> Result<()> {
         let main = Block::bordered()
             .border_type(BorderType::Rounded)
             .title("🐗 Pーちゃん debugger");
@@ -318,30 +251,43 @@ impl<'a> Component<'a> for App {
 
         match state.app_config.initialized() {
             false => {
-                FirstTimeSetup.render(area, buf, &mut state.first_time_setup_state, &mut ())?;
+                FirstTimeSetup(self.0.prop()).render(
+                    area,
+                    buf,
+                    &mut state.first_time_setup_state,
+                )?;
             }
-            true => MainPage.render(area, buf, &mut state.main_page_state, &mut ())?,
+            true => MainPage(self.0.prop()).render(area, buf, &mut state.main_page_state)?,
         }
 
-        Modeline.render(area, buf, &mut state.modeline_state, &mut ())?;
+        Modeline(self.0.prop()).render(area, buf, &mut state.modeline_state)?;
 
         Ok(())
     }
 }
 pub enum TypingAction<T> {
     Escape,
+    Enter,
     Pending,
     Submit(T),
 }
 
-pub struct MainPage;
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MainPageFocus {
+    None,
+    #[default]
+    OpsList,
+}
+
+pub struct MainPage(FocusProp<MainPage>);
 pub struct MainPageState {
     emu_state: EmuState,
     fetch_summary: Option<FetchSummary>,
     ops_list_state: OpsListState,
+    focus: MainPageFocus,
 }
 
-pub struct OpsList;
+pub struct OpsList<'a>(&'a EmuState);
 #[derive(Debug, Clone)]
 pub struct OpsListData {
     ops: Vec<Line<'static>>,
@@ -388,12 +334,10 @@ impl OpsListData {
     }
 }
 
-impl<'state> Component<'state> for OpsList {
+impl<'a> Component for OpsList<'a> {
     type ComponentState = OpsListState;
 
     type ComponentSummary = ();
-
-    type Props = EmuState;
 
     fn handle_input(
         &mut self,
@@ -403,13 +347,8 @@ impl<'state> Component<'state> for OpsList {
         Ok(())
     }
 
-    fn render(
-        &mut self,
-        area: Rect,
-        buf: &mut Buffer,
-        state: &mut Self::ComponentState,
-        props: &mut Self::Props,
-    ) -> Result<()> {
+    fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::ComponentState) -> Result<()> {
+        let OpsList(emu_state) = self;
         match &state.data {
             Some(data) => {
                 StatefulWidget::render(
@@ -424,7 +363,7 @@ impl<'state> Component<'state> for OpsList {
                 let [centered] = Layout::vertical([Constraint::Max(4)])
                     .flex(Flex::Center)
                     .areas(area);
-                Paragraph::new(match &props {
+                Paragraph::new(match emu_state {
                     EmuState::Error(err) => Cow::Owned(format!("何もない\nError: {}", err)),
                     EmuState::Running => Cow::Borrowed("何もない\nThe emulator is running..."),
                     _ => Cow::Borrowed("何もない\nThe emulator is not running"),
@@ -438,16 +377,10 @@ impl<'state> Component<'state> for OpsList {
     }
 }
 
-impl<'props> Component<'props> for MainPage {
+impl Component for MainPage {
     type ComponentState = MainPageState;
 
-    fn render(
-        &mut self,
-        area: Rect,
-        buf: &mut Buffer,
-        state: &mut Self::ComponentState,
-        props: &mut (),
-    ) -> Result<()> {
+    fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::ComponentState) -> Result<()> {
         let [ops] = Layout::horizontal([Constraint::Ratio(1, 3)]).areas(area);
         let ops_block = Block::bordered()
             .border_type(BorderType::Rounded)
@@ -472,7 +405,7 @@ impl<'props> Component<'props> for MainPage {
                 }
             }
         };
-        OpsList.render(ops, buf, &mut state.ops_list_state, &mut state.emu_state)?;
+        OpsList(&state.emu_state).render(ops, buf, &mut state.ops_list_state)?;
         Ok(())
     }
 

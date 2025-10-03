@@ -1,0 +1,126 @@
+use std::{
+    any::{Any, TypeId},
+    marker::PhantomData,
+};
+
+use flume::{Receiver, Sender};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FocusId(TypeId);
+
+pub trait Focus: Any {
+    fn as_focus() -> FocusId {
+        FocusId(TypeId::of::<Self>())
+    }
+    fn focus_next(&self) -> Option<FocusId> {
+        None
+    }
+    fn focus_prev(&self) -> Option<FocusId> {
+        None
+    }
+}
+
+pub struct FocusProvider {
+    receiver: Receiver<FocusEvent>,
+    sender: Sender<FocusEvent>,
+    stack: Vec<FocusId>,
+}
+
+impl FocusProvider {
+    pub fn new() -> FocusProvider {
+        let (sender, receiver) = flume::unbounded();
+        let stack = Vec::with_capacity(32);
+        FocusProvider {
+            sender,
+            receiver,
+            stack,
+        }
+    }
+    fn focus(&mut self, on: FocusId) {
+        match &mut self.stack[..] {
+            [] => self.stack.push(on),
+            [.., last] => {
+                *last = on;
+            }
+        }
+    }
+    fn push_focus(&mut self, on: FocusId) {
+        self.stack.push(on);
+    }
+    fn unfocus(&mut self) {
+        self.stack.pop();
+    }
+    /// call in a loop
+    pub fn process(&mut self) {
+        while let Ok(event) = self.receiver.try_recv() {
+            match event {
+                FocusEvent::Focus(focus_id) => self.focus(focus_id),
+                FocusEvent::PushFocus(focus_id) => self.push_focus(focus_id),
+                FocusEvent::Unfocus => self.unfocus(),
+            }
+        }
+    }
+    pub fn props<T>(&self) -> FocusProp<T> {
+        FocusProp {
+            sender: self.sender.clone(),
+            current: self.stack.last().cloned(),
+            _self: PhantomData::<T>,
+        }
+    }
+}
+
+impl Default for FocusProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub enum FocusEvent {
+    /// use for focusing on elements within the same logical focus group
+    Focus(FocusId),
+    /// use to push a new focus group on the stack, (eg. a popup or the modeline)
+    PushFocus(FocusId),
+    /// inverse of the `PushFocus` event
+    Unfocus,
+}
+
+#[derive(Debug, Clone)]
+pub struct FocusProp<T> {
+    sender: Sender<FocusEvent>,
+    current: Option<FocusId>,
+    _self: PhantomData<T>,
+}
+
+impl<T: Focus> FocusProp<T> {
+    pub fn is_focused(&self) -> bool {
+        self.current == Some(T::as_focus())
+    }
+    pub fn unfocus(&self) {
+        _ = self
+            .sender
+            .send(FocusEvent::Unfocus)
+            .inspect_err(|err| tracing::warn!(%err));
+    }
+    pub fn focus(&self) {
+        _ = self
+            .sender
+            .send(FocusEvent::Focus(T::as_focus()))
+            .inspect_err(|err| tracing::warn!(%err));
+    }
+    pub fn push_focus(&self) {
+        _ = self
+            .sender
+            .send(FocusEvent::PushFocus(T::as_focus()))
+            .inspect_err(|err| tracing::warn!(%err));
+    }
+}
+
+impl<T> FocusProp<T> {
+    pub fn prop<W>(&self) -> FocusProp<W> {
+        FocusProp {
+            sender: self.sender.clone(),
+            current: self.current.clone(),
+            _self: PhantomData::<W>,
+        }
+    }
+}
