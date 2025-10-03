@@ -4,6 +4,7 @@ use std::{
 };
 
 use flume::{Receiver, Sender};
+use ratatui::style::{Style, Stylize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FocusId(TypeId);
@@ -112,6 +113,12 @@ impl<T: Focus> FocusProp<T> {
             .sender
             .send(FocusEvent::PushFocus(T::as_focus()))
             .inspect_err(|err| tracing::warn!(%err));
+    }
+    pub fn style(&self) -> Style {
+        match self.is_focused() {
+            true => Style::new().green(),
+            false => Style::new(),
+        }
     }
 }
 

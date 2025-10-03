@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 use std::hash::Hasher;
 use std::hash::{DefaultHasher, Hash};
+use std::ops::Shr;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -18,9 +19,9 @@ use ratatui::widgets::{Block, BorderType, List, ListState, Padding, Paragraph, W
 use ratatui::{DefaultTerminal, crossterm::event};
 
 use crate::AppConfig;
-use crate::app::component::{Component, ComponentWidget};
+use crate::app::component::Component;
 use crate::app::first_time_setup::{FirstTimeSetup, FirstTimeSetupState};
-use crate::app::focus::{FocusProp, FocusProvider};
+use crate::app::focus::{Focus, FocusProp, FocusProvider};
 use crate::app::modeline::{Command, Mode, Modeline, ModelineState};
 
 pub mod component;
@@ -73,7 +74,7 @@ pub fn run(config: AppConfig, mut terminal: DefaultTerminal) -> Result<()> {
         first_time_setup_state: FirstTimeSetupState::default(),
         main_page_state: MainPageState {
             fetch_summary: None,
-            emu_state: EmuState::Uninitialized,
+            emu_state: EmuState::Uninitialized.into(),
             ops_list_state: OpsListState::default(),
             focus: MainPageFocus::default(),
         },
@@ -101,7 +102,9 @@ pub fn run(config: AppConfig, mut terminal: DefaultTerminal) -> Result<()> {
                 EmuInfo::Fetch(fetch_summary) => {
                     app_state.main_page_state.fetch_summary = Some(fetch_summary)
                 }
-                EmuInfo::StateUpdate(emu_state) => app_state.main_page_state.emu_state = emu_state,
+                EmuInfo::StateUpdate(emu_state) => {
+                    app_state.main_page_state.emu_state = emu_state.into()
+                }
             }
         }
         if app_state.exit {
@@ -180,6 +183,7 @@ fn emu_thread(
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy)]
 pub enum Screen {
     Main,
     FirstTimeSetup,
@@ -228,6 +232,8 @@ impl Component for App {
                     TypingAction::Pending => {}
                     TypingAction::Submit(path) => {
                         state.app_config.bios_path = Some(path);
+                        state.screen = Screen::Main;
+                        self.0.prop::<OpsList>().push_focus();
                         state.config_tx.send(state.app_config.clone())?;
                     }
                     TypingAction::Enter => {}
@@ -244,20 +250,23 @@ impl Component for App {
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::ComponentState) -> Result<()> {
         let main = Block::bordered()
             .border_type(BorderType::Rounded)
-            .title("🐗 Pーちゃん debugger");
+            .title("🐗 Pーちゃん debugger")
+            .title_bottom(format!("{:?}", state.screen));
         let main_area = main.inner(area);
         main.render(area, buf);
         let area = main_area;
 
-        match state.app_config.initialized() {
-            false => {
+        match state.screen {
+            Screen::FirstTimeSetup => {
                 FirstTimeSetup(self.0.prop()).render(
                     area,
                     buf,
                     &mut state.first_time_setup_state,
                 )?;
             }
-            true => MainPage(self.0.prop()).render(area, buf, &mut state.main_page_state)?,
+            Screen::Main => {
+                MainPage(self.0.prop()).render(area, buf, &mut state.main_page_state)?
+            }
         }
 
         Modeline(self.0.prop()).render(area, buf, &mut state.modeline_state)?;
@@ -281,13 +290,13 @@ pub enum MainPageFocus {
 
 pub struct MainPage(FocusProp<MainPage>);
 pub struct MainPageState {
-    emu_state: EmuState,
+    emu_state: Arc<EmuState>,
     fetch_summary: Option<FetchSummary>,
     ops_list_state: OpsListState,
     focus: MainPageFocus,
 }
 
-pub struct OpsList<'a>(&'a EmuState);
+pub struct OpsList(Arc<EmuState>, FocusProp<OpsList>);
 #[derive(Debug, Clone)]
 pub struct OpsListData {
     ops: Vec<Line<'static>>,
@@ -319,6 +328,11 @@ impl OpsListData {
                                 format!("{}", op).into()
                             },
                         ])
+                        .style(if address.shr(2) % 2u32 == 0u32 {
+                            Style::new().fg(Color::Rgb(250 - 15, 250 - 15, 250 - 15))
+                        } else {
+                            Style::new()
+                        })
                     })
                     .collect::<Vec<Line>>()
             })
@@ -334,7 +348,9 @@ impl OpsListData {
     }
 }
 
-impl<'a> Component for OpsList<'a> {
+impl Focus for OpsList {}
+
+impl Component for OpsList {
     type ComponentState = OpsListState;
 
     type ComponentSummary = ();
@@ -344,15 +360,27 @@ impl<'a> Component for OpsList<'a> {
         event: event::Event,
         state: &mut Self::ComponentState,
     ) -> Result<Self::ComponentSummary> {
+        if !self.1.is_focused() {
+            return Ok(());
+        }
+        match event {
+            event::Event::Key(key!(Char('j'), Press)) => {
+                state.list_state.select_next();
+            }
+            event::Event::Key(key!(Char('k'), Press)) => {
+                state.list_state.select_previous();
+            }
+            _ => {}
+        };
         Ok(())
     }
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::ComponentState) -> Result<()> {
-        let OpsList(emu_state) = self;
+        let OpsList(emu_state, focus) = self;
         match &state.data {
             Some(data) => {
                 StatefulWidget::render(
-                    List::new(data.ops.clone()),
+                    List::new(data.ops.clone()).highlight_style(Style::new().black().on_yellow()),
                     area,
                     buf,
                     &mut state.list_state,
@@ -363,7 +391,7 @@ impl<'a> Component for OpsList<'a> {
                 let [centered] = Layout::vertical([Constraint::Max(4)])
                     .flex(Flex::Center)
                     .areas(area);
-                Paragraph::new(match emu_state {
+                Paragraph::new(match emu_state.as_ref() {
                     EmuState::Error(err) => Cow::Owned(format!("何もない\nError: {}", err)),
                     EmuState::Running => Cow::Borrowed("何もない\nThe emulator is running..."),
                     _ => Cow::Borrowed("何もない\nThe emulator is not running"),
@@ -382,9 +410,11 @@ impl Component for MainPage {
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::ComponentState) -> Result<()> {
         let [ops] = Layout::horizontal([Constraint::Ratio(1, 3)]).areas(area);
+        let ops_focus = self.0.prop::<OpsList>();
         let ops_block = Block::bordered()
             .border_type(BorderType::Rounded)
             .padding(Padding::horizontal(1))
+            .border_style(ops_focus.style())
             .title("OPコード");
         let ops_inner = ops_block.inner(ops);
         ops_block.render(ops, buf);
@@ -405,7 +435,7 @@ impl Component for MainPage {
                 }
             }
         };
-        OpsList(&state.emu_state).render(ops, buf, &mut state.ops_list_state)?;
+        OpsList(state.emu_state.clone(), ops_focus).render(ops, buf, &mut state.ops_list_state)?;
         Ok(())
     }
 
@@ -414,6 +444,9 @@ impl Component for MainPage {
         event: event::Event,
         state: &mut Self::ComponentState,
     ) -> Result<Self::ComponentSummary> {
+        let ops_focus = self.0.prop::<OpsList>();
+        OpsList(state.emu_state.clone(), ops_focus)
+            .handle_input(event, &mut state.ops_list_state)?;
         Ok(())
     }
 }

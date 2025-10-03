@@ -2,7 +2,6 @@ use std::path::PathBuf;
 
 use color_eyre::eyre::Result;
 
-use color_eyre::owo_colors::OwoColorize;
 use ratatui::crossterm::event;
 use ratatui::layout::Flex;
 use ratatui::prelude::*;
@@ -51,10 +50,7 @@ impl Component for FirstTimeSetup {
                 Block::bordered()
                     .title("path to bios file:")
                     .border_type(BorderType::Rounded)
-                    .border_style(match self.0.is_focused() {
-                        true => Style::new().green(),
-                        false => Style::new(),
-                    }),
+                    .border_style(self.0.style()),
             )
             .render(bios_path_input, buf);
 
