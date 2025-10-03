@@ -83,6 +83,7 @@ pub fn run(config: AppConfig, mut terminal: DefaultTerminal) -> Result<()> {
 
     let mut app_state = AppState {
         screen: if config.initialized() {
+            config_tx.send(config.clone())?;
             Screen::Main
         } else {
             Screen::FirstTimeSetup
@@ -255,6 +256,7 @@ impl Component for App {
                     TypingAction::Pending => {}
                     TypingAction::Submit(path) => {
                         state.app_config.bios_path = Some(path);
+                        confy::store("pchan-debugger", "config", state.app_config.clone())?;
                         state.screen = Screen::Main;
                         self.0.prop::<OpsList>().push_focus();
                         state.config_tx.send(state.app_config.clone())?;

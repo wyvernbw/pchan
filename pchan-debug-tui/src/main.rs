@@ -35,7 +35,7 @@ fn main() -> Result<()> {
         .with(TuiTracingSubscriberLayer)
         .init();
 
-    let app_config: AppConfig = confy::load("pchan-debugger", None)?;
+    let app_config: AppConfig = confy::load("pchan-debugger", Some("config"))?;
 
     let terminal = ratatui::init();
     let result = app::run(app_config, terminal);
