@@ -1,16 +1,15 @@
 use std::borrow::Cow;
 use std::hash::Hasher;
 use std::hash::{DefaultHasher, Hash};
-use std::iter::Peekable;
 use std::ops::Shr;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use color_eyre::eyre::{Result, eyre};
-use color_eyre::owo_colors::OwoColorize;
 use flume::{Receiver, Sender};
 use pchan_emu::Emu;
 use pchan_emu::cpu::ops::Op;
+use pchan_emu::cpu::reg_str;
 use pchan_emu::dynarec::{FetchParams, FetchSummary};
 use pchan_emu::jit::JIT;
 use pchan_utils::hex;
@@ -18,11 +17,14 @@ use ratatui::crossterm::event::KeyModifiers;
 use ratatui::layout::Flex;
 use ratatui::prelude::*;
 use ratatui::style::{Styled, Stylize};
-use ratatui::widgets::{Block, BorderType, List, ListState, Padding, Paragraph, Wrap};
+use ratatui::widgets::{
+    Block, BorderType, List, ListState, Padding, Paragraph, Row, Table, TableState, Tabs, Wrap,
+};
 use ratatui::{DefaultTerminal, crossterm::event};
+use strum::{FromRepr, IntoEnumIterator};
 
 use crate::AppConfig;
-use crate::app::component::Component;
+use crate::app::component::{Component, StatelessComponent};
 use crate::app::first_time_setup::{FirstTimeSetup, FirstTimeSetupState};
 use crate::app::focus::{Focus, FocusProp, FocusProvider};
 use crate::app::modeline::{Command, Mode, Modeline, ModelineState};
@@ -32,6 +34,11 @@ pub mod component;
 pub mod first_time_setup;
 pub mod focus;
 pub mod modeline;
+
+pub fn centered(area: Rect, vertical: Constraint) -> Rect {
+    let [centered] = Layout::vertical([vertical]).flex(Flex::Center).areas(area);
+    centered
+}
 
 #[macro_export]
 macro_rules! key {
@@ -82,6 +89,11 @@ pub fn run(config: AppConfig, mut terminal: DefaultTerminal) -> Result<()> {
     emu_thread(emu, config_rx, emu_cmd_rx, emu_info_tx)?;
 
     let mut app_state = AppState {
+        focus: if config.initialized() {
+            FocusProvider::new(Some(OpsList::as_focus()))
+        } else {
+            FocusProvider::new(Some(FirstTimeSetup::as_focus()))
+        },
         screen: if config.initialized() {
             config_tx.send(config.clone())?;
             Screen::Main
@@ -92,15 +104,24 @@ pub fn run(config: AppConfig, mut terminal: DefaultTerminal) -> Result<()> {
         exit: false,
         config_tx,
         error: None,
-        focus: FocusProvider::default(),
+        emu: None,
 
         modeline_state: ModelineState { mode: Mode::Normal },
         first_time_setup_state: FirstTimeSetupState::default(),
         main_page_state: MainPageState {
             fetch_summary: None,
             emu_state: EmuState::Uninitialized.into(),
+            cpu_inspector_state: CpuInspectorState {
+                emu: None,
+                current_tab: CpuInspectorTab::Cpu,
+                cpu_tab_state: CpuTabState {
+                    table_state: TableState::default(),
+                    show_zero: true,
+                },
+            },
             ops_list_state: OpsListState::default(),
             focus: MainPageFocus::default(),
+            emu: None,
         },
     };
 
@@ -123,6 +144,11 @@ pub fn run(config: AppConfig, mut terminal: DefaultTerminal) -> Result<()> {
         }
         if let Ok(info) = emu_info_rx.try_recv() {
             match info {
+                EmuInfo::Ref(emu) => {
+                    app_state.emu = Some(emu.clone());
+                    app_state.main_page_state.emu = Some(emu.clone());
+                    app_state.main_page_state.cpu_inspector_state.emu = Some(emu.clone());
+                }
                 EmuInfo::Fetch(fetch_summary) => {
                     app_state.main_page_state.fetch_summary = Some(fetch_summary)
                 }
@@ -153,6 +179,7 @@ pub enum EmuState {
 pub enum EmuInfo {
     StateUpdate(EmuState),
     Fetch(FetchSummary),
+    Ref(Arc<RwLock<Emu>>),
 }
 
 fn emu_thread(
@@ -185,6 +212,7 @@ fn emu_thread(
             emu.jump_to_bios();
         }
         emu_info_tx.send(EmuInfo::StateUpdate(EmuState::Running))?;
+        emu_info_tx.send(EmuInfo::Ref(emu.clone()));
         loop {
             if let Ok(new_config) = config_rx.try_recv() {
                 config = new_config;
@@ -222,6 +250,7 @@ pub struct AppState {
     config_tx: Sender<AppConfig>,
     exit: bool,
     error: Option<color_eyre::Report>,
+    emu: Option<Arc<RwLock<Emu>>>,
 
     modeline_state: ModelineState,
     first_time_setup_state: FirstTimeSetupState,
@@ -275,8 +304,7 @@ impl Component for App {
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::ComponentState) -> Result<()> {
         let main = Block::bordered()
             .border_type(BorderType::Rounded)
-            .title("🐗 Pーちゃん debugger")
-            .title_bottom(format!("{:?}", state.screen));
+            .title("🐗 Pーちゃん debugger");
         let main_area = main.inner(area);
         main.render(area, buf);
         let area = main_area;
@@ -316,8 +344,10 @@ pub enum MainPageFocus {
 pub struct MainPage(FocusProp<MainPage>);
 pub struct MainPageState {
     emu_state: Arc<EmuState>,
+    emu: Option<Arc<RwLock<Emu>>>,
     fetch_summary: Option<FetchSummary>,
     ops_list_state: OpsListState,
+    cpu_inspector_state: CpuInspectorState,
     focus: MainPageFocus,
 }
 
@@ -383,7 +413,11 @@ impl OpsListData {
     }
 }
 
-impl Focus for OpsList {}
+impl Focus for OpsList {
+    fn focus_next() -> Option<focus::FocusId> {
+        Some(CpuInspector::as_focus())
+    }
+}
 
 impl Component for OpsList {
     type ComponentState = OpsListState;
@@ -425,6 +459,12 @@ impl Component for OpsList {
                     .saturating_sub(screen_height as usize - 4);
                 state.list_state.select(Some(selected));
             }
+            event::Event::Key(key!(Char('h'), Press)) => {
+                self.1.focus_prev();
+            }
+            event::Event::Key(key!(Char('l'), Press)) => {
+                self.1.focus_next();
+            }
             _ => {}
         };
         Ok(())
@@ -464,7 +504,7 @@ impl Component for MainPage {
     type ComponentState = MainPageState;
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::ComponentState) -> Result<()> {
-        let [ops] = Layout::horizontal([Constraint::Ratio(1, 3)]).areas(area);
+        let [ops, mid, _] = Layout::horizontal([Constraint::Ratio(1, 3)].repeat(3)).areas(area);
         let ops_focus = self.0.prop::<OpsList>();
         let ops_block = Block::bordered()
             .border_type(BorderType::Rounded)
@@ -491,6 +531,22 @@ impl Component for MainPage {
             }
         };
         OpsList(state.emu_state.clone(), ops_focus).render(ops, buf, &mut state.ops_list_state)?;
+
+        let [cpu_inspector] = Layout::vertical([Constraint::Ratio(2, 3)]).areas(mid);
+        let cpu_inspector_focus = self.0.prop::<CpuInspector>();
+        let cpu_inspector_block = Block::bordered()
+            .border_type(BorderType::Rounded)
+            .border_style(cpu_inspector_focus.style())
+            .title_bottom(" <Tab> Cycle ")
+            .title("エミュ CPU");
+        let cpu_inspector_inner = cpu_inspector_block.inner(cpu_inspector);
+        cpu_inspector_block.render(cpu_inspector, buf);
+        let cpu_inspector = cpu_inspector_inner;
+        CpuInspector(cpu_inspector_focus).render(
+            cpu_inspector,
+            buf,
+            &mut state.cpu_inspector_state,
+        )?;
         Ok(())
     }
 
@@ -501,7 +557,206 @@ impl Component for MainPage {
     ) -> Result<Self::ComponentSummary> {
         let ops_focus = self.0.prop::<OpsList>();
         OpsList(state.emu_state.clone(), ops_focus)
-            .handle_input(event, &mut state.ops_list_state)?;
+            .handle_input(event.clone(), &mut state.ops_list_state)?;
+        CpuInspector(self.0.prop()).handle_input(event, &mut state.cpu_inspector_state)?;
+        Ok(())
+    }
+}
+
+pub struct CpuInspector(FocusProp<Self>);
+pub struct CpuInspectorState {
+    emu: Option<Arc<RwLock<Emu>>>,
+    current_tab: CpuInspectorTab,
+    cpu_tab_state: CpuTabState,
+}
+
+impl Focus for CpuInspector {
+    fn focus_down() -> Option<focus::FocusId> {
+        None
+    }
+    fn focus_up() -> Option<focus::FocusId> {
+        None
+    }
+    fn focus_left() -> Option<focus::FocusId> {
+        Some(OpsList::as_focus())
+    }
+    fn focus_right() -> Option<focus::FocusId> {
+        None
+    }
+}
+
+impl Component for CpuInspector {
+    type ComponentState = CpuInspectorState;
+
+    fn handle_input(
+        &mut self,
+        event: event::Event,
+        state: &mut Self::ComponentState,
+    ) -> Result<Self::ComponentSummary> {
+        if !self.0.is_focused() {
+            return Ok(());
+        }
+        match event {
+            event::Event::Key(key!(Tab, Press)) => {
+                state.current_tab = state.current_tab.next();
+            }
+            event::Event::Key(key!(Char('h'), Press)) => {
+                self.0.focus_left();
+            }
+            event::Event::Key(key!(Char('j'), Press)) => {
+                self.0.focus_down();
+            }
+            event::Event::Key(key!(Char('k'), Press)) => {
+                self.0.focus_up();
+            }
+            event::Event::Key(key!(Char('l'), Press)) => {
+                self.0.focus_right();
+            }
+            _ => {}
+        };
+        let Some(emu) = state.emu.as_deref() else {
+            return Ok(());
+        };
+        match state.current_tab {
+            CpuInspectorTab::Cpu => {
+                CpuTab(emu).handle_input(event, &mut state.cpu_tab_state)?;
+            }
+            CpuInspectorTab::Cop0 => todo!(),
+            CpuInspectorTab::Gte => todo!(),
+        }
+        Ok(())
+    }
+
+    fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::ComponentState) -> Result<()> {
+        let emu = match state.emu.as_deref() {
+            Some(emu) => emu,
+            None => {
+                let [centered] = Layout::vertical([Constraint::Max(4)])
+                    .flex(Flex::Center)
+                    .areas(area);
+                Paragraph::new("何もない\nEmulator is not running")
+                    .wrap(Wrap { trim: false })
+                    .centered()
+                    .render(centered, buf);
+                return Ok(());
+            }
+        };
+
+        let [tabs_area, tabs_inner] =
+            Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(area);
+        Tabs::new(CpuInspectorTab::iter().map(|el| el.to_string()))
+            .style(Style::default().white())
+            .highlight_style(Style::default().yellow())
+            .select(state.current_tab as usize)
+            .divider(symbols::border::PLAIN.vertical_left)
+            .render(tabs_area, buf);
+        match state.current_tab {
+            CpuInspectorTab::Cpu => {
+                CpuTab(emu).render(tabs_inner, buf, &mut state.cpu_tab_state)?
+            }
+            CpuInspectorTab::Cop0 => todo!(),
+            CpuInspectorTab::Gte => todo!(),
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, derive_more::Display, strum::EnumIter)]
+enum CpuInspectorTab {
+    #[display("CPU")]
+    Cpu,
+    #[display("COP0")]
+    Cop0,
+    #[display("GTE")]
+    Gte,
+}
+
+impl CpuInspectorTab {
+    pub fn next(&self) -> Self {
+        match self {
+            CpuInspectorTab::Cpu => CpuInspectorTab::Cop0,
+            CpuInspectorTab::Cop0 => CpuInspectorTab::Gte,
+            CpuInspectorTab::Gte => CpuInspectorTab::Cpu,
+        }
+    }
+}
+
+pub struct CpuTab<'a>(&'a RwLock<Emu>);
+pub struct CpuTabState {
+    table_state: TableState,
+    show_zero: bool,
+}
+
+impl<'a> Component for CpuTab<'a> {
+    type ComponentState = CpuTabState;
+
+    fn handle_input(
+        &mut self,
+        event: event::Event,
+        state: &mut Self::ComponentState,
+    ) -> Result<Self::ComponentSummary> {
+        match event {
+            event::Event::Key(key!(Char('j'), Press)) => {
+                state.table_state.select_next();
+            }
+            event::Event::Key(key!(Char('k'), Press)) => {
+                state.table_state.select_previous();
+            }
+            event::Event::Key(key!(Char('s'), Press)) => {
+                state.show_zero = !state.show_zero;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::ComponentState) -> Result<()> {
+        let emu = self.0.read().unwrap();
+        let rows = emu
+            .cpu
+            .gpr
+            .iter()
+            .enumerate()
+            .filter(|(_, value)| if !state.show_zero { value != &&0 } else { true })
+            .map(|(reg, value)| {
+                Row::new([
+                    Cow::Owned(format!("${}", reg_str(reg as u8))),
+                    Cow::Borrowed(hex(*value)),
+                ])
+                .style(if value == &0 {
+                    Style::new().dim()
+                } else {
+                    Style::new()
+                })
+            })
+            .collect::<Vec<_>>();
+        if rows.is_empty() {
+            let block = Block::bordered()
+                .border_type(BorderType::Rounded)
+                .title_bottom("<s> Show zero registers");
+            let block_inner = block.inner(area);
+            block.render(area, buf);
+            Paragraph::new("ゼロ ー All registers are zero.")
+                .wrap(Wrap { trim: false })
+                .centered()
+                .render(centered(block_inner, Constraint::Max(2)), buf);
+            return Ok(());
+        }
+        StatefulWidget::render(
+            Table::new(rows, [Constraint::Max(8), Constraint::Fill(1)])
+                .row_highlight_style(Style::new().black().on_yellow())
+                .block(
+                    Block::bordered()
+                        .border_type(BorderType::Rounded)
+                        .title_bottom("<s> Show zero registers"),
+                )
+                .header(Row::new(["レジスタ", "Value"])),
+            area,
+            buf,
+            &mut state.table_state,
+        );
+
         Ok(())
     }
 }

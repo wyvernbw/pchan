@@ -38,3 +38,13 @@ where
         }
     }
 }
+
+pub trait StatelessComponent {
+    fn stateless_render(self, area: Rect, buf: &mut Buffer) -> Result<()>;
+}
+
+impl<S, T: Component<ComponentState = (), ComponentSummary = S>> StatelessComponent for T {
+    fn stateless_render(self, area: Rect, buf: &mut Buffer) -> Result<()> {
+        self.render(area, buf, &mut ())
+    }
+}
