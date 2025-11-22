@@ -868,8 +868,9 @@ impl<'a> Component for Actions<'a> {
     }
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::ComponentState) -> Result<()> {
-        let [actions, report] =
-            Layout::vertical([Constraint::Max(6), Constraint::Max(2)]).areas(area);
+        let [actions, report, stage_list] =
+            Layout::vertical([Constraint::Max(6), Constraint::Max(2), Constraint::Max(5)])
+                .areas(area);
         Paragraph::new(format!(
             "<n>  next: {} 
             <r>  run 
@@ -892,6 +893,19 @@ impl<'a> Component for Actions<'a> {
             .line_set(symbols::line::THICK)
             .ratio(self.1.progress as f64 / { EmuDynarecPipeline::max_progress() as f64 })
             .render(report, buf);
+
+        let progress = ["ready", "fetched", "emitted", "called", "cached"]
+            .into_iter()
+            .enumerate()
+            .map(|(i, state)| (i, format!(" - {}", state)))
+            .map(|(i, state)| {
+                Line::from(state).style(if i <= self.1.progress {
+                    Style::new().white()
+                } else {
+                    Style::new().dark_gray()
+                })
+            });
+        Text::from_iter(progress).render(stage_list, buf);
         Ok(())
     }
 }

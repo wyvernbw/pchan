@@ -92,19 +92,20 @@ macro_rules! array {
 
 use std::{mem::size_of, slice, str};
 
+// FIXME: nuke this
 thread_local! {
     static BUFFERS: Buffers = const { Buffers::new() };
 }
 
 struct Buffers {
-    slots: [[u8; 130]; 8], // 8 concurrent hex strings per thread
+    slots: [[u8; 130]; 64], // 64 concurrent hex strings per thread
     index: Cell<usize>,
 }
 
 impl Buffers {
     const fn new() -> Self {
         Self {
-            slots: [[0; 130]; 8],
+            slots: [[0; 130]; 64],
             index: Cell::new(0),
         }
     }
