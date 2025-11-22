@@ -13,7 +13,7 @@ use cranelift_codegen::{
 use tracing::{Instrument, Level, enabled, instrument};
 
 use crate::{
-    FnBuilderExt,
+    Emu, FnBuilderExt,
     cpu::{Cop0, Cpu, REG_STR, Reg},
     cranelift_bs::*,
     dynarec::{CacheUpdates, EntryCache},
@@ -885,22 +885,22 @@ pub struct BlockFn {
     pub func: Arc<Function>,
 }
 
-type BlockFnArgs<'a> = (&'a mut Cpu, &'a mut Memory, bool);
+type BlockFnArgs<'a> = (&'a mut Emu, bool);
 
 impl BlockFn {
-    fn call_block(&self, (cpu, memory, instrument): BlockFnArgs) {
+    fn call_block(&self, (emu, instrument): BlockFnArgs) {
         // reset delta clock before running
-        cpu.d_clock = 0;
+        emu.cpu.d_clock = 0;
 
         if instrument {
             (self.fn_ptr)
                 .instrument(tracing::info_span!("fn", addr = ?self.fn_ptr))
-                .inner()(ptr::from_mut(cpu), ptr::from_mut(memory))
+                .inner()(ptr::from_mut(&mut emu.cpu), ptr::from_mut(&mut emu.mem))
         } else {
-            (self.fn_ptr)(ptr::from_mut(cpu), ptr::from_mut(memory))
+            (self.fn_ptr)(ptr::from_mut(&mut emu.cpu), ptr::from_mut(&mut emu.mem))
         };
 
-        IO::run_timer_pipeline(cpu, memory);
+        IO::run_timer_pipeline(&mut emu.cpu, &mut emu.mem);
     }
 }
 

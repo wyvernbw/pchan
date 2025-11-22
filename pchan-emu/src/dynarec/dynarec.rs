@@ -16,6 +16,7 @@ use tracing::trace_span;
 use tracing::{Level, enabled, instrument};
 
 pub mod builder;
+pub mod pipeline;
 #[path = "./sparse-queue.rs"]
 pub mod sparse_queue;
 pub mod prelude {
@@ -101,8 +102,8 @@ impl Emu {
     pub fn try_cache_call(&mut self, address: u32) -> TryCacheSummary {
         // TODO: implement 128bit hash
         let cached = self.jit_cache.use_cached_function(address);
-        if let Some(cached) = cached {
-            cached(&mut self.cpu, &mut self.mem, false);
+        if let Some(cached) = cached.cloned() {
+            cached(self, false);
             TryCacheSummary::Success
         } else {
             TryCacheSummary::Fail
@@ -115,12 +116,12 @@ impl Emu {
     #[builder]
     pub fn fetch_post_process_pass(
         &mut self,
-        _fn_builder: &mut FunctionBuilder<'_>,
+        fn_builder: &mut FunctionBuilder<'_>,
         fetch_result: &mut FetchSummary,
     ) {
         let mut dfs = Dfs::new(&fetch_result.cfg, fetch_result.entry);
-        while let Some(_node) = dfs.next(&fetch_result.cfg) {
-            // unused
+        while let Some(node) = dfs.next(&fetch_result.cfg) {
+            fetch_result.cfg[node].clif_block = Some(fn_builder.create_block());
         }
     }
 }
@@ -141,8 +142,8 @@ impl Emu {
 
         // try cache first
         let cached = self.jit_cache.use_cached_function(initial_address);
-        if let Some(cached) = cached {
-            cached(&mut self.cpu, &mut self.mem, false);
+        if let Some(cached) = cached.cloned() {
+            cached(self, false);
             tracing::info!("{:?} fn invoked", cached.fn_ptr);
             return Ok(());
         }
@@ -171,7 +172,7 @@ impl Emu {
 
         tracing::info!("{:?} fn compiled", function.fn_ptr);
 
-        function(&mut self.cpu, &mut self.mem, true);
+        function(self, true);
 
         self.jit_cache.fn_map.insert(initial_address, function);
 
@@ -360,9 +361,13 @@ impl Emu {
         fn_builder: &mut FunctionBuilder<'b>,
         func_ref_table: &'a FuncRefTable,
     ) {
+        self.fetch_post_process_pass()
+            .fn_builder(fn_builder)
+            .fetch_result(&mut fetch_result)
+            .call();
+
         let mut dfs = Dfs::new(&fetch_result.cfg, fetch_result.entry);
         while let Some(node) = dfs.next(&fetch_result.cfg) {
-            fetch_result.cfg[node].clif_block = Some(fn_builder.create_block());
             let basic_block = &fetch_result.cfg[node];
             let cranelift_block = basic_block.clif_block();
 
@@ -678,7 +683,7 @@ impl Emu {
             });
             fn_builder.append_inst(i, final_instruction.terminator);
         } else {
-            // fn_builder.ins().return_(&[]);
+            fn_builder.ins().return_(&[]);
             tracing::error!("block did not emit a terminator!")
         }
 
