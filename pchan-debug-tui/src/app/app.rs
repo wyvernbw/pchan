@@ -106,7 +106,7 @@ pub fn run(config: AppConfig, mut terminal: DefaultTerminal) -> Result<()> {
         config_tx,
         error: None,
         emu: None,
-        pipeline_report: EmuDynarecPipeline::new().report(),
+        pipeline_report: EmuDynarecPipelineReport::not_started(),
 
         modeline_state: ModelineState { mode: Mode::Normal },
         first_time_setup_state: FirstTimeSetupState::default(),
@@ -227,7 +227,10 @@ fn emu_thread(
         emu_info_tx.send(EmuInfo::StateUpdate(EmuState::Running))?;
         emu_info_tx.send(EmuInfo::Ref(emu.clone()))?;
 
-        let mut pipeline = EmuDynarecPipeline::new();
+        let mut pipeline = {
+            let emu = emu.read().unwrap();
+            EmuDynarecPipeline::from_emu(&emu)
+        };
 
         loop {
             if let Ok(new_config) = config_rx.try_recv() {
@@ -236,8 +239,7 @@ fn emu_thread(
             match emu_cmd_rx.try_recv() {
                 Ok(EmuCmd::StepJit) => {
                     let mut emu = emu.write().unwrap();
-                    let pc = emu.cpu.pc;
-                    pipeline = pipeline.step(&mut emu, &mut jit, pc)?;
+                    pipeline = pipeline.step(&mut emu, &mut jit)?;
                     if let Some(fetch) = pipeline.as_fetch() {
                         emu_info_tx.send(EmuInfo::Fetch(fetch.clone()))?;
                     }
@@ -245,8 +247,10 @@ fn emu_thread(
                 }
                 Ok(EmuCmd::Run) => {
                     let mut emu = emu.write().unwrap();
-                    let pc = emu.cpu.pc;
-                    pipeline = pipeline.run(&mut emu, &mut jit, pc)?;
+                    pipeline = pipeline.run(&mut emu, &mut jit)?;
+                    if let Some(fetch) = pipeline.as_fetch() {
+                        emu_info_tx.send(EmuInfo::Fetch(fetch.clone()))?;
+                    }
                     emu_info_tx.send(EmuInfo::PipelineUpdate(pipeline.report()))?;
                 }
                 Err(_) => {}
@@ -703,8 +707,14 @@ impl Component for CpuInspector {
             }
         };
 
+        let [summary_area, tabs_area] =
+            Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(area);
+
+        Paragraph::new(format!("PC: 0x{:08x}", emu.read().unwrap().cpu.pc))
+            .render(summary_area, buf);
+
         let [tabs_area, tabs_inner] =
-            Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(area);
+            Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(tabs_area);
         Tabs::new(CpuInspectorTab::iter().map(|el| el.to_string()))
             .style(Style::default().white())
             .highlight_style(Style::default().yellow())
@@ -869,7 +879,7 @@ impl<'a> Component for Actions<'a> {
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::ComponentState) -> Result<()> {
         let [actions, report, stage_list] =
-            Layout::vertical([Constraint::Max(6), Constraint::Max(2), Constraint::Max(5)])
+            Layout::vertical([Constraint::Max(6), Constraint::Max(2), Constraint::Max(6)])
                 .areas(area);
         Paragraph::new(format!(
             "<n>  next: {} 
@@ -885,7 +895,7 @@ impl<'a> Component for Actions<'a> {
         LineGauge::default()
             .block(
                 Block::new()
-                    .title(format!("Emu Stage -> {}", self.1.current))
+                    .title(format!("Emu Stage :: {}", self.1.current))
                     .title_style(Style::new().bold()),
             )
             .unfilled_style(Style::new().dark_gray())
@@ -894,17 +904,24 @@ impl<'a> Component for Actions<'a> {
             .ratio(self.1.progress as f64 / { EmuDynarecPipeline::max_progress() as f64 })
             .render(report, buf);
 
-        let progress = ["ready", "fetched", "emitted", "called", "cached"]
-            .into_iter()
-            .enumerate()
-            .map(|(i, state)| (i, format!(" - {}", state)))
-            .map(|(i, state)| {
-                Line::from(state).style(if i <= self.1.progress {
-                    Style::new().white()
-                } else {
-                    Style::new().dark_gray()
-                })
-            });
+        let progress = [
+            "ready",
+            "try cache",
+            "fetched",
+            "emitted",
+            "called",
+            "cached",
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(i, state)| (i, format!(" - {}", state)))
+        .map(|(i, state)| {
+            Line::from(state).style(if i <= self.1.progress {
+                Style::new().white()
+            } else {
+                Style::new().dark_gray()
+            })
+        });
         Text::from_iter(progress).render(stage_list, buf);
         Ok(())
     }

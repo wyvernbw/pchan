@@ -239,12 +239,13 @@ impl Memory {
                 // FIXME: cache isolation check on fast path is stupid
                 // also not all addresses are cached, so this is straight wrong
                 if cpu.isc() {
-                    let address = address & 0xFFF;
-                    unsafe {
-                        let ptr = self.cache.as_mut_ptr().add(address as usize);
-                        Memory::write_impl(ptr, value);
-                        return;
-                    }
+                    // let address = address & 0xFFF;
+                    // unsafe {
+                    //     let ptr = self.cache.as_mut_ptr().add(address as usize);
+                    //     Memory::write_impl(ptr, value);
+                    //     return;
+                    // }
+                    return;
                 }
 
                 let ptr = mem
