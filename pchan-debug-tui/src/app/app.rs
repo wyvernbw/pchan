@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::hash::Hasher;
 use std::hash::{DefaultHasher, Hash};
 use std::ops::Shr;
@@ -130,8 +131,11 @@ pub fn run(config: AppConfig, mut terminal: DefaultTerminal) -> Result<()> {
             },
             memory_inspector_state: MemoryInspectorState {
                 emu: emu.clone(),
-                address: 0xbfc00000,
+                dims: None,
+                loaded_address: 0xbfc00000,
+                selected_address: 0xbfc00000,
                 loaded: Vec::new(),
+                loaded_address_tags: Vec::new(),
                 table_state: TableState::new(),
             },
         },
@@ -935,8 +939,11 @@ impl<'a> Component for Actions<'a> {
 pub struct MemoryInspector(FocusProp<Self>);
 pub struct MemoryInspectorState {
     emu: Arc<RwLock<Emu>>,
-    address: u32,
+    loaded_address: u32,
+    selected_address: u32,
+    dims: Option<(u16, u16)>,
     loaded: Vec<const_hex::Buffer<1>>,
+    loaded_address_tags: Vec<const_hex::Buffer<4, true>>,
     table_state: TableState,
 }
 
@@ -959,21 +966,52 @@ impl Focus for MemoryInspector {
 }
 
 impl MemoryInspectorState {
-    fn fetch(&mut self) {
-        const MIN_LEN: usize = 1024;
-
+    fn fetch(&mut self, rows: u16, cols: u16) {
         let emu = &self.emu.read().unwrap();
 
         self.loaded.clear();
-        (self.address..)
-            .take(MIN_LEN)
+        (self.loaded_address..)
+            .take((cols * rows) as usize)
             .map(|address| emu.read::<u8, pchan_emu::memory::ext::NoExt>(address))
             .map(|byte| const_hex::const_encode::<_, false>(&[byte]))
             .collect_into(&mut self.loaded);
+
+        self.loaded_address_tags.clear();
+        self.loaded
+            .chunks(cols as usize)
+            .enumerate()
+            .map(|(row, _)| self.loaded_address + row as u32 * cols as u32)
+            .map(|address| const_hex::const_encode::<_, true>(&address.to_be_bytes()))
+            .collect_into(&mut self.loaded_address_tags);
     }
-    fn update_address(&mut self, addr: u32) {
-        self.address = addr;
-        self.fetch();
+    fn update_address(&mut self, addr: u32, rows: u16, cols: u16) {
+        let page_size = (cols * rows) as u32;
+        if addr < self.loaded_address {
+            self.loaded_address -= page_size;
+            self.fetch(rows, cols);
+        }
+        if addr > self.loaded_address + page_size {
+            self.loaded_address += page_size;
+            self.fetch(rows, cols);
+        }
+        self.selected_address = addr;
+    }
+    fn update_selected(&mut self, cols: usize) {
+        let selected = self
+            .loaded
+            .chunks(cols)
+            .enumerate()
+            .find_map(|(row_idx, row)| {
+                row.iter().enumerate().find_map(|(col_idx, _)| {
+                    let address = self.loaded_address as usize + (row_idx * cols + col_idx);
+                    if address == self.selected_address as usize {
+                        Some((row_idx, col_idx))
+                    } else {
+                        None
+                    }
+                })
+            });
+        self.table_state.select_cell(selected);
     }
 }
 
@@ -986,7 +1024,11 @@ impl MemoryInspector {
     ) -> Result<()> {
         const COL_WIDTH: u16 = 3;
 
+        let [tags, area] =
+            Layout::horizontal([Constraint::Max(12), Constraint::Min(4)]).areas(area);
         let cols = area.width / COL_WIDTH;
+        let rows = area.height - 2;
+        state.dims = Some((rows, cols));
 
         if cols <= 1 {
             "Window Too small".render(area, buf);
@@ -994,14 +1036,14 @@ impl MemoryInspector {
         }
 
         if state.loaded.is_empty() {
-            state.fetch();
+            state.fetch(rows, cols);
         }
 
         let rows = {
             state
                 .loaded
                 .chunks(cols as usize)
-                .map(|row| row.iter().map(ToText))
+                .map(|row| row.iter().map(|cell| cell.as_str()))
                 .map(Row::new)
                 .collect::<Vec<_>>()
         };
@@ -1011,11 +1053,31 @@ impl MemoryInspector {
         }
 
         StatefulWidget::render(
-            Table::new(rows, [COL_WIDTH].repeat(cols as usize))
-                .cell_highlight_style(Style::new().green()),
+            Table::new(rows, [COL_WIDTH - 1].repeat(cols as usize))
+                .style(Style::new().dark_gray())
+                .cell_highlight_style(Style::new().on_gray())
+                .block(
+                    Block::bordered()
+                        .border_type(BorderType::Rounded)
+                        .border_style(Style::new().white())
+                        .title("Hex"),
+                ),
             area,
             buf,
             &mut state.table_state,
+        );
+
+        StatefulWidget::render(
+            List::new(state.loaded_address_tags.iter().map(|row| row.as_str()))
+                .block(
+                    Block::bordered()
+                        .border_type(BorderType::Rounded)
+                        .title("Address"),
+                )
+                .highlight_style(Style::new().bg(Color::White).fg(Color::Black)),
+            tags,
+            buf,
+            &mut ListState::default().with_selected(state.table_state.selected()),
         );
 
         Ok(())
@@ -1032,22 +1094,23 @@ impl Component for MemoryInspector {
         event: event::Event,
         state: &mut Self::ComponentState,
     ) -> Result<Self::ComponentSummary> {
-        match event {
-            event::Event::Key(key!(Char('l'), Press, KeyModifiers::CONTROL)) => {
-                state.update_address(state.address + 1);
-                state.table_state.select_next_column();
+        if let Some((rows, cols)) = state.dims {
+            match event {
+                event::Event::Key(key!(Char('l'), Press, KeyModifiers::CONTROL)) => {
+                    state.update_address(state.selected_address + 1, rows, cols);
+                }
+                event::Event::Key(key!(Char('h'), Press, KeyModifiers::CONTROL)) => {
+                    state.update_address(state.selected_address - 1, rows, cols);
+                }
+                event::Event::Key(key!(Char('j'), Press, KeyModifiers::CONTROL)) => {
+                    state.update_address(state.selected_address + cols as u32, rows, cols);
+                }
+                event::Event::Key(key!(Char('k'), Press, KeyModifiers::CONTROL)) => {
+                    state.update_address(state.selected_address - cols as u32, rows, cols);
+                }
+                _ => {}
             }
-            event::Event::Key(key!(Char('h'), Press, KeyModifiers::CONTROL)) => {
-                state.update_address(state.address - 1);
-                state.table_state.select_previous_column();
-            }
-            event::Event::Key(key!(Char('j'), Press, KeyModifiers::CONTROL)) => {
-                state.table_state.select_next();
-            }
-            event::Event::Key(key!(Char('k'), Press, KeyModifiers::CONTROL)) => {
-                state.table_state.select_previous();
-            }
-            _ => {}
+            state.update_selected(cols as usize);
         }
 
         if !self.0.is_focused() {
@@ -1077,7 +1140,7 @@ impl Component for MemoryInspector {
             Layout::vertical([Constraint::Min(2), Constraint::Max(3)]).areas(area);
 
         self.render_hex_table(table, buf, state)?;
-        Paragraph::new(format!("0x{:08x}", state.address))
+        Paragraph::new(format!("0x{:08x}", state.selected_address))
             .block(
                 Block::bordered()
                     .border_type(BorderType::Rounded)
@@ -1086,13 +1149,5 @@ impl Component for MemoryInspector {
             .render(address_area, buf);
 
         Ok(())
-    }
-}
-
-struct ToText<T>(T);
-
-impl<'a, const N: usize> From<ToText<&'a const_hex::Buffer<N, false>>> for Text<'a> {
-    fn from(value: ToText<&'a const_hex::Buffer<N, false>>) -> Self {
-        Text::raw(value.0.as_str())
     }
 }
