@@ -147,8 +147,8 @@ impl Memory {
                     }
 
                     _ => {
-                        panic!("unsupported region for {}!", hex(address));
-                        // unsafe { std::mem::zeroed() }
+                        // panic!("unsupported region for {}!", hex(address));
+                        unsafe { std::mem::zeroed() }
                     }
                 }
             }

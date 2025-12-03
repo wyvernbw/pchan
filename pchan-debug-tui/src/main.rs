@@ -1,5 +1,6 @@
 #![allow(clippy::collapsible_if)]
 #![feature(impl_trait_in_assoc_type)]
+#![feature(iter_collect_into)]
 #![feature(associated_type_defaults)]
 #![feature(iter_intersperse)]
 

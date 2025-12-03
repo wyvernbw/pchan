@@ -128,7 +128,12 @@ pub fn run(config: AppConfig, mut terminal: DefaultTerminal) -> Result<()> {
             action_state: ActionState {
                 chord: ActionChord::None,
             },
-            memory_inspector_state: MemoryInspectorState { emu: emu.clone() },
+            memory_inspector_state: MemoryInspectorState {
+                emu: emu.clone(),
+                address: 0xbfc00000,
+                loaded: Vec::new(),
+                table_state: TableState::new(),
+            },
         },
     };
 
@@ -600,7 +605,7 @@ impl<'a> Component for MainPage<'a> {
         let memory_inspector_focus = self.0.prop();
         let memory_block = Block::bordered()
             .border_type(BorderType::Rounded)
-            .style(memory_inspector_focus.style())
+            .border_style(memory_inspector_focus.style())
             .title("Memory");
         let memory_block_inner = memory_block.inner(memory);
         memory_block.render(memory, buf);
@@ -930,6 +935,9 @@ impl<'a> Component for Actions<'a> {
 pub struct MemoryInspector(FocusProp<Self>);
 pub struct MemoryInspectorState {
     emu: Arc<RwLock<Emu>>,
+    address: u32,
+    loaded: Vec<const_hex::Buffer<1>>,
+    table_state: TableState,
 }
 
 impl Focus for MemoryInspector {
@@ -950,6 +958,70 @@ impl Focus for MemoryInspector {
     }
 }
 
+impl MemoryInspectorState {
+    fn fetch(&mut self) {
+        const MIN_LEN: usize = 1024;
+
+        let emu = &self.emu.read().unwrap();
+
+        self.loaded.clear();
+        (self.address..)
+            .take(MIN_LEN)
+            .map(|address| emu.read::<u8, pchan_emu::memory::ext::NoExt>(address))
+            .map(|byte| const_hex::const_encode::<_, false>(&[byte]))
+            .collect_into(&mut self.loaded);
+    }
+    fn update_address(&mut self, addr: u32) {
+        self.address = addr;
+        self.fetch();
+    }
+}
+
+impl MemoryInspector {
+    fn render_hex_table(
+        self,
+        area: Rect,
+        buf: &mut Buffer,
+        state: &mut MemoryInspectorState,
+    ) -> Result<()> {
+        const COL_WIDTH: u16 = 3;
+
+        let cols = area.width / COL_WIDTH;
+
+        if cols <= 1 {
+            "Window Too small".render(area, buf);
+            return Ok(());
+        }
+
+        if state.loaded.is_empty() {
+            state.fetch();
+        }
+
+        let rows = {
+            state
+                .loaded
+                .chunks(cols as usize)
+                .map(|row| row.iter().map(ToText))
+                .map(Row::new)
+                .collect::<Vec<_>>()
+        };
+
+        if state.table_state.selected_cell().is_none() {
+            state.table_state.select_cell(Some((0, 0)));
+        }
+
+        StatefulWidget::render(
+            Table::new(rows, [COL_WIDTH].repeat(cols as usize))
+                .cell_highlight_style(Style::new().green()),
+            area,
+            buf,
+            &mut state.table_state,
+        );
+
+        Ok(())
+    }
+}
+
 impl Component for MemoryInspector {
     type ComponentState = MemoryInspectorState;
 
@@ -960,9 +1032,28 @@ impl Component for MemoryInspector {
         event: event::Event,
         state: &mut Self::ComponentState,
     ) -> Result<Self::ComponentSummary> {
+        match event {
+            event::Event::Key(key!(Char('l'), Press, KeyModifiers::CONTROL)) => {
+                state.update_address(state.address + 1);
+                state.table_state.select_next_column();
+            }
+            event::Event::Key(key!(Char('h'), Press, KeyModifiers::CONTROL)) => {
+                state.update_address(state.address - 1);
+                state.table_state.select_previous_column();
+            }
+            event::Event::Key(key!(Char('j'), Press, KeyModifiers::CONTROL)) => {
+                state.table_state.select_next();
+            }
+            event::Event::Key(key!(Char('k'), Press, KeyModifiers::CONTROL)) => {
+                state.table_state.select_previous();
+            }
+            _ => {}
+        }
+
         if !self.0.is_focused() {
             return Ok(());
         }
+
         match event {
             event::Event::Key(key!(Char('h'), Press)) => {
                 self.0.focus_left();
@@ -982,6 +1073,26 @@ impl Component for MemoryInspector {
     }
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::ComponentState) -> Result<()> {
+        let [table, address_area] =
+            Layout::vertical([Constraint::Min(2), Constraint::Max(3)]).areas(area);
+
+        self.render_hex_table(table, buf, state)?;
+        Paragraph::new(format!("0x{:08x}", state.address))
+            .block(
+                Block::bordered()
+                    .border_type(BorderType::Rounded)
+                    .title("Address"),
+            )
+            .render(address_area, buf);
+
         Ok(())
+    }
+}
+
+struct ToText<T>(T);
+
+impl<'a, const N: usize> From<ToText<&'a const_hex::Buffer<N, false>>> for Text<'a> {
+    fn from(value: ToText<&'a const_hex::Buffer<N, false>>) -> Self {
+        Text::raw(value.0.as_str())
     }
 }
