@@ -1,5 +1,4 @@
 use std::borrow::Cow;
-use std::collections::HashMap;
 use std::hash::Hasher;
 use std::hash::{DefaultHasher, Hash};
 use std::ops::Shr;
@@ -9,7 +8,7 @@ use std::time::Duration;
 use color_eyre::eyre::{Result, eyre};
 use flume::{Receiver, Sender};
 use pchan_emu::Emu;
-use pchan_emu::cpu::ops::Op;
+use pchan_emu::cpu::ops::{BoundaryType, Op};
 use pchan_emu::cpu::reg_str;
 use pchan_emu::dynarec::pipeline::{EmuDynarecPipeline, EmuDynarecPipelineReport};
 use pchan_emu::dynarec::{FetchParams, FetchSummary};
@@ -20,8 +19,8 @@ use ratatui::layout::Flex;
 use ratatui::prelude::*;
 use ratatui::style::Stylize;
 use ratatui::widgets::{
-    Block, BorderType, Gauge, LineGauge, List, ListState, Padding, Paragraph, Row, Table,
-    TableState, Tabs, Wrap,
+    Block, BorderType, LineGauge, List, ListState, Padding, Paragraph, Row, Table, TableState,
+    Tabs, Wrap,
 };
 use ratatui::{DefaultTerminal, crossterm::event};
 use strum::IntoEnumIterator;
@@ -425,26 +424,23 @@ impl OpsListData {
             .map(|(address, op)| {
                 (
                     address,
-                    Line::from(vec![
-                        format!("{}   ", hex(*address)).dim(),
-                        if op.is_block_boundary().is_some() {
-                            format!("{}", op).red()
-                        } else {
-                            format!("{}", op).into()
+                    Span::raw(format!("{}   {}", hex(*address), op)).style(
+                        match (address.shr(2) % 2u32 == 0u32, op.is_block_boundary()) {
+                            (
+                                _,
+                                Some(BoundaryType::Block { .. } | BoundaryType::BlockSplit { .. }),
+                            ) => Style::new().red(),
+                            (true, _) => Style::new().fg(Color::Rgb(250 - 15, 250 - 15, 250 - 15)),
+                            (false, _) => Style::new(),
                         },
-                    ])
-                    .style(if address.shr(2) % 2u32 == 0u32 {
-                        Style::new().fg(Color::Rgb(250 - 15, 250 - 15, 250 - 15))
-                    } else {
-                        Style::new()
-                    }),
+                    ),
                 )
             })
             .insert_between(
                 |a, b| a.0.abs_diff(*b.0).ge(&8),
-                || (&0u32, Line::from("...").style(Style::new().dim())),
+                || (&0u32, Span::from("...").style(Style::new().dim())),
             )
-            .map(|(_, line)| line)
+            .map(|(_, line)| line.into())
             .collect::<Vec<Line>>();
         let mut hasher = DefaultHasher::new();
         decoded_ops.hash(&mut hasher);
@@ -1043,7 +1039,16 @@ impl MemoryInspector {
             state
                 .loaded
                 .chunks(cols as usize)
-                .map(|row| row.iter().map(|cell| cell.as_str()))
+                .enumerate()
+                .map(|(row_idx, row)| {
+                    row.iter().enumerate().map(move |(col_idx, cell)| {
+                        Span::raw(cell.as_str()).style(if (row_idx + col_idx) % 2 == 0 {
+                            Style::new().white()
+                        } else {
+                            Style::new().fg(Color::Rgb(255 - 15, 255 - 15, 255 - 15))
+                        })
+                    })
+                })
                 .map(Row::new)
                 .collect::<Vec<_>>()
         };
@@ -1054,8 +1059,8 @@ impl MemoryInspector {
 
         StatefulWidget::render(
             Table::new(rows, [COL_WIDTH - 1].repeat(cols as usize))
-                .style(Style::new().dark_gray())
-                .cell_highlight_style(Style::new().on_gray())
+                .style(Style::new().gray())
+                .cell_highlight_style(Style::new().on_gray().black())
                 .block(
                     Block::bordered()
                         .border_type(BorderType::Rounded)
@@ -1074,7 +1079,7 @@ impl MemoryInspector {
                         .border_type(BorderType::Rounded)
                         .title("Address"),
                 )
-                .highlight_style(Style::new().bg(Color::White).fg(Color::Black)),
+                .highlight_style(Style::new().bg(Color::Gray).fg(Color::Black)),
             tags,
             buf,
             &mut ListState::default().with_selected(state.table_state.selected()),
