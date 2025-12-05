@@ -113,6 +113,9 @@ impl<T: Focus> FocusProp<T> {
         self.current == Some(T::as_focus())
     }
     pub fn unfocus(&self) {
+        if !self.is_focused() {
+            return;
+        }
         _ = self
             .sender
             .send(FocusEvent::Unfocus)

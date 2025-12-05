@@ -5,11 +5,12 @@ use std::ops::Shr;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-use color_eyre::eyre::{Result, eyre};
+use color_eyre::eyre::{Result, bail, eyre};
 use flume::{Receiver, Sender};
 use pchan_emu::Emu;
 use pchan_emu::cpu::ops::{BoundaryType, Op};
 use pchan_emu::cpu::reg_str;
+use pchan_emu::cranelift_bs::codegen::gimli::write::DebuggingInformationEntry;
 use pchan_emu::dynarec::pipeline::{EmuDynarecPipeline, EmuDynarecPipelineReport};
 use pchan_emu::dynarec::{FetchParams, FetchSummary};
 use pchan_emu::jit::JIT;
@@ -24,6 +25,8 @@ use ratatui::widgets::{
 };
 use ratatui::{DefaultTerminal, crossterm::event};
 use strum::IntoEnumIterator;
+use tui_input::Input;
+use tui_input::backend::crossterm::EventHandler;
 
 use crate::AppConfig;
 use crate::app::component::Component;
@@ -136,6 +139,10 @@ pub fn run(config: AppConfig, mut terminal: DefaultTerminal) -> Result<()> {
                 loaded: Vec::new(),
                 loaded_address_tags: Vec::new(),
                 table_state: TableState::new(),
+                address_bar_state: MemoryInspectorAddressBarState {
+                    input: Input::new("".into()),
+                    mode: MemoryInspectorAddressBarMode::Normal,
+                },
             },
         },
     };
@@ -452,6 +459,9 @@ impl OpsListData {
 }
 
 impl Focus for OpsList {
+    fn focus_prev() -> Option<focus::FocusId> {
+        Some(MemoryInspector::as_focus())
+    }
     fn focus_next() -> Option<focus::FocusId> {
         Some(CpuInspector::as_focus())
     }
@@ -941,6 +951,7 @@ pub struct MemoryInspectorState {
     loaded: Vec<const_hex::Buffer<1>>,
     loaded_address_tags: Vec<const_hex::Buffer<4, true>>,
     table_state: TableState,
+    address_bar_state: MemoryInspectorAddressBarState,
 }
 
 impl Focus for MemoryInspector {
@@ -962,7 +973,11 @@ impl Focus for MemoryInspector {
 }
 
 impl MemoryInspectorState {
-    fn fetch(&mut self, rows: u16, cols: u16) {
+    fn fetch(&mut self) {
+        let Some((rows, cols)) = self.dims else {
+            return;
+        };
+
         let emu = &self.emu.read().unwrap();
 
         self.loaded.clear();
@@ -980,19 +995,34 @@ impl MemoryInspectorState {
             .map(|address| const_hex::const_encode::<_, true>(&address.to_be_bytes()))
             .collect_into(&mut self.loaded_address_tags);
     }
-    fn update_address(&mut self, addr: u32, rows: u16, cols: u16) {
+    fn update_address(&mut self, addr: u32) {
+        let Some((rows, cols)) = self.dims else {
+            return;
+        };
+
         let page_size = (cols * rows) as u32;
         if addr < self.loaded_address {
-            self.loaded_address -= page_size;
-            self.fetch(rows, cols);
-        }
-        if addr > self.loaded_address + page_size {
-            self.loaded_address += page_size;
-            self.fetch(rows, cols);
+            self.loaded_address = self.loaded_address.saturating_sub(
+                self.loaded_address
+                    .abs_diff(addr)
+                    .next_multiple_of(page_size),
+            );
+            self.fetch();
+        } else if addr >= self.loaded_address + page_size {
+            self.loaded_address = self.loaded_address.saturating_add(
+                self.loaded_address
+                    .abs_diff(addr)
+                    .next_multiple_of(page_size),
+            );
+            self.fetch();
         }
         self.selected_address = addr;
     }
-    fn update_selected(&mut self, cols: usize) {
+    fn update_selected(&mut self) {
+        let Some((_, cols)) = self.dims else {
+            return;
+        };
+        let cols = cols as usize;
         let selected = self
             .loaded
             .chunks(cols)
@@ -1013,7 +1043,7 @@ impl MemoryInspectorState {
 
 impl MemoryInspector {
     fn render_hex_table(
-        self,
+        &self,
         area: Rect,
         buf: &mut Buffer,
         state: &mut MemoryInspectorState,
@@ -1032,7 +1062,7 @@ impl MemoryInspector {
         }
 
         if state.loaded.is_empty() {
-            state.fetch(rows, cols);
+            state.fetch();
         }
 
         let rows = {
@@ -1099,23 +1129,42 @@ impl Component for MemoryInspector {
         event: event::Event,
         state: &mut Self::ComponentState,
     ) -> Result<Self::ComponentSummary> {
-        if let Some((rows, cols)) = state.dims {
+        let new_selected = MemoryInspectorAddressBar {
+            focus: self.0.prop(),
+            selected_address: state.selected_address,
+        }
+        .handle_input(event.clone(), &mut state.address_bar_state);
+        match new_selected {
+            Ok(Some(address)) => {
+                state.update_address(address);
+            }
+            Ok(_) => {}
+            Err(_) => {
+                state.address_bar_state.normal(self.0.prop());
+            }
+        }
+
+        if let Some((_, cols)) = state.dims {
             match event {
                 event::Event::Key(key!(Char('l'), Press, KeyModifiers::CONTROL)) => {
-                    state.update_address(state.selected_address + 1, rows, cols);
+                    state.update_address(state.selected_address + 1);
+                    self.0.focus();
                 }
                 event::Event::Key(key!(Char('h'), Press, KeyModifiers::CONTROL)) => {
-                    state.update_address(state.selected_address - 1, rows, cols);
+                    state.update_address(state.selected_address - 1);
+                    self.0.focus();
                 }
                 event::Event::Key(key!(Char('j'), Press, KeyModifiers::CONTROL)) => {
-                    state.update_address(state.selected_address + cols as u32, rows, cols);
+                    state.update_address(state.selected_address + cols as u32);
+                    self.0.focus();
                 }
                 event::Event::Key(key!(Char('k'), Press, KeyModifiers::CONTROL)) => {
-                    state.update_address(state.selected_address - cols as u32, rows, cols);
+                    state.update_address(state.selected_address - cols as u32);
+                    self.0.focus();
                 }
                 _ => {}
             }
-            state.update_selected(cols as usize);
+            state.update_selected();
         }
 
         if !self.0.is_focused() {
@@ -1123,6 +1172,9 @@ impl Component for MemoryInspector {
         }
 
         match event {
+            event::Event::Key(key!(Char('g'), Press)) => {
+                state.address_bar_state.go(self.0.prop());
+            }
             event::Event::Key(key!(Char('h'), Press)) => {
                 self.0.focus_left();
             }
@@ -1145,14 +1197,112 @@ impl Component for MemoryInspector {
             Layout::vertical([Constraint::Min(2), Constraint::Max(3)]).areas(area);
 
         self.render_hex_table(table, buf, state)?;
-        Paragraph::new(format!("0x{:08x}", state.selected_address))
-            .block(
-                Block::bordered()
-                    .border_type(BorderType::Rounded)
-                    .title("Address"),
-            )
-            .render(address_area, buf);
+        MemoryInspectorAddressBar {
+            focus: self.0.prop(),
+            selected_address: state.selected_address,
+        }
+        .render(address_area, buf, &mut state.address_bar_state)?;
 
         Ok(())
     }
 }
+
+pub struct MemoryInspectorAddressBar {
+    focus: FocusProp<Self>,
+    selected_address: u32,
+}
+pub struct MemoryInspectorAddressBarState {
+    input: Input,
+    mode: MemoryInspectorAddressBarMode,
+}
+
+pub enum MemoryInspectorAddressBarMode {
+    Normal,
+    Go,
+}
+
+impl Component for MemoryInspectorAddressBar {
+    type ComponentState = MemoryInspectorAddressBarState;
+
+    type ComponentSummary = Option<u32>;
+
+    fn handle_input(
+        &mut self,
+        event: event::Event,
+        state: &mut Self::ComponentState,
+    ) -> Result<Self::ComponentSummary> {
+        if !self.focus.is_focused() {
+            return Ok(None);
+        }
+        state.input.handle_event(&event);
+
+        use MemoryInspectorAddressBarMode as Mode;
+        match (&state.mode, &event) {
+            (Mode::Go, event::Event::Key(key!(Esc, Press))) => {
+                state.mode = Mode::Normal;
+                state.input.reset();
+                state.normal(self.focus.prop());
+
+                Ok(None)
+            }
+            (Mode::Go, event::Event::Key(key!(Enter, Press))) => {
+                let address = match state.input.value().split_at_checked(2) {
+                    Some(("0x" | "0X", address)) => address,
+                    Some(_) => state.input.value(),
+                    None => state.input.value(),
+                };
+                let address = u32::from_str_radix(address, 16)?;
+
+                state.mode = Mode::Normal;
+                state.input.reset();
+                state.normal(self.focus.prop());
+
+                Ok(Some(address))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::ComponentState) -> Result<()> {
+        use MemoryInspectorAddressBarMode as Mode;
+        match state.mode {
+            Mode::Normal => {
+                Paragraph::new(format!("0x{:08x}", self.selected_address))
+                    .block(
+                        Block::bordered()
+                            .border_style(self.focus.style())
+                            .border_type(BorderType::Rounded)
+                            .title("Address"),
+                    )
+                    .render(area, buf);
+            }
+            Mode::Go => {
+                Paragraph::new(state.input.value())
+                    .block(
+                        Block::bordered()
+                            .border_style(self.focus.style())
+                            .border_type(BorderType::Rounded)
+                            .title("Go to"),
+                    )
+                    .render(area, buf);
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl MemoryInspectorAddressBarState {
+    fn go(&mut self, focus: FocusProp<MemoryInspectorAddressBar>) {
+        focus.push_focus();
+        self.mode = MemoryInspectorAddressBarMode::Go;
+        self.input.reset();
+    }
+    fn normal(&mut self, focus: FocusProp<MemoryInspectorAddressBar>) {
+        focus.unfocus();
+        self.mode = MemoryInspectorAddressBarMode::Normal;
+        self.input.reset();
+    }
+}
+
+impl Focus for MemoryInspectorAddressBar {}
