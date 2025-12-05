@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::collections::HashSet;
 use std::hash::Hasher;
 use std::hash::{DefaultHasher, Hash};
 use std::ops::Shr;
@@ -19,13 +20,13 @@ use ratatui::layout::Flex;
 use ratatui::prelude::*;
 use ratatui::style::Stylize;
 use ratatui::widgets::{
-    Block, BorderType, LineGauge, List, ListState, Padding, Paragraph, Row, Table, TableState,
-    Tabs, Wrap,
+    Block, BorderType, Clear, LineGauge, List, ListState, Padding, Paragraph, Row, Table,
+    TableState, Tabs, Wrap,
 };
 use ratatui::{DefaultTerminal, crossterm::event};
 use strum::IntoEnumIterator;
-use tui_input::Input;
 use tui_input::backend::crossterm::EventHandler;
+use tui_input::{Input, StateChanged};
 
 use crate::AppConfig;
 use crate::app::component::Component;
@@ -129,6 +130,7 @@ pub fn run(config: AppConfig, mut terminal: DefaultTerminal) -> Result<()> {
             emu_cmd_tx,
             action_state: ActionState {
                 chord: ActionChord::None,
+                add_breakpoint_popup: None,
             },
             memory_inspector_state: MemoryInspectorState {
                 emu: emu.clone(),
@@ -184,13 +186,14 @@ pub fn run(config: AppConfig, mut terminal: DefaultTerminal) -> Result<()> {
                 // app_state.error = Some(err);
             }
         })?;
-        std::thread::sleep(Duration::from_secs_f32(1.0 / 120.0));
+        std::thread::sleep(Duration::from_secs_f32(1.0 / 60.0));
     }
 }
 
 pub enum EmuCmd {
     StepJit,
     Run,
+    AddBreakpoint(u32),
 }
 
 pub enum EmuState {
@@ -247,6 +250,7 @@ fn emu_thread(
             EmuDynarecPipeline::from_emu(&emu)
         };
 
+        let mut breakpoints = HashSet::<u32>::new();
         loop {
             // if let Ok(new_config) = config_rx.try_recv() {
             //     config = new_config;
@@ -260,14 +264,23 @@ fn emu_thread(
                     }
                     emu_info_tx.send(EmuInfo::PipelineUpdate(pipeline.report()))?;
                 }
-                Ok(EmuCmd::Run) => {
+                Ok(EmuCmd::Run) =>
+                {
                     #[allow(clippy::unwrap_used)]
-                    let mut emu = emu.write().unwrap();
-                    pipeline = pipeline.run(&mut emu, &mut jit)?;
-                    if let Some(fetch) = pipeline.as_fetch() {
-                        emu_info_tx.send(EmuInfo::Fetch(fetch.clone()))?;
+                    loop {
+                        let mut emu = emu.write().unwrap();
+                        pipeline = pipeline.step(&mut emu, &mut jit)?;
+                        if let Some(fetch) = pipeline.as_fetch() {
+                            emu_info_tx.send(EmuInfo::Fetch(fetch.clone()))?;
+                        }
+                        emu_info_tx.send(EmuInfo::PipelineUpdate(pipeline.report()))?;
+                        if breakpoints.contains(&emu.cpu.pc) {
+                            break;
+                        }
                     }
-                    emu_info_tx.send(EmuInfo::PipelineUpdate(pipeline.report()))?;
+                }
+                Ok(EmuCmd::AddBreakpoint(addr)) => {
+                    breakpoints.insert(addr);
                 }
                 Err(_) => {}
             }
@@ -616,7 +629,7 @@ impl<'a> Component for MainPage<'a> {
             .title("Actions");
         let actions_block_inner = actions_block.inner(actions);
         actions_block.render(actions, buf);
-        Actions(&state.emu_cmd_tx, self.1).render(
+        Actions(&state.emu_cmd_tx, self.1, self.0.prop()).render(
             actions_block_inner,
             buf,
             &mut state.action_state,
@@ -655,7 +668,7 @@ impl<'a> Component for MainPage<'a> {
             &mut state.cpu_inspector_state,
             area,
         )?;
-        Actions(&state.emu_cmd_tx, self.1).handle_input(
+        Actions(&state.emu_cmd_tx, self.1, self.0.prop()).handle_input(
             event.clone(),
             &mut state.action_state,
             area,
@@ -879,9 +892,19 @@ impl<'a> Component for CpuTab<'a> {
     }
 }
 
-pub struct Actions<'a>(&'a Sender<EmuCmd>, &'a EmuDynarecPipelineReport);
+pub struct Actions<'a>(
+    &'a Sender<EmuCmd>,
+    &'a EmuDynarecPipelineReport,
+    FocusProp<ActionsAddBreakpoint>,
+);
+
+pub struct ActionFocus;
+
+impl Focus for ActionFocus {}
+
 pub struct ActionState {
     chord: ActionChord,
+    add_breakpoint_popup: Option<Input>,
 }
 
 pub enum ActionChord {
@@ -899,31 +922,52 @@ impl<'a> Component for Actions<'a> {
         state: &mut Self::ComponentState,
         _: Rect,
     ) -> Result<Self::ComponentSummary> {
-        match (&state.chord, event) {
-            (ActionChord::None, event::Event::Key(key!(Char('n'), Press))) => {
-                self.0.send(EmuCmd::StepJit)?;
+        if self.2.is_focused() {
+            match (&mut state.add_breakpoint_popup, &event) {
+                (Some(input), event::Event::Key(key!(Enter, Press))) => {
+                    self.0
+                        .send(EmuCmd::AddBreakpoint(parse_address(input.value())?))?;
+                    self.2.unfocus();
+                    state.add_breakpoint_popup = None;
+                }
+                (Some(_input), event::Event::Key(key!(Esc, Press))) => {
+                    self.2.unfocus();
+                    state.add_breakpoint_popup = None;
+                }
+                (Some(input), event) => {
+                    input.handle_event(event);
+                }
+                _ => {}
+            };
+        } else {
+            match (&state.chord, event) {
+                (ActionChord::None, event::Event::Key(key!(Char('n'), Press))) => {
+                    self.0.send(EmuCmd::StepJit)?;
+                }
+                (ActionChord::None, event::Event::Key(key!(Char('r'), Press))) => {
+                    self.0.send(EmuCmd::Run)?;
+                }
+                (ActionChord::None, event::Event::Key(key!(Char('b'), Press))) => {
+                    state.chord = ActionChord::Breakpoint;
+                }
+                (ActionChord::Breakpoint, event::Event::Key(key!(Char('a'), Press))) => {
+                    state.add_breakpoint_popup = Some(Input::new("".to_owned()));
+                    self.2.push_focus();
+                }
+                (ActionChord::Breakpoint, event::Event::Key(key!(Char('d'), Press))) => {
+                    todo!("delete breakpoint")
+                }
+                (ActionChord::Breakpoint, event::Event::Key(_)) => {
+                    state.chord = ActionChord::None;
+                }
+                _ => {}
             }
-            (ActionChord::None, event::Event::Key(key!(Char('r'), Press))) => {
-                self.0.send(EmuCmd::Run)?;
-            }
-            (ActionChord::None, event::Event::Key(key!(Char('b'), Press))) => {
-                state.chord = ActionChord::Breakpoint;
-            }
-            (ActionChord::Breakpoint, event::Event::Key(key!(Char('a'), Press))) => {
-                todo!("add breakpoint")
-            }
-            (ActionChord::Breakpoint, event::Event::Key(key!(Char('d'), Press))) => {
-                todo!("delete breakpoint")
-            }
-            (ActionChord::Breakpoint, event::Event::Key(_)) => {
-                state.chord = ActionChord::None;
-            }
-            _ => {}
         }
+
         Ok(())
     }
 
-    fn render(self, area: Rect, buf: &mut Buffer, _state: &mut Self::ComponentState) -> Result<()> {
+    fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::ComponentState) -> Result<()> {
         let [actions, report, stage_list] =
             Layout::vertical([Constraint::Max(6), Constraint::Max(2), Constraint::Max(6)])
                 .areas(area);
@@ -969,9 +1013,29 @@ impl<'a> Component for Actions<'a> {
             })
         });
         Text::from_iter(progress).render(stage_list, buf);
+
+        // TODO: break out into separate component
+
+        if let Some(input) = &state.add_breakpoint_popup {
+            let [area] = Layout::vertical([Constraint::Length(3)]).areas(area);
+            Clear.render(area, buf);
+            Paragraph::new(input.value())
+                .block(
+                    Block::bordered()
+                        .border_style(self.2.style())
+                        .border_type(BorderType::Rounded)
+                        .title("Add breakpoint"),
+                )
+                .render(area, buf);
+        }
+
         Ok(())
     }
 }
+
+pub struct ActionsAddBreakpoint;
+
+impl Focus for ActionsAddBreakpoint {}
 
 pub struct MemoryInspector(FocusProp<Self>);
 pub struct MemoryInspectorState {
@@ -1339,3 +1403,13 @@ impl MemoryInspectorAddressBarState {
 }
 
 impl Focus for MemoryInspectorAddressBar {}
+
+fn parse_address(str: &str) -> color_eyre::Result<u32> {
+    let address = match str.split_at_checked(2) {
+        Some(("0x" | "0X", address)) => address,
+        Some(_) => str,
+        None => str,
+    };
+    let address = u32::from_str_radix(address, 16)?;
+    Ok(address)
+}
