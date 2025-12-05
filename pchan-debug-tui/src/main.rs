@@ -1,4 +1,6 @@
+#![deny(clippy::unwrap_used)]
 #![allow(clippy::collapsible_if)]
+#![feature(try_blocks)]
 #![feature(impl_trait_in_assoc_type)]
 #![feature(iter_collect_into)]
 #![feature(associated_type_defaults)]
@@ -21,6 +23,7 @@ pub struct AppConfig {
 }
 
 impl AppConfig {
+    #[must_use]
     pub fn initialized(&self) -> bool {
         match self {
             AppConfig { bios_path: None } => false,

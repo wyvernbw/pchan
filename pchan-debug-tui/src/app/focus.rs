@@ -178,7 +178,7 @@ impl<T> FocusProp<T> {
     pub fn prop<W>(&self) -> FocusProp<W> {
         FocusProp {
             sender: self.sender.clone(),
-            current: self.current.clone(),
+            current: self.current,
             _self: PhantomData::<W>,
         }
     }

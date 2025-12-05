@@ -1,6 +1,10 @@
 #![feature(ptr_as_ref_unchecked)]
 
-use std::{backtrace::Backtrace, cell::Cell};
+use std::{
+    backtrace::Backtrace,
+    cell::Cell,
+    sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard},
+};
 
 use rstest::*;
 use tracing_indicatif::IndicatifLayer;
@@ -149,4 +153,44 @@ fn test_hex_encode() {
     let fmt = format!("0x{number:x}");
     let hex = hex(number);
     assert_eq!(hex, fmt);
+}
+
+pub trait IgnorePoison<'a> {
+    type Output;
+    type OutputMut;
+
+    fn get(&'a self) -> Self::Output;
+    fn get_mut(&'a self) -> Self::OutputMut;
+}
+
+impl<'a, T> IgnorePoison<'a> for Mutex<T>
+where
+    T: 'a,
+{
+    type Output = MutexGuard<'a, T>;
+    type OutputMut = MutexGuard<'a, T>;
+
+    fn get(&'a self) -> Self::Output {
+        self.lock().unwrap()
+    }
+
+    fn get_mut(&'a self) -> Self::OutputMut {
+        self.lock().unwrap()
+    }
+}
+
+impl<'a, T> IgnorePoison<'a> for RwLock<T>
+where
+    T: 'a,
+{
+    type Output = RwLockReadGuard<'a, T>;
+    type OutputMut = RwLockWriteGuard<'a, T>;
+
+    fn get(&'a self) -> Self::Output {
+        self.read().unwrap()
+    }
+
+    fn get_mut(&'a self) -> Self::OutputMut {
+        self.write().unwrap()
+    }
 }

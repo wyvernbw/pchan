@@ -64,6 +64,7 @@ impl Component for FirstTimeSetup {
         &mut self,
         event: event::Event,
         state: &mut Self::ComponentState,
+        _: Rect,
     ) -> Result<Self::ComponentSummary> {
         if self.0.is_focused() {
             state.bios_path_input.handle_event(&event);

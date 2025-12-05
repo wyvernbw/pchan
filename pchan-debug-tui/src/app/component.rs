@@ -1,5 +1,3 @@
-use std::marker::PhantomData;
-
 use color_eyre::eyre::Result;
 use ratatui::crossterm::event;
 use ratatui::prelude::*;
@@ -11,6 +9,7 @@ pub trait Component {
         &mut self,
         event: event::Event,
         state: &mut Self::ComponentState,
+        area: Rect,
     ) -> Result<Self::ComponentSummary>;
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::ComponentState) -> Result<()>;
 }

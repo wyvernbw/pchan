@@ -60,7 +60,12 @@ impl Component for Modeline {
         Ok(())
     }
 
-    fn handle_input(&mut self, event: event::Event, state: &mut ModelineState) -> Result<Command> {
+    fn handle_input(
+        &mut self,
+        event: event::Event,
+        state: &mut ModelineState,
+        _: Rect,
+    ) -> Result<Command> {
         if let event::Event::Key(key_event) = event {
             match (&mut state.mode, key_event) {
                 (Mode::Normal, key!(Char(':'), Press)) => {

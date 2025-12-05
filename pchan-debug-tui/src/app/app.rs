@@ -5,16 +5,15 @@ use std::ops::Shr;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-use color_eyre::eyre::{Result, bail, eyre};
+use color_eyre::eyre::{Result, eyre};
 use flume::{Receiver, Sender};
 use pchan_emu::Emu;
 use pchan_emu::cpu::ops::{BoundaryType, Op};
 use pchan_emu::cpu::reg_str;
-use pchan_emu::cranelift_bs::codegen::gimli::write::DebuggingInformationEntry;
+use pchan_emu::dynarec::FetchSummary;
 use pchan_emu::dynarec::pipeline::{EmuDynarecPipeline, EmuDynarecPipelineReport};
-use pchan_emu::dynarec::{FetchParams, FetchSummary};
 use pchan_emu::jit::JIT;
-use pchan_utils::hex;
+use pchan_utils::{IgnorePoison, hex};
 use ratatui::crossterm::event::KeyModifiers;
 use ratatui::layout::Flex;
 use ratatui::prelude::*;
@@ -40,6 +39,7 @@ pub mod first_time_setup;
 pub mod focus;
 pub mod modeline;
 
+#[must_use]
 pub fn centered(area: Rect, vertical: Constraint) -> Rect {
     let [centered] = Layout::vertical([vertical]).flex(Flex::Center).areas(area);
     centered
@@ -125,7 +125,6 @@ pub fn run(config: AppConfig, mut terminal: DefaultTerminal) -> Result<()> {
                 },
             },
             ops_list_state: OpsListState::default(),
-            focus: MainPageFocus::default(),
             emu: None,
             emu_cmd_tx,
             action_state: ActionState {
@@ -134,13 +133,13 @@ pub fn run(config: AppConfig, mut terminal: DefaultTerminal) -> Result<()> {
             memory_inspector_state: MemoryInspectorState {
                 emu: emu.clone(),
                 dims: None,
-                loaded_address: 0xbfc00000,
-                selected_address: 0xbfc00000,
+                loaded_address: 0xbfc0_0000,
+                selected_address: 0xbfc0_0000,
                 loaded: Vec::new(),
                 loaded_address_tags: Vec::new(),
                 table_state: TableState::new(),
                 address_bar_state: MemoryInspectorAddressBarState {
-                    input: Input::new("".into()),
+                    input: Input::new(String::new()),
                     mode: MemoryInspectorAddressBarMode::Normal,
                 },
             },
@@ -148,42 +147,41 @@ pub fn run(config: AppConfig, mut terminal: DefaultTerminal) -> Result<()> {
     };
 
     loop {
-        let mut app = App(app_state.focus.props());
-        if let Ok(true) = event::poll(Duration::from_millis(0)) {
-            let event = event::read()?;
-            let result = app.handle_input(event, &mut app_state);
-            if let Err(err) = result {
-                app_state.error = Some(err);
-            }
-        }
-        if let Ok(info) = emu_info_rx.try_recv() {
-            match info {
-                EmuInfo::PipelineUpdate(report) => {
-                    app_state.pipeline_report = report;
-                }
-                EmuInfo::Ref(emu) => {
-                    app_state.emu = Some(emu.clone());
-                    app_state.main_page_state.emu = Some(emu.clone());
-                    app_state.main_page_state.cpu_inspector_state.emu = Some(emu.clone());
-                }
-                EmuInfo::Fetch(fetch_summary) => {
-                    app_state.main_page_state.fetch_summary = Some(fetch_summary)
-                }
-                EmuInfo::StateUpdate(emu_state) => {
-                    app_state.main_page_state.emu_state = emu_state.into()
-                }
-            }
-        }
         if app_state.exit {
             return Ok(());
         }
-        app_state.focus.process();
         terminal.draw(|frame| {
-            let result = app
-                .clone()
-                .render(frame.area(), frame.buffer_mut(), &mut app_state);
+            let result: color_eyre::Result<()> = try {
+                let mut app = App(app_state.focus.props());
+                if let Ok(true) = event::poll(Duration::from_millis(0)) {
+                    let event = event::read()?;
+                    app.handle_input(event, &mut app_state, frame.area())?;
+                }
+                if let Ok(info) = emu_info_rx.try_recv() {
+                    match info {
+                        EmuInfo::PipelineUpdate(report) => {
+                            app_state.pipeline_report = report;
+                        }
+                        EmuInfo::Ref(emu) => {
+                            app_state.emu = Some(emu.clone());
+                            app_state.main_page_state.emu = Some(emu.clone());
+                            app_state.main_page_state.cpu_inspector_state.emu = Some(emu.clone());
+                        }
+                        EmuInfo::Fetch(fetch_summary) => {
+                            app_state.main_page_state.fetch_summary = Some(fetch_summary);
+                        }
+                        EmuInfo::StateUpdate(emu_state) => {
+                            app_state.main_page_state.emu_state = emu_state.into();
+                        }
+                    }
+                }
+                app_state.focus.process();
+                app.clone()
+                    .render(frame.area(), frame.buffer_mut(), &mut app_state)?;
+            };
             if let Err(err) = result {
-                app_state.error = Some(err);
+                panic!("{}", err);
+                // app_state.error = Some(err);
             }
         })?;
         std::thread::sleep(Duration::from_secs_f32(1.0 / 120.0));
@@ -220,7 +218,7 @@ fn emu_thread(
     std::thread::spawn(move || -> Result<()> {
         let mut jit = JIT::default();
         emu_info_tx.send(EmuInfo::StateUpdate(EmuState::WaitingForConfig))?;
-        let Ok(mut config) = config_rx.recv() else {
+        let Ok(config) = config_rx.recv() else {
             emu_info_tx.send(EmuInfo::StateUpdate(EmuState::Error(eyre!(
                 "emu thread received config with no bios path"
             ))))?;
@@ -228,10 +226,12 @@ fn emu_thread(
         };
         emu_info_tx.send(EmuInfo::StateUpdate(EmuState::SettingUp))?;
         {
-            let mut emu = emu.write().unwrap();
-            emu.boot.set_bios_path(config.bios_path.unwrap());
+            let mut emu = emu.get_mut();
+
+            emu.boot
+                .set_bios_path(config.bios_path.expect("config must contain bios path"));
             match emu.load_bios() {
-                Ok(_) => {}
+                Ok(()) => {}
                 Err(err) => {
                     emu_info_tx.send(EmuInfo::StateUpdate(EmuState::Error(err)))?;
                     return Ok(());
@@ -243,17 +243,17 @@ fn emu_thread(
         emu_info_tx.send(EmuInfo::Ref(emu.clone()))?;
 
         let mut pipeline = {
-            let emu = emu.read().unwrap();
+            let emu = emu.get();
             EmuDynarecPipeline::from_emu(&emu)
         };
 
         loop {
-            if let Ok(new_config) = config_rx.try_recv() {
-                config = new_config;
-            }
+            // if let Ok(new_config) = config_rx.try_recv() {
+            //     config = new_config;
+            // }
             match emu_cmd_rx.try_recv() {
                 Ok(EmuCmd::StepJit) => {
-                    let mut emu = emu.write().unwrap();
+                    let mut emu = emu.get_mut();
                     pipeline = pipeline.step(&mut emu, &mut jit)?;
                     if let Some(fetch) = pipeline.as_fetch() {
                         emu_info_tx.send(EmuInfo::Fetch(fetch.clone()))?;
@@ -261,6 +261,7 @@ fn emu_thread(
                     emu_info_tx.send(EmuInfo::PipelineUpdate(pipeline.report()))?;
                 }
                 Ok(EmuCmd::Run) => {
+                    #[allow(clippy::unwrap_used)]
                     let mut emu = emu.write().unwrap();
                     pipeline = pipeline.run(&mut emu, &mut jit)?;
                     if let Some(fetch) = pipeline.as_fetch() {
@@ -290,6 +291,7 @@ pub struct AppState {
     screen: Screen,
     config_tx: Sender<AppConfig>,
     exit: bool,
+    #[allow(dead_code)]
     error: Option<color_eyre::Report>,
     emu: Option<Arc<RwLock<Emu>>>,
     pipeline_report: EmuDynarecPipelineReport,
@@ -309,22 +311,26 @@ impl Component for App {
         &mut self,
         event: event::Event,
         state: &mut Self::ComponentState,
+        area: Rect,
     ) -> Result<Self::ComponentSummary> {
-        let cmd = Modeline(self.0.clone().prop())
-            .handle_input(event.clone(), &mut state.modeline_state)?;
+        let cmd = Modeline(self.0.clone().prop()).handle_input(
+            event.clone(),
+            &mut state.modeline_state,
+            area,
+        )?;
         match cmd {
-            Command::Escape => {}
-            Command::None => {}
+            Command::Escape | Command::None => {}
             Command::Quit => state.exit = true,
-        };
+        }
 
         match state.screen {
             Screen::FirstTimeSetup => {
-                let action = FirstTimeSetup(self.0.prop())
-                    .handle_input(event, &mut state.first_time_setup_state)?;
+                let action = FirstTimeSetup(self.0.prop()).handle_input(
+                    event,
+                    &mut state.first_time_setup_state,
+                    area,
+                )?;
                 match action {
-                    TypingAction::Escape => {}
-                    TypingAction::Pending => {}
                     TypingAction::Submit(path) => {
                         state.app_config.bios_path = Some(path);
                         confy::store("pchan-debugger", "config", state.app_config.clone())?;
@@ -332,12 +338,15 @@ impl Component for App {
                         self.0.prop::<OpsList>().push_focus();
                         state.config_tx.send(state.app_config.clone())?;
                     }
-                    TypingAction::Enter => {}
+                    TypingAction::Escape | TypingAction::Pending | TypingAction::Enter => {}
                 }
             }
             Screen::Main => {
-                MainPage(self.0.prop(), &state.pipeline_report)
-                    .handle_input(event, &mut state.main_page_state)?;
+                MainPage(self.0.prop(), &state.pipeline_report).handle_input(
+                    event,
+                    &mut state.main_page_state,
+                    area,
+                )?;
             }
         }
 
@@ -394,7 +403,6 @@ pub struct MainPageState {
     fetch_summary: Option<FetchSummary>,
     ops_list_state: OpsListState,
     cpu_inspector_state: CpuInspectorState,
-    focus: MainPageFocus,
     action_state: ActionState,
     memory_inspector_state: MemoryInspectorState,
 }
@@ -412,6 +420,7 @@ pub struct OpsListState {
 }
 
 impl OpsListData {
+    #[must_use]
     pub fn from_fetch(summary: &FetchSummary) -> Self {
         let mut decoded_ops = summary
             .cfg
@@ -476,6 +485,7 @@ impl Component for OpsList {
         &mut self,
         event: event::Event,
         state: &mut Self::ComponentState,
+        _: Rect,
     ) -> Result<Self::ComponentSummary> {
         if !self.1.is_focused() {
             return Ok(());
@@ -519,7 +529,7 @@ impl Component for OpsList {
     }
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::ComponentState) -> Result<()> {
-        let OpsList(emu_state, focus) = self;
+        let OpsList(emu_state, _) = self;
         match &state.data {
             Some(data) => {
                 StatefulWidget::render(
@@ -632,13 +642,29 @@ impl<'a> Component for MainPage<'a> {
         &mut self,
         event: event::Event,
         state: &mut Self::ComponentState,
+        area: Rect,
     ) -> Result<Self::ComponentSummary> {
         let ops_focus = self.0.prop::<OpsList>();
-        OpsList(state.emu_state.clone(), ops_focus)
-            .handle_input(event.clone(), &mut state.ops_list_state)?;
-        CpuInspector(self.0.prop()).handle_input(event.clone(), &mut state.cpu_inspector_state)?;
-        Actions(&state.emu_cmd_tx, self.1).handle_input(event.clone(), &mut state.action_state)?;
-        MemoryInspector(self.0.prop()).handle_input(event, &mut state.memory_inspector_state)?;
+        OpsList(state.emu_state.clone(), ops_focus).handle_input(
+            event.clone(),
+            &mut state.ops_list_state,
+            area,
+        )?;
+        CpuInspector(self.0.prop()).handle_input(
+            event.clone(),
+            &mut state.cpu_inspector_state,
+            area,
+        )?;
+        Actions(&state.emu_cmd_tx, self.1).handle_input(
+            event.clone(),
+            &mut state.action_state,
+            area,
+        )?;
+        MemoryInspector(self.0.prop()).handle_input(
+            event,
+            &mut state.memory_inspector_state,
+            area,
+        )?;
         Ok(())
     }
 }
@@ -672,6 +698,7 @@ impl Component for CpuInspector {
         &mut self,
         event: event::Event,
         state: &mut Self::ComponentState,
+        area: Rect,
     ) -> Result<Self::ComponentSummary> {
         if !self.0.is_focused() {
             return Ok(());
@@ -699,7 +726,7 @@ impl Component for CpuInspector {
         };
         match state.current_tab {
             CpuInspectorTab::Cpu => {
-                CpuTab(emu).handle_input(event, &mut state.cpu_tab_state)?;
+                CpuTab(emu).handle_input(event, &mut state.cpu_tab_state, area)?;
             }
             CpuInspectorTab::Cop0 => todo!(),
             CpuInspectorTab::Gte => todo!(),
@@ -725,6 +752,7 @@ impl Component for CpuInspector {
         let [summary_area, tabs_area] =
             Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(area);
 
+        #[allow(clippy::unwrap_used)]
         Paragraph::new(format!("PC: 0x{:08x}", emu.read().unwrap().cpu.pc))
             .render(summary_area, buf);
 
@@ -781,6 +809,7 @@ impl<'a> Component for CpuTab<'a> {
         &mut self,
         event: event::Event,
         state: &mut Self::ComponentState,
+        _: Rect,
     ) -> Result<Self::ComponentSummary> {
         match event {
             event::Event::Key(key!(Char('j'), Press)) => {
@@ -798,6 +827,7 @@ impl<'a> Component for CpuTab<'a> {
     }
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::ComponentState) -> Result<()> {
+        #[allow(clippy::unwrap_used)]
         let emu = self.0.read().unwrap();
         let rows = emu
             .cpu
@@ -867,6 +897,7 @@ impl<'a> Component for Actions<'a> {
         &mut self,
         event: event::Event,
         state: &mut Self::ComponentState,
+        _: Rect,
     ) -> Result<Self::ComponentSummary> {
         match (&state.chord, event) {
             (ActionChord::None, event::Event::Key(key!(Char('n'), Press))) => {
@@ -892,7 +923,7 @@ impl<'a> Component for Actions<'a> {
         Ok(())
     }
 
-    fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::ComponentState) -> Result<()> {
+    fn render(self, area: Rect, buf: &mut Buffer, _state: &mut Self::ComponentState) -> Result<()> {
         let [actions, report, stage_list] =
             Layout::vertical([Constraint::Max(6), Constraint::Max(2), Constraint::Max(6)])
                 .areas(area);
@@ -978,7 +1009,7 @@ impl MemoryInspectorState {
             return;
         };
 
-        let emu = &self.emu.read().unwrap();
+        let emu = &self.emu.get();
 
         self.loaded.clear();
         (self.loaded_address..)
@@ -1128,12 +1159,13 @@ impl Component for MemoryInspector {
         &mut self,
         event: event::Event,
         state: &mut Self::ComponentState,
+        area: Rect,
     ) -> Result<Self::ComponentSummary> {
         let new_selected = MemoryInspectorAddressBar {
             focus: self.0.prop(),
             selected_address: state.selected_address,
         }
-        .handle_input(event.clone(), &mut state.address_bar_state);
+        .handle_input(event.clone(), &mut state.address_bar_state, area);
         match new_selected {
             Ok(Some(address)) => {
                 state.update_address(address);
@@ -1230,6 +1262,7 @@ impl Component for MemoryInspectorAddressBar {
         &mut self,
         event: event::Event,
         state: &mut Self::ComponentState,
+        _: Rect,
     ) -> Result<Self::ComponentSummary> {
         if !self.focus.is_focused() {
             return Ok(None);
