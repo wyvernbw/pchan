@@ -13,6 +13,7 @@ tracing-panic = "0.1.2"
 const-hex.workspace = true
 heapless = "0.9.1"
 tracing-indicatif = "0.3.13"
+smol = "2.0.2"
 
 [dev-dependencies]
 pretty_assertions = {version = "1.4.1", features = ["unstable"]}

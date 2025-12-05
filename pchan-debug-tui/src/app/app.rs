@@ -24,9 +24,10 @@ use ratatui::widgets::{
     TableState, Tabs, Wrap,
 };
 use ratatui::{DefaultTerminal, crossterm::event};
+use smol::LocalExecutor;
 use strum::IntoEnumIterator;
+use tui_input::Input;
 use tui_input::backend::crossterm::EventHandler;
-use tui_input::{Input, StateChanged};
 
 use crate::AppConfig;
 use crate::app::component::Component;
@@ -86,108 +87,116 @@ macro_rules! key {
 }
 
 pub fn run(config: AppConfig, mut terminal: DefaultTerminal) -> Result<()> {
+    let exec = LocalExecutor::new();
+
     let emu = Arc::new(RwLock::new(Emu::default()));
     let (config_tx, config_rx) = flume::unbounded();
     let (emu_cmd_tx, emu_cmd_rx) = flume::unbounded();
     let (emu_info_tx, emu_info_rx) = flume::unbounded();
 
-    emu_thread(emu.clone(), config_rx, emu_cmd_rx, emu_info_tx)?;
+    let emu_2 = emu.clone();
+    exec.spawn(emu_task(emu_2, config_rx, emu_cmd_rx, emu_info_tx))
+        .detach();
 
-    let mut app_state = AppState {
-        focus: if config.initialized() {
-            FocusProvider::new(Some(OpsList::as_focus()))
-        } else {
-            FocusProvider::new(Some(FirstTimeSetup::as_focus()))
-        },
-        screen: if config.initialized() {
-            config_tx.send(config.clone())?;
-            Screen::Main
-        } else {
-            Screen::FirstTimeSetup
-        },
-        app_config: config,
-        exit: false,
-        config_tx,
-        error: None,
-        emu: None,
-        pipeline_report: EmuDynarecPipelineReport::not_started(),
-
-        modeline_state: ModelineState { mode: Mode::Normal },
-        first_time_setup_state: FirstTimeSetupState::default(),
-        main_page_state: MainPageState {
-            fetch_summary: None,
-            emu_state: EmuState::Uninitialized.into(),
-            cpu_inspector_state: CpuInspectorState {
-                emu: None,
-                current_tab: CpuInspectorTab::Cpu,
-                cpu_tab_state: CpuTabState {
-                    table_state: TableState::default(),
-                    show_zero: true,
-                },
+    let future = exec.run(async {
+        let mut app_state = AppState {
+            focus: if config.initialized() {
+                FocusProvider::new(Some(OpsList::as_focus()))
+            } else {
+                FocusProvider::new(Some(FirstTimeSetup::as_focus()))
             },
-            ops_list_state: OpsListState::default(),
+            screen: if config.initialized() {
+                config_tx.send(config.clone())?;
+                Screen::Main
+            } else {
+                Screen::FirstTimeSetup
+            },
+            app_config: config,
+            exit: false,
+            config_tx,
+            error: None,
             emu: None,
-            emu_cmd_tx,
-            action_state: ActionState {
-                chord: ActionChord::None,
-                add_breakpoint_popup: None,
-            },
-            memory_inspector_state: MemoryInspectorState {
-                emu: emu.clone(),
-                dims: None,
-                loaded_address: 0xbfc0_0000,
-                selected_address: 0xbfc0_0000,
-                loaded: Vec::new(),
-                loaded_address_tags: Vec::new(),
-                table_state: TableState::new(),
-                address_bar_state: MemoryInspectorAddressBarState {
-                    input: Input::new(String::new()),
-                    mode: MemoryInspectorAddressBarMode::Normal,
+            pipeline_report: EmuDynarecPipelineReport::not_started(),
+
+            modeline_state: ModelineState { mode: Mode::Normal },
+            first_time_setup_state: FirstTimeSetupState::default(),
+            main_page_state: MainPageState {
+                fetch_summary: None,
+                emu_state: EmuState::Uninitialized.into(),
+                cpu_inspector_state: CpuInspectorState {
+                    emu: None,
+                    current_tab: CpuInspectorTab::Cpu,
+                    cpu_tab_state: CpuTabState {
+                        table_state: TableState::default(),
+                        show_zero: true,
+                    },
+                },
+                ops_list_state: OpsListState::default(),
+                emu: None,
+                emu_cmd_tx,
+                action_state: ActionState {
+                    chord: ActionChord::None,
+                    add_breakpoint_popup: None,
+                },
+                memory_inspector_state: MemoryInspectorState {
+                    emu: emu.clone(),
+                    dims: None,
+                    loaded_address: 0xbfc0_0000,
+                    selected_address: 0xbfc0_0000,
+                    loaded: Vec::new(),
+                    loaded_address_tags: Vec::new(),
+                    table_state: TableState::new(),
+                    address_bar_state: MemoryInspectorAddressBarState {
+                        input: Input::new(String::new()),
+                        mode: MemoryInspectorAddressBarMode::Normal,
+                    },
                 },
             },
-        },
-    };
+        };
 
-    loop {
-        if app_state.exit {
-            return Ok(());
-        }
-        terminal.draw(|frame| {
-            let result: color_eyre::Result<()> = try {
-                let mut app = App(app_state.focus.props());
-                if let Ok(true) = event::poll(Duration::from_millis(0)) {
-                    let event = event::read()?;
-                    app.handle_input(event, &mut app_state, frame.area())?;
-                }
-                if let Ok(info) = emu_info_rx.try_recv() {
-                    match info {
-                        EmuInfo::PipelineUpdate(report) => {
-                            app_state.pipeline_report = report;
-                        }
-                        EmuInfo::Ref(emu) => {
-                            app_state.emu = Some(emu.clone());
-                            app_state.main_page_state.emu = Some(emu.clone());
-                            app_state.main_page_state.cpu_inspector_state.emu = Some(emu.clone());
-                        }
-                        EmuInfo::Fetch(fetch_summary) => {
-                            app_state.main_page_state.fetch_summary = Some(fetch_summary);
-                        }
-                        EmuInfo::StateUpdate(emu_state) => {
-                            app_state.main_page_state.emu_state = emu_state.into();
+        loop {
+            if app_state.exit {
+                return Ok(());
+            }
+            terminal.draw(|frame| {
+                let result: color_eyre::Result<()> = try {
+                    let mut app = App(app_state.focus.props());
+                    if let Ok(true) = event::poll(Duration::from_millis(0)) {
+                        let event = event::read()?;
+                        app.handle_input(event, &mut app_state, frame.area())?;
+                    }
+                    if let Ok(info) = emu_info_rx.try_recv() {
+                        match info {
+                            EmuInfo::PipelineUpdate(report) => {
+                                app_state.pipeline_report = report;
+                            }
+                            EmuInfo::Ref(emu) => {
+                                app_state.emu = Some(emu.clone());
+                                app_state.main_page_state.emu = Some(emu.clone());
+                                app_state.main_page_state.cpu_inspector_state.emu =
+                                    Some(emu.clone());
+                            }
+                            EmuInfo::Fetch(fetch_summary) => {
+                                app_state.main_page_state.fetch_summary = Some(fetch_summary);
+                            }
+                            EmuInfo::StateUpdate(emu_state) => {
+                                app_state.main_page_state.emu_state = emu_state.into();
+                            }
                         }
                     }
+                    app_state.focus.process();
+                    app.clone()
+                        .render(frame.area(), frame.buffer_mut(), &mut app_state)?;
+                };
+                if let Err(err) = result {
+                    panic!("{}", err);
+                    // app_state.error = Some(err);
                 }
-                app_state.focus.process();
-                app.clone()
-                    .render(frame.area(), frame.buffer_mut(), &mut app_state)?;
-            };
-            if let Err(err) = result {
-                panic!("{}", err);
-                // app_state.error = Some(err);
-            }
-        })?;
-        std::thread::sleep(Duration::from_secs_f32(1.0 / 60.0));
-    }
+            })?;
+            smol::Timer::after(Duration::from_secs_f64(1.0 / 60.0)).await;
+        }
+    });
+    smol::block_on(future)
 }
 
 pub enum EmuCmd {
@@ -211,83 +220,97 @@ pub enum EmuInfo {
     Ref(Arc<RwLock<Emu>>),
 }
 
-fn emu_thread(
+async fn emu_task(
     emu: Arc<RwLock<Emu>>,
     config_rx: Receiver<AppConfig>,
     emu_cmd_rx: Receiver<EmuCmd>,
     emu_info_tx: Sender<EmuInfo>,
 ) -> Result<()> {
     emu_info_tx.send(EmuInfo::StateUpdate(EmuState::Uninitialized))?;
-    std::thread::spawn(move || -> Result<()> {
-        let mut jit = JIT::default();
-        emu_info_tx.send(EmuInfo::StateUpdate(EmuState::WaitingForConfig))?;
-        let Ok(config) = config_rx.recv() else {
-            emu_info_tx.send(EmuInfo::StateUpdate(EmuState::Error(eyre!(
-                "emu thread received config with no bios path"
-            ))))?;
-            return Err(eyre!("emu thread received config with no bios path"));
-        };
-        emu_info_tx.send(EmuInfo::StateUpdate(EmuState::SettingUp))?;
-        {
-            let mut emu = emu.get_mut();
 
-            emu.boot
-                .set_bios_path(config.bios_path.expect("config must contain bios path"));
-            match emu.load_bios() {
-                Ok(()) => {}
-                Err(err) => {
-                    emu_info_tx.send(EmuInfo::StateUpdate(EmuState::Error(err)))?;
-                    return Ok(());
-                }
+    emu_info_tx.send(EmuInfo::StateUpdate(EmuState::WaitingForConfig))?;
+    let Ok(config) = config_rx.recv() else {
+        emu_info_tx.send(EmuInfo::StateUpdate(EmuState::Error(eyre!(
+            "emu thread received config with no bios path"
+        ))))?;
+        return Err(eyre!("emu thread received config with no bios path"));
+    };
+    emu_info_tx.send(EmuInfo::StateUpdate(EmuState::SettingUp))?;
+    {
+        let mut emu = emu.get_mut();
+
+        emu.boot
+            .set_bios_path(config.bios_path.expect("config must contain bios path"));
+        match emu.load_bios() {
+            Ok(()) => {}
+            Err(err) => {
+                emu_info_tx.send(EmuInfo::StateUpdate(EmuState::Error(err)))?;
+                return Ok(());
             }
-            emu.jump_to_bios();
         }
-        emu_info_tx.send(EmuInfo::StateUpdate(EmuState::Running))?;
-        emu_info_tx.send(EmuInfo::Ref(emu.clone()))?;
+        emu.jump_to_bios();
+    }
+    emu_info_tx.send(EmuInfo::StateUpdate(EmuState::Running))?;
+    emu_info_tx.send(EmuInfo::Ref(emu.clone()))?;
 
-        let mut pipeline = {
-            let emu = emu.get();
-            EmuDynarecPipeline::from_emu(&emu)
-        };
+    let mut pipeline = {
+        let emu = emu.get();
+        EmuDynarecPipeline::from_emu(&emu)
+    };
 
-        let mut breakpoints = HashSet::<u32>::new();
-        loop {
-            // if let Ok(new_config) = config_rx.try_recv() {
-            //     config = new_config;
-            // }
-            match emu_cmd_rx.try_recv() {
-                Ok(EmuCmd::StepJit) => {
+    let mut breakpoints = HashSet::<u32>::new();
+    let mut jit = JIT::default();
+    loop {
+        let emu = emu.clone();
+        // if let Ok(new_config) = config_rx.try_recv() {
+        //     config = new_config;
+        // }
+        match emu_cmd_rx.recv_async().await {
+            Ok(EmuCmd::StepJit) => {
+                {
                     let mut emu = emu.get_mut();
                     pipeline = pipeline.step(&mut emu, &mut jit)?;
-                    if let Some(fetch) = pipeline.as_fetch() {
-                        emu_info_tx.send(EmuInfo::Fetch(fetch.clone()))?;
-                    }
-                    emu_info_tx.send(EmuInfo::PipelineUpdate(pipeline.report()))?;
                 }
-                Ok(EmuCmd::Run) =>
-                {
-                    #[allow(clippy::unwrap_used)]
-                    loop {
-                        let mut emu = emu.write().unwrap();
+                if let Some(fetch) = pipeline.as_fetch() {
+                    emu_info_tx
+                        .send_async(EmuInfo::Fetch(fetch.clone()))
+                        .await?;
+                }
+                emu_info_tx.send(EmuInfo::PipelineUpdate(pipeline.report()))?;
+            }
+            Ok(EmuCmd::Run) =>
+            {
+                #[allow(clippy::unwrap_used)]
+                loop {
+                    {
+                        let mut emu = emu.get_mut();
                         pipeline = pipeline.step(&mut emu, &mut jit)?;
-                        if let Some(fetch) = pipeline.as_fetch() {
-                            emu_info_tx.send(EmuInfo::Fetch(fetch.clone()))?;
-                        }
-                        emu_info_tx.send(EmuInfo::PipelineUpdate(pipeline.report()))?;
+                    }
+                    if let Some(fetch) = pipeline.as_fetch() {
+                        emu_info_tx
+                            .send_async(EmuInfo::Fetch(fetch.clone()))
+                            .await?;
+                    }
+                    emu_info_tx
+                        .send_async(EmuInfo::PipelineUpdate(pipeline.report()))
+                        .await?;
+                    {
+                        let emu = emu.get();
                         if breakpoints.contains(&emu.cpu.pc) {
                             break;
                         }
                     }
+                    smol::future::yield_now().await;
                 }
-                Ok(EmuCmd::AddBreakpoint(addr)) => {
-                    breakpoints.insert(addr);
-                }
-                Err(_) => {}
+            }
+            Ok(EmuCmd::AddBreakpoint(addr)) => {
+                breakpoints.insert(addr);
+            }
+            Err(err) => {
+                panic!("{}", err);
             }
         }
-    });
-
-    Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy)]

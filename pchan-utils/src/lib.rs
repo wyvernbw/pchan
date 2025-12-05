@@ -1,3 +1,4 @@
+#![feature(impl_trait_in_assoc_type)]
 #![feature(ptr_as_ref_unchecked)]
 
 use std::{
@@ -192,5 +193,19 @@ where
 
     fn get_mut(&'a self) -> Self::OutputMut {
         self.write().unwrap()
+    }
+}
+
+impl<'a, T> IgnorePoison<'a> for smol::lock::RwLock<T> {
+    type Output = impl Future<Output = smol::lock::RwLockReadGuard<'a, T>>;
+
+    type OutputMut = impl Future<Output = smol::lock::RwLockWriteGuard<'a, T>>;
+
+    fn get(&'a self) -> Self::Output {
+        self.read()
+    }
+
+    fn get_mut(&'a self) -> Self::OutputMut {
+        self.write()
     }
 }
