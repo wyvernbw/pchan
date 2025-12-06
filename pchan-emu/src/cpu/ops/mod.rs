@@ -69,6 +69,7 @@ pub mod store;
 pub mod sw;
 
 // cop
+pub mod lwc;
 pub mod mfc;
 pub mod mtc;
 pub mod rfe;
@@ -98,6 +99,7 @@ pub mod prelude {
     pub use super::lhu::*;
     pub use super::lui::*;
     pub use super::lw::*;
+    pub use super::lwc::*;
     pub use super::mfc::*;
     pub use super::mfhi::*;
     pub use super::mflo::*;
@@ -607,6 +609,8 @@ pub enum DecodedOp {
     MFCn(MFCn),
     #[strum(transparent)]
     RFE(RFE),
+    #[strum(transparent)]
+    LWCn(LWCn),
 
     ILLEGAL(ILLEGAL),
 }
@@ -832,7 +836,9 @@ impl DecodedOp {
                 // cop imm16
                 (0x10..=0x13, 0x8, 0, _) => todo!("bcnf"),
                 (0x10..=0x13, 0x8, 1, _) => todo!("bcnt"),
-                (0x30..=0x33, _, _, _) => todo!("lwcn"),
+                (0x30..=0x33, rs, rt, _) => {
+                    Self::LWCn(LWCn::new(fields.cop(), rs, rt, fields.imm16()))
+                }
                 (0x38..=0x3B, _, _, _) => todo!("swcn"),
 
                 // cop imm25

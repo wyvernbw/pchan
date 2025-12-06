@@ -76,9 +76,7 @@ fn test_display(setup_tracing: (), #[case] op: DecodedOp, #[case] expected: &str
 
 #[rstest]
 #[case::addiu(0x275a0c80, "addiu $k0 $k0 0x0c80")]
+#[case::lwcn(0xc486c0bf, "lwc1 $a2 $a0 0xc0bf")]
 fn test_decode(setup_tracing: (), #[case] opcode: u32, #[case] expected: &str) {
-    assert_eq!(
-        DecodedOp::new(OpCode(opcode)).to_string(),
-        "addiu $k0 $k0 0x0c80"
-    );
+    assert_eq!(DecodedOp::new(OpCode(opcode)).to_string(), expected,);
 }
