@@ -591,8 +591,12 @@ impl<'a> Component for MainPage<'a> {
     type ComponentState = MainPageState;
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::ComponentState) -> Result<()> {
-        let [ops, mid, memory] =
-            Layout::horizontal([Constraint::Ratio(1, 3)].repeat(3)).areas(area);
+        let [ops, mid, memory] = Layout::horizontal([
+            Constraint::Ratio(1, 3),
+            Constraint::Ratio(1, 4),
+            Constraint::Min(32),
+        ])
+        .areas(area);
         let ops_focus = self.0.prop::<OpsList>();
         let ops_block = Block::bordered()
             .border_type(BorderType::Rounded)
@@ -1094,7 +1098,7 @@ impl MemoryInspectorState {
 
         self.loaded.clear();
         (self.loaded_address..)
-            .take((cols * rows) as usize)
+            .take((rows * MemoryInspector::COLUMNS) as usize)
             .map(|address| emu.read::<u8, pchan_emu::memory::ext::NoExt>(address))
             .map(|byte| const_hex::const_encode::<_, false>(&[byte]))
             .collect_into(&mut self.loaded);
@@ -1108,40 +1112,31 @@ impl MemoryInspectorState {
             .collect_into(&mut self.loaded_address_tags);
     }
     fn update_address(&mut self, addr: u32) {
-        let Some((rows, cols)) = self.dims else {
+        let Some((rows, _)) = self.dims else {
             return;
         };
-
-        let page_size = (cols * rows) as u32;
-        if addr < self.loaded_address {
-            self.loaded_address = self.loaded_address.saturating_sub(
-                self.loaded_address
-                    .abs_diff(addr)
-                    .next_multiple_of(page_size),
-            );
-            self.fetch();
-        } else if addr >= self.loaded_address + page_size {
-            self.loaded_address = self.loaded_address.saturating_add(
-                self.loaded_address
-                    .abs_diff(addr)
-                    .next_multiple_of(page_size),
-            );
-            self.fetch();
+        let cols = MemoryInspector::COLUMNS as u32;
+        let page = self.loaded_address..(self.loaded_address + (rows as u32 * cols));
+        if !page.contains(&addr) {
+            self.loaded_address = addr.next_multiple_of(cols) - cols;
+            // pagination
+            let row_idx = addr / MemoryInspector::COLUMNS as u32;
+            self.loaded_address =
+                (row_idx / rows as u32) * rows as u32 * MemoryInspector::COLUMNS as u32;
         }
         self.selected_address = addr;
+
+        self.fetch();
     }
     fn update_selected(&mut self) {
-        let Some((_, cols)) = self.dims else {
-            return;
-        };
-        let cols = cols as usize;
         let selected = self
             .loaded
-            .chunks(cols)
+            .chunks(MemoryInspector::COLUMNS as usize)
             .enumerate()
             .find_map(|(row_idx, row)| {
                 row.iter().enumerate().find_map(|(col_idx, _)| {
-                    let address = self.loaded_address as usize + (row_idx * cols + col_idx);
+                    let address = self.loaded_address as usize
+                        + (row_idx * MemoryInspector::COLUMNS as usize + col_idx);
                     if address == self.selected_address as usize {
                         Some((row_idx, col_idx))
                     } else {
@@ -1154,6 +1149,8 @@ impl MemoryInspectorState {
 }
 
 impl MemoryInspector {
+    const COLUMNS: u16 = 16;
+
     fn render_hex_table(
         &self,
         area: Rect,
@@ -1164,7 +1161,8 @@ impl MemoryInspector {
 
         let [tags, area] =
             Layout::horizontal([Constraint::Max(12), Constraint::Min(4)]).areas(area);
-        let cols = area.width / COL_WIDTH;
+        // area.width = area.width.max(50);
+        let cols = Self::COLUMNS;
         let rows = area.height - 2;
         state.dims = Some((rows, cols));
 
@@ -1184,7 +1182,9 @@ impl MemoryInspector {
                 .enumerate()
                 .map(|(row_idx, row)| {
                     row.iter().enumerate().map(move |(col_idx, cell)| {
-                        Span::raw(cell.as_str()).style(if (row_idx + col_idx) % 2 == 0 {
+                        Span::raw(cell.as_str()).style(if cell.as_str() == "00" {
+                            Style::new().dark_gray()
+                        } else if (row_idx + col_idx) % 2 == 0 {
                             Style::new().white()
                         } else {
                             Style::new().fg(Color::Rgb(255 - 15, 255 - 15, 255 - 15))
@@ -1200,15 +1200,25 @@ impl MemoryInspector {
         }
 
         StatefulWidget::render(
-            Table::new(rows, [COL_WIDTH - 1].repeat(cols as usize))
-                .style(Style::new().gray())
-                .cell_highlight_style(Style::new().on_gray().black())
-                .block(
-                    Block::bordered()
-                        .border_type(BorderType::Rounded)
-                        .border_style(Style::new().white())
-                        .title("Hex"),
-                ),
+            Table::new(
+                rows,
+                [
+                    Constraint::Length(COL_WIDTH - 1),
+                    Constraint::Length(COL_WIDTH - 1),
+                    Constraint::Length(COL_WIDTH - 1),
+                    Constraint::Length(COL_WIDTH),
+                ]
+                .repeat(4),
+            )
+            .column_spacing(0)
+            .style(Style::new().gray())
+            .cell_highlight_style(Style::new().on_gray().black())
+            .block(
+                Block::bordered()
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::new().white())
+                    .title("Hex"),
+            ),
             area,
             buf,
             &mut state.table_state,
