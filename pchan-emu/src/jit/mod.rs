@@ -689,13 +689,16 @@ impl JIT {
             "coprocessor register value must be i32"
         );
 
-        const COP0: usize = const { core::mem::offset_of!(Cpu, cop0) };
-        const COP_SIZE: usize = size_of::<Cop0>();
-        let offset = i32::try_from(COP0 + COP_SIZE * cop as usize + idx * size_of::<u32>())
-            .expect("offset overflow");
+        let offset = match cop {
+            0 => offset_of!(Cpu, cop0),
+            1 => offset_of!(Cpu, cop1),
+            2 => offset_of!(Cpu, _pad_cop2_gte),
+            _ => panic!("invalid coprocessor"),
+        };
+        let offset = offset + idx * size_of::<u32>();
 
         tracing::info!(?offset, "write to coprocessor");
-        JIT::emit_store_to_cpu(builder, block, value, offset)
+        JIT::emit_store_to_cpu(builder, block, value, offset as i32)
     }
 
     #[instrument(skip(builder, block))]

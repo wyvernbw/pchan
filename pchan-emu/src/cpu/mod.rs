@@ -25,25 +25,24 @@ pub struct Cpu {
     pub hilo: u64,
     pub d_clock: u16,
     pub cop0: Cop0,
-    #[debug(skip)]
-    pub _pad_cop1: [u64; 32],
+    pub cop1: Cop1,
     #[debug(skip)]
     pub _pad_cop2_gte: [u64; 32],
 }
 
-#[derive(derive_more::Debug)]
-#[repr(C)]
-pub struct Cop0 {
-    #[debug("{:#?}",
-        reg
-            .iter()
-            .enumerate()
-            .filter(|(_, x)| x != &&0)
-            .map(|(i, x)| format!("${}={}", REG_STR[i], hex(*x)))
-            .collect::<Vec<String>>()
-    )]
-    pub reg: [u32; 64],
+macro_rules! coprocessor_definition {
+    ($n:ident) => {
+        #[derive(derive_more::Debug)]
+        #[repr(C)]
+        pub struct $n {
+            #[debug("{:#?}", reg.iter() .enumerate() .filter(|(_, x)| x != &&0) .map(|(i, x)|format!("${}={}", REG_STR[i], hex(*x))) .collect::<Vec<String>>())]
+            pub reg: [u32; 64],
+        }
+    };
 }
+
+coprocessor_definition!(Cop0);
+coprocessor_definition!(Cop1);
 
 bitfield! {
     pub struct Cop0StatusReg(u32);
@@ -148,6 +147,12 @@ impl Cpu {
     pub fn handle_break(&mut self) {
         tracing::info!("running break");
         self.handle_exception(Exception::Break);
+    }
+}
+
+impl Default for Cop1 {
+    fn default() -> Self {
+        Self { reg: [0; 64] }
     }
 }
 

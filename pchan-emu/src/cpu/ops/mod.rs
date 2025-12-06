@@ -827,7 +827,7 @@ impl DecodedOp {
                 (0x3, _, _, _) => Self::JAL(JAL::new(fields.imm26())),
 
                 // cop reg
-                (_, 0x0, _, 0x0) => Self::MFCn(MFCn::new(fields.cop(), rt, rd)),
+                (0x10..=0x13, 0x0, _, 0x0) => Self::MFCn(MFCn::new(fields.cop(), rt, rd)),
                 (_, 0x2, _, 0x0) => todo!("cfcn"),
                 (_, 0x4, _, 0x0) => Self::MTCn(MTCn::new(fields.cop(), rt, rd)),
                 (_, 0x6, _, 0x0) => todo!("ctcn"),
@@ -836,8 +836,8 @@ impl DecodedOp {
                 // cop imm16
                 (0x10..=0x13, 0x8, 0, _) => todo!("bcnf"),
                 (0x10..=0x13, 0x8, 1, _) => todo!("bcnt"),
-                (0x30..=0x33, rs, rt, _) => {
-                    Self::LWCn(LWCn::new(fields.cop(), rs, rt, fields.imm16()))
+                (0x30..=0x33, _, _, _) => {
+                    Self::LWCn(LWCn::new(fields.cop(), rt, rs, fields.imm16()))
                 }
                 (0x38..=0x3B, _, _, _) => todo!("swcn"),
 
@@ -848,6 +848,7 @@ impl DecodedOp {
                     // tracing::error!("cop command not yet implemented");
                     // Self::illegal()
                 }
+
                 _ => Self::illegal(),
             }
         })

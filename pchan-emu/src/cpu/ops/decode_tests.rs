@@ -70,6 +70,7 @@ fn test_bios_ops(setup_tracing: ()) -> color_eyre::Result<()> {
 #[case::rfe(DecodedOp::new(rfe()), "rfe")]
 #[case::bgez(DecodedOp::new(bgez(8, 0x20)), "bgez $t0 0x0020")]
 #[case::addiu_02(DecodedOp::new(addiu(26, 26, 0x0C80)), "addiu $k0 $k0 0x0c80")]
+#[case::lwc(DecodedOp::new(lwc(1)(5, 0, 0x0000_1000)), "lwc1 $a1 $zero 0x1000")]
 fn test_display(setup_tracing: (), #[case] op: DecodedOp, #[case] expected: &str) {
     assert_eq!(op.to_string(), expected);
 }

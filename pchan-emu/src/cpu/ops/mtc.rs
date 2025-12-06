@@ -92,7 +92,9 @@ mod tests {
 
         let summary = emulator.step_jit_summarize::<JitSummary>(&mut jit)?;
 
+        tracing::info!(%summary.decoded_ops);
         tracing::info!(?summary.function);
+        tracing::info!(?emulator.cpu);
 
         assert_eq!(emulator.cpu.cop0.reg[16], 69);
         Ok(())
