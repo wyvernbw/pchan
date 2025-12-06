@@ -179,6 +179,59 @@ impl Emu {
         Ok(())
     }
 
+    #[instrument(name = "dynarec", skip_all, fields(pc = %hex(self.cpu.pc)))]
+    pub fn step_jit_summarize<S: SummarizeJit>(&mut self, jit: &mut JIT) -> color_eyre::Result<S> {
+        let initial_address = self.cpu.pc;
+        let ptr_type = jit.pointer_type();
+
+        // try cache first
+        let cached = self.jit_cache.use_cached_function(initial_address);
+        if let Some(cached) = cached.cloned() {
+            cached(self, false);
+            tracing::info!("{:?} fn invoked", cached.fn_ptr);
+            return Ok(S::summarize(
+                SummarizeDeps::builder().cpu(&self.cpu).build(),
+            ));
+        }
+
+        // collect blocks in function
+        let mut fetch_result = self.fetch(FetchParams::builder().pc(initial_address).build())?;
+
+        let (func_id, mut func) = jit.create_function(initial_address)?;
+        let func_ref_table = jit.create_func_ref_table(&mut func);
+        let mut fn_builder = jit.create_fn_builder(&mut func);
+
+        self.fetch_post_process_pass()
+            .fn_builder(&mut fn_builder)
+            .fetch_result(&mut fetch_result)
+            .call();
+
+        self.emit_function()
+            .ptr_type(ptr_type)
+            .fetch_result(fetch_result.clone())
+            .fn_builder(&mut fn_builder)
+            .func_ref_table(&func_ref_table)
+            .call();
+
+        Self::destroy_fn_builder(fn_builder);
+        let deps = SummarizeDeps::builder()
+            .function(&func)
+            .cpu(&self.cpu)
+            .fetch_summary(&fetch_result)
+            .build();
+        let summary = S::summarize(deps);
+
+        let function = jit.finish_function(func_id, func)?;
+
+        tracing::info!("{:?} fn compiled", function.fn_ptr);
+
+        function(self, true);
+
+        self.jit_cache.fn_map.insert(initial_address, function);
+
+        Ok(summary)
+    }
+
     pub fn destroy_fn_builder(mut fn_builder: FunctionBuilder) {
         tracing::trace!("closing function");
         fn_builder.seal_all_blocks();

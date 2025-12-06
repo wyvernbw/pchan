@@ -73,6 +73,7 @@ mod tests {
     use rstest::rstest;
 
     use crate::dynarec::prelude::*;
+    use crate::test_utils::jit;
     use crate::{Emu, test_utils::emulator};
 
     #[rstest]
@@ -83,17 +84,16 @@ mod tests {
     fn sra_1(
         setup_tracing: (),
         mut emulator: Emu,
+        mut jit: crate::jit::JIT,
         #[case] a: i16,
         #[case] b: i8,
         #[case] expected: u32,
     ) -> color_eyre::Result<()> {
-        use crate::dynarec::JitSummary;
-
         emulator.write_many(
             0x0,
             &program([addiu(8, 0, a), sra(10, 8, b), OpCode(69420)]),
         );
-        let summary = emulator.step_jit_summarize::<JitSummary>()?;
+        let summary = emulator.step_jit_summarize::<JitSummary>(&mut jit)?;
         tracing::info!(?summary.function);
         assert_eq!(emulator.cpu.gpr[10], expected);
         Ok(())
@@ -101,11 +101,14 @@ mod tests {
     #[rstest]
     #[case(8)]
     #[case(0b00001111)]
-    fn sra_2(setup_tracing: (), mut emulator: Emu, #[case] imm: i8) -> color_eyre::Result<()> {
-        use crate::dynarec::JitSummary;
-
+    fn sra_2(
+        setup_tracing: (),
+        mut emulator: Emu,
+        mut jit: crate::jit::JIT,
+        #[case] imm: i8,
+    ) -> color_eyre::Result<()> {
         emulator.write_many(0x0, &program([sra(10, 0, imm), OpCode(69420)]));
-        let summary = emulator.step_jit_summarize::<JitSummary>()?;
+        let summary = emulator.step_jit_summarize::<JitSummary>(&mut jit)?;
         tracing::info!(?summary.function);
         assert_eq!(emulator.cpu.gpr[10], 0);
         Ok(())

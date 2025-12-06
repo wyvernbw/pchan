@@ -79,12 +79,13 @@ mod tests {
     use pretty_assertions::assert_eq;
     use rstest::rstest;
 
-    use crate::{Emu, dynarec::JitSummary, test_utils::emulator};
+    use crate::dynarec::prelude::*;
+    use crate::jit::JIT;
+    use crate::test_utils::jit;
+    use crate::{Emu, test_utils::emulator};
 
     #[rstest]
-    fn jr_1(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
-        use crate::cpu::ops::prelude::*;
-
+    fn jr_1(setup_tracing: (), mut emulator: Emu, mut jit: JIT) -> color_eyre::Result<()> {
         let main = program([lui(8, 0x8000u16 as i16), ori(8, 8, 0x2000), jr(8), nop()]);
 
         let function = program([addiu(9, 0, 69), nop(), OpCode(69420)]);
@@ -93,7 +94,7 @@ mod tests {
         emulator.write_many(0x8000_2000, &function);
 
         for i in 0..2 {
-            let summary = emulator.step_jit_summarize::<JitSummary>()?;
+            let summary = emulator.step_jit_summarize::<JitSummary>(&mut jit)?;
             tracing::info!(?summary.function);
             tracing::info!(emulator.cpu.pc = %format!("0x{:08X}", emulator.cpu.pc));
             assert_eq!(emulator.cpu.gpr[8], 0x8000_2000);

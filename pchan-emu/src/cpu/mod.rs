@@ -6,8 +6,6 @@ use tracing::instrument;
 
 use crate::cpu::ops::OpCode;
 
-#[cfg(test)]
-mod cranelift_tests;
 pub mod ops;
 
 #[derive(Default, derive_more::Debug)]

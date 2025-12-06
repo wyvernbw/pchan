@@ -65,6 +65,7 @@ mod tests {
     use rstest::rstest;
 
     use crate::dynarec::prelude::*;
+    use crate::test_utils::jit;
     use crate::{Emu, test_utils::emulator};
 
     #[rstest]
@@ -75,17 +76,16 @@ mod tests {
     pub fn multu_1(
         setup_tracing: (),
         mut emulator: Emu,
+        mut jit: crate::jit::JIT,
         #[case] a: u32,
         #[case] b: u32,
         #[case] expected: u64,
     ) -> color_eyre::Result<()> {
-        use crate::dynarec::JitSummary;
-
         emulator.write_many(0, &program([multu(8, 9), OpCode(69420)]));
         emulator.cpu.gpr[8] = a;
         emulator.cpu.gpr[9] = b;
 
-        let summary = emulator.step_jit_summarize::<JitSummary>()?;
+        let summary = emulator.step_jit_summarize::<JitSummary>(&mut jit)?;
         tracing::info!(?summary.function);
         let output = emulator.cpu.hilo;
         assert_eq!(output, expected);
@@ -100,6 +100,7 @@ mod tests {
     pub fn multu_2_shortpath(
         setup_tracing: (),
         mut emulator: Emu,
+        mut jit: crate::jit::JIT,
         #[case] a: u8,
         #[case] b: u8,
         #[case] expected: u64,
@@ -114,7 +115,7 @@ mod tests {
             emulator.cpu.gpr[b as usize] = 1;
         }
 
-        let summary = emulator.step_jit_summarize::<JitSummary>()?;
+        let summary = emulator.step_jit_summarize::<JitSummary>(&mut jit)?;
         tracing::info!(?summary.function);
         let output = emulator.cpu.hilo;
         assert_eq!(output, expected);

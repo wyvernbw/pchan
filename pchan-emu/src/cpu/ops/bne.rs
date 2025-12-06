@@ -43,7 +43,7 @@ impl Display for BNE {
             "bne ${} ${} {}",
             REG_STR[self.rs as usize],
             REG_STR[self.rt as usize],
-            hex(self.imm as i32 * 4 + 4)
+            hex(self.imm * 4 + 4)
         )
     }
 }
@@ -131,8 +131,9 @@ mod tests {
     use pretty_assertions::assert_eq;
     use rstest::rstest;
 
-    use crate::cpu::ops::prelude::*;
-    use crate::{Emu, dynarec::JitSummary, test_utils::emulator};
+    use crate::dynarec::prelude::*;
+    use crate::test_utils::jit;
+    use crate::{Emu, test_utils::emulator};
 
     struct Bne1Test {
         a: i16,
@@ -149,6 +150,7 @@ mod tests {
         setup_tracing: (),
         mut emulator: Emu,
         #[case] test: Bne1Test,
+        mut jit: crate::jit::JIT,
     ) -> color_eyre::Result<()> {
         emulator.write_many(
             0x0,
@@ -165,7 +167,7 @@ mod tests {
             ]),
         );
 
-        let summary = emulator.step_jit_summarize::<JitSummary>()?;
+        let summary = emulator.step_jit_summarize::<JitSummary>(&mut jit)?;
         tracing::info!(?summary.function);
 
         assert_eq!(emulator.cpu.gpr[10], test.expected);

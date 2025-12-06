@@ -74,28 +74,28 @@ mod tests {
     use pchan_utils::setup_tracing;
     use rstest::rstest;
 
-    use crate::{
-        Emu,
-        cpu::ops::{self},
-        memory::ext,
-        test_utils::emulator,
-    };
+    use crate::dynarec::prelude::*;
+    use crate::jit::JIT;
+    use crate::test_utils::jit;
+    use crate::{Emu, memory::ext, test_utils::emulator};
 
     #[rstest]
-    pub fn test_lb_sign_extension(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
-        use crate::cpu::ops::prelude::*;
-
+    pub fn test_lb_sign_extension(
+        setup_tracing: (),
+        mut emulator: Emu,
+        mut jit: JIT,
+    ) -> color_eyre::Result<()> {
         emulator.write(32, 0xFFu8);
         emulator.write(33, 0x7Fu8);
         emulator.write_many(
             0x0,
-            &program([lb(8, 9, 0), lb(10, 9, 1), nop(), ops::OpCode(69420)]),
+            &program([lb(8, 9, 0), lb(10, 9, 1), nop(), OpCode(69420)]),
         );
 
         emulator.cpu.gpr[9] = 32; // base register
 
         // Run the block
-        emulator.step_jit()?;
+        emulator.step_jit(&mut jit)?;
 
         assert_eq!(emulator.cpu.gpr[8], ext::sign::<u8>(0xFFu8) as u32);
 

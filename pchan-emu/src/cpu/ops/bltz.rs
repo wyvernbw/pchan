@@ -115,9 +115,10 @@ mod tests {
     use pretty_assertions::assert_eq;
     use rstest::rstest;
 
-    use crate::cpu::program;
+    use crate::Emu;
     use crate::dynarec::prelude::*;
-    use crate::{Emu, dynarec::JitSummary};
+    use crate::jit::JIT;
+    use crate::test_utils::jit;
 
     #[rstest]
     #[case(0, 69)]
@@ -127,6 +128,7 @@ mod tests {
         setup_tracing: (),
         #[case] value: i16,
         #[case] expected: i16,
+        mut jit: JIT,
     ) -> color_eyre::Result<()> {
         let mut emu = Emu::default();
         emu.write_many(
@@ -149,7 +151,7 @@ mod tests {
                 OpCode(69420),
             ]),
         );
-        let summary = emu.step_jit_summarize::<JitSummary>()?;
+        let summary = emu.step_jit_summarize::<JitSummary>(&mut jit)?;
         tracing::info!(?summary);
         assert_eq!(emu.cpu.gpr[10] as i16, expected);
         Ok(())

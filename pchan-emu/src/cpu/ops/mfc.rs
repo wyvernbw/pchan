@@ -78,11 +78,4 @@ pub fn mfc2(rt: u8, rd: u8) -> OpCode {
 }
 
 #[cfg(test)]
-mod tests {
-    use crate::{cpu::ops::prelude::*, dynarec::JitSummary};
-    use pchan_utils::setup_tracing;
-    use pretty_assertions::assert_eq;
-    use rstest::rstest;
-
-    use crate::{Emu, test_utils::emulator};
-}
+mod tests {}

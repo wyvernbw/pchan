@@ -68,29 +68,26 @@ impl Op for LW {
 #[cfg(test)]
 mod tests {
     use crate::dynarec::prelude::*;
+    use crate::jit::JIT;
     use crate::memory::ext;
+    use crate::test_utils::jit;
     use pchan_utils::setup_tracing;
     use pretty_assertions::assert_eq;
     use pretty_assertions::assert_ne;
     use rstest::rstest;
 
-    use crate::{
-        Emu,
-        cpu::ops::{self},
-        dynarec::JitSummary,
-        test_utils::emulator,
-    };
+    use crate::{Emu, test_utils::emulator};
 
     #[rstest]
-    pub fn test_lw(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
+    pub fn test_lw(setup_tracing: (), mut emulator: Emu, mut jit: JIT) -> color_eyre::Result<()> {
         emulator.write::<u32>(32, 0xDEAD_BEEF); // -32768
 
-        emulator.write_many(0, &program([lw(8, 9, 0), nop(), ops::OpCode(69420)]));
+        emulator.write_many(0, &program([lw(8, 9, 0), nop(), OpCode(69420)]));
 
         emulator.cpu.gpr[9] = 32; // base register
 
         // Run the block
-        emulator.step_jit()?;
+        emulator.step_jit(&mut jit)?;
 
         assert_eq!(emulator.cpu.gpr[8], 0xDEAD_BEEF);
 
@@ -98,23 +95,22 @@ mod tests {
     }
 
     #[rstest]
-    pub fn load_delay_hazard_1(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
+    pub fn load_delay_hazard_1(
+        setup_tracing: (),
+        mut emulator: Emu,
+        mut jit: JIT,
+    ) -> color_eyre::Result<()> {
         emulator.write::<u32>(32, 0xDEAD_BEEF);
 
         emulator.write_many(
             0,
-            &program([
-                addiu(8, 0, 0),
-                lw(8, 9, 0),
-                addiu(8, 8, 12),
-                ops::OpCode(69420),
-            ]),
+            &program([addiu(8, 0, 0), lw(8, 9, 0), addiu(8, 8, 12), OpCode(69420)]),
         );
 
         emulator.cpu.gpr[9] = 32; // base register
 
         // Run the block
-        let summary = emulator.step_jit_summarize::<JitSummary>()?;
+        let summary = emulator.step_jit_summarize::<JitSummary>(&mut jit)?;
         tracing::info!(?summary.function);
 
         // $t0 is replaced with 0xDEAD_BEEF, even tho load happened before
@@ -124,19 +120,23 @@ mod tests {
     }
 
     #[rstest]
-    pub fn load_delay_hazard_2(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
+    pub fn load_delay_hazard_2(
+        setup_tracing: (),
+        mut emulator: Emu,
+        mut jit: JIT,
+    ) -> color_eyre::Result<()> {
         emulator.write::<u32>(32, 0xDEAD_BEEF);
 
         emulator.write_many(
             0,
-            &program([lw(8, 9, 0), nop(), sb(8, 10, 0), ops::OpCode(69420)]),
+            &program([lw(8, 9, 0), nop(), sb(8, 10, 0), OpCode(69420)]),
         );
 
         emulator.cpu.gpr[9] = 32; // base register
         emulator.cpu.gpr[10] = 36;
 
         // Run the block
-        emulator.step_jit()?;
+        emulator.step_jit(&mut jit)?;
 
         assert_eq!(emulator.cpu.gpr[8], 0xDEAD_BEEF);
         assert_ne!(emulator.read::<u32, ext::NoExt>(36), 0);

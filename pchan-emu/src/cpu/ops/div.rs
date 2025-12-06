@@ -46,7 +46,7 @@ impl Op for DIV {
 
 #[cfg(test)]
 mod tests {
-    use crate::dynarec::prelude::*;
+    use crate::{dynarec::prelude::*, test_utils::jit};
     use pchan_utils::setup_tracing;
     use rstest::rstest;
 
@@ -61,6 +61,7 @@ mod tests {
         #[case] b: i16,
         #[case] expected_res: u32,
         #[case] expected_rem: u32,
+        mut jit: crate::jit::JIT,
     ) {
         use crate::Emu;
 
@@ -76,7 +77,7 @@ mod tests {
             ]),
         );
 
-        let summary = emu.step_jit_summarize::<JitSummary>().unwrap();
+        let summary = emu.step_jit_summarize::<JitSummary>(&mut jit).unwrap();
         tracing::info!(?summary);
 
         assert_eq!((emu.cpu.hilo & ((1 << 32) - 1)) as u32, expected_res);

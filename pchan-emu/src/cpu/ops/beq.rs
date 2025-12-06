@@ -43,7 +43,7 @@ impl Display for BEQ {
             "beq ${} ${} {}",
             REG_STR[self.rs as usize],
             REG_STR[self.rt as usize],
-            hex(self.imm)
+            hex(self.imm * 4 + 4)
         )
     }
 }
@@ -126,16 +126,19 @@ impl Op for BEQ {
 
 #[cfg(test)]
 mod tests {
+    use crate::{dynarec::prelude::*, jit::JIT, test_utils::jit};
     use pchan_utils::setup_tracing;
     use pretty_assertions::assert_eq;
     use rstest::rstest;
 
-    use crate::{Emu, dynarec::JitSummary, test_utils::emulator};
+    use crate::{Emu, test_utils::emulator};
 
     #[rstest]
-    fn beq_basic_loop(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
-        use crate::cpu::ops::prelude::*;
-
+    fn beq_basic_loop(
+        setup_tracing: (),
+        mut emulator: Emu,
+        mut jit: JIT,
+    ) -> color_eyre::Result<()> {
         let func = program([
             addiu(8, 0, 0),           // ;  0 $t0 = 0
             addiu(10, 0, 4),          // ;  4 $t2 = 4
@@ -153,7 +156,7 @@ mod tests {
 
         emulator.write_many(0x0, &func);
 
-        let summary = emulator.step_jit_summarize::<JitSummary>()?;
+        let summary = emulator.step_jit_summarize::<JitSummary>(&mut jit)?;
         if let Some(func) = summary.function {
             tracing::info!(%func);
         }
@@ -165,7 +168,7 @@ mod tests {
         Ok(())
     }
     #[rstest]
-    fn beq_taken(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
+    fn beq_taken(setup_tracing: (), mut emulator: Emu, mut jit: JIT) -> color_eyre::Result<()> {
         use crate::cpu::ops::prelude::*;
 
         let func = program([
@@ -181,7 +184,7 @@ mod tests {
 
         emulator.write_many(emulator.cpu.pc, &func);
 
-        emulator.step_jit()?;
+        emulator.step_jit(&mut jit)?;
 
         let slice = &emulator.mem.buf.as_ref()[0x41..0x42];
         assert_eq!(slice, &[99]);
@@ -190,7 +193,7 @@ mod tests {
     }
 
     #[rstest]
-    fn beq_not_taken(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
+    fn beq_not_taken(setup_tracing: (), mut emulator: Emu, mut jit: JIT) -> color_eyre::Result<()> {
         use crate::cpu::ops::prelude::*;
 
         let func = program([
@@ -204,7 +207,7 @@ mod tests {
 
         emulator.write_many(emulator.cpu.pc, &func);
 
-        emulator.step_jit()?;
+        emulator.step_jit(&mut jit)?;
 
         let slice = &emulator.mem.buf.as_ref()[0x30..0x31];
         assert_eq!(slice, &[42]);

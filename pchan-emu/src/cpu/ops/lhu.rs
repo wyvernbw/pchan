@@ -79,12 +79,16 @@ mod tests {
     use pchan_utils::setup_tracing;
     use rstest::rstest;
 
-    use crate::{Emu, memory::ext, test_utils::emulator};
+    use crate::dynarec::prelude::*;
+    use crate::{
+        Emu,
+        jit::JIT,
+        memory::ext,
+        test_utils::{emulator, jit},
+    };
 
     #[rstest]
-    pub fn test_lhu(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
-        use crate::cpu::ops::prelude::*;
-
+    pub fn test_lhu(setup_tracing: (), mut emulator: Emu, mut jit: JIT) -> color_eyre::Result<()> {
         emulator.write_many(0x0, &program([lhu(8, 9, 4), nop(), OpCode(69420)]));
 
         let op = emulator.read::<OpCode, ext::NoExt>(0);
@@ -95,7 +99,7 @@ mod tests {
 
         emulator.write::<u16>(20, 0xABCD);
 
-        emulator.step_jit()?;
+        emulator.step_jit(&mut jit)?;
 
         assert_eq!(emulator.cpu.gpr[8], 0xABCDu32);
 

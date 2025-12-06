@@ -18,8 +18,8 @@ members = [
   "pchan-macros",
   "pchan-utils",
   "pchan-cranelift-frontend",
-  "pchan-debug"
-, "pchan-debug-tui"]
+  "pchan-debug-tui",
+]
 
 [patch.crates-io]
 cranelift-frontend = { path = "./pchan-cranelift-frontend" }

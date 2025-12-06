@@ -90,9 +90,9 @@ mod tests {
     use pretty_assertions::assert_eq;
     use rstest::rstest;
 
-    use crate::cpu::ops::prelude::*;
-    use crate::dynarec::JitSummary;
-    use crate::{Emu, test_utils::emulator};
+    use crate::dynarec::prelude::*;
+    use crate::test_utils::jit;
+    use crate::{Emu, jit::JIT, test_utils::emulator};
 
     #[rstest]
     #[case(1, 1, 1)]
@@ -106,6 +106,7 @@ mod tests {
         #[case] a: i16,
         #[case] b: i16,
         #[case] expected: u32,
+        mut jit: JIT,
     ) -> color_eyre::Result<()> {
         use crate::cpu::program;
 
@@ -113,7 +114,7 @@ mod tests {
             0x0,
             &program([addiu(8, 0, a), addiu(9, 0, b), and(10, 8, 9), OpCode(69420)]),
         );
-        let summary = emulator.step_jit_summarize::<JitSummary>()?;
+        let summary = emulator.step_jit_summarize::<JitSummary>(&mut jit)?;
         tracing::info!(?summary.function);
         assert_eq!(emulator.cpu.gpr[10], expected);
         Ok(())

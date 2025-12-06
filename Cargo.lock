@@ -1767,22 +1767,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pchan-debug"
-version = "0.1.0"
-dependencies = [
- "color-eyre",
- "const-hex",
- "derive_more",
- "inquire",
- "pchan-emu",
- "pchan-macros",
- "pchan-utils",
- "strum 0.27.2",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "pchan-debug-tui"
 version = "0.1.0"
 dependencies = [

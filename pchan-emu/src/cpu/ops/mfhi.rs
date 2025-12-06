@@ -64,7 +64,7 @@ mod tests {
 
     use crate::Emu;
     use crate::dynarec::prelude::*;
-    use crate::test_utils::emulator;
+    use crate::test_utils::{emulator, jit};
 
     #[rstest]
     #[case(2, 3, 0)]
@@ -75,6 +75,7 @@ mod tests {
     pub fn mfhi_1(
         setup_tracing: (),
         mut emulator: Emu,
+        mut jit: crate::jit::JIT,
         #[case] a: u32,
         #[case] b: u32,
         #[case] expected: u32,
@@ -83,7 +84,7 @@ mod tests {
         emulator.cpu.gpr[8] = a;
         emulator.cpu.gpr[9] = b;
 
-        let summary = emulator.step_jit_summarize::<JitSummary>()?;
+        let summary = emulator.step_jit_summarize::<JitSummary>(&mut jit)?;
         tracing::info!(?summary.function);
         let output = emulator.cpu.gpr[10];
         tracing::info!("hilo=0x{:016X}", emulator.cpu.hilo);

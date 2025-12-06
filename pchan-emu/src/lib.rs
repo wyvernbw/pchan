@@ -42,7 +42,7 @@ use crate::{
     bootloader::Bootloader,
     cpu::Cpu,
     dynarec::prelude::PureInstBuilder,
-    jit::{JIT, JitCache},
+    jit::JitCache,
     memory::{Chunk, Memory},
 };
 
@@ -210,11 +210,16 @@ impl<'a> FnBuilderExt<'a> for FunctionBuilder<'a> {
 #[cfg(test)]
 pub mod test_utils {
 
-    use crate::Emu;
+    use crate::{Emu, jit::JIT};
     use rstest::fixture;
 
     #[fixture]
     pub fn emulator() -> Emu {
         Emu::default()
+    }
+
+    #[fixture]
+    pub fn jit() -> JIT {
+        JIT::default()
     }
 }

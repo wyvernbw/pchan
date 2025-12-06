@@ -4,6 +4,7 @@
 
 use pchan_emu::Emu;
 use pchan_emu::dynarec::prelude::*;
+use pchan_emu::jit::JIT;
 use pchan_emu::memory::ext;
 use pchan_utils::setup_tracing;
 use pretty_assertions::assert_eq;
@@ -40,6 +41,7 @@ use rstest::rstest;
 #[case::kseg1_bios(0xBFC0_0000)]
 fn write_to_address(setup_tracing: (), #[case] base: u32) -> color_eyre::Result<()> {
     let mut emu = Emu::default();
+    let mut jit = JIT::default();
     emu.cpu.pc = 0xBFC0_0000;
     let main = program([
         addiu(8, 0, 0),
@@ -54,7 +56,7 @@ fn write_to_address(setup_tracing: (), #[case] base: u32) -> color_eyre::Result<
         OpCode(69420),
     ]);
     emu.write_many::<u32>(0xBFC0_0000, &main);
-    let summary = emu.step_jit_summarize::<JitSummary>()?;
+    let summary = emu.step_jit_summarize::<JitSummary>(&mut jit)?;
     tracing::info!(?summary.function);
 
     assert_eq!(emu.cpu.gpr[9], base);

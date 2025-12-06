@@ -103,12 +103,13 @@ mod tests {
     use pretty_assertions::assert_eq;
     use rstest::rstest;
 
-    use crate::{Emu, cpu::RA, dynarec::JitSummary, test_utils::emulator};
+    use crate::dynarec::prelude::*;
+    use crate::jit::JIT;
+    use crate::test_utils::jit;
+    use crate::{Emu, cpu::RA, test_utils::emulator};
 
     #[rstest]
-    fn jalr_1(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
-        use crate::cpu::ops::prelude::*;
-
+    fn jalr_1(setup_tracing: (), mut emulator: Emu, mut jit: JIT) -> color_eyre::Result<()> {
         let main = program([
             addiu(9, 0, 0),
             lui(8, 0x8000u16 as i16),
@@ -125,7 +126,7 @@ mod tests {
         emulator.write_many(0x8000_2000, &function);
 
         for i in 0..3 {
-            let summary = emulator.step_jit_summarize::<JitSummary>()?;
+            let summary = emulator.step_jit_summarize::<JitSummary>(&mut jit)?;
             tracing::info!(?summary.function);
             tracing::info!(emulator.cpu.pc = %format!("0x{:08X}", emulator.cpu.pc));
             assert_eq!(emulator.cpu.gpr[8], 0x8000_2000);
@@ -136,7 +137,11 @@ mod tests {
     }
 
     #[rstest]
-    fn jalr_1_delay_hazard(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
+    fn jalr_1_delay_hazard(
+        setup_tracing: (),
+        mut emulator: Emu,
+        mut jit: JIT,
+    ) -> color_eyre::Result<()> {
         use crate::cpu::ops::prelude::*;
 
         let main = program([
@@ -165,7 +170,7 @@ mod tests {
         emulator.write_many(0x8000_2000, &function);
 
         for i in 0..3 {
-            let summary = emulator.step_jit_summarize::<JitSummary>()?;
+            let summary = emulator.step_jit_summarize::<JitSummary>(&mut jit)?;
             tracing::info!(?summary.function);
             tracing::info!(emulator.cpu.pc = %format!("0x{:08X}", emulator.cpu.pc));
             assert_eq!(emulator.cpu.gpr[8], 0x8000_2000);

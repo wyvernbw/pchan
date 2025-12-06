@@ -70,6 +70,7 @@ mod tests {
     use rstest::rstest;
 
     use crate::dynarec::prelude::*;
+    use crate::test_utils::jit;
     use crate::{Emu, test_utils::emulator};
 
     #[rstest]
@@ -80,6 +81,7 @@ mod tests {
     fn srlv_1(
         setup_tracing: (),
         mut emulator: Emu,
+        mut jit: crate::jit::JIT,
         #[case] a: i16,
         #[case] b: i16,
         #[case] expected: u32,
@@ -93,7 +95,7 @@ mod tests {
                 OpCode(69420),
             ]),
         );
-        let summary = emulator.step_jit_summarize::<JitSummary>()?;
+        let summary = emulator.step_jit_summarize::<JitSummary>(&mut jit)?;
         tracing::info!(?summary.function);
         assert_eq!(emulator.cpu.gpr[10], expected);
         Ok(())
@@ -105,6 +107,7 @@ mod tests {
     fn srlv_2(
         setup_tracing: (),
         mut emulator: Emu,
+        mut jit: crate::jit::JIT,
         #[case] value: i16,
         #[case] expected: u32,
     ) -> color_eyre::Result<()> {
@@ -112,7 +115,7 @@ mod tests {
             0x0,
             &program([addiu(9, 0, value), srlv(10, 0, 9), OpCode(69420)]),
         );
-        let summary = emulator.step_jit_summarize::<JitSummary>()?;
+        let summary = emulator.step_jit_summarize::<JitSummary>(&mut jit)?;
         tracing::info!(?summary.function);
         assert_eq!(emulator.cpu.gpr[10], expected);
         Ok(())

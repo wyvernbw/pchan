@@ -77,15 +77,17 @@ mod tests {
     use rstest::rstest;
 
     use crate::dynarec::prelude::*;
+    use crate::jit::JIT;
+    use crate::test_utils::jit;
     use crate::{Emu, test_utils::emulator};
 
     #[rstest]
-    fn addu_1(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
+    fn addu_1(setup_tracing: (), mut emulator: Emu, mut jit: JIT) -> color_eyre::Result<()> {
         let program = program([subu(10, 8, 9), OpCode(69420)]);
         emulator.write_many(emulator.cpu.pc, &program);
         emulator.cpu.gpr[8] = 64;
         emulator.cpu.gpr[9] = 32;
-        emulator.step_jit()?;
+        emulator.step_jit(&mut jit)?;
         assert_eq!(
             emulator.cpu.gpr[10],
             emulator.cpu.gpr[8] - emulator.cpu.gpr[9]
@@ -93,12 +95,12 @@ mod tests {
         Ok(())
     }
     #[rstest]
-    fn addu_2(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
+    fn addu_2(setup_tracing: (), mut emulator: Emu, mut jit: JIT) -> color_eyre::Result<()> {
         let program = program([subu(10, 8, 9), OpCode(69420)]);
         emulator.write_many(emulator.cpu.pc, &program);
         emulator.cpu.gpr[8] = u32::MAX;
         emulator.cpu.gpr[9] = 1;
-        emulator.step_jit()?;
+        emulator.step_jit(&mut jit)?;
         assert_eq!(
             emulator.cpu.gpr[10],
             emulator.cpu.gpr[8] - emulator.cpu.gpr[9]

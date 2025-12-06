@@ -85,15 +85,17 @@ mod tests {
     use rstest::rstest;
 
     use crate::dynarec::prelude::*;
+    use crate::jit::JIT;
+    use crate::test_utils::jit;
     use crate::{Emu, test_utils::emulator};
 
     #[rstest]
-    fn slti_test(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
+    fn slti_test(setup_tracing: (), mut emulator: Emu, mut jit: JIT) -> color_eyre::Result<()> {
         emulator.write_many(
             0,
             &program([addiu(8, 0, -3), slti(9, 8, 32), OpCode(69420)]),
         );
-        let summary = emulator.step_jit_summarize::<JitSummary>()?;
+        let summary = emulator.step_jit_summarize::<JitSummary>(&mut jit)?;
         tracing::info!(?summary.function);
         assert_eq!(emulator.cpu.gpr[9], 1);
 

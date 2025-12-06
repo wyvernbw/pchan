@@ -110,15 +110,17 @@ mod tests {
     use pretty_assertions::assert_eq;
     use rstest::rstest;
 
+    use crate::dynarec::prelude::*;
+    use crate::jit::JIT;
+    use crate::test_utils::jit;
     use crate::{
         Emu,
         cpu::{RA, SP},
-        dynarec::JitSummary,
         test_utils::emulator,
     };
 
     #[rstest]
-    fn jal_1(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
+    fn jal_1(setup_tracing: (), mut emulator: Emu, mut jit: JIT) -> color_eyre::Result<()> {
         use crate::cpu::ops::prelude::*;
 
         let main = program([
@@ -139,7 +141,7 @@ mod tests {
         emulator.write_many(emulator.cpu.pc, &main);
         emulator.write_many(0x0000_2000, &function);
 
-        let summary = emulator.step_jit_summarize::<JitSummary>()?;
+        let summary = emulator.step_jit_summarize::<JitSummary>(&mut jit)?;
         tracing::info!(?summary.function);
         assert_eq!(emulator.cpu.gpr[10], 12);
 
@@ -147,7 +149,7 @@ mod tests {
     }
 
     #[rstest]
-    fn jal_2(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
+    fn jal_2(setup_tracing: (), mut emulator: Emu, mut jit: JIT) -> color_eyre::Result<()> {
         use crate::dynarec::prelude::*;
 
         let main = program([
@@ -177,7 +179,7 @@ mod tests {
         emulator.write_many(emulator.cpu.pc, &main);
         emulator.write_many(0x00002000, &recursive_fn);
 
-        let summary = emulator.step_jit_summarize::<JitSummary>()?;
+        let summary = emulator.step_jit_summarize::<JitSummary>(&mut jit)?;
         tracing::info!(?summary.function);
 
         Ok(())

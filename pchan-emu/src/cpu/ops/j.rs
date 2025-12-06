@@ -95,10 +95,12 @@ mod tests {
     use rstest::rstest;
 
     use crate::dynarec::prelude::*;
+    use crate::jit::JIT;
+    use crate::test_utils::jit;
     use crate::{Emu, test_utils::emulator};
 
     #[rstest]
-    fn basic_jump(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
+    fn basic_jump(setup_tracing: (), mut emulator: Emu, mut jit: JIT) -> color_eyre::Result<()> {
         use crate::cpu::ops::prelude::*;
 
         let main = program([addiu(8, 0, 32), j((0x0000_2000 - 4) >> 2), nop()]);
@@ -108,15 +110,17 @@ mod tests {
         emulator.write_many(emulator.cpu.pc, &main);
         emulator.write_many(0x0000_2000, &function);
 
-        emulator.step_jit()?;
+        emulator.step_jit(&mut jit)?;
         assert_eq!(emulator.cpu.gpr[9], 69);
 
         Ok(())
     }
     #[rstest]
-    fn jump_delay_hazard_1(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
-        use crate::cpu::ops::prelude::*;
-
+    fn jump_delay_hazard_1(
+        setup_tracing: (),
+        mut emulator: Emu,
+        mut jit: JIT,
+    ) -> color_eyre::Result<()> {
         let main = program([addiu(8, 0, 32), j((0x0000_2000 - 4) >> 2), addiu(10, 0, 42)]);
 
         let function = program([addiu(9, 0, 69), nop(), OpCode(69420)]);
@@ -124,7 +128,7 @@ mod tests {
         emulator.write_many(emulator.cpu.pc, &main);
         emulator.write_many(0x0000_2000, &function);
 
-        let summary = emulator.step_jit_summarize::<JitSummary>()?;
+        let summary = emulator.step_jit_summarize::<JitSummary>(&mut jit)?;
         tracing::info!(?summary.function);
 
         assert_eq!(emulator.cpu.gpr[9], 69);

@@ -116,27 +116,31 @@ mod tests {
     use pretty_assertions::assert_eq;
     use rstest::rstest;
 
-    use crate::cpu::ops::prelude::*;
     use crate::cpu::program;
+    use crate::dynarec::prelude::*;
+    use crate::jit::JIT;
+    use crate::test_utils::jit;
     use crate::{Emu, test_utils::emulator};
 
     #[rstest]
-    fn addiu_1(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
+    fn addiu_1(setup_tracing: (), mut emulator: Emu, mut jit: JIT) -> color_eyre::Result<()> {
         use crate::cpu::ops::prelude::*;
         let program = program([addiu(9, 8, -16), addiu(10, 0, 8), OpCode(69420)]);
         emulator.write_many(emulator.cpu.pc, &program);
         emulator.cpu.gpr[8] = 32;
-        emulator.step_jit()?;
+        emulator.step_jit(&mut jit)?;
         assert_eq!(emulator.cpu.gpr[9], emulator.cpu.gpr[8] - 16);
         assert_eq!(emulator.cpu.gpr[10], 8);
         Ok(())
     }
     #[rstest]
-    fn addiu_2_shortpath(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
-        use crate::dynarec::JitSummary;
-
+    fn addiu_2_shortpath(
+        setup_tracing: (),
+        mut emulator: Emu,
+        mut jit: JIT,
+    ) -> color_eyre::Result<()> {
         emulator.write_many(0x0, &program([addiu(10, 0, 32), OpCode(69420)]));
-        let summary = emulator.step_jit_summarize::<JitSummary>()?;
+        let summary = emulator.step_jit_summarize::<JitSummary>(&mut jit)?;
         tracing::info!(?summary.function);
         assert_eq!(emulator.cpu.gpr[10], 32);
         let op_count = summary.function.unwrap().dfg.num_insts();
@@ -151,14 +155,16 @@ mod tests {
         Ok(())
     }
     #[rstest]
-    fn addiu_3_shortpath(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
-        use crate::dynarec::JitSummary;
-
+    fn addiu_3_shortpath(
+        setup_tracing: (),
+        mut emulator: Emu,
+        mut jit: JIT,
+    ) -> color_eyre::Result<()> {
         emulator.write_many(
             0x0,
             &program([addiu(8, 0, 21), addiu(10, 8, 0), OpCode(69420)]),
         );
-        let summary = emulator.step_jit_summarize::<JitSummary>()?;
+        let summary = emulator.step_jit_summarize::<JitSummary>(&mut jit)?;
         tracing::info!(?summary.function);
         assert_eq!(emulator.cpu.gpr[10], 21);
         let op_count = summary.function.unwrap().dfg.num_insts();

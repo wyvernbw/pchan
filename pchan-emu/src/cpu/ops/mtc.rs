@@ -79,7 +79,7 @@ pub fn mtc2(rt: u8, rd: u8) -> OpCode {
 
 #[cfg(test)]
 mod tests {
-    use crate::{cpu::ops::prelude::*, dynarec::JitSummary};
+    use crate::{dynarec::prelude::*, jit::JIT, test_utils::jit};
     use pchan_utils::setup_tracing;
     use pretty_assertions::assert_eq;
     use rstest::rstest;
@@ -87,10 +87,10 @@ mod tests {
     use crate::{Emu, test_utils::emulator};
 
     #[rstest]
-    fn mtc_1(setup_tracing: (), mut emulator: Emu) -> color_eyre::Result<()> {
+    fn mtc_1(setup_tracing: (), mut emulator: Emu, mut jit: JIT) -> color_eyre::Result<()> {
         emulator.write_many(0x0, &program([addiu(8, 0, 69), mtc0(8, 16), OpCode(69420)]));
 
-        let summary = emulator.step_jit_summarize::<JitSummary>()?;
+        let summary = emulator.step_jit_summarize::<JitSummary>(&mut jit)?;
 
         tracing::info!(?summary.function);
 
