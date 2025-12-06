@@ -165,10 +165,11 @@ pub fn run(config: AppConfig, mut terminal: DefaultTerminal) -> Result<()> {
                         let event = event::read()?;
                         app.handle_input(event, &mut app_state, frame.area())?;
                     }
-                    if let Ok(info) = emu_info_rx.try_recv() {
+                    for info in emu_info_rx.try_iter() {
                         match info {
                             EmuInfo::PipelineUpdate(report) => {
                                 app_state.pipeline_report = report;
+                                app_state.main_page_state.memory_inspector_state.fetch();
                             }
                             EmuInfo::Ref(emu) => {
                                 app_state.emu = Some(emu.clone());
@@ -189,11 +190,10 @@ pub fn run(config: AppConfig, mut terminal: DefaultTerminal) -> Result<()> {
                         .render(frame.area(), frame.buffer_mut(), &mut app_state)?;
                 };
                 if let Err(err) = result {
-                    panic!("{}", err);
-                    // app_state.error = Some(err);
+                    app_state.error = Some(err);
                 }
             })?;
-            smol::Timer::after(Duration::from_secs_f64(1.0 / 60.0)).await;
+            smol::future::yield_now().await;
         }
     });
     smol::block_on(future)
@@ -202,6 +202,7 @@ pub fn run(config: AppConfig, mut terminal: DefaultTerminal) -> Result<()> {
 pub enum EmuCmd {
     StepJit,
     Run,
+    Pause,
     AddBreakpoint(u32),
 }
 
@@ -260,56 +261,48 @@ async fn emu_task(
 
     let mut breakpoints = HashSet::<u32>::new();
     let mut jit = JIT::default();
+    let mut running = false;
+    let mut step_jit =
+        async |mut pipeline: EmuDynarecPipeline| -> color_eyre::Result<EmuDynarecPipeline> {
+            {
+                let mut emu = emu.get_mut();
+                pipeline = pipeline.step(&mut emu, &mut jit)?;
+            }
+            if let Some(fetch) = pipeline.as_fetch() {
+                emu_info_tx
+                    .send_async(EmuInfo::Fetch(fetch.clone()))
+                    .await?;
+            }
+            emu_info_tx
+                .send_async(EmuInfo::PipelineUpdate(pipeline.report()))
+                .await?;
+            Ok(pipeline)
+        };
+
     loop {
-        let emu = emu.clone();
         // if let Ok(new_config) = config_rx.try_recv() {
         //     config = new_config;
         // }
-        match emu_cmd_rx.recv_async().await {
-            Ok(EmuCmd::StepJit) => {
-                {
-                    let mut emu = emu.get_mut();
-                    pipeline = pipeline.step(&mut emu, &mut jit)?;
+        for cmd in emu_cmd_rx.try_iter() {
+            match cmd {
+                EmuCmd::StepJit => {
+                    pipeline = step_jit(pipeline).await?;
                 }
-                if let Some(fetch) = pipeline.as_fetch() {
-                    emu_info_tx
-                        .send_async(EmuInfo::Fetch(fetch.clone()))
-                        .await?;
+                EmuCmd::Run => {
+                    running = true;
                 }
-                emu_info_tx.send(EmuInfo::PipelineUpdate(pipeline.report()))?;
-            }
-            Ok(EmuCmd::Run) =>
-            {
-                #[allow(clippy::unwrap_used)]
-                loop {
-                    {
-                        let mut emu = emu.get_mut();
-                        pipeline = pipeline.step(&mut emu, &mut jit)?;
-                    }
-                    if let Some(fetch) = pipeline.as_fetch() {
-                        emu_info_tx
-                            .send_async(EmuInfo::Fetch(fetch.clone()))
-                            .await?;
-                    }
-                    emu_info_tx
-                        .send_async(EmuInfo::PipelineUpdate(pipeline.report()))
-                        .await?;
-                    {
-                        let emu = emu.get();
-                        if breakpoints.contains(&emu.cpu.pc) {
-                            break;
-                        }
-                    }
-                    smol::future::yield_now().await;
+                EmuCmd::Pause => {
+                    running = false;
                 }
-            }
-            Ok(EmuCmd::AddBreakpoint(addr)) => {
-                breakpoints.insert(addr);
-            }
-            Err(err) => {
-                panic!("{}", err);
-            }
+                EmuCmd::AddBreakpoint(addr) => {
+                    breakpoints.insert(addr);
+                }
+            };
         }
+        if running {
+            pipeline = step_jit(pipeline).await?;
+        }
+        smol::future::yield_now().await;
     }
 }
 
@@ -788,9 +781,7 @@ impl Component for CpuInspector {
         let [summary_area, tabs_area] =
             Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(area);
 
-        #[allow(clippy::unwrap_used)]
-        Paragraph::new(format!("PC: 0x{:08x}", emu.read().unwrap().cpu.pc))
-            .render(summary_area, buf);
+        Paragraph::new(format!("PC: 0x{:08x}", emu.get().cpu.pc)).render(summary_area, buf);
 
         let [tabs_area, tabs_inner] =
             Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(tabs_area);
@@ -863,26 +854,26 @@ impl<'a> Component for CpuTab<'a> {
     }
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::ComponentState) -> Result<()> {
-        #[allow(clippy::unwrap_used)]
-        let emu = self.0.read().unwrap();
-        let rows = emu
-            .cpu
-            .gpr
-            .iter()
-            .enumerate()
-            .filter(|(_, value)| if !state.show_zero { **value != 0 } else { true })
-            .map(|(reg, value)| {
-                Row::new([
-                    Cow::Owned(format!("${}", reg_str(reg as u8))),
-                    Cow::Borrowed(hex(*value)),
-                ])
-                .style(if *value == 0 {
-                    Style::new().dim()
-                } else {
-                    Style::new()
+        let rows = {
+            let emu = self.0.get();
+            emu.cpu
+                .gpr
+                .iter()
+                .enumerate()
+                .filter(|(_, value)| if !state.show_zero { **value != 0 } else { true })
+                .map(|(reg, value)| {
+                    Row::new([
+                        Cow::Owned(format!("${}", reg_str(reg as u8))),
+                        Cow::Borrowed(hex(*value)),
+                    ])
+                    .style(if *value == 0 {
+                        Style::new().dim()
+                    } else {
+                        Style::new()
+                    })
                 })
-            })
-            .collect::<Vec<_>>();
+                .collect::<Vec<_>>()
+        };
 
         if rows.is_empty() {
             let block = Block::bordered()
@@ -966,6 +957,9 @@ impl<'a> Component for Actions<'a> {
             match (&state.chord, event) {
                 (ActionChord::None, event::Event::Key(key!(Char('n'), Press))) => {
                     self.0.send(EmuCmd::StepJit)?;
+                }
+                (ActionChord::None, event::Event::Key(key!(Char('p'), Press))) => {
+                    self.0.send(EmuCmd::Pause)?;
                 }
                 (ActionChord::None, event::Event::Key(key!(Char('r'), Press))) => {
                     self.0.send(EmuCmd::Run)?;

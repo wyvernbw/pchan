@@ -1,8 +1,5 @@
 use std::iter::Peekable;
 
-use pchan_utils::IgnorePoison;
-use smol::lock::{RwLockReadGuard, RwLockWriteGuard};
-
 pub struct InsertBetween<I, F, G, T>
 where
     I: Iterator<Item = T>,
