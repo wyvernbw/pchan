@@ -5,7 +5,7 @@ use crate::dynarec::prelude::*;
 use super::{EmitCtx, OpCode, PrimeOp};
 use crate::load;
 
-#[derive(Debug, Clone, Copy, Hash)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct LB {
     rt: u8,
     rs: u8,

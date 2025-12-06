@@ -2,7 +2,7 @@ use std::fmt::Display;
 
 use crate::dynarec::prelude::*;
 
-#[derive(Debug, Clone, Copy, Hash)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct LWCn {
     pub cop: u8,
     pub rt: u8,

@@ -1,20 +1,25 @@
 use std::{
+    cell::Cell,
     collections::{HashMap, HashSet},
+    hash::Hash,
     mem::offset_of,
     ptr,
     sync::Arc,
 };
 
+use color_eyre::owo_colors::OwoColorize;
 use cranelift::codegen::ir::{self, immediates::Offset32};
 use cranelift_codegen::{
     gimli::{self, RunTimeEndian, write::FrameTable},
     isa::unwind::UnwindInfo,
 };
+use rapidhash::fast::RapidHasher;
+use std::hash::Hasher;
 use tracing::{Instrument, Level, enabled, instrument};
 
 use crate::{
     Emu, FnBuilderExt,
-    cpu::{Cop0, Cpu, REG_STR, Reg},
+    cpu::{Cop0, Cpu, REG_STR, Reg, ops::DecodedOp},
     cranelift_bs::*,
     dynarec::{CacheUpdates, EntryCache},
     io::IO,
@@ -73,12 +78,22 @@ impl JitCache {
         )
     }
 
-    pub fn use_cached_function(&self, address: u32) -> Option<&BlockFn> {
-        if let Some(function) = self.fn_map.get(address) {
-            Some(function)
-        } else {
-            None
-        }
+    pub fn use_cached_function(
+        &self,
+        address: u32,
+        fetched_ops: &[DecodedOp],
+    ) -> Result<&BlockFn, u64> {
+        let hash_ops = hash_ops(fetched_ops);
+        self.fn_map
+            .get(address)
+            .and_then(|blockfn| {
+                if hash_ops == blockfn.hash {
+                    Some(blockfn)
+                } else {
+                    None
+                }
+            })
+            .ok_or(hash_ops)
     }
 }
 
@@ -319,6 +334,12 @@ impl Default for JIT {
     }
 }
 
+pub fn hash_ops(ops: &[DecodedOp]) -> u64 {
+    let mut hasher = RapidHasher::default();
+    ops.hash(&mut hasher);
+    hasher.finish()
+}
+
 #[bon::bon]
 impl JIT {
     pub const FN_PARAMS: usize = 2;
@@ -328,12 +349,13 @@ impl JIT {
         self.module.target_config().pointer_type()
     }
 
-    pub fn get_func(&self, id: FuncId, func: Function) -> BlockFn {
+    pub fn get_func(&self, id: FuncId, func: Function, hash: u64) -> BlockFn {
         let code_ptr = self.module.get_finalized_function(id);
         let ptr = unsafe { std::mem::transmute::<*const u8, BlockFnPtr>(code_ptr) };
         BlockFn {
             fn_ptr: ptr,
             func: Arc::new(func),
+            hash,
         }
     }
 
@@ -414,6 +436,7 @@ impl JIT {
         &mut self,
         func_id: FuncId,
         func: Function,
+        hash: u64,
     ) -> Result<BlockFn, Box<ModuleError>> {
         self.ctx.func = func.clone();
         if let Err(err) = self.ctx.replace_redundant_loads() {
@@ -495,7 +518,7 @@ impl JIT {
         self.module.clear_context(&mut self.ctx);
         self.ctx.clear();
 
-        let res = self.get_func(func_id, func);
+        let res = self.get_func(func_id, func, hash);
         Ok(res)
     }
 
@@ -881,11 +904,12 @@ type BlockFnPtr = fn(*mut Cpu, *mut Memory);
 /// - will update cpu's delta clock
 /// - may trigger interrupts
 #[derive(derive_more::Debug, Clone)]
-#[debug("{:?}", self.fn_ptr)]
+#[debug("{:?}:{}", self.fn_ptr, self.hash)]
 pub struct BlockFn {
     pub fn_ptr: BlockFnPtr,
     #[debug(skip)]
     pub func: Arc<Function>,
+    pub hash: u64,
 }
 
 type BlockFnArgs<'a> = (&'a mut Emu, bool);

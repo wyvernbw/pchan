@@ -2,7 +2,7 @@ use crate::memory::ext;
 use crate::{FnBuilderExt, dynarec::prelude::*};
 use std::fmt::Display;
 
-#[derive(Debug, Clone, Copy, Hash)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 #[allow(clippy::upper_case_acronyms)]
 pub struct XORI {
     rs: u8,

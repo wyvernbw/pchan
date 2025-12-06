@@ -406,7 +406,7 @@ pub trait Op: Sized + Display {
     }
 }
 
-#[derive(Debug, Clone, Copy, Hash)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct NOP;
 
 impl Op for NOP {
@@ -442,7 +442,7 @@ impl Display for NOP {
     }
 }
 
-#[derive(Debug, Clone, Copy, Hash)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct HaltBlock;
 
 impl Display for HaltBlock {
@@ -497,7 +497,7 @@ impl TryFrom<OpCode> for HaltBlock {
     }
 }
 
-#[derive(Debug, Clone, Copy, strum::Display, Hash)]
+#[derive(Debug, Clone, Copy, strum::Display, PartialEq, Eq, Hash)]
 #[enum_dispatch]
 #[allow(clippy::upper_case_acronyms)]
 pub enum DecodedOp {
@@ -615,7 +615,7 @@ pub enum DecodedOp {
     ILLEGAL(ILLEGAL),
 }
 
-#[derive(Debug, Clone, Copy, derive_more::Display, Hash)]
+#[derive(Debug, Clone, Copy, derive_more::Display, Hash, PartialEq, Eq)]
 pub struct ILLEGAL;
 
 impl Op for ILLEGAL {

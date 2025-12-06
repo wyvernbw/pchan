@@ -1,6 +1,6 @@
 use crate::dynarec::prelude::*;
 
-#[derive(Debug, Clone, Copy, derive_more::Display, Hash)]
+#[derive(Debug, Clone, Copy, derive_more::Display, Hash, PartialEq, Eq)]
 #[display("div ${},${}", reg_str(self.rs), reg_str(self.rt))]
 pub struct DIV {
     rs: u8,

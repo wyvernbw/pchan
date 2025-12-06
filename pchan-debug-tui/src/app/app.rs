@@ -1017,8 +1017,8 @@ impl<'a> Component for Actions<'a> {
 
         let progress = [
             "ready",
-            "try cache",
             "fetched",
+            "try cache",
             "emitted",
             "called",
             "cached",

@@ -1,7 +1,7 @@
 use crate::dynarec::prelude::*;
 
 /// FIXME: might require the imm20 field
-#[derive(Debug, Clone, Copy, derive_more::Display, Hash)]
+#[derive(Debug, Clone, Copy, derive_more::Display, Hash, PartialEq, Eq)]
 #[display("break")]
 pub struct BREAK;
 

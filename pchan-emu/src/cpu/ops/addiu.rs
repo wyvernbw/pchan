@@ -6,7 +6,7 @@ use crate::memory::ext;
 
 use super::PrimeOp;
 
-#[derive(Debug, Clone, Copy, Hash)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 #[allow(clippy::upper_case_acronyms)]
 pub struct ADDIU {
     rs: u8,

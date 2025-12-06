@@ -2,7 +2,7 @@ use std::fmt::Display;
 
 use crate::dynarec::prelude::*;
 
-#[derive(Debug, Clone, Copy, Hash)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 #[allow(clippy::upper_case_acronyms)]
 pub struct JR {
     pub rs: u8,

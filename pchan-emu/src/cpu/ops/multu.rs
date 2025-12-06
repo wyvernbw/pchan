@@ -1,7 +1,7 @@
 use crate::dynarec::prelude::*;
 use std::fmt::Display;
 
-#[derive(Debug, Clone, Copy, Hash)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct MULTU {
     rs: u8,
     rt: u8,

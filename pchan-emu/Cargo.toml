@@ -22,6 +22,7 @@ panic-message = "0.3.0"
 pchan-macros = { workspace = true }
 pchan-utils = { workspace = true }
 petgraph = "0.8.2"
+rapidhash = { version = "4.1.1", features = ["nightly"] }
 rayon = "1.11.0"
 slab.workspace = true
 strum = { version = "0.27.2", features = ["derive"] }

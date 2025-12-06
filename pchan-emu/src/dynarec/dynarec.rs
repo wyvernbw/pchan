@@ -2,7 +2,7 @@ use crate::{
     IntoInst,
     cpu::Reg,
     cranelift_bs::*,
-    dynarec::sparse_queue::SparseQueue,
+    dynarec::{pipeline::EmuDynarecPipeline, sparse_queue::SparseQueue},
     jit::{FuncRefTable, FunctionMap},
     memory::ext,
 };
@@ -92,21 +92,23 @@ impl EntryCache {
     }
 }
 
+#[derive(Debug, Clone)]
 pub enum TryCacheSummary {
     Success,
-    Fail,
+    Fail(u64),
 }
 
 // #[bon]
 impl Emu {
-    pub fn try_cache_call(&mut self, address: u32) -> TryCacheSummary {
-        // TODO: implement 128bit hash
-        let cached = self.jit_cache.use_cached_function(address);
-        if let Some(cached) = cached.cloned() {
-            cached(self, false);
-            TryCacheSummary::Success
-        } else {
-            TryCacheSummary::Fail
+    pub fn try_cache_call(&mut self, address: u32, fetched_ops: &[DecodedOp]) -> TryCacheSummary {
+        // DONE: implement 128bit hash
+        let cached = self.jit_cache.use_cached_function(address, fetched_ops);
+        match cached.cloned() {
+            Ok(cached) => {
+                cached(self, false);
+                TryCacheSummary::Success
+            }
+            Err(hash) => TryCacheSummary::Fail(hash),
         }
     }
 }
@@ -137,45 +139,8 @@ impl Emu {
     }
     #[instrument(name = "dynarec", skip_all, fields(pc = %hex(self.cpu.pc)))]
     pub fn step_jit(&mut self, jit: &mut JIT) -> color_eyre::Result<()> {
-        let initial_address = self.cpu.pc;
-        let ptr_type = jit.pointer_type();
-
-        // try cache first
-        let cached = self.jit_cache.use_cached_function(initial_address);
-        if let Some(cached) = cached.cloned() {
-            cached(self, false);
-            tracing::info!("{:?} fn invoked", cached.fn_ptr);
-            return Ok(());
-        }
-
-        // collect blocks in function
-        let mut fetch_result = self.fetch(FetchParams::builder().pc(initial_address).build())?;
-
-        let (func_id, mut func) = jit.create_function(initial_address)?;
-        let func_ref_table = jit.create_func_ref_table(&mut func);
-        let mut fn_builder = jit.create_fn_builder(&mut func);
-
-        self.fetch_post_process_pass()
-            .fn_builder(&mut fn_builder)
-            .fetch_result(&mut fetch_result)
-            .call();
-
-        self.emit_function()
-            .ptr_type(ptr_type)
-            .fetch_result(fetch_result)
-            .fn_builder(&mut fn_builder)
-            .func_ref_table(&func_ref_table)
-            .call();
-
-        Self::destroy_fn_builder(fn_builder);
-        let function = jit.finish_function(func_id, func.clone())?;
-
-        tracing::info!("{:?} fn compiled", function.fn_ptr);
-
-        function(self, true);
-
-        self.jit_cache.fn_map.insert(initial_address, function);
-
+        let pipeline = EmuDynarecPipeline::from_emu(self);
+        pipeline.run_once(self, jit)?;
         Ok(())
     }
 
@@ -184,18 +149,24 @@ impl Emu {
         let initial_address = self.cpu.pc;
         let ptr_type = jit.pointer_type();
 
+        let mut fetch = self.fetch(FetchParams::builder().pc(initial_address).build())?;
+
         // try cache first
-        let cached = self.jit_cache.use_cached_function(initial_address);
-        if let Some(cached) = cached.cloned() {
-            cached(self, false);
-            tracing::info!("{:?} fn invoked", cached.fn_ptr);
-            return Ok(S::summarize(
-                SummarizeDeps::builder().cpu(&self.cpu).build(),
-            ));
-        }
+        let cached = self
+            .jit_cache
+            .use_cached_function(initial_address, &fetch.decoded_ops);
+        let hash = match cached.cloned() {
+            Ok(cached) => {
+                cached(self, false);
+                tracing::info!("{:?} fn invoked", cached.fn_ptr);
+                return Ok(S::summarize(
+                    SummarizeDeps::builder().cpu(&self.cpu).build(),
+                ));
+            }
+            Err(hash) => hash,
+        };
 
         // collect blocks in function
-        let mut fetch_result = self.fetch(FetchParams::builder().pc(initial_address).build())?;
 
         let (func_id, mut func) = jit.create_function(initial_address)?;
         let func_ref_table = jit.create_func_ref_table(&mut func);
@@ -203,12 +174,12 @@ impl Emu {
 
         self.fetch_post_process_pass()
             .fn_builder(&mut fn_builder)
-            .fetch_result(&mut fetch_result)
+            .fetch_result(&mut fetch)
             .call();
 
         self.emit_function()
             .ptr_type(ptr_type)
-            .fetch_result(fetch_result.clone())
+            .fetch_result(fetch.clone())
             .fn_builder(&mut fn_builder)
             .func_ref_table(&func_ref_table)
             .call();
@@ -217,11 +188,11 @@ impl Emu {
         let deps = SummarizeDeps::builder()
             .function(&func)
             .cpu(&self.cpu)
-            .fetch_summary(&fetch_result)
+            .fetch_summary(&fetch)
             .build();
         let summary = S::summarize(deps);
 
-        let function = jit.finish_function(func_id, func)?;
+        let function = jit.finish_function(func_id, func, hash)?;
 
         tracing::info!("{:?} fn compiled", function.fn_ptr);
 
@@ -752,10 +723,11 @@ impl Emu {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(derive_more::Debug, Clone)]
 pub struct FetchSummary {
     pub cfg: Graph<BasicBlock, ()>,
     pub entry: NodeIndex,
+    #[debug("{} ops", decoded_ops.len())]
     pub decoded_ops: Vec<DecodedOp>,
 }
 

@@ -2,7 +2,7 @@ use crate::dynarec::prelude::*;
 
 use std::fmt::Display;
 
-#[derive(Debug, Clone, Copy, Hash)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct RFE;
 
 impl Display for RFE {

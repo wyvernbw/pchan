@@ -1,7 +1,7 @@
 use crate::{cpu::reg_str, dynarec::prelude::*};
 use std::fmt::Display;
 
-#[derive(Debug, Clone, Copy, Hash)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct MTLO {
     rs: u8,
 }

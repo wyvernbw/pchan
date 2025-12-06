@@ -5,7 +5,7 @@ use crate::dynarec::prelude::*;
 
 use super::PrimeOp;
 
-#[derive(Debug, Clone, Copy, Hash)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 #[allow(clippy::upper_case_acronyms)]
 pub struct ADDU {
     rd: u8,

@@ -2,7 +2,7 @@ use std::fmt::Display;
 
 use crate::dynarec::prelude::*;
 
-#[derive(Debug, Clone, Copy, Hash)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct LUI {
     rt: u8,
     imm: i16,

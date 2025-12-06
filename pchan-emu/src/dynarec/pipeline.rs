@@ -9,13 +9,29 @@ pub struct EmuBundle {
     jit: JIT,
 }
 
+#[derive(Debug, Clone)]
 pub enum EmuDynarecPipeline {
     Uninit,
-    Init { pc: u32 },
-    TriedCache { pc: u32, result: TryCacheSummary },
-    Fetched { pc: u32, fetch: FetchSummary },
-    Emitted { pc: u32, function: BlockFn },
-    Called { pc: u32, function: BlockFn },
+    Init {
+        pc: u32,
+    },
+    Fetched {
+        pc: u32,
+        fetch: FetchSummary,
+    },
+    TriedCache {
+        pc: u32,
+        fetch: FetchSummary,
+        result: TryCacheSummary,
+    },
+    Emitted {
+        pc: u32,
+        function: BlockFn,
+    },
+    Called {
+        pc: u32,
+        function: BlockFn,
+    },
     Cached,
 }
 
@@ -43,8 +59,19 @@ impl EmuDynarecPipeline {
         match self {
             EmuDynarecPipeline::Uninit => Ok(EmuDynarecPipeline::Uninit),
             EmuDynarecPipeline::Init { pc } => {
-                let call = emu.try_cache_call(pc);
-                Ok(EmuDynarecPipeline::TriedCache { pc, result: call })
+                let fetch_result = { emu.fetch(FetchParams::builder().pc(pc).build()).unwrap() };
+                Ok(Self::Fetched {
+                    pc,
+                    fetch: fetch_result,
+                })
+            }
+            EmuDynarecPipeline::Fetched { pc, fetch } => {
+                let call = emu.try_cache_call(pc, &fetch.decoded_ops);
+                Ok(EmuDynarecPipeline::TriedCache {
+                    pc,
+                    fetch,
+                    result: call,
+                })
             }
             EmuDynarecPipeline::TriedCache {
                 result: TryCacheSummary::Success,
@@ -52,18 +79,9 @@ impl EmuDynarecPipeline {
             } => Ok(EmuDynarecPipeline::from_emu(emu)),
             EmuDynarecPipeline::TriedCache {
                 pc,
-                result: TryCacheSummary::Fail,
+                result: TryCacheSummary::Fail(hash),
+                fetch,
             } => {
-                let fetch_result = {
-                    emu.fetch(FetchParams::builder().pc(emu.cpu.pc).build())
-                        .unwrap()
-                };
-                Ok(Self::Fetched {
-                    pc,
-                    fetch: fetch_result,
-                })
-            }
-            EmuDynarecPipeline::Fetched { pc, fetch } => {
                 let ptr_type = jit.pointer_type();
                 let (func_id, mut func) = jit.create_function(pc)?;
                 let func_ref_table = jit.create_func_ref_table(&mut func);
@@ -77,7 +95,7 @@ impl EmuDynarecPipeline {
                     .call();
 
                 Emu::destroy_fn_builder(fn_builder);
-                let function = jit.finish_function(func_id, func.clone())?;
+                let function = jit.finish_function(func_id, func.clone(), hash)?;
 
                 tracing::info!("{:?} fn compiled", function.fn_ptr);
 
@@ -94,6 +112,12 @@ impl EmuDynarecPipeline {
             EmuDynarecPipeline::Cached => Ok(Self::from_emu(emu)),
         }
     }
+    pub fn run_once(mut self, emu: &mut Emu, jit: &mut JIT) -> color_eyre::Result<Self> {
+        while self.progress() != Self::max_progress() {
+            self = self.step(emu, jit)?;
+        }
+        Ok(self)
+    }
     pub fn run(mut self, emu: &mut Emu, jit: &mut JIT) -> color_eyre::Result<Self> {
         loop {
             self = self.step(emu, jit)?;
@@ -103,8 +127,8 @@ impl EmuDynarecPipeline {
         match self {
             EmuDynarecPipeline::Uninit => 0,
             EmuDynarecPipeline::Init { .. } => 0,
-            EmuDynarecPipeline::TriedCache { .. } => 1,
-            EmuDynarecPipeline::Fetched { .. } => 2,
+            EmuDynarecPipeline::Fetched { .. } => 1,
+            EmuDynarecPipeline::TriedCache { .. } => 2,
             EmuDynarecPipeline::Emitted { .. } => 3,
             EmuDynarecPipeline::Called { .. } => 4,
             EmuDynarecPipeline::Cached => 5,
@@ -156,7 +180,7 @@ impl EmuDynarecPipeline {
                 next: "restart",
             },
             EmuDynarecPipeline::TriedCache {
-                result: TryCacheSummary::Fail,
+                result: TryCacheSummary::Fail(_),
                 ..
             } => EmuDynarecPipelineReport {
                 progress,
@@ -184,5 +208,63 @@ impl EmuDynarecPipeline {
                 next: "restart",
             },
         }
+    }
+}
+
+#[cfg(test)]
+pub mod tests {
+    use pretty_assertions::{assert_eq, assert_matches};
+
+    use crate::{
+        Emu,
+        dynarec::{TryCacheSummary, pipeline::EmuDynarecPipeline},
+        jit::{JIT, hash_ops},
+    };
+
+    #[test]
+    fn test_hash() -> color_eyre::Result<()> {
+        let mut emu = Emu::default();
+        let mut jit = JIT::default();
+        emu.load_bios()?;
+        emu.jump_to_bios();
+        let mut pipeline = EmuDynarecPipeline::from_emu(&emu);
+        pipeline = pipeline.step(&mut emu, &mut jit)?;
+        let fetched = pipeline.clone();
+
+        assert_matches!(fetched, EmuDynarecPipeline::Fetched { .. });
+        let f = fetched.as_fetch().unwrap();
+        let hash1a = hash_ops(&f.decoded_ops);
+        let hash1b = hash_ops(&f.decoded_ops);
+        assert_eq!(hash1a, hash1b, "Hashing same data should be deterministic!");
+
+        pipeline = pipeline.run_once(&mut emu, &mut jit)?;
+        emu.jump_to_bios();
+        pipeline = pipeline
+            .step(&mut emu, &mut jit)?
+            .step(&mut emu, &mut jit)?
+            .step(&mut emu, &mut jit)?;
+        assert_matches!(pipeline, EmuDynarecPipeline::TriedCache { .. });
+
+        assert_matches!(&fetched, pipeline);
+        if let (
+            EmuDynarecPipeline::Fetched { fetch: fetch_1, .. },
+            EmuDynarecPipeline::TriedCache { fetch: fetch_2, .. },
+        ) = (&fetched, &pipeline)
+        {
+            assert_eq!(fetch_1.decoded_ops, fetch_2.decoded_ops);
+            assert_eq!(
+                hash_ops(&fetch_1.decoded_ops),
+                hash_ops(&fetch_2.decoded_ops)
+            );
+        }
+        assert_matches!(
+            pipeline,
+            EmuDynarecPipeline::TriedCache {
+                result: TryCacheSummary::Success,
+                ..
+            }
+        );
+
+        Ok(())
     }
 }
