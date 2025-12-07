@@ -301,6 +301,9 @@ async fn emu_task(
         }
         if running {
             pipeline = step_jit(pipeline).await?;
+            if breakpoints.contains(&emu.get().cpu.pc) {
+                running = false;
+            }
         }
         smol::future::yield_now().await;
     }
