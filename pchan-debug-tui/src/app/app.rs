@@ -130,6 +130,10 @@ pub fn run(config: AppConfig, mut terminal: DefaultTerminal) -> Result<()> {
                         table_state: TableState::default(),
                         show_zero: true,
                     },
+                    cop0_tab_state: Cop0TabState {
+                        table_state: TableState::default(),
+                        show_zero: true,
+                    },
                 },
                 ops_list_state: OpsListState::default(),
                 emu: None,
@@ -710,6 +714,7 @@ pub struct CpuInspectorState {
     emu: Option<Arc<RwLock<Emu>>>,
     current_tab: CpuInspectorTab,
     cpu_tab_state: CpuTabState,
+    cop0_tab_state: Cop0TabState,
 }
 
 impl Focus for CpuInspector {
@@ -764,8 +769,10 @@ impl Component for CpuInspector {
             CpuInspectorTab::Cpu => {
                 CpuTab(emu).handle_input(event, &mut state.cpu_tab_state, area)?;
             }
-            CpuInspectorTab::Cop0 => todo!(),
-            CpuInspectorTab::Gte => todo!(),
+            CpuInspectorTab::Cop0 => {
+                Cop0Tab(emu).handle_input(event, &mut state.cop0_tab_state, area)?
+            }
+            CpuInspectorTab::Gte => {}
         }
         Ok(())
     }
@@ -802,8 +809,10 @@ impl Component for CpuInspector {
             CpuInspectorTab::Cpu => {
                 CpuTab(emu).render(tabs_inner, buf, &mut state.cpu_tab_state)?
             }
-            CpuInspectorTab::Cop0 => todo!(),
-            CpuInspectorTab::Gte => todo!(),
+            CpuInspectorTab::Cop0 => {
+                Cop0Tab(emu).render(tabs_inner, buf, &mut state.cop0_tab_state)?
+            }
+            CpuInspectorTab::Gte => {}
         }
 
         Ok(())
@@ -905,6 +914,92 @@ impl<'a> Component for CpuTab<'a> {
                 )
                 .header(Row::new(["レジスタ", "Value"])),
             area,
+            buf,
+            &mut state.table_state,
+        );
+
+        Ok(())
+    }
+}
+
+pub struct Cop0Tab<'a>(&'a RwLock<Emu>);
+pub struct Cop0TabState {
+    table_state: TableState,
+    show_zero: bool,
+}
+
+impl<'a> Component for Cop0Tab<'a> {
+    type ComponentState = Cop0TabState;
+
+    fn handle_input(
+        &mut self,
+        event: event::Event,
+        state: &mut Self::ComponentState,
+        _: Rect,
+    ) -> Result<Self::ComponentSummary> {
+        match event {
+            event::Event::Key(key!(Char('j'), Press)) => {
+                state.table_state.select_next();
+            }
+            event::Event::Key(key!(Char('k'), Press)) => {
+                state.table_state.select_previous();
+            }
+            event::Event::Key(key!(Char('s'), Press)) => {
+                state.show_zero = !state.show_zero;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::ComponentState) -> Result<()> {
+        let [table, value] =
+            Layout::vertical([Constraint::Min(2), Constraint::Length(3)]).areas(area);
+        let rows = {
+            let emu = self.0.get();
+            emu.cpu
+                .cop0
+                .reg
+                .iter()
+                .enumerate()
+                .filter(|(_, value)| if !state.show_zero { **value != 0 } else { true })
+                .map(|(reg, value)| {
+                    Row::new([
+                        Cow::Owned(format!("$cop0reg{}", reg)),
+                        Cow::Borrowed(hex(*value)),
+                    ])
+                    .style(if *value == 0 {
+                        Style::new().dim()
+                    } else {
+                        Style::new()
+                    })
+                })
+                .collect::<Vec<_>>()
+        };
+
+        if rows.is_empty() {
+            let block = Block::bordered()
+                .border_type(BorderType::Rounded)
+                .title_bottom("<s> Show zero registers");
+            let block_inner = block.inner(area);
+            block.render(area, buf);
+            Paragraph::new("ゼロ ー All registers are zero.")
+                .wrap(Wrap { trim: false })
+                .centered()
+                .render(centered(block_inner, Constraint::Max(2)), buf);
+            return Ok(());
+        }
+
+        StatefulWidget::render(
+            Table::new(rows, [Constraint::Max(8), Constraint::Fill(1)])
+                .row_highlight_style(Style::new().black().on_yellow())
+                .block(
+                    Block::bordered()
+                        .border_type(BorderType::Rounded)
+                        .title_bottom("<s> Show zero registers"),
+                )
+                .header(Row::new(["レジスタ", "Value"])),
+            table,
             buf,
             &mut state.table_state,
         );
