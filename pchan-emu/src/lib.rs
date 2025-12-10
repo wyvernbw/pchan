@@ -36,12 +36,15 @@
 // allow unused variables in tests to supress the setup tracing warnings
 #![cfg_attr(test, allow(unused_variables))]
 
-use std::simd::{LaneCount, SimdElement, SupportedLaneCount};
+use std::{
+    collections::HashMap,
+    simd::{LaneCount, SimdElement, SupportedLaneCount},
+};
 
 use crate::{
     bootloader::Bootloader,
     cpu::Cpu,
-    dynarec::prelude::PureInstBuilder,
+    dynarec::{FetchSummary, prelude::PureInstBuilder},
     jit::JitCache,
     memory::{Chunk, Memory},
 };
@@ -92,8 +95,11 @@ pub struct Emu {
     pub mem: Memory,
     pub cpu: Cpu,
     pub jit_cache: JitCache,
+    pub inst_cache: InstCache,
     pub boot: Bootloader,
 }
+
+pub type InstCache = HashMap<u32, FetchSummary>;
 
 use memory::Extend;
 
@@ -106,7 +112,7 @@ impl Emu {
     }
 
     pub fn write<T: Copy>(&mut self, address: u32, value: T) {
-        self.mem.write(&mut self.cpu, address, value);
+        self.mem.write(&self.cpu, address, value);
     }
 
     pub fn write_many<T: SimdElement>(&mut self, address: u32, values: &[T])

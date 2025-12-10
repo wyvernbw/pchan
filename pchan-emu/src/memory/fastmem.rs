@@ -14,11 +14,11 @@ const PAGE_SIZE: usize = kb(64);
 type PageTable = Box<[Option<u32>; PAGE_COUNT]>;
 
 pub struct Lut {
-    read: PageTable,
-    write: PageTable,
+    pub read: PageTable,
+    pub write: PageTable,
 }
 
-static LUT: LazyLock<Lut> = LazyLock::new(generate_page_tables);
+pub static LUT: LazyLock<Lut> = LazyLock::new(generate_page_tables);
 
 fn generate_page_tables() -> Lut {
     let mut table_read: PageTable = Box::new([None; PAGE_COUNT]);
@@ -78,6 +78,7 @@ fn generate_page_tables() -> Lut {
 }
 
 impl Memory {
+    #[inline(always)]
     pub fn util_fast_map_address(address: u32) -> Option<u32> {
         let page = address >> 16;
         let offset = address & 0xFFFF;

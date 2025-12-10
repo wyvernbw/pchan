@@ -1,5 +1,4 @@
 use std::{
-    cell::Cell,
     collections::{HashMap, HashSet},
     hash::Hash,
     mem::offset_of,
@@ -7,7 +6,6 @@ use std::{
     sync::Arc,
 };
 
-use color_eyre::owo_colors::OwoColorize;
 use cranelift::codegen::ir::{self, immediates::Offset32};
 use cranelift_codegen::{
     gimli::{self, RunTimeEndian, write::FrameTable},
@@ -23,7 +21,7 @@ use crate::{
     cranelift_bs::*,
     dynarec::{CacheUpdates, EntryCache},
     io::IO,
-    memory::Memory,
+    memory::{self, Memory, fastmem::LUT},
 };
 
 #[derive(derive_more::Debug)]
@@ -53,29 +51,11 @@ pub struct JIT {
 #[derive(derive_more::Debug, Default)]
 pub struct JitCache {
     pub fn_map: FunctionMap,
-    pub dirty_pages: HashSet<FunctionPage>,
 }
 
 impl JitCache {
     pub fn clear_cache(&mut self) {
-        self.dirty_pages.clear();
-        self.fn_map.0.clear();
-    }
-
-    pub fn apply_dirty_pages(&mut self, address: u32) {
-        let page = FunctionPage::new(address);
-        if self.dirty_pages.remove(&page)
-            && let Some(page) = self.fn_map.0.get_mut(&page)
-        {
-            page.clear();
-        }
-    }
-
-    pub fn cache_usage(&self) -> (usize, usize) {
-        (
-            self.fn_map.0.len(),
-            self.fn_map.0.values().map(|page| page.len()).sum(),
-        )
+        self.fn_map = FunctionMap::default();
     }
 
     pub fn use_cached_function(
@@ -97,33 +77,28 @@ impl JitCache {
     }
 }
 
-#[derive(derive_more::Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Hash)]
-#[debug("Page#{}", self.0)]
-pub struct FunctionPage(u32);
+/// TODO: make it store a module function ref as well
+#[derive(Debug, Clone)]
+pub struct FunctionMap(Box<[Option<BlockFn>]>);
 
-impl FunctionPage {
-    const SHIFT: u32 = 8;
-
-    pub fn new(address: u32) -> Self {
-        Self(address >> Self::SHIFT)
+impl Default for FunctionMap {
+    fn default() -> Self {
+        Self(vec![None; memory::mb(32)].into_boxed_slice())
     }
 }
 
-/// TODO: make it store a module function ref as well
-#[derive(Debug, Clone, Default)]
-pub struct FunctionMap(HashMap<FunctionPage, HashMap<u32, BlockFn>>);
-
 impl FunctionMap {
-    pub fn insert(&mut self, address: u32, func: BlockFn) -> Option<BlockFn> {
-        let page = FunctionPage::new(address);
-        self.0.entry(page).or_default().insert(address, func)
+    pub fn insert(&mut self, address: u32, func: BlockFn) {
+        let idx = Memory::util_fast_map_address(address).expect("address not executable");
+        self.0[idx as usize] = Some(func);
     }
     pub fn get(&self, address: u32) -> Option<&BlockFn> {
-        let page = FunctionPage::new(address);
-        self.0.get(&page).and_then(|map| map.get(&address))
+        let idx = Memory::util_fast_map_address(address).expect("address not executable");
+        self.0[idx as usize].as_ref()
     }
-    pub fn functions(&self) -> impl Iterator<Item = (&u32, &BlockFn)> {
-        self.0.values().flat_map(|page| page.iter())
+    pub fn get_mut(&mut self, address: u32) -> Option<&mut BlockFn> {
+        let idx = Memory::util_fast_map_address(address).expect("address not executable");
+        self.0[idx as usize].as_mut()
     }
 }
 
@@ -164,7 +139,10 @@ impl Default for JIT {
         // Set up JIT
         let mut flags = settings::builder();
         flags.set("opt_level", "none").unwrap();
-        flags.set("unwind_info", "true").unwrap();
+        flags.set("unwind_info", "false").unwrap();
+        flags.set("enable_verifier", "false").unwrap();
+        flags.set("enable_pcc", "false").unwrap();
+        flags.set("machine_code_cfg_info", "false").unwrap();
 
         let isa = cranelift::native::builder()
             .unwrap()
@@ -368,6 +346,11 @@ impl JIT {
         &mut self,
         address: u32,
     ) -> Result<(FuncId, Function), Box<ModuleError>> {
+        let want_disasm = self.ctx.want_disasm;
+        self.module.clear_context(&mut self.ctx);
+        self.ctx.clear();
+        self.ctx.want_disasm = want_disasm;
+
         let sig = self.create_signature();
         let func_id = self.module.declare_function(
             &format!("pc_0x{:08X}:{}", address, self.func_idx),
@@ -447,77 +430,76 @@ impl JIT {
 
         self.module.finalize_definitions()?;
 
-        unsafe extern "C" {
-            // libunwind import
-            fn __register_frame(fde: *const u8);
-        }
+        if enabled!(Level::TRACE) {
+            unsafe extern "C" {
+                // libunwind import
+                fn __register_frame(fde: *const u8);
+            }
 
-        let compiled_code = &self.ctx.compiled_code().unwrap();
-        let unwind_info = compiled_code.create_unwind_info(self.module.isa()).unwrap();
-        if let Some(info) = unwind_info {
-            match info {
-                UnwindInfo::SystemV(info) => {
-                    let endian = match self.module.isa().endianness() {
-                        cranelift_codegen::ir::Endianness::Little => RunTimeEndian::Little,
-                        cranelift_codegen::ir::Endianness::Big => RunTimeEndian::Big,
-                    };
-                    let mut frame_table = FrameTable::default();
-                    let func_start = self.module.get_finalized_function(func_id);
-                    let fde =
-                        info.to_fde(gimli::write::Address::Constant(func_start as usize as u64)); // Create FDE.
-                    let cie = self.module.isa().create_systemv_cie().unwrap();
-                    let cie_id = frame_table.add_cie(cie);
-                    frame_table.add_fde(cie_id, fde); // Add shared CIE.
+            let compiled_code = &self.ctx.compiled_code().unwrap();
+            let unwind_info = compiled_code.create_unwind_info(self.module.isa()).unwrap();
+            if let Some(info) = unwind_info {
+                match info {
+                    UnwindInfo::SystemV(info) => {
+                        let endian = match self.module.isa().endianness() {
+                            cranelift_codegen::ir::Endianness::Little => RunTimeEndian::Little,
+                            cranelift_codegen::ir::Endianness::Big => RunTimeEndian::Big,
+                        };
+                        let mut frame_table = FrameTable::default();
+                        let func_start = self.module.get_finalized_function(func_id);
+                        let fde = info
+                            .to_fde(gimli::write::Address::Constant(func_start as usize as u64)); // Create FDE.
+                        let cie = self.module.isa().create_systemv_cie().unwrap();
+                        let cie_id = frame_table.add_cie(cie);
+                        frame_table.add_fde(cie_id, fde); // Add shared CIE.
 
-                    // Write EH frame bytes.
-                    let mut eh_frame = gimli::write::EhFrame(gimli::write::EndianVec::new(endian));
-                    frame_table.write_eh_frame(&mut eh_frame).unwrap();
-                    let mut eh_frame = eh_frame.0.into_vec();
+                        // Write EH frame bytes.
+                        let mut eh_frame =
+                            gimli::write::EhFrame(gimli::write::EndianVec::new(endian));
+                        frame_table.write_eh_frame(&mut eh_frame).unwrap();
+                        let mut eh_frame = eh_frame.0.into_vec();
 
-                    // GCC expects a terminating "empty" length, so write a 0 length at the end of the table.
-                    eh_frame.extend(&[0, 0, 0, 0]);
+                        // GCC expects a terminating "empty" length, so write a 0 length at the end of the table.
+                        eh_frame.extend(&[0, 0, 0, 0]);
 
-                    let eh_frame_bytes: &'static [u8] = Box::leak(eh_frame.into_boxed_slice());
+                        let eh_frame_bytes: &'static [u8] = Box::leak(eh_frame.into_boxed_slice());
 
-                    #[cfg(target_os = "macos")]
-                    unsafe {
-                        // On macOS, `__register_frame` takes a pointer to a single FDE
-                        let start = eh_frame_bytes.as_ptr();
-                        let end = start.add(eh_frame_bytes.len());
-                        let mut current = start;
+                        #[cfg(target_os = "macos")]
+                        unsafe {
+                            // On macOS, `__register_frame` takes a pointer to a single FDE
+                            let start = eh_frame_bytes.as_ptr();
+                            let end = start.add(eh_frame_bytes.len());
+                            let mut current = start;
 
-                        // Walk all of the entries in the frame table and register them
-                        while current < end {
-                            let len = std::ptr::read::<u32>(current as *const u32) as usize;
+                            // Walk all of the entries in the frame table and register them
+                            while current < end {
+                                let len = std::ptr::read::<u32>(current as *const u32) as usize;
 
-                            // Skip over the CIE
-                            if current != start {
-                                __register_frame(current);
+                                // Skip over the CIE
+                                if current != start {
+                                    __register_frame(current);
+                                }
+
+                                // Move to the next table entry (+4 because the length itself is not inclusive)
+                                current = current.add(len + 4);
                             }
-
-                            // Move to the next table entry (+4 because the length itself is not inclusive)
-                            current = current.add(len + 4);
+                            tracing::info!("macos: added unwind fde entries");
                         }
-                        tracing::info!("macos: added unwind fde entries");
-                    }
 
-                    #[cfg(not(target_os = "macos"))]
-                    unsafe {
-                        __register_frame(eh_frame_bytes.as_ptr());
+                        #[cfg(not(target_os = "macos"))]
+                        unsafe {
+                            __register_frame(eh_frame_bytes.as_ptr());
+                        }
                     }
-                }
-                UnwindInfo::WindowsX64(_) => {
-                    // FIXME implement this
-                }
-                unwind_info => unimplemented!("{:?}", unwind_info),
-            };
-        } else {
-            tracing::warn!("unable to attach unwind info");
+                    UnwindInfo::WindowsX64(_) => {
+                        // FIXME implement this
+                    }
+                    unwind_info => unimplemented!("{:?}", unwind_info),
+                };
+            } else {
+                tracing::warn!("unable to attach unwind info");
+            }
         }
-
-        self.module.clear_context(&mut self.ctx);
-        self.ctx.clear();
-
         let res = self.get_func(func_id, func, hash);
         Ok(res)
     }
@@ -915,7 +897,7 @@ pub struct BlockFn {
 type BlockFnArgs<'a> = (&'a mut Emu, bool);
 
 impl BlockFn {
-    fn call_block(&self, (emu, instrument): BlockFnArgs) {
+    pub fn call_block(&self, (emu, instrument): BlockFnArgs) {
         // reset delta clock before running
         emu.cpu.d_clock = 0;
 

@@ -38,8 +38,8 @@ slab = "0.4.11"
 debug = true
 
 [profile.release]
-lto = "thin"
 panic = "unwind"
+lto = "fat"
 
 [profile.dev]
 panic = "unwind"

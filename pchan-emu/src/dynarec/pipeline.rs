@@ -1,3 +1,5 @@
+use std::time::{Duration, Instant};
+
 use crate::{
     Emu,
     dynarec::{FetchParams, FetchSummary, TryCacheSummary},
@@ -16,23 +18,29 @@ pub enum EmuDynarecPipeline {
         pc: u32,
     },
     Fetched {
+        elapsed: Duration,
         pc: u32,
         fetch: FetchSummary,
     },
     TriedCache {
+        elapsed: Duration,
         pc: u32,
         fetch: FetchSummary,
         result: TryCacheSummary,
     },
     Emitted {
+        elapsed: Duration,
         pc: u32,
         function: BlockFn,
     },
     Called {
+        elapsed: Duration,
         pc: u32,
         function: BlockFn,
     },
-    Cached,
+    Cached {
+        elapsed: Duration,
+    },
 }
 
 impl EmuDynarecPipeline {
@@ -59,15 +67,31 @@ impl EmuDynarecPipeline {
         match self {
             EmuDynarecPipeline::Uninit => Ok(EmuDynarecPipeline::Uninit),
             EmuDynarecPipeline::Init { pc } => {
-                let fetch_result = { emu.fetch(FetchParams::builder().pc(pc).build()).unwrap() };
+                let now = Instant::now();
+                let fetch_result = match emu.inst_cache.get(&pc).cloned() {
+                    None => {
+                        let fetch_result =
+                            emu.fetch(FetchParams::builder().pc(pc).build()).unwrap();
+                        emu.inst_cache.insert(pc, fetch_result.clone());
+                        fetch_result
+                    }
+                    Some(fetch_result) => fetch_result,
+                };
                 Ok(Self::Fetched {
+                    elapsed: now.elapsed(),
                     pc,
                     fetch: fetch_result,
                 })
             }
-            EmuDynarecPipeline::Fetched { pc, fetch } => {
+            EmuDynarecPipeline::Fetched {
+                pc,
+                fetch,
+                elapsed: _,
+            } => {
+                let now = Instant::now();
                 let call = emu.try_cache_call(pc, &fetch.decoded_ops);
                 Ok(EmuDynarecPipeline::TriedCache {
+                    elapsed: now.elapsed(),
                     pc,
                     fetch,
                     result: call,
@@ -81,7 +105,9 @@ impl EmuDynarecPipeline {
                 pc,
                 result: TryCacheSummary::Fail(hash),
                 fetch,
+                elapsed: _,
             } => {
+                let now = Instant::now();
                 let ptr_type = jit.pointer_type();
                 let (func_id, mut func) = jit.create_function(pc)?;
                 let func_ref_table = jit.create_func_ref_table(&mut func);
@@ -99,17 +125,37 @@ impl EmuDynarecPipeline {
 
                 tracing::info!("{:?} fn compiled", function.fn_ptr);
 
-                Ok(Self::Emitted { pc, function })
+                Ok(Self::Emitted {
+                    pc,
+                    function,
+                    elapsed: now.elapsed(),
+                })
             }
-            EmuDynarecPipeline::Emitted { pc, function } => {
-                function(emu, true);
-                Ok(Self::Called { pc, function })
+            EmuDynarecPipeline::Emitted {
+                pc,
+                function,
+                elapsed: _,
+            } => {
+                let now = Instant::now();
+                function(emu, false);
+                Ok(Self::Called {
+                    pc,
+                    function,
+                    elapsed: now.elapsed(),
+                })
             }
-            EmuDynarecPipeline::Called { pc, function } => {
+            EmuDynarecPipeline::Called {
+                pc,
+                function,
+                elapsed: _,
+            } => {
+                let now = Instant::now();
                 emu.jit_cache.fn_map.insert(pc, function);
-                Ok(Self::Cached)
+                Ok(Self::Cached {
+                    elapsed: now.elapsed(),
+                })
             }
-            EmuDynarecPipeline::Cached => Ok(Self::from_emu(emu)),
+            EmuDynarecPipeline::Cached { .. } => Ok(Self::from_emu(emu)),
         }
     }
     pub fn run_once(mut self, emu: &mut Emu, jit: &mut JIT) -> color_eyre::Result<Self> {
@@ -131,7 +177,7 @@ impl EmuDynarecPipeline {
             EmuDynarecPipeline::TriedCache { .. } => 2,
             EmuDynarecPipeline::Emitted { .. } => 3,
             EmuDynarecPipeline::Called { .. } => 4,
-            EmuDynarecPipeline::Cached => 5,
+            EmuDynarecPipeline::Cached { .. } => 5,
         }
     }
     pub const fn max_progress() -> usize {
@@ -149,6 +195,7 @@ pub struct EmuDynarecPipelineReport {
     pub current: &'static str,
     pub next: &'static str,
     pub progress: usize,
+    pub elapsed: Duration,
 }
 
 impl EmuDynarecPipelineReport {
@@ -157,6 +204,7 @@ impl EmuDynarecPipelineReport {
             current: "not started",
             next: "init",
             progress: 0,
+            elapsed: Duration::new(0, 0),
         }
     }
 }
@@ -170,43 +218,79 @@ impl EmuDynarecPipeline {
                 progress,
                 current: "ready",
                 next: "try cache",
+                elapsed: Duration::new(0, 0),
             },
             EmuDynarecPipeline::TriedCache {
                 result: TryCacheSummary::Success,
+                elapsed,
                 ..
             } => EmuDynarecPipelineReport {
+                elapsed: *elapsed,
                 progress,
                 current: "cache success",
                 next: "restart",
             },
             EmuDynarecPipeline::TriedCache {
                 result: TryCacheSummary::Fail(_),
+                elapsed,
                 ..
             } => EmuDynarecPipelineReport {
+                elapsed: *elapsed,
                 progress,
                 current: "cache fail",
                 next: "fetch",
             },
-            EmuDynarecPipeline::Fetched { .. } => EmuDynarecPipelineReport {
+            EmuDynarecPipeline::Fetched { elapsed, .. } => EmuDynarecPipelineReport {
+                elapsed: *elapsed,
                 progress,
                 current: "fetched",
                 next: "emit",
             },
-            EmuDynarecPipeline::Emitted { .. } => EmuDynarecPipelineReport {
+            EmuDynarecPipeline::Emitted { elapsed, .. } => EmuDynarecPipelineReport {
+                elapsed: *elapsed,
                 progress,
                 current: "emitted",
                 next: "call",
             },
-            EmuDynarecPipeline::Called { .. } => EmuDynarecPipelineReport {
+            EmuDynarecPipeline::Called { elapsed, .. } => EmuDynarecPipelineReport {
+                elapsed: *elapsed,
                 progress,
                 current: "called",
                 next: "cache",
             },
-            EmuDynarecPipeline::Cached => EmuDynarecPipelineReport {
+            EmuDynarecPipeline::Cached { elapsed, .. } => EmuDynarecPipelineReport {
+                elapsed: *elapsed,
                 progress,
                 current: "cached",
                 next: "restart",
             },
+        }
+    }
+}
+
+pub struct EmuDynarecPipelineIterator<'e, 'j> {
+    pipeline: EmuDynarecPipeline,
+    emu: &'e mut Emu,
+    jit: &'j mut JIT,
+}
+
+impl<'e, 'j> Iterator for EmuDynarecPipelineIterator<'e, 'j> {
+    type Item = EmuDynarecPipeline;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let pipe = self.pipeline.clone().step(self.emu, self.jit).ok()?;
+        self.pipeline = pipe;
+        Some(self.pipeline.clone())
+    }
+}
+
+impl EmuDynarecPipeline {
+    #[must_use]
+    pub fn iter<'e, 'j>(emu: &'e mut Emu, jit: &'j mut JIT) -> EmuDynarecPipelineIterator<'e, 'j> {
+        EmuDynarecPipelineIterator {
+            pipeline: EmuDynarecPipeline::Init { pc: emu.cpu.pc },
+            emu,
+            jit,
         }
     }
 }

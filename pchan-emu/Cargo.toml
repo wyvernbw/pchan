@@ -35,9 +35,14 @@ tracing-subscriber = { workspace = true }
 pretty_assertions = {version = "1.4.1", features = ["unstable"]}
 rstest = "*"
 color-eyre = "*" 
+capstone = "0.13.0"
 criterion = { version = "0.5", features = ["html_reports"] }
 
 
 [[bench]]
 name = "op_decoding"
+harness = false
+
+[[bench]]
+name = "bios_func_1"
 harness = false

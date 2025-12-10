@@ -4,7 +4,7 @@ use std::hash::Hasher;
 use std::hash::{DefaultHasher, Hash};
 use std::ops::Shr;
 use std::sync::{Arc, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use color_eyre::eyre::{Result, eyre};
 use flume::{Receiver, Sender};
@@ -117,6 +117,7 @@ pub fn run(config: AppConfig, mut terminal: DefaultTerminal) -> Result<()> {
             error: None,
             emu: None,
             pipeline_report: EmuDynarecPipelineReport::not_started(),
+            frequency: None,
 
             modeline_state: ModelineState { mode: Mode::Normal },
             first_time_setup_state: FirstTimeSetupState::default(),
@@ -187,6 +188,12 @@ pub fn run(config: AppConfig, mut terminal: DefaultTerminal) -> Result<()> {
                             EmuInfo::StateUpdate(emu_state) => {
                                 app_state.main_page_state.emu_state = emu_state.into();
                             }
+                            EmuInfo::FrequencyUpdate(new) => match app_state.frequency {
+                                Some(freq) => {
+                                    app_state.frequency = Some((freq + new) / 2.0);
+                                }
+                                None => app_state.frequency = Some(new),
+                            },
                         }
                     }
                     app_state.focus.process();
@@ -220,6 +227,7 @@ pub enum EmuState {
 
 pub enum EmuInfo {
     PipelineUpdate(EmuDynarecPipelineReport),
+    FrequencyUpdate(f64),
     StateUpdate(EmuState),
     Fetch(FetchSummary),
     Ref(Arc<RwLock<Emu>>),
@@ -266,15 +274,26 @@ async fn emu_task(
     let mut breakpoints = HashSet::<u32>::new();
     let mut jit = JIT::default();
     let mut running = false;
+    let mut elapsed = Duration::new(0, 0);
     let mut step_jit =
         async |mut pipeline: EmuDynarecPipeline| -> color_eyre::Result<EmuDynarecPipeline> {
             {
                 let mut emu = emu.get_mut();
+                let now = Instant::now();
                 pipeline = pipeline.step(&mut emu, &mut jit)?;
+                elapsed += now.elapsed();
             }
             if let Some(fetch) = pipeline.as_fetch() {
                 emu_info_tx
                     .send_async(EmuInfo::Fetch(fetch.clone()))
+                    .await?;
+            }
+            if let EmuDynarecPipeline::Init { .. } = pipeline {
+                let cycles_elapsed = emu.get().cpu.d_clock as f64;
+                let frequency = cycles_elapsed / elapsed.as_secs_f64();
+                elapsed = Duration::new(0, 0);
+                emu_info_tx
+                    .send_async(EmuInfo::FrequencyUpdate(frequency))
                     .await?;
             }
             emu_info_tx
@@ -331,6 +350,7 @@ pub struct AppState {
     error: Option<color_eyre::Report>,
     emu: Option<Arc<RwLock<Emu>>>,
     pipeline_report: EmuDynarecPipelineReport,
+    frequency: Option<f64>,
 
     modeline_state: ModelineState,
     first_time_setup_state: FirstTimeSetupState,
@@ -378,7 +398,7 @@ impl Component for App {
                 }
             }
             Screen::Main => {
-                MainPage(self.0.prop(), &state.pipeline_report).handle_input(
+                MainPage(self.0.prop(), &state.pipeline_report, state.frequency).handle_input(
                     event,
                     &mut state.main_page_state,
                     area,
@@ -405,11 +425,8 @@ impl Component for App {
                     &mut state.first_time_setup_state,
                 )?;
             }
-            Screen::Main => MainPage(self.0.prop(), &state.pipeline_report).render(
-                area,
-                buf,
-                &mut state.main_page_state,
-            )?,
+            Screen::Main => MainPage(self.0.prop(), &state.pipeline_report, state.frequency)
+                .render(area, buf, &mut state.main_page_state)?,
         }
 
         Modeline(self.0.prop()).render(area, buf, &mut state.modeline_state)?;
@@ -431,7 +448,11 @@ pub enum MainPageFocus {
     OpsList,
 }
 
-pub struct MainPage<'a>(FocusProp<MainPage<'a>>, &'a EmuDynarecPipelineReport);
+pub struct MainPage<'a>(
+    FocusProp<MainPage<'a>>,
+    &'a EmuDynarecPipelineReport,
+    Option<f64>,
+);
 pub struct MainPageState {
     emu_state: Arc<EmuState>,
     emu: Option<Arc<RwLock<Emu>>>,
@@ -656,7 +677,7 @@ impl<'a> Component for MainPage<'a> {
             .title("Actions");
         let actions_block_inner = actions_block.inner(actions);
         actions_block.render(actions, buf);
-        Actions(&state.emu_cmd_tx, self.1, self.0.prop()).render(
+        Actions(&state.emu_cmd_tx, self.1, self.0.prop(), self.2).render(
             actions_block_inner,
             buf,
             &mut state.action_state,
@@ -695,7 +716,7 @@ impl<'a> Component for MainPage<'a> {
             &mut state.cpu_inspector_state,
             area,
         )?;
-        Actions(&state.emu_cmd_tx, self.1, self.0.prop()).handle_input(
+        Actions(&state.emu_cmd_tx, self.1, self.0.prop(), self.2).handle_input(
             event.clone(),
             &mut state.action_state,
             area,
@@ -1012,6 +1033,7 @@ pub struct Actions<'a>(
     &'a Sender<EmuCmd>,
     &'a EmuDynarecPipelineReport,
     FocusProp<ActionsAddBreakpoint>,
+    Option<f64>,
 );
 
 pub struct ActionFocus;
@@ -1088,7 +1110,7 @@ impl<'a> Component for Actions<'a> {
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::ComponentState) -> Result<()> {
         let [actions, report, stage_list] =
-            Layout::vertical([Constraint::Max(6), Constraint::Max(2), Constraint::Max(6)])
+            Layout::vertical([Constraint::Max(6), Constraint::Max(3), Constraint::Max(6)])
                 .areas(area);
         Paragraph::new(format!(
             "<n>  next: {} 
@@ -1101,17 +1123,25 @@ impl<'a> Component for Actions<'a> {
         .wrap(Wrap { trim: true })
         .render(actions, buf);
 
+        let freq = match self.3.map(|freq| freq / 1_000_000.) {
+            Some(freq) => Cow::Owned(format!("{freq:.2}MHz")),
+            None => Cow::Borrowed("N/A"),
+        };
+        let [line_area, elapsed_area] =
+            Layout::vertical([Constraint::Length(2), Constraint::Length(1)]).areas(report);
         LineGauge::default()
             .block(
                 Block::new()
-                    .title(format!("Emu Stage :: {}", self.1.current))
+                    .title(format!("Emu Stage :: {} @ {}", self.1.current, freq))
                     .title_style(Style::new().bold()),
             )
             .unfilled_style(Style::new().dark_gray())
             .filled_style(Style::new().green().on_black())
             .line_set(symbols::line::THICK)
             .ratio(self.1.progress as f64 / { EmuDynarecPipeline::max_progress() as f64 })
-            .render(report, buf);
+            .render(line_area, buf);
+        Paragraph::new(format!("elapsed: {}us", self.1.elapsed.as_micros()))
+            .render(elapsed_area, buf);
 
         let progress = [
             "ready",

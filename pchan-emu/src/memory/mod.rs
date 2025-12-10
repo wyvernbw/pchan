@@ -13,6 +13,10 @@ pub const fn kb(value: usize) -> usize {
     value * 1024
 }
 
+pub const fn mb(value: usize) -> usize {
+    kb(value) * 1024
+}
+
 pub const fn from_kb(value: usize) -> usize {
     value / 1024
 }
