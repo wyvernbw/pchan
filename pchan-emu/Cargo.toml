@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 bitfield = "0.19.2"
+bitvec = "1.0.1"
 bon = "3.7.2"
 color-eyre = "*"
 const-hex.workspace = true
@@ -16,6 +17,8 @@ cranelift-codegen = { version = "0.124", features = ["arm64", "x86", "unwind"] }
 
 crossbeam = "0.8.4"
 derive_more = { version = "2.0.1", features = ["add", "debug", "display"] }
+dynasm = "4.0.1"
+dynasmrt = "4.0.1"
 enum_dispatch = "0.3.13"
 inquire = "0.9.1"
 panic-message = "0.3.0"

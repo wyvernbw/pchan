@@ -59,6 +59,8 @@ pub mod bootloader;
 pub mod cpu;
 #[path = "./dynarec/dynarec.rs"]
 pub mod dynarec;
+#[path = "./dynarec-v2/dynarec-v2.rs"]
+pub mod dynarec_v2;
 #[path = "./io/io.rs"]
 pub mod io;
 pub mod jit;

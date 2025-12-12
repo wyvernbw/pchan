@@ -110,6 +110,11 @@ pub enum Exception {
 }
 
 impl Cpu {
+    pub const fn reg_offset(reg: u8) -> usize {
+        use std::mem::offset_of;
+
+        (offset_of!(Cpu, gpr) + size_of::<u32>() * reg as usize)
+    }
     #[instrument(ret)]
     pub fn handle_exception(&mut self, exception: Exception) {
         let cause = self.cop0.reg[13];
