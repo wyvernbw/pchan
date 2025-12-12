@@ -36,16 +36,13 @@
 // allow unused variables in tests to supress the setup tracing warnings
 #![cfg_attr(test, allow(unused_variables))]
 
-use std::{
-    collections::HashMap,
-    simd::{LaneCount, SimdElement, SupportedLaneCount},
-};
+use std::simd::{LaneCount, SimdElement, SupportedLaneCount};
 
 use crate::{
     bootloader::Bootloader,
     cpu::Cpu,
     dynarec::{FetchSummary, prelude::PureInstBuilder},
-    jit::JitCache,
+    jit::{JitCache, LUTMap},
     memory::{Chunk, Memory},
 };
 
@@ -99,7 +96,7 @@ pub struct Emu {
     pub boot: Bootloader,
 }
 
-pub type InstCache = HashMap<u32, FetchSummary>;
+pub type InstCache = LUTMap<FetchSummary>;
 
 use memory::Extend;
 

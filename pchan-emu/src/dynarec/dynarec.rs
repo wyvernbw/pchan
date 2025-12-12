@@ -3,7 +3,7 @@ use crate::{
     cpu::Reg,
     cranelift_bs::*,
     dynarec::{pipeline::EmuDynarecPipeline, sparse_queue::SparseQueue},
-    jit::{FuncRefTable, FunctionMap},
+    jit::{BlockFn, FuncRefTable, LUTMap},
     memory::ext,
 };
 use std::{borrow::Cow, collections::HashMap, ops::Range, rc::Rc};
@@ -813,7 +813,7 @@ pub struct EmitCtx<'a, 'b> {
     pub node: NodeIndex,
     pub pc: u32,
     pub cfg: &'a Graph<BasicBlock, ()>,
-    pub function_map: &'a FunctionMap,
+    pub function_map: &'a LUTMap<BlockFn>,
     pub function_sig_ref: Option<SigRef>,
 }
 

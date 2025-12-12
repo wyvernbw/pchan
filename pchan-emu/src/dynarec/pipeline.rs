@@ -68,7 +68,7 @@ impl EmuDynarecPipeline {
             EmuDynarecPipeline::Uninit => Ok(EmuDynarecPipeline::Uninit),
             EmuDynarecPipeline::Init { pc } => {
                 let now = Instant::now();
-                let fetch_result = match emu.inst_cache.get(&pc).cloned() {
+                let fetch_result = match emu.inst_cache.get(pc).cloned() {
                     None => {
                         let fetch_result =
                             emu.fetch(FetchParams::builder().pc(pc).build()).unwrap();

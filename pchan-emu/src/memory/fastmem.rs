@@ -88,7 +88,17 @@ impl Memory {
     /// # Safety
     ///
     /// this is never safe, live fast die young
+    #[inline(always)]
     pub unsafe fn read_raw<T: Copy>(&self, cpu: &Cpu, address: u32) -> T {
+        if cpu.isc() {
+            let address = address & 0xFFF;
+            unsafe {
+                let ptr = self.buf.as_ptr().add(address as usize);
+                let ptr = ptr as *const T;
+                return std::ptr::read_unaligned(ptr);
+            }
+        }
+
         let page = address >> 16;
         let offset = address & 0xFFFF;
 
@@ -97,22 +107,10 @@ impl Memory {
 
         match lut_ptr {
             // fastmem
-            Some(region_ptr) => {
-                if cpu.isc() {
-                    let address = address & 0xFFF;
-                    unsafe {
-                        let ptr = self.cache.as_ptr().add(address as usize);
-                        let ptr = ptr as *const T;
-                        return std::ptr::read_unaligned(ptr);
-                    }
-                }
-
-                let ptr = mem
-                    .wrapping_add(region_ptr as usize)
-                    .wrapping_add(offset as usize);
-
-                unsafe { std::ptr::read_unaligned(ptr as *const T) }
-            }
+            Some(region_ptr) => unsafe {
+                let ptr = mem.add(region_ptr as usize).add(offset as usize);
+                std::ptr::read_unaligned(ptr as *const T)
+            },
             // memcheck
             None => {
                 let _span = tracing::trace_span!("memcheck").entered();
@@ -227,7 +225,20 @@ impl Memory {
     /// # SAFETY
     ///
     /// here be segfaults... should be fine tho
+    #[inline(always)]
     pub unsafe fn write_raw<T: Copy>(&mut self, cpu: &Cpu, address: u32, value: T) {
+        // FIXME: cache isolation check on fast path is stupid
+        // also not all addresses are cached, so this is straight wrong
+        // let address = address & 0xFFF;
+        // unsafe {
+        //     let ptr = self.cache.as_mut_ptr().add(address as usize);
+        //     Memory::write_impl(ptr, value);
+        //     return;
+        // }
+        if cpu.isc() {
+            return;
+        }
+
         let page = address >> 16;
         let offset = address & 0x0000_FFFF;
 
@@ -236,26 +247,10 @@ impl Memory {
 
         match lut_ptr {
             // fastmem
-            Some(region_ptr) => {
-                // FIXME: cache isolation check on fast path is stupid
-                // also not all addresses are cached, so this is straight wrong
-                if cpu.isc() {
-                    // let address = address & 0xFFF;
-                    // unsafe {
-                    //     let ptr = self.cache.as_mut_ptr().add(address as usize);
-                    //     Memory::write_impl(ptr, value);
-                    //     return;
-                    // }
-                    return;
-                }
-
-                let ptr = mem
-                    .wrapping_add(region_ptr as usize)
-                    .wrapping_add(offset as usize);
-                unsafe {
-                    Memory::write_impl(ptr, value);
-                }
-            }
+            Some(region_ptr) => unsafe {
+                let ptr = mem.add(region_ptr as usize).add(offset as usize);
+                Memory::write_impl(ptr, value);
+            },
             // memcheck
             None => {
                 let _span = tracing::trace_span!("memcheck").entered();

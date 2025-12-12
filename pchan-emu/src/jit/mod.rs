@@ -1,7 +1,9 @@
 use std::{
+    cell::RefCell,
     collections::{HashMap, HashSet},
     hash::Hash,
     mem::offset_of,
+    ops::{Index, IndexMut},
     ptr,
     sync::Arc,
 };
@@ -50,12 +52,12 @@ pub struct JIT {
 
 #[derive(derive_more::Debug, Default)]
 pub struct JitCache {
-    pub fn_map: FunctionMap,
+    pub fn_map: LUTMap<BlockFn>,
 }
 
 impl JitCache {
     pub fn clear_cache(&mut self) {
-        self.fn_map = FunctionMap::default();
+        self.fn_map = LUTMap::default();
     }
 
     pub fn use_cached_function(
@@ -77,28 +79,44 @@ impl JitCache {
     }
 }
 
-/// TODO: make it store a module function ref as well
-#[derive(Debug, Clone)]
-pub struct FunctionMap(Box<[Option<BlockFn>]>);
+pub trait LUTMapStorage {
+    type Inner;
+    type Out: AsRef<[Option<Self::Inner>]> + AsMut<[Option<Self::Inner>]>;
 
-impl Default for FunctionMap {
-    fn default() -> Self {
-        Self(vec![None; memory::mb(32)].into_boxed_slice())
+    fn from_vec(values: Vec<Option<Self::Inner>>) -> Self::Out;
+}
+
+impl<T> LUTMapStorage for Box<T> {
+    type Inner = T;
+    type Out = Box<[Option<T>]>;
+
+    fn from_vec(values: Vec<Option<T>>) -> Self::Out {
+        values.into_boxed_slice()
     }
 }
 
-impl FunctionMap {
-    pub fn insert(&mut self, address: u32, func: BlockFn) {
-        let idx = Memory::util_fast_map_address(address).expect("address not executable");
-        self.0[idx as usize] = Some(func);
+/// TODO: make it store a module function ref as well
+#[derive(Debug, Clone)]
+pub struct LUTMap<T, S: LUTMapStorage<Inner = T> = Box<T>>(S::Out);
+
+impl<T: Clone, S: LUTMapStorage<Inner = T>> Default for LUTMap<T, S> {
+    fn default() -> Self {
+        Self(S::from_vec(vec![None; memory::mb(32)]))
     }
-    pub fn get(&self, address: u32) -> Option<&BlockFn> {
+}
+
+impl<T, S: LUTMapStorage<Inner = T>> LUTMap<T, S> {
+    pub fn insert(&mut self, address: u32, func: T) {
         let idx = Memory::util_fast_map_address(address).expect("address not executable");
-        self.0[idx as usize].as_ref()
+        self.0.as_mut()[idx as usize] = Some(func);
     }
-    pub fn get_mut(&mut self, address: u32) -> Option<&mut BlockFn> {
+    pub fn get(&self, address: u32) -> Option<&T> {
         let idx = Memory::util_fast_map_address(address).expect("address not executable");
-        self.0[idx as usize].as_mut()
+        self.0.as_ref()[idx as usize].as_ref()
+    }
+    pub fn get_mut(&mut self, address: u32) -> Option<&mut T> {
+        let idx = Memory::util_fast_map_address(address).expect("address not executable");
+        self.0.as_mut()[idx as usize].as_mut()
     }
 }
 

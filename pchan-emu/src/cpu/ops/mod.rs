@@ -828,10 +828,6 @@ impl DecodedOp {
 
                 // cop reg
                 (0x10..=0x13, 0x0, _, 0x0) => Self::MFCn(MFCn::new(fields.cop(), rt, rd)),
-                (_, 0x2, _, 0x0) => todo!("cfcn"),
-                (_, 0x4, _, 0x0) => Self::MTCn(MTCn::new(fields.cop(), rt, rd)),
-                (_, 0x6, _, 0x0) => todo!("ctcn"),
-                (_, 0x10, _, 0x10) => Self::RFE(RFE),
 
                 // cop imm16
                 (0x10..=0x13, 0x8, 0, _) => todo!("bcnf"),
@@ -848,6 +844,11 @@ impl DecodedOp {
                     // tracing::error!("cop command not yet implemented");
                     // Self::illegal()
                 }
+
+                (_, 0x2, _, 0x0) => todo!("cfcn"),
+                (_, 0x4, _, 0x0) => Self::MTCn(MTCn::new(fields.cop(), rt, rd)),
+                (_, 0x6, _, 0x0) => todo!("ctcn"),
+                (_, 0x10, _, 0x10) => Self::RFE(RFE),
 
                 _ => Self::illegal(),
             }
