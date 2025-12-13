@@ -10,8 +10,8 @@ use std::{
 use rstest::*;
 use tracing_indicatif::IndicatifLayer;
 use tracing_subscriber::{
-    EnvFilter,
-    fmt::{self},
+    EnvFilter, Layer,
+    fmt::{self, format::FmtSpan},
     util::SubscriberInitExt,
 };
 
@@ -53,16 +53,16 @@ pub fn setup_tracing() {
                 .with_line_number(false), // .with_span_events(FmtSpan::CLOSE),
         )
         .with(indicatif_layer)
-        // .with(
-        //     fmt::layer()
-        //         .with_ansi(true)
-        //         .with_span_events(FmtSpan::CLOSE)
-        //         .with_filter(
-        //             EnvFilter::from_default_env()
-        //                 // .add_directive("off".parse().unwrap())
-        //                 .add_directive("pchan_emu[fn]=trace".parse().unwrap()),
-        //         ),
-        // )
+        .with(
+            fmt::layer()
+                .with_ansi(true)
+                .with_span_events(FmtSpan::CLOSE)
+                .with_filter(
+                    EnvFilter::from_default_env()
+                        // .add_directive("off".parse().unwrap())
+                        .add_directive("pchan_emu[fn]=trace".parse().unwrap()),
+                ),
+        )
         .with(
             EnvFilter::builder()
                 .with_env_var("PCHAN_LOG")

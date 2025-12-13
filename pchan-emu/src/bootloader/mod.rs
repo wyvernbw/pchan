@@ -11,7 +11,7 @@ use crate::{
     memory::{Memory, buffer, from_kb, kb},
 };
 
-#[derive(derive_more::Debug)]
+#[derive(derive_more::Debug, Clone)]
 pub struct Bootloader {
     bios_path: PathBuf,
 }

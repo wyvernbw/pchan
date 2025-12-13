@@ -687,20 +687,20 @@ bitfield! {
     #[derive_const(Default)]
     pub struct OpCode(u32);
 
-    u8, funct, _: 5, 0;
-    u8, shamt, _: 10, 6;
-    u8, rd, _: 15, 11;
-    u8, rt, _: 20, 16;
-    u8, rs, _: 25, 21;
-    u8, opcode, _: 31, 26;
-    i16, imm16, _: 15, 0;
-    u32, imm26, _: 25, 0;
-    u8, cop, _: 27, 26;
+    pub u8, funct, _: 5, 0;
+    pub u8, shamt, _: 10, 6;
+    pub u8, rd, _: 15, 11;
+    pub u8, rt, _: 20, 16;
+    pub u8, rs, _: 25, 21;
+    pub u8, opcode, _: 31, 26;
+    pub i16, imm16, _: 15, 0;
+    pub u32, imm26, _: 25, 0;
+    pub u8, cop, _: 27, 26;
 }
 
 impl OpCode {
-    const NOP_FIELDS: Self = Self::default();
-    const HALT_FIELDS: Self = OpCode(69420);
+    pub const NOP_FIELDS: Self = Self::default();
+    pub const HALT_FIELDS: Self = OpCode(69420);
 }
 
 impl From<u32> for OpCode {

@@ -50,7 +50,7 @@ pub struct JIT {
     pub func_table: FunctionTable,
 }
 
-#[derive(derive_more::Debug, Default)]
+#[derive(derive_more::Debug, Default, Clone)]
 pub struct JitCache {
     pub fn_map: LUTMap<BlockFn>,
 }
@@ -99,16 +99,19 @@ impl<T> LUTMapStorage for Box<T> {
 #[derive(Debug, Clone)]
 pub struct LUTMap<T, S: LUTMapStorage<Inner = T> = Box<T>>(S::Out);
 
-impl<T: Clone, S: LUTMapStorage<Inner = T>> Default for LUTMap<T, S> {
+impl<T, S: LUTMapStorage<Inner = T>> Default for LUTMap<T, S> {
     fn default() -> Self {
-        Self(S::from_vec(vec![None; memory::mb(32)]))
+        Self(S::from_vec(Vec::from_iter(
+            (0..memory::mb(32)).map(|_| None),
+        )))
     }
 }
 
 impl<T, S: LUTMapStorage<Inner = T>> LUTMap<T, S> {
-    pub fn insert(&mut self, address: u32, func: T) {
+    pub fn insert(&mut self, address: u32, func: T) -> &T {
         let idx = Memory::util_fast_map_address(address).expect("address not executable");
         self.0.as_mut()[idx as usize] = Some(func);
+        self.0.as_ref()[idx as usize].as_ref().unwrap()
     }
     pub fn get(&self, address: u32) -> Option<&T> {
         let idx = Memory::util_fast_map_address(address).expect("address not executable");
@@ -117,6 +120,10 @@ impl<T, S: LUTMapStorage<Inner = T>> LUTMap<T, S> {
     pub fn get_mut(&mut self, address: u32) -> Option<&mut T> {
         let idx = Memory::util_fast_map_address(address).expect("address not executable");
         self.0.as_mut()[idx as usize].as_mut()
+    }
+    pub fn take(&mut self, address: u32) -> Option<T> {
+        let idx = Memory::util_fast_map_address(address).expect("address not executable");
+        self.0.as_mut()[idx as usize].take()
     }
 }
 

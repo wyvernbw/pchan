@@ -3,6 +3,7 @@
 #![allow(long_running_const_eval)]
 #![allow(incomplete_features)]
 #![allow(clippy::collapsible_if)]
+#![feature(test)]
 #![feature(stmt_expr_attributes)]
 #![feature(ptr_as_ref_unchecked)]
 #![feature(const_for)]
@@ -42,6 +43,7 @@ use crate::{
     bootloader::Bootloader,
     cpu::Cpu,
     dynarec::{FetchSummary, prelude::PureInstBuilder},
+    dynarec_v2::DynarecBlock,
     jit::{JitCache, LUTMap},
     memory::{Chunk, Memory},
 };
@@ -88,12 +90,13 @@ pub const fn max_simd_width_bytes() -> usize {
 
 pub const MAX_SIMD_WIDTH: usize = max_simd_width_bytes();
 
-#[derive(Default, derive_more::Debug)]
+#[derive(Default, derive_more::Debug, Clone)]
 pub struct Emu {
     #[debug(skip)]
     pub mem: Memory,
     pub cpu: Cpu,
     pub jit_cache: JitCache,
+    pub dynarec_cache: LUTMap<DynarecBlock>,
     pub inst_cache: InstCache,
     pub boot: Bootloader,
 }

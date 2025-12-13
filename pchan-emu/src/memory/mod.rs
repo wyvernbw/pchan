@@ -27,7 +27,7 @@ pub fn buffer(size: usize) -> Box<[u8]> {
 
 pub type Buffer = Box<[u8]>;
 
-#[derive(derive_more::Debug)]
+#[derive(derive_more::Debug, Clone)]
 #[debug("memory:{}kb", MEM_SIZE/1024)]
 pub struct Memory {
     pub buf: Buffer,

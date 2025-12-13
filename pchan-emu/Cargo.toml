@@ -20,6 +20,7 @@ derive_more = { version = "2.0.1", features = ["add", "debug", "display"] }
 dynasm = "4.0.1"
 dynasmrt = "4.0.1"
 enum_dispatch = "0.3.13"
+flume = "0.12.0"
 inquire = "0.9.1"
 panic-message = "0.3.0"
 pchan-macros = { workspace = true }
@@ -28,6 +29,8 @@ petgraph = "0.8.2"
 rapidhash = { version = "4.1.1", features = ["nightly"] }
 rayon = "1.11.0"
 slab.workspace = true
+smallvec = "1.15.1"
+smol = "2.0.2"
 strum = { version = "0.27.2", features = ["derive"] }
 tailcall = "1.0.1"
 thiserror = "2.0.16"
@@ -48,4 +51,8 @@ harness = false
 
 [[bench]]
 name = "bios_func_1"
+harness = false
+
+[[bench]]
+name = "dynarec_v2"
 harness = false
