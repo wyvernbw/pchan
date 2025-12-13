@@ -1,14 +1,13 @@
 use bitvec::prelude as bv;
-use color_eyre::eyre;
 use color_eyre::eyre::bail;
 use dynasm::dynasm;
 use dynasmrt::Assembler;
 use dynasmrt::DynasmApi;
 use dynasmrt::ExecutableBuffer;
-use enum_dispatch::enum_dispatch;
 use pchan_utils::array;
 use std::hash::Hash;
 use std::hash::Hasher;
+use std::mem::offset_of;
 use std::rc::Rc;
 use std::simd::Simd;
 use tracing::Instrument;
@@ -16,12 +15,16 @@ use tracing::Level;
 use tracing::enabled;
 
 use crate::Emu;
-use crate::cpu::ops::HaltBlock;
 use crate::cpu::ops::OpCode;
-use crate::dynarec::prelude::ADDIU;
+use crate::dynarec_v2::dynarec_ops::DecodedOpNew;
+use crate::dynarec_v2::dynarec_ops::DynarecOp;
+use crate::dynarec_v2::dynarec_ops::EmitCtx;
+use crate::dynarec_v2::dynarec_ops::EmitSummary;
 use crate::io::IO;
 use crate::memory::ext;
 use crate::{cpu::Cpu, memory::Memory};
+
+pub mod dynarec_ops;
 
 #[cfg(target_arch = "aarch64")]
 type Reloc = dynasmrt::aarch64::Aarch64Relocation;
@@ -31,6 +34,7 @@ type Reloc = dynasmrt::x64::X64Relocation;
 #[derive(Debug)]
 pub struct Dynarec {
     reg_alloc: RegAlloc,
+    delay_slot: Option<fn(EmitCtx) -> EmitSummary>,
     asm: Assembler<Reloc>,
 }
 
@@ -39,6 +43,7 @@ impl Default for Dynarec {
         let asm = Assembler::new_with_capacity(size_of::<u32>() * 256)
             .expect("failed to create assembler");
         Self {
+            delay_slot: None,
             reg_alloc: Default::default(),
             asm,
         }
@@ -50,6 +55,88 @@ pub struct RegAlloc {
     loaded: bv::BitArray,
     dirty: bv::BitArray,
 }
+
+#[derive(Debug, Clone, Copy)]
+pub enum Reg {
+    #[cfg(target_arch = "aarch64")]
+    W(u8),
+}
+
+#[cfg(target_arch = "aarch64")]
+impl Reg {
+    const WZR: Self = Reg::W(31);
+    const WSP: Self = Reg::W(31);
+
+    const DELAY_1: Self = Reg::W(28);
+}
+
+#[cfg(target_arch = "aarch64")]
+impl From<Reg> for u8 {
+    fn from(value: Reg) -> Self {
+        match value {
+            Reg::W(reg) => reg,
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+static REG_MAP: [Option<Reg>; 32] = array![
+    // $zero
+    0 => Some(Reg::WZR),
+
+    // $at
+    1 => Some(Reg::W(1)),
+
+    // $v0, $v1
+    2 => Some(Reg::W(2)),
+    3 => Some(Reg::W(3)),
+
+    // $a0-$a3
+    4 => Some(Reg::W(4)),
+    5 => Some(Reg::W(5)),
+    6 => Some(Reg::W(6)),
+    7 => Some(Reg::W(7)),
+
+    // $t0-$t7
+    8 => Some(Reg::W(8)),
+    9 => Some(Reg::W(9)),
+    10 => Some(Reg::W(10)),
+    11 => Some(Reg::W(11)),
+    12 => Some(Reg::W(12)),
+    13 => Some(Reg::W(13)),
+    14 => Some(Reg::W(14)),
+    15 => Some(Reg::W(15)),
+
+    // $s0-$s7
+    16 => Some(Reg::W(16)),
+    17 => Some(Reg::W(17)),
+    18 => Some(Reg::W(18)),
+    19 => Some(Reg::W(19)),
+    20 => Some(Reg::W(20)),
+    21 => Some(Reg::W(21)),
+    22 => Some(Reg::W(22)),
+    23 => Some(Reg::W(23)),
+
+    // $t8-$t9
+    24 => None,
+    25 => None,
+
+    // $k0-$k1
+    26 => None,
+    27 => None,
+
+    // $gp
+    28 => None,
+
+    // $sp
+    29 => Some(Reg::WSP),
+
+    // $fp
+    30 => None,
+
+    // $ra
+    31 => Some(Reg::W(24))
+];
 
 #[derive(Debug, Clone)]
 pub struct DynarecFunction {
@@ -161,7 +248,7 @@ impl Dynarec {
         Self::emit_writeback_free(&mut self.asm, guest_reg, host_reg);
     }
 
-    fn emit_block_epilogue(&mut self) {
+    fn emit_block_epilogue(&mut self, d_clock: u16) {
         // emit write back to dirty registers
         self.reg_alloc
             .dirty
@@ -176,6 +263,19 @@ impl Dynarec {
                 Self::emit_writeback_free(&mut self.asm, guest_reg, host_reg);
             });
 
+        // emit delta clock update
+        let d_clock_offset = offset_of!(Cpu, d_clock);
+        #[cfg(target_arch = "aarch64")]
+        #[allow(clippy::useless_conversion)]
+        {
+            dynasm!(
+                self.asm
+                ; .arch aarch64
+                ; mov w24, d_clock as _
+                ; str w24, [x0, d_clock_offset as _]
+            )
+        }
+
         // emit return
         #[cfg(target_arch = "aarch64")]
         #[allow(clippy::useless_conversion)]
@@ -183,7 +283,7 @@ impl Dynarec {
             dynasm!(
                 self.asm
                 ; .arch aarch64
-                // TODO: restore all registers
+                // DONE: restore all registers
                 ; ldp x27, x28, [sp], #16
                 ; ldp x25, x26, [sp], #16
                 ; ldp x23, x24, [sp], #16
@@ -244,6 +344,11 @@ impl Dynarec {
     fn mark_clean(&mut self, guest_reg: u8) {
         self.reg_alloc.dirty.set(guest_reg as usize, false);
     }
+
+    fn set_delay_slot(&mut self, emitter: impl Into<fn(EmitCtx) -> EmitSummary>) {
+        let emitter = emitter.into();
+        self.delay_slot = Some(emitter);
+    }
 }
 
 impl Emu {
@@ -261,8 +366,6 @@ impl Emu {
             .map(OpCode)
     }
 }
-
-pub struct FetchResult;
 
 pub enum PipelineV2 {
     Uninit,
@@ -291,6 +394,12 @@ impl PipelineV2 {
             dynarec: Box::new(Dynarec::default()),
             pc: emu.cpu.pc,
         }
+    }
+    pub fn run_once(mut self, emu: &mut Emu) -> color_eyre::Result<Self> {
+        for _ in 0..3 {
+            self = self.step(emu)?;
+        }
+        Ok(self)
     }
     pub fn step(self, emu: &mut Emu) -> color_eyre::Result<Self> {
         match self {
@@ -350,24 +459,6 @@ fn fast_hash(emu: &Emu, op_count: usize) -> u64 {
     hasher.finish()
 }
 
-fn fetch_and_compile_single_threaded_no_hash(
-    emu: &Emu,
-    mut dynarec: Box<Dynarec>,
-) -> color_eyre::Result<DynarecFunction> {
-    dynarec.emit_block_prelude(&emu.cpu, &emu.mem);
-
-    emu.linear_fetch().for_each(|(_, decoded)| {
-        decoded.emit(EmitCtx {
-            dynarec: &mut dynarec,
-        });
-    });
-    dynarec.emit_block_epilogue();
-
-    let func = dynarec.finalize()?;
-
-    Ok(func)
-}
-
 fn fetch_and_compile_single_threaded(
     emu: &Emu,
     mut dynarec: Box<Dynarec>,
@@ -376,14 +467,15 @@ fn fetch_and_compile_single_threaded(
 
     let mut hasher = rapidhash::fast::RapidHasher::default();
     let mut op_count = 0;
-    emu.linear_fetch().for_each(|(op, decoded)| {
+    let cycles = emu.linear_fetch().fold(0u16, |cycles, (op, decoded)| {
         decoded.emit(EmitCtx {
             dynarec: &mut dynarec,
         });
         hasher.write_u32(op.0);
         op_count += 1;
+        cycles + decoded.cycles()
     });
-    dynarec.emit_block_epilogue();
+    dynarec.emit_block_epilogue(cycles);
 
     let func = dynarec.finalize()?;
     let hash = hasher.finish();
@@ -395,221 +487,6 @@ fn fetch_and_compile_single_threaded(
     })
 }
 
-pub trait ResultIntoInner {
-    type IntoInner;
-    fn into_inner(self) -> Self::IntoInner;
-}
-
-impl<T> ResultIntoInner for Result<T, T> {
-    type IntoInner = T;
-
-    fn into_inner(self) -> Self::IntoInner {
-        match self {
-            Ok(ok) => ok,
-            Err(err) => err,
-        }
-    }
-}
-
-#[derive(Default, Debug, Clone, Copy)]
-pub enum Boundary {
-    #[default]
-    None = 0,
-    Block,
-    Function,
-}
-
-pub struct EmitCtx<'a> {
-    dynarec: &'a mut Dynarec,
-}
-
-pub struct EmitSummary;
-
-#[enum_dispatch(DecodedOpNew)]
-pub trait DynarecOp {
-    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary;
-
-    fn boundary(&self) -> Boundary;
-
-    fn is_block_boundary(&self) -> bool {
-        matches!(self.boundary(), Boundary::Block)
-    }
-
-    fn is_function_boundary(&self) -> bool {
-        matches!(self.boundary(), Boundary::Function)
-    }
-
-    fn is_boundary(&self) -> bool {
-        matches!(self.boundary(), Boundary::Block | Boundary::Function)
-    }
-}
-
-#[enum_dispatch]
-#[derive(Debug, Clone, Copy, Hash)]
-pub enum DecodedOpNew {
-    ILLEGAL(ILLEGAL),
-    ADDIU(ADDIU),
-    HaltBlock(HaltBlock),
-}
-
-#[derive(Debug, Clone, Copy, derive_more::Display, Hash, PartialEq, Eq)]
-pub struct ILLEGAL;
-
-impl DynarecOp for ILLEGAL {
-    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
-        EmitSummary
-    }
-
-    fn boundary(&self) -> Boundary {
-        Boundary::None
-    }
-}
-
-impl DecodedOpNew {
-    pub fn new(fields: OpCode) -> Self {
-        let [op] = Self::decode([fields]);
-        op
-    }
-    pub const fn illegal() -> Self {
-        Self::ILLEGAL(ILLEGAL)
-    }
-    pub fn decode<const N: usize>(fields: [impl Into<OpCode>; N]) -> [Self; N] {
-        fields.map(|fields| {
-            let fields = fields.into();
-            if fields == OpCode::HALT_FIELDS {
-                return Self::HaltBlock(HaltBlock);
-            }
-            let opcode = fields.opcode();
-            let rs = fields.rs();
-            let rt = fields.rt();
-            let rd = fields.rd();
-            let funct = fields.funct();
-            match (opcode, rs, rt, funct) {
-                (0x8 | 0x9, _, _, _) => Self::ADDIU(ADDIU::new(rs, rt, fields.imm16())),
-                _ => Self::illegal(),
-            }
-        })
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-enum Reg {
-    #[cfg(target_arch = "aarch64")]
-    W(u8),
-}
-
-#[cfg(target_arch = "aarch64")]
-impl Reg {
-    const WZR: Self = Reg::W(31);
-    const WSP: Self = Reg::W(31);
-}
-
-#[cfg(target_arch = "aarch64")]
-impl From<Reg> for u8 {
-    fn from(value: Reg) -> Self {
-        match value {
-            Reg::W(reg) => reg,
-        }
-    }
-}
-
-#[cfg(target_arch = "aarch64")]
-static REG_MAP: [Option<Reg>; 32] = array![
-    // $zero
-    0 => Some(Reg::WZR),
-
-    // $at
-    1 => Some(Reg::W(1)),
-
-    // $v0, $v1
-    2 => Some(Reg::W(2)),
-    3 => Some(Reg::W(3)),
-
-    // $a0-$a3
-    4 => Some(Reg::W(4)),
-    5 => Some(Reg::W(5)),
-    6 => Some(Reg::W(6)),
-    7 => Some(Reg::W(7)),
-
-    // $t0-$t7
-    8 => Some(Reg::W(8)),
-    9 => Some(Reg::W(9)),
-    10 => Some(Reg::W(10)),
-    11 => Some(Reg::W(11)),
-    12 => Some(Reg::W(12)),
-    13 => Some(Reg::W(13)),
-    14 => Some(Reg::W(14)),
-    15 => Some(Reg::W(15)),
-
-    // $s0-$s7
-    16 => Some(Reg::W(16)),
-    17 => Some(Reg::W(17)),
-    18 => Some(Reg::W(18)),
-    19 => Some(Reg::W(19)),
-    20 => Some(Reg::W(20)),
-    21 => Some(Reg::W(21)),
-    22 => Some(Reg::W(22)),
-    23 => Some(Reg::W(23)),
-
-    // $t8-$t9
-    24 => None,
-    25 => None,
-
-    // $k0-$k1
-    26 => None,
-    27 => None,
-
-    // $gp
-    28 => None,
-
-    // $sp
-    29 => Some(Reg::WSP),
-
-    // $fp
-    30 => None,
-
-    // $ra
-    31 => Some(Reg::W(24))
-];
-
-impl DynarecOp for ADDIU {
-    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
-        use dynasm::dynasm;
-        #[cfg(target_arch = "aarch64")]
-        {
-            let rs = ctx.dynarec.emit_load_reg(self.rs, Reg::W(25)).into_inner();
-            let loaded_rt = ctx.dynarec.emit_load_reg(self.rt, Reg::W(26));
-            let rt = loaded_rt.into_inner();
-            dynasm!(
-                ctx.dynarec.asm
-                ; .arch aarch64
-                ; add WSP(rt), WSP(rs), self.imm as _
-            );
-
-            if loaded_rt.is_ok() {
-                ctx.dynarec.mark_dirty(self.rt);
-            } else {
-                ctx.dynarec.emit_writeback(self.rt, rt);
-            }
-        }
-        EmitSummary
-    }
-
-    fn boundary(&self) -> Boundary {
-        Boundary::None
-    }
-}
-
-impl DynarecOp for HaltBlock {
-    fn emit<'a>(&self, _: EmitCtx<'a>) -> EmitSummary {
-        EmitSummary
-    }
-
-    fn boundary(&self) -> Boundary {
-        Boundary::Function
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::{ptr, time::Instant};
@@ -617,9 +494,13 @@ mod tests {
 
     use color_eyre::Result;
     use pchan_utils::setup_tracing;
+    use pretty_assertions::assert_eq;
 
     use super::*;
-    use crate::{Emu, cpu::ops::addiu::*};
+    use crate::{
+        Emu,
+        cpu::{ops::addiu::*, program},
+    };
 
     #[test]
     fn dynarec_minimal_test() -> Result<()> {
@@ -652,7 +533,7 @@ mod tests {
             dynarec: &mut dynarec,
         });
         tracing::info!("emitted addiu instruction");
-        dynarec.emit_block_epilogue();
+        dynarec.emit_block_epilogue(0);
         tracing::info!("emitted epilogue");
 
         let func = dynarec.finalize()?;
@@ -676,7 +557,7 @@ mod tests {
             dynarec: &mut dynarec,
         });
         tracing::info!("emitted addiu instruction");
-        dynarec.emit_block_epilogue();
+        dynarec.emit_block_epilogue(0);
         tracing::info!("emitted epilogue");
         let func = dynarec.finalize()?;
         tracing::info!("About to call JIT function");
@@ -687,6 +568,22 @@ mod tests {
         assert_eq!(emu.cpu.gpr[24], 69);
         tracing::info!("Assert passed");
 
+        Ok(())
+    }
+
+    #[test]
+    fn dynarec_v2_test_cycles() -> Result<()> {
+        setup_tracing();
+        let mut emu = Emu::default();
+        emu.write_many(
+            0x0,
+            &program([addiu(10, 0, 4), addiu(10, 0, 5), OpCode(69420)]),
+        );
+        PipelineV2::new(&emu).run_once(&mut emu)?;
+        tracing::info!(?emu.cpu);
+
+        assert_eq!(emu.cpu.gpr[10], 5);
+        assert_eq!(emu.cpu.d_clock, 2);
         Ok(())
     }
 
