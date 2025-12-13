@@ -16,10 +16,12 @@ use tracing::enabled;
 
 use crate::Emu;
 use crate::cpu::ops::OpCode;
+use crate::cpu::reg_str;
 use crate::dynarec_v2::dynarec_ops::DecodedOpNew;
 use crate::dynarec_v2::dynarec_ops::DynarecOp;
 use crate::dynarec_v2::dynarec_ops::EmitCtx;
 use crate::dynarec_v2::dynarec_ops::EmitSummary;
+use crate::dynarec_v2::dynarec_ops::ResultIntoInner;
 use crate::io::IO;
 use crate::max_simd_elements;
 use crate::memory::ext;
@@ -53,11 +55,11 @@ impl Default for Dynarec {
 
 #[derive(Default, Debug, Clone)]
 pub struct RegAlloc {
-    loaded: bv::BitArray,
-    dirty: bv::BitArray,
+    loaded: bv::BitArray<[u32; 1]>,
+    dirty: bv::BitArray<[u32; 1]>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Reg {
     #[cfg(target_arch = "aarch64")]
     W(u8),
@@ -69,6 +71,11 @@ impl Reg {
     const WSP: Self = Reg::W(31);
 
     const DELAY_1: Self = Reg::W(28);
+
+    pub fn consecutive(self: Reg, b: Reg) -> bool {
+        let Reg::W(w) = self;
+        b == Reg::W(w + 1)
+    }
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -244,47 +251,84 @@ impl Dynarec {
         }
     }
 
+    fn emit_writeback_pair_free(asm: &mut Assembler<Reloc>, arr: [(u8, Reg); 2]) {
+        let [(gr1, hr1), (gr2, hr2)] = arr;
+        debug_assert!(
+            hr1.consecutive(hr2),
+            "pairs store must be of consecutive registers"
+        );
+
+        let offset = u32::try_from(Cpu::reg_offset(gr1)).expect("invalid cpu offset");
+        tracing::trace!("store: guest ${} & ${} (pair)", reg_str(gr1), reg_str(gr2));
+
+        #[cfg(target_arch = "aarch64")]
+        dynasm!(
+            asm
+            ; .arch aarch64
+            ; stp W(hr1), W(hr2), [x0, offset as _]
+        );
+    }
+
     #[inline(always)]
     fn emit_writeback(&mut self, guest_reg: u8, host_reg: Reg) {
         Self::emit_writeback_free(&mut self.asm, guest_reg, host_reg);
     }
 
     fn emit_block_epilogue(&mut self, d_clock: u16, new_pc: u32) {
-        // emit write back to dirty registers
-        self.reg_alloc
-            .dirty
-            .iter()
-            .enumerate()
-            .flat_map(|(guest_reg, dirty)| if *dirty { Some(guest_reg) } else { None })
-            .flat_map(|guest_reg| {
-                let host_reg = REG_MAP[guest_reg];
-                Some(guest_reg as u8).zip(host_reg)
+        // emit write back to dirty registers loop through every pair of
+        // consecutive registers. there are 32 registers so the remainder of the
+        // iterator is guaranteed to be 0
+        if cfg!(debug_assertions) {
+            let chunk_iter = self
+                .reg_alloc
+                .dirty
+                .iter()
+                .enumerate()
+                .array_chunks::<2>()
+                .into_remainder()
+                .unwrap();
+            debug_assert!(chunk_iter.count() == 0);
+        }
+        let chunk_iter = self.reg_alloc.dirty.iter().enumerate().array_chunks::<2>();
+        chunk_iter
+            .map(|arr| arr.map(|(guest_reg, dirty)| if *dirty { Some(guest_reg) } else { None }))
+            // holy map chain
+            .map(|arr| {
+                arr.map(|guest_reg| {
+                    guest_reg.and_then(|guest_reg| {
+                        let host_reg = REG_MAP[guest_reg];
+                        Some(guest_reg as u8).zip(host_reg)
+                    })
+                })
             })
-            .for_each(|(guest_reg, host_reg)| {
-                Self::emit_writeback_free(&mut self.asm, guest_reg, host_reg);
+            .for_each(|arr| match arr {
+                [None, None] => {}
+                [Some((guest_reg, host_reg)), None] | [None, Some((guest_reg, host_reg))] => {
+                    Self::emit_writeback_free(&mut self.asm, guest_reg, host_reg);
+                }
+                #[cfg(target_arch = "aarch64")]
+                [Some(a), Some(b)] if a.1.consecutive(b.1) => {
+                    Self::emit_writeback_pair_free(&mut self.asm, [a, b]);
+                }
+                [Some(a), Some(b)] => {
+                    Self::emit_writeback_free(&mut self.asm, a.0, a.1);
+                    Self::emit_writeback_free(&mut self.asm, b.0, b.1);
+                }
             });
 
-        // emit delta clock update
+        // emit pc update & clock update
         #[cfg(target_arch = "aarch64")]
         #[allow(clippy::useless_conversion)]
         {
-            dynasm!(
-                self.asm
-                ; .arch aarch64
-                ; mov w24, d_clock as _
-                ; str w24, [x0, Cpu::D_CLOCK_OFFSET as _]
-            )
-        }
-
-        // emit pc update
-        #[cfg(target_arch = "aarch64")]
-        #[allow(clippy::useless_conversion)]
-        {
+            const {
+                debug_assert!(Cpu::D_CLOCK_OFFSET == Cpu::PC_OFFSET + 4);
+            };
             dynasm!(
                 self.asm
                 ; .arch aarch64
                 ; mov w24, new_pc as _
-                ; str w24, [x0, Cpu::PC_OFFSET as _]
+                ; mov w25, d_clock as _
+                ; stp w24, w25, [x0, Cpu::PC_OFFSET as _]
             )
         }
 
@@ -303,13 +347,19 @@ impl Dynarec {
             )
         }
     }
+    fn map_reg(&self, guest_reg: u8, spill_to: Reg) -> Result<Reg, Reg> {
+        let host_reg = REG_MAP[guest_reg as usize];
+        match host_reg {
+            Some(host_reg) => Ok(host_reg),
+            None => Err(spill_to),
+        }
+    }
     fn emit_load_reg(&mut self, guest_reg: u8, spill_to: Reg) -> Result<Reg, Reg> {
         #[cfg(target_arch = "aarch64")]
         #[allow(clippy::useless_conversion)]
         {
-            let host_reg = REG_MAP[guest_reg as usize];
-            match host_reg {
-                Some(Reg::W(host_reg)) => {
+            match self.map_reg(guest_reg, spill_to) {
+                Ok(Reg::W(host_reg)) => {
                     // already in register
                     if self.reg_alloc.loaded[guest_reg as usize] {
                         return Ok(Reg::W(host_reg));
@@ -331,8 +381,7 @@ impl Dynarec {
                     Ok(Reg::W(host_reg))
                 }
                 // spill register
-                None => {
-                    let Reg::W(spill_to) = spill_to;
+                Err(spill_to) => {
                     let offset =
                         u32::try_from(Cpu::reg_offset(guest_reg)).expect("invalid cpu offset");
                     dynasm!(
@@ -343,9 +392,18 @@ impl Dynarec {
                     self.reg_alloc.dirty.set(guest_reg as usize, false);
                     tracing::trace!("load: guest r{} (spill)", guest_reg);
 
-                    Err(Reg::W(spill_to))
+                    Err(spill_to)
                 }
             }
+        }
+    }
+
+    fn writeback(&mut self, guest: u8, host: Result<Reg, Reg>) {
+        let reg_inner = host.into_inner();
+        if host.is_ok() {
+            self.mark_dirty(guest);
+        } else {
+            self.emit_writeback(guest, reg_inner);
         }
     }
 

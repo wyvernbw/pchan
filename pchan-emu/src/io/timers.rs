@@ -124,7 +124,7 @@ impl IO {
         let timer_0 = mem.read::<TimerCounterValue, ext::NoExt>(cpu, timer_0_address);
         let timer_0_value = timer_0.value();
         // timer 0 is synced to system clock
-        let (new_timer_0_value, overflowed) = timer_0_value.overflowing_add(cpu.d_clock);
+        let (new_timer_0_value, overflowed) = timer_0_value.overflowing_add(cpu.d_clock as _);
 
         // TODO: timer 1 and 2
 

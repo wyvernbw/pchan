@@ -21,9 +21,9 @@ pub struct Cpu {
     )]
     pub gpr: [u32; 32],
     #[debug("{}", hex(self.pc))]
-    pub pc: u32,
+    pub pc: u32, // store pc and d_clock together so one write can target both
+    pub d_clock: u32,
     pub hilo: u64,
-    pub d_clock: u16,
     pub cop0: Cop0,
     pub cop1: Cop1,
     #[debug(skip)]
