@@ -1,4 +1,4 @@
-use std::fmt::Display;
+use std::{fmt::Display, mem::offset_of};
 
 use bitfield::bitfield;
 use pchan_utils::{array, hex};
@@ -110,6 +110,9 @@ pub enum Exception {
 }
 
 impl Cpu {
+    pub const PC_OFFSET: usize = offset_of!(Self, pc);
+    pub const D_CLOCK_OFFSET: usize = offset_of!(Self, d_clock);
+
     pub const fn reg_offset(reg: u8) -> usize {
         use std::mem::offset_of;
 

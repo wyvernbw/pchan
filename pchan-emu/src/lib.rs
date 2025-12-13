@@ -90,6 +90,10 @@ pub const fn max_simd_width_bytes() -> usize {
 
 pub const MAX_SIMD_WIDTH: usize = max_simd_width_bytes();
 
+pub const fn max_simd_elements<T>() -> usize {
+    return max_simd_width_bytes() / size_of::<T>();
+}
+
 #[derive(Default, derive_more::Debug, Clone)]
 pub struct Emu {
     #[debug(skip)]

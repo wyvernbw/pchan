@@ -21,6 +21,7 @@ use crate::dynarec_v2::dynarec_ops::DynarecOp;
 use crate::dynarec_v2::dynarec_ops::EmitCtx;
 use crate::dynarec_v2::dynarec_ops::EmitSummary;
 use crate::io::IO;
+use crate::max_simd_elements;
 use crate::memory::ext;
 use crate::{cpu::Cpu, memory::Memory};
 
@@ -248,7 +249,7 @@ impl Dynarec {
         Self::emit_writeback_free(&mut self.asm, guest_reg, host_reg);
     }
 
-    fn emit_block_epilogue(&mut self, d_clock: u16) {
+    fn emit_block_epilogue(&mut self, d_clock: u16, new_pc: u32) {
         // emit write back to dirty registers
         self.reg_alloc
             .dirty
@@ -264,7 +265,6 @@ impl Dynarec {
             });
 
         // emit delta clock update
-        let d_clock_offset = offset_of!(Cpu, d_clock);
         #[cfg(target_arch = "aarch64")]
         #[allow(clippy::useless_conversion)]
         {
@@ -272,7 +272,19 @@ impl Dynarec {
                 self.asm
                 ; .arch aarch64
                 ; mov w24, d_clock as _
-                ; str w24, [x0, d_clock_offset as _]
+                ; str w24, [x0, Cpu::D_CLOCK_OFFSET as _]
+            )
+        }
+
+        // emit pc update
+        #[cfg(target_arch = "aarch64")]
+        #[allow(clippy::useless_conversion)]
+        {
+            dynasm!(
+                self.asm
+                ; .arch aarch64
+                ; mov w24, new_pc as _
+                ; str w24, [x0, Cpu::PC_OFFSET as _]
             )
         }
 
@@ -361,7 +373,9 @@ impl Emu {
         const CHUNK: usize = 32;
         (self.cpu.pc..)
             .step_by(size_of::<u32>() * CHUNK)
-            .flat_map(|address| self.read::<[Simd<u32, 4>; CHUNK / 4], ext::NoExt>(address))
+            .flat_map(|address| {
+                self.read::<[Simd<u32, 4>; CHUNK / max_simd_elements::<u32>()], ext::NoExt>(address)
+            })
             .flat_map(|value| value.to_array())
             .map(OpCode)
     }
@@ -475,7 +489,8 @@ fn fetch_and_compile_single_threaded(
         op_count += 1;
         cycles + decoded.cycles()
     });
-    dynarec.emit_block_epilogue(cycles);
+    let new_pc = emu.cpu.pc + op_count as u32 * size_of::<OpCode>() as u32;
+    dynarec.emit_block_epilogue(cycles, new_pc);
 
     let func = dynarec.finalize()?;
     let hash = hasher.finish();
@@ -533,7 +548,7 @@ mod tests {
             dynarec: &mut dynarec,
         });
         tracing::info!("emitted addiu instruction");
-        dynarec.emit_block_epilogue(0);
+        dynarec.emit_block_epilogue(0, 0x0);
         tracing::info!("emitted epilogue");
 
         let func = dynarec.finalize()?;
@@ -557,7 +572,7 @@ mod tests {
             dynarec: &mut dynarec,
         });
         tracing::info!("emitted addiu instruction");
-        dynarec.emit_block_epilogue(0);
+        dynarec.emit_block_epilogue(0, 0x0);
         tracing::info!("emitted epilogue");
         let func = dynarec.finalize()?;
         tracing::info!("About to call JIT function");
@@ -572,7 +587,7 @@ mod tests {
     }
 
     #[test]
-    fn dynarec_v2_test_cycles() -> Result<()> {
+    fn dynarec_v2_test_updates() -> Result<()> {
         setup_tracing();
         let mut emu = Emu::default();
         emu.write_many(
@@ -584,6 +599,7 @@ mod tests {
 
         assert_eq!(emu.cpu.gpr[10], 5);
         assert_eq!(emu.cpu.d_clock, 2);
+        assert_eq!(emu.cpu.pc, 0x8);
         Ok(())
     }
 

@@ -102,7 +102,7 @@ pub struct LUTMap<T, S: LUTMapStorage<Inner = T> = Box<T>>(S::Out);
 impl<T, S: LUTMapStorage<Inner = T>> Default for LUTMap<T, S> {
     fn default() -> Self {
         Self(S::from_vec(Vec::from_iter(
-            (0..memory::mb(32)).map(|_| None),
+            (0..memory::kb(64)).map(|_| None),
         )))
     }
 }
