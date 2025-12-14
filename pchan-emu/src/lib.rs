@@ -4,6 +4,8 @@
 #![allow(incomplete_features)]
 #![allow(clippy::collapsible_if)]
 #![feature(test)]
+#![feature(if_let_guard)]
+#![feature(random)]
 #![feature(stmt_expr_attributes)]
 #![feature(ptr_as_ref_unchecked)]
 #![feature(const_for)]

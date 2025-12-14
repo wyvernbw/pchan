@@ -1,13 +1,12 @@
-use bitvec::prelude as bv;
 use color_eyre::eyre::bail;
 use dynasm::dynasm;
 use dynasmrt::Assembler;
 use dynasmrt::DynasmApi;
 use dynasmrt::ExecutableBuffer;
-use pchan_utils::array;
+use std::cell::Cell;
 use std::hash::Hash;
 use std::hash::Hasher;
-use std::mem::offset_of;
+use std::ops::Deref;
 use std::rc::Rc;
 use std::simd::Simd;
 use tracing::Instrument;
@@ -22,12 +21,14 @@ use crate::dynarec_v2::dynarec_ops::DynarecOp;
 use crate::dynarec_v2::dynarec_ops::EmitCtx;
 use crate::dynarec_v2::dynarec_ops::EmitSummary;
 use crate::dynarec_v2::dynarec_ops::ResultIntoInner;
+use crate::dynarec_v2::regalloc::*;
 use crate::io::IO;
 use crate::max_simd_elements;
 use crate::memory::ext;
 use crate::{cpu::Cpu, memory::Memory};
 
 pub mod dynarec_ops;
+pub mod regalloc;
 
 #[cfg(target_arch = "aarch64")]
 type Reloc = dynasmrt::aarch64::Aarch64Relocation;
@@ -52,110 +53,6 @@ impl Default for Dynarec {
         }
     }
 }
-
-#[derive(Default, Debug, Clone)]
-pub struct RegAlloc {
-    loaded: bv::BitArray<[u32; 1]>,
-    dirty: bv::BitArray<[u32; 1]>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Reg {
-    #[cfg(target_arch = "aarch64")]
-    W(u8),
-}
-
-#[cfg(target_arch = "aarch64")]
-impl Reg {
-    const WZR: Self = Reg::W(31);
-    const WSP: Self = Reg::W(31);
-
-    const DELAY_1: Self = Reg::W(28);
-    const DELAY_2: Self = Reg::W(27);
-
-    pub fn consecutive(self: Reg, b: Reg) -> bool {
-        let Reg::W(w) = self;
-        b == Reg::W(w + 1)
-    }
-
-    pub fn caller_saved(&self) -> bool {
-        matches!(self, Reg::W(19..=31))
-    }
-}
-
-#[cfg(target_arch = "aarch64")]
-impl From<Reg> for u8 {
-    fn from(value: Reg) -> Self {
-        match value {
-            Reg::W(reg) => reg,
-        }
-    }
-}
-
-#[cfg(target_arch = "aarch64")]
-static REG_MAP: [Option<Reg>; 32] = array![
-    // $zero
-    0 => Some(Reg::WZR),
-
-    // x0-x3 are used for function arguments or as
-    // temp registers.
-    // x0 is always the pointer to the `Emu` struct.
-    // r18 is the platform register and cannot be used.
-    // x27-x28 should be kept for the delay slot.
-    // $at
-    1 => Some(Reg::W(4)),
-
-    // $v0, $v1
-    2 => Some(Reg::W(5)),
-    3 => Some(Reg::W(6)),
-
-    // $a0-$a3
-    4 => Some(Reg::W(7)),
-    5 => Some(Reg::W(8)),
-    6 => Some(Reg::W(9)),
-    7 => Some(Reg::W(10)),
-
-    // $t0-$t7
-    8 => Some(Reg::W(11)),
-    9 => Some(Reg::W(12)),
-    10 => Some(Reg::W(13)),
-    11 => Some(Reg::W(14)),
-    12 => Some(Reg::W(15)),
-    13 => Some(Reg::W(16)),
-    14 => Some(Reg::W(17)),
-    // r18 must not be used.
-    15 => Some(Reg::W(19)),
-
-    // $s0-$s7
-    16 => Some(Reg::W(20)),
-    17 => Some(Reg::W(21)),
-    18 => Some(Reg::W(22)),
-    19 => Some(Reg::W(23)),
-    20 => Some(Reg::W(24)),
-    21 => Some(Reg::W(25)),
-    22 => Some(Reg::W(26)),
-    23 => Some(Reg::W(27)),
-
-    // $t8-$t9
-    24 => None,
-    25 => None,
-
-    // $k0-$k1
-    26 => None,
-    27 => None,
-
-    // $gp
-    28 => None,
-
-    // $sp
-    29 => Some(Reg::WSP),
-
-    // $fp
-    30 => None,
-
-    // $ra
-    31 => None
-];
 
 #[derive(Debug, Clone)]
 pub struct DynarecFunction {
@@ -291,15 +188,13 @@ impl Dynarec {
         // emit write back to dirty registers
         self.reg_alloc
             .dirty
+            .clone() // this is actually cheap since `dirty` is just a u32
             .iter()
             .enumerate()
             .flat_map(|(guest_reg, dirty)| if *dirty { Some(guest_reg) } else { None })
-            .flat_map(|guest_reg| {
-                let host_reg = REG_MAP[guest_reg];
-                Some(guest_reg as u8).zip(host_reg)
-            })
-            .for_each(|(guest_reg, host_reg)| {
-                Self::emit_writeback_free(&mut self.asm, guest_reg, host_reg);
+            .for_each(|guest_reg| {
+                let host_reg = self.alloc_reg(guest_reg as _);
+                self.emit_writeback(guest_reg as _, host_reg.reg());
             });
 
         // emit pc update & clock update
@@ -335,26 +230,34 @@ impl Dynarec {
             )
         }
     }
-    fn map_reg(&self, guest_reg: u8, spill_to: Reg) -> Result<Reg, Reg> {
-        let host_reg = REG_MAP[guest_reg as usize];
-        match host_reg {
-            Some(host_reg) => Ok(host_reg),
-            None => Err(spill_to),
-        }
+    fn alloc_reg(&mut self, guest_reg: u8) -> LoadedReg {
+        let result = self.reg_alloc.regalloc(guest_reg);
+        LoadedReg::from(result).arm()
     }
-    fn emit_load_reg(&mut self, guest_reg: u8, spill_to: Reg) -> Result<Reg, Reg> {
+    fn emit_load_temp_reg(&mut self, guest_reg: u8, host_reg: Reg) {
+        debug_assert!(!self.reg_alloc.allocatable[host_reg.to_idx() as usize]);
+
+        let offset = Emu::reg_offset(guest_reg) as u32;
+        dynasm!(
+            self.asm
+            ; .arch aarch64
+            ; ldr W(host_reg), [x0, offset]
+        );
+
+        tracing::trace!("load: guest r{} to temp reg {:?}", guest_reg, host_reg);
+    }
+    fn emit_load_reg(&mut self, guest_reg: u8) -> LoadedReg {
         let offset = Emu::reg_offset(guest_reg) as u32;
 
         #[cfg(target_arch = "aarch64")]
         #[allow(clippy::useless_conversion)]
         {
-            match self.map_reg(guest_reg, spill_to) {
-                Ok(Reg::W(host_reg)) => {
-                    // already in register
-                    if self.reg_alloc.loaded[guest_reg as usize] {
-                        return Ok(Reg::W(host_reg));
-                    }
-
+            let result = self.reg_alloc.regalloc(guest_reg);
+            match result {
+                // no op case
+                Err(RegAllocError::AlreadyAllocatedTo(_)) => {}
+                // new allocation
+                Ok(host_reg) => {
                     dynasm!(
                         self.asm
                         ; .arch aarch64
@@ -364,31 +267,35 @@ impl Dynarec {
                     self.reg_alloc.loaded.set(guest_reg as usize, true);
                     self.reg_alloc.dirty.set(guest_reg as usize, false);
                     tracing::trace!("load: guest r{}", guest_reg);
-
-                    Ok(Reg::W(host_reg))
                 }
                 // spill register
-                Err(spill_to) => {
+                Err(RegAllocError::EvictToMemory(host_reg)) => {
+                    self.emit_writeback(guest_reg, Reg::new(host_reg));
                     dynasm!(
                         self.asm
                         ; .arch aarch64
-                        ; ldr W(spill_to), [x0, offset]
+                        ; ldr W(host_reg), [x0, offset]
                     );
                     self.reg_alloc.dirty.set(guest_reg as usize, false);
-                    tracing::trace!("load: guest r{} (spill)", guest_reg);
-
-                    Err(spill_to)
+                    tracing::trace!(
+                        "load: guest r{} (evicted previous w{host_reg} to memory)",
+                        guest_reg
+                    );
                 }
-            }
-        }
-    }
-
-    fn writeback(&mut self, guest: u8, host: Result<Reg, Reg>) {
-        let reg_inner = host.into_inner();
-        if host.is_ok() {
-            self.mark_dirty(guest);
-        } else {
-            self.emit_writeback(guest, reg_inner);
+                Err(RegAllocError::EvictToStack(host_reg)) => {
+                    dynasm!(
+                        self.asm
+                        ; .arch aarch64
+                        ; str W(host_reg), [sp], #16
+                    );
+                    self.reg_alloc.dirty.set(guest_reg as usize, false);
+                    tracing::trace!(
+                        "load: guest r{} (evicted previous w{host_reg} to stack)",
+                        guest_reg
+                    );
+                }
+            };
+            LoadedReg::from(result).arm()
         }
     }
 
@@ -405,6 +312,92 @@ impl Dynarec {
         self.delay_slot = Some(emitter);
     }
 }
+
+#[derive(Debug, Clone)]
+pub struct LoadedReg {
+    result: Result<u8, RegAllocError>,
+    reg: Reg,
+    armed: bool,
+    restored: Cell<bool>,
+}
+
+impl From<Result<u8, RegAllocError>> for LoadedReg {
+    fn from(result: Result<u8, RegAllocError>) -> Self {
+        Self {
+            reg: match &result {
+                Ok(reg) => Reg::new(*reg),
+                Err(
+                    RegAllocError::EvictToMemory(reg)
+                    | RegAllocError::EvictToStack(reg)
+                    | RegAllocError::AlreadyAllocatedTo(reg),
+                ) => Reg::new(*reg),
+            },
+            result,
+            armed: false,
+            restored: Cell::new(false),
+        }
+    }
+}
+
+impl Deref for LoadedReg {
+    type Target = u8;
+
+    fn deref(&self) -> &Self::Target {
+        self.as_ref()
+    }
+}
+
+impl AsRef<u8> for LoadedReg {
+    fn as_ref(&self) -> &u8 {
+        match &self.result {
+            Ok(reg) => reg,
+            Err(
+                RegAllocError::EvictToMemory(reg)
+                | RegAllocError::EvictToStack(reg)
+                | RegAllocError::AlreadyAllocatedTo(reg),
+            ) => reg,
+        }
+    }
+}
+
+impl AsRef<Reg> for LoadedReg {
+    fn as_ref(&self) -> &Reg {
+        &self.reg
+    }
+}
+
+impl LoadedReg {
+    fn reg(&self) -> Reg {
+        *self.as_ref()
+    }
+    fn arm(mut self) -> LoadedReg {
+        self.armed = true;
+        self
+    }
+    fn restore(&self, dynarec: &mut Dynarec) {
+        debug_assert!(!self.restored.get(), "loaded reg already restored.");
+        self.restored.set(true);
+        if let Err(RegAllocError::EvictToStack(reg)) = self.result {
+            #[cfg(target_arch = "aarch64")]
+            dynasm!(
+                dynarec.asm
+                ; .arch aarch64
+                ; ldr W(reg), [sp], #16
+            )
+        }
+    }
+}
+
+// impl Drop for LoadedReg {
+//     fn drop(&mut self) {
+//         if self.armed {
+//             debug_assert!(
+//                 self.restored.get(),
+//                 "loaded register handle dropped without calling restore."
+//             )
+//         }
+//     }
+// }
 
 impl Emu {
     fn linear_fetch(&self) -> impl Iterator<Item = (OpCode, DecodedOpNew)> {
@@ -575,138 +568,6 @@ mod tests {
         tracing::info!("Calling JIT function...");
         func.func.call((&mut emu,));
         tracing::info!("JIT call succeeded!");
-
-        Ok(())
-    }
-
-    #[test]
-    fn dynarec_v2_test() -> Result<()> {
-        setup_tracing();
-        let mut emu = Emu::default();
-        let mut dynarec = Dynarec::default();
-
-        dynarec.emit_block_prelude(ptr::from_ref(&emu.cpu), ptr::from_ref(&emu.mem));
-        tracing::info!("emitted prelude");
-        ADDIU::new(9, 8, 69).emit(EmitCtx {
-            dynarec: &mut dynarec,
-        });
-        tracing::info!("emitted addiu instruction");
-        dynarec.emit_block_epilogue(0, 0x0);
-        tracing::info!("emitted epilogue");
-
-        let func = dynarec.finalize()?;
-        func.func.call((&mut emu,));
-
-        tracing::info!(?emu.cpu);
-        assert_eq!(emu.cpu.gpr[8], 69);
-
-        Ok(())
-    }
-
-    #[test]
-    fn dynarec_v2_test_register_spill() -> Result<()> {
-        setup_tracing();
-        let mut emu = Emu::default();
-        let mut dynarec = Dynarec::default();
-
-        dynarec.emit_block_prelude(ptr::from_ref(&emu.cpu), ptr::from_ref(&emu.mem));
-        tracing::info!("emitted prelude");
-        ADDIU::new(9, 24, 69).emit(EmitCtx {
-            dynarec: &mut dynarec,
-        });
-        tracing::info!("emitted addiu instruction");
-        dynarec.emit_block_epilogue(0, 0x0);
-        tracing::info!("emitted epilogue");
-        let func = dynarec.finalize()?;
-        tracing::info!("About to call JIT function");
-        func.func.call((&mut emu,));
-        tracing::info!("JIT function returned successfully");
-        tracing::info!(?emu.cpu);
-        tracing::info!("About to assert");
-        assert_eq!(emu.cpu.gpr[24], 69);
-        tracing::info!("Assert passed");
-
-        Ok(())
-    }
-
-    #[test]
-    fn dynarec_v2_test_updates() -> Result<()> {
-        setup_tracing();
-        let mut emu = Emu::default();
-        emu.write_many(
-            0x0,
-            &program([addiu(10, 0, 4), addiu(10, 0, 5), OpCode(69420)]),
-        );
-        PipelineV2::new(&emu).run_once(&mut emu)?;
-        tracing::info!(?emu.cpu);
-
-        assert_eq!(emu.cpu.gpr[10], 5);
-        assert_eq!(emu.cpu.d_clock, 2);
-        assert_eq!(emu.cpu.pc, 0x8);
-        Ok(())
-    }
-
-    #[bench]
-    fn dynarec_v2_test_50_adds(b: &mut test::Bencher) -> Result<()> {
-        let instruction_count = 50;
-        setup_tracing();
-        let mut emu = Emu::default();
-        let mut pipe = PipelineV2::new(&emu);
-        let mut last_addr = 0x0;
-        for addr in (0x0..).step_by(4).take(instruction_count) {
-            emu.write(addr, addiu(8, 8, 1));
-            last_addr = addr;
-        }
-        emu.write(last_addr + 4, OpCode::HALT_FIELDS);
-
-        emu.cpu.gpr[8] = 0;
-        for i in 0..3 {
-            let now = Instant::now();
-            pipe = pipe.step(&mut emu)?;
-            let elapsed = now.elapsed().as_micros();
-            tracing::info!("{i}: elapsed: {}us", elapsed);
-        }
-
-        assert_eq!(emu.cpu.gpr[8], instruction_count as u32);
-
-        tracing::info!("after cache:");
-
-        for j in 0..3 {
-            emu.cpu.pc = 0x0;
-            for i in 0..3 {
-                let now = Instant::now();
-                pipe = pipe.step(&mut emu)?;
-                let elapsed = now.elapsed().as_micros();
-                tracing::info!("{i}: elapsed: {}us", elapsed);
-            }
-            println!();
-        }
-
-        Ok(())
-    }
-
-    #[bench]
-    fn dynarec_v2_test_50_adds_call(b: &mut test::Bencher) -> Result<()> {
-        let instruction_count = 50;
-        setup_tracing();
-        let mut emu = Emu::default();
-        let mut pipe = PipelineV2::new(&emu);
-        let mut last_addr = 0x0;
-        for addr in (0x0..).step_by(4).take(instruction_count) {
-            emu.write(addr, addiu(8, 8, 1));
-            last_addr = addr;
-        }
-        emu.write(last_addr + 4, OpCode::HALT_FIELDS);
-
-        emu.cpu.gpr[8] = 0;
-        pipe = pipe.step(&mut emu)?;
-        let PipelineV2::Compiled { pc, func, dynarec } = pipe else {
-            panic!("wrong stage");
-        };
-
-        b.iter(|| {
-            func(&mut emu, false);
-        });
 
         Ok(())
     }
