@@ -71,10 +71,15 @@ impl Reg {
     const WSP: Self = Reg::W(31);
 
     const DELAY_1: Self = Reg::W(28);
+    const DELAY_2: Self = Reg::W(27);
 
     pub fn consecutive(self: Reg, b: Reg) -> bool {
         let Reg::W(w) = self;
         b == Reg::W(w + 1)
+    }
+
+    pub fn caller_saved(&self) -> bool {
+        matches!(self, Reg::W(19..=31))
     }
 }
 
@@ -92,38 +97,44 @@ static REG_MAP: [Option<Reg>; 32] = array![
     // $zero
     0 => Some(Reg::WZR),
 
+    // x0-x3 are used for function arguments or as
+    // temp registers.
+    // x0 is always the pointer to the `Emu` struct.
+    // r18 is the platform register and cannot be used.
+    // x27-x28 should be kept for the delay slot.
     // $at
-    1 => Some(Reg::W(1)),
+    1 => Some(Reg::W(4)),
 
     // $v0, $v1
-    2 => Some(Reg::W(2)),
-    3 => Some(Reg::W(3)),
+    2 => Some(Reg::W(5)),
+    3 => Some(Reg::W(6)),
 
     // $a0-$a3
-    4 => Some(Reg::W(4)),
-    5 => Some(Reg::W(5)),
-    6 => Some(Reg::W(6)),
-    7 => Some(Reg::W(7)),
+    4 => Some(Reg::W(7)),
+    5 => Some(Reg::W(8)),
+    6 => Some(Reg::W(9)),
+    7 => Some(Reg::W(10)),
 
     // $t0-$t7
-    8 => Some(Reg::W(8)),
-    9 => Some(Reg::W(9)),
-    10 => Some(Reg::W(10)),
-    11 => Some(Reg::W(11)),
-    12 => Some(Reg::W(12)),
-    13 => Some(Reg::W(13)),
-    14 => Some(Reg::W(14)),
-    15 => Some(Reg::W(15)),
+    8 => Some(Reg::W(11)),
+    9 => Some(Reg::W(12)),
+    10 => Some(Reg::W(13)),
+    11 => Some(Reg::W(14)),
+    12 => Some(Reg::W(15)),
+    13 => Some(Reg::W(16)),
+    14 => Some(Reg::W(17)),
+    // r18 must not be used.
+    15 => Some(Reg::W(19)),
 
     // $s0-$s7
-    16 => Some(Reg::W(16)),
-    17 => Some(Reg::W(17)),
-    18 => Some(Reg::W(18)),
-    19 => Some(Reg::W(19)),
-    20 => Some(Reg::W(20)),
-    21 => Some(Reg::W(21)),
-    22 => Some(Reg::W(22)),
-    23 => Some(Reg::W(23)),
+    16 => Some(Reg::W(20)),
+    17 => Some(Reg::W(21)),
+    18 => Some(Reg::W(22)),
+    19 => Some(Reg::W(23)),
+    20 => Some(Reg::W(24)),
+    21 => Some(Reg::W(25)),
+    22 => Some(Reg::W(26)),
+    23 => Some(Reg::W(27)),
 
     // $t8-$t9
     24 => None,
@@ -143,12 +154,12 @@ static REG_MAP: [Option<Reg>; 32] = array![
     30 => None,
 
     // $ra
-    31 => Some(Reg::W(24))
+    31 => None
 ];
 
 #[derive(Debug, Clone)]
 pub struct DynarecFunction {
-    func: fn(*mut Cpu, *mut Memory),
+    func: fn(*mut Emu),
     exec: Rc<ExecutableBuffer>,
 }
 
@@ -169,9 +180,9 @@ impl DynarecBlock {
         if instrument {
             (self.function.func)
                 .instrument(tracing::info_span!("fn", addr = ?self.function.func))
-                .inner()(&mut emu.cpu, &mut emu.mem)
+                .inner()(emu)
         } else {
-            (self.function.func)(&mut emu.cpu, &mut emu.mem)
+            (self.function.func)(emu)
         };
 
         IO::run_timer_pipeline(&mut emu.cpu, &mut emu.mem);
@@ -214,7 +225,7 @@ impl Dynarec {
             tracing::trace!("Wrote {} bytes to /tmp/jit_code.bin", exec.len());
         }
 
-        let func = unsafe { std::mem::transmute::<*const u8, fn(_, _)>(exec.as_ptr()) };
+        let func = unsafe { std::mem::transmute::<*const u8, fn(_)>(exec.as_ptr()) };
         Ok(DynarecFunction {
             func,
             exec: Rc::new(exec),
@@ -226,15 +237,17 @@ impl Dynarec {
             dynasm!(
                 self.asm
                 ; .arch aarch64
-                // TODO: save all registers
+                ; stp x19, x20, [sp, -16]!
+                ; stp x21, x22, [sp, -16]!
                 ; stp x23, x24, [sp, -16]!
                 ; stp x25, x26, [sp, -16]!
                 ; stp x27, x28, [sp, -16]!
+                ; stp x29, x30, [sp, -16]!
             )
         }
     }
     fn emit_writeback_free(asm: &mut Assembler<Reloc>, guest_reg: u8, host_reg: Reg) {
-        let offset = u32::try_from(Cpu::reg_offset(guest_reg)).expect("invalid cpu offset");
+        let offset = Emu::reg_offset(guest_reg) as u32;
         tracing::trace!("store: guest r{}", guest_reg);
 
         // emit writeback
@@ -258,7 +271,7 @@ impl Dynarec {
             "pairs store must be of consecutive registers"
         );
 
-        let offset = u32::try_from(Cpu::reg_offset(gr1)).expect("invalid cpu offset");
+        let offset = Emu::reg_offset(gr1) as u32;
         tracing::trace!("store: guest ${} & ${} (pair)", reg_str(gr1), reg_str(gr2));
 
         #[cfg(target_arch = "aarch64")]
@@ -275,45 +288,18 @@ impl Dynarec {
     }
 
     fn emit_block_epilogue(&mut self, d_clock: u16, new_pc: u32) {
-        // emit write back to dirty registers loop through every pair of
-        // consecutive registers. there are 32 registers so the remainder of the
-        // iterator is guaranteed to be 0
-        if cfg!(debug_assertions) {
-            let chunk_iter = self
-                .reg_alloc
-                .dirty
-                .iter()
-                .enumerate()
-                .array_chunks::<2>()
-                .into_remainder()
-                .unwrap();
-            debug_assert!(chunk_iter.count() == 0);
-        }
-        let chunk_iter = self.reg_alloc.dirty.iter().enumerate().array_chunks::<2>();
-        chunk_iter
-            .map(|arr| arr.map(|(guest_reg, dirty)| if *dirty { Some(guest_reg) } else { None }))
-            // holy map chain
-            .map(|arr| {
-                arr.map(|guest_reg| {
-                    guest_reg.and_then(|guest_reg| {
-                        let host_reg = REG_MAP[guest_reg];
-                        Some(guest_reg as u8).zip(host_reg)
-                    })
-                })
+        // emit write back to dirty registers
+        self.reg_alloc
+            .dirty
+            .iter()
+            .enumerate()
+            .flat_map(|(guest_reg, dirty)| if *dirty { Some(guest_reg) } else { None })
+            .flat_map(|guest_reg| {
+                let host_reg = REG_MAP[guest_reg];
+                Some(guest_reg as u8).zip(host_reg)
             })
-            .for_each(|arr| match arr {
-                [None, None] => {}
-                [Some((guest_reg, host_reg)), None] | [None, Some((guest_reg, host_reg))] => {
-                    Self::emit_writeback_free(&mut self.asm, guest_reg, host_reg);
-                }
-                #[cfg(target_arch = "aarch64")]
-                [Some(a), Some(b)] if a.1.consecutive(b.1) => {
-                    Self::emit_writeback_pair_free(&mut self.asm, [a, b]);
-                }
-                [Some(a), Some(b)] => {
-                    Self::emit_writeback_free(&mut self.asm, a.0, a.1);
-                    Self::emit_writeback_free(&mut self.asm, b.0, b.1);
-                }
+            .for_each(|(guest_reg, host_reg)| {
+                Self::emit_writeback_free(&mut self.asm, guest_reg, host_reg);
             });
 
         // emit pc update & clock update
@@ -321,14 +307,14 @@ impl Dynarec {
         #[allow(clippy::useless_conversion)]
         {
             const {
-                debug_assert!(Cpu::D_CLOCK_OFFSET == Cpu::PC_OFFSET + 4);
+                debug_assert!(Emu::D_CLOCK_OFFSET == Emu::PC_OFFSET + 4);
             };
             dynasm!(
                 self.asm
                 ; .arch aarch64
                 ; mov w24, new_pc as _
                 ; mov w25, d_clock as _
-                ; stp w24, w25, [x0, Cpu::PC_OFFSET as _]
+                ; stp w24, w25, [x0, Emu::PC_OFFSET as _]
             )
         }
 
@@ -339,10 +325,12 @@ impl Dynarec {
             dynasm!(
                 self.asm
                 ; .arch aarch64
-                // DONE: restore all registers
+                ; ldp x29, x30, [sp], #16
                 ; ldp x27, x28, [sp], #16
                 ; ldp x25, x26, [sp], #16
                 ; ldp x23, x24, [sp], #16
+                ; ldp x21, x22, [sp], #16
+                ; ldp x19, x20, [sp], #16
                 ; ret
             )
         }
@@ -355,6 +343,8 @@ impl Dynarec {
         }
     }
     fn emit_load_reg(&mut self, guest_reg: u8, spill_to: Reg) -> Result<Reg, Reg> {
+        let offset = Emu::reg_offset(guest_reg) as u32;
+
         #[cfg(target_arch = "aarch64")]
         #[allow(clippy::useless_conversion)]
         {
@@ -364,9 +354,6 @@ impl Dynarec {
                     if self.reg_alloc.loaded[guest_reg as usize] {
                         return Ok(Reg::W(host_reg));
                     }
-
-                    let offset =
-                        u32::try_from(Cpu::reg_offset(guest_reg)).expect("invalid cpu offset");
 
                     dynasm!(
                         self.asm
@@ -382,8 +369,6 @@ impl Dynarec {
                 }
                 // spill register
                 Err(spill_to) => {
-                    let offset =
-                        u32::try_from(Cpu::reg_offset(guest_reg)).expect("invalid cpu offset");
                     dynasm!(
                         self.asm
                         ; .arch aarch64
@@ -475,7 +460,7 @@ impl PipelineV2 {
     }
     pub fn step(self, emu: &mut Emu) -> color_eyre::Result<Self> {
         match self {
-            PipelineV2::Init { pc, dynarec } => match emu.dynarec_cache.take(pc) {
+            PipelineV2::Init { pc, dynarec } => match emu.dynarec_cache.remove(&pc) {
                 None => {
                     let func = fetch_and_compile_single_threaded(emu, dynarec)?;
                     Ok(PipelineV2::Compiled {
@@ -588,7 +573,7 @@ mod tests {
 
         let func = dynarec.finalize()?;
         tracing::info!("Calling JIT function...");
-        func.func.call((&mut emu.cpu, &mut emu.mem));
+        func.func.call((&mut emu,));
         tracing::info!("JIT call succeeded!");
 
         Ok(())
@@ -610,7 +595,7 @@ mod tests {
         tracing::info!("emitted epilogue");
 
         let func = dynarec.finalize()?;
-        func.func.call((&mut emu.cpu, &mut emu.mem));
+        func.func.call((&mut emu,));
 
         tracing::info!(?emu.cpu);
         assert_eq!(emu.cpu.gpr[8], 69);
@@ -634,7 +619,7 @@ mod tests {
         tracing::info!("emitted epilogue");
         let func = dynarec.finalize()?;
         tracing::info!("About to call JIT function");
-        func.func.call((&mut emu.cpu, &mut emu.mem));
+        func.func.call((&mut emu,));
         tracing::info!("JIT function returned successfully");
         tracing::info!(?emu.cpu);
         tracing::info!("About to assert");

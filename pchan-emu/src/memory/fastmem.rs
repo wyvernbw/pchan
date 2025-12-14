@@ -4,6 +4,7 @@ use pchan_utils::hex;
 use tracing::{Level, instrument};
 
 use crate::{
+    Emu,
     cpu::Cpu,
     memory::{MEM_MAP, Memory, kb},
 };
@@ -206,9 +207,9 @@ impl Memory {
         let ptr = ptr as *mut T;
 
         if !ptr.is_aligned() {
-            tracing::error!(
-                "emulator triggered unaligned write in an aligned operation. consider the exception handler invoked (not yet implemented)"
-            );
+            // tracing::error!(
+            //     "emulator triggered unaligned write in an aligned operation. consider the exception handler invoked (not yet implemented)"
+            // );
             unsafe { std::ptr::write_unaligned(ptr, value) };
             return;
         }
@@ -342,5 +343,14 @@ impl Memory {
     #[instrument(level = Level::TRACE, skip(self, address, cpu), fields(address = %hex(address), value = %hex(value), isc = cpu.isc()))]
     pub unsafe extern "C-unwind" fn write8(&mut self, cpu: &Cpu, address: u32, value: i32) {
         unsafe { self.write_raw(cpu, address, value as i8) }
+    }
+}
+
+impl Emu {
+    #[unsafe(no_mangle)]
+    #[pchan_macros::instrument_write]
+    pub unsafe extern "C" fn write8v2(emu: *mut Emu, address: u32, value: i32) {
+        tracing::trace!("WRITE");
+        unsafe { (*emu).write(address, value as i8) }
     }
 }

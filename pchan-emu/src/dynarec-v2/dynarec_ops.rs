@@ -3,13 +3,19 @@ use enum_dispatch::enum_dispatch;
 #[cfg(test)]
 use rstest::rstest;
 
+use crate::Emu;
 use crate::cpu::ops::addiu::*;
+use crate::cpu::ops::sb::*;
 use crate::cpu::ops::subu::*;
 use crate::cpu::ops::{HaltBlock, OpCode};
 use crate::dynarec_v2::Dynarec;
 use crate::dynarec_v2::Reg;
+use crate::memory::Extend;
+use crate::memory::Memory;
+use crate::memory::ext;
 use dynasm::dynasm;
 use dynasmrt::DynasmApi;
+use dynasmrt::DynasmLabelApi;
 
 pub trait ResultIntoInner {
     type IntoInner;
@@ -35,6 +41,7 @@ pub enum Boundary {
     Function,
 }
 
+#[derive(Debug)]
 pub struct EmitCtx<'a> {
     pub dynarec: &'a mut Dynarec,
 }
@@ -77,6 +84,8 @@ pub enum DecodedOpNew {
     SUBU(SUBU),
     #[strum(transparent)]
     HaltBlock(HaltBlock),
+    #[strum(transparent)]
+    SB(SB),
 }
 
 #[derive(Debug, Clone, Copy, derive_more::Display, Hash, PartialEq, Eq)]
@@ -112,8 +121,9 @@ impl DecodedOpNew {
             let rd = fields.rd();
             let funct = fields.funct();
             match (opcode, rs, rt, funct) {
-                (0x8 | 0x9, _, _, _) => Self::ADDIU(ADDIU::new(rs, rt, fields.imm16())),
                 (0x0, _, _, 0x22 | 0x23) => Self::SUBU(SUBU::new(rd, rs, rt)),
+                (0x8 | 0x9, _, _, _) => Self::ADDIU(ADDIU::new(rs, rt, fields.imm16())),
+                (0x28, _, _, _) => Self::SB(SB::new(rt, rs, fields.imm16())),
                 _ => Self::illegal(),
             }
         })
@@ -214,5 +224,87 @@ fn test_subu(#[case] a: u32, #[case] b: u32, #[case] expected: u32) -> color_eyr
     assert_eq!(emu.cpu.gpr[12], expected);
     assert_eq!(emu.cpu.d_clock, 1);
     assert_eq!(emu.cpu.pc, 0x4);
+    Ok(())
+}
+
+// fn emit_store_scope(rt: u8, rs: u8, imm: i16, ctx: EmitCtx, f: impl Fn()) {
+//     #[cfg(target_arch = "aarch64")]
+//     {
+//     }
+// }
+
+impl DynarecOp for SB {
+    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+        let rt = ctx.dynarec.emit_load_reg(self.rt, Reg::W(24)).into_inner();
+        let rs = ctx.dynarec.emit_load_reg(self.rs, Reg::W(25)).into_inner();
+        let caller_saved = rt.caller_saved() || rs.caller_saved();
+
+        #[cfg(target_arch = "aarch64")]
+        dynasm!(
+            ctx.dynarec.asm
+            ; .arch aarch64
+
+            // load function pointer first into x16
+            ; ldr x16, >func_ptr
+            ; b >after_ptr
+            ; func_ptr:
+            ; .u64 Emu::write8v2 as usize as _
+            ; after_ptr:
+
+            // calculate guest address in w27 (safe temp)
+            ; add w27, WSP(rs), ext::sign(self.imm) as _
+
+            ; stp x0, x16, [sp, #-16]!
+
+            ;; if caller_saved {
+                dynasm!(ctx.dynarec.asm
+                    ; stp X(rt), X(rs), [sp, #-16]!
+                );
+            }
+
+            // x0 = emu pointer
+            ; mov w1, w27        // address (3rd arg)
+            ; mov w2, W(rt)      // value (4th arg)
+
+            // write8
+            ; blr x16
+
+            // restore x0, x1
+            ;; if caller_saved {
+                dynasm!(ctx.dynarec.asm
+                    ; ldp X(rt), X(rs), [sp], #16
+                );
+            }
+
+            ; ldp x0, x16, [sp], #16
+
+        );
+
+        EmitSummary
+    }
+
+    fn cycles(&self) -> u16 {
+        2
+    }
+}
+
+#[cfg(test)]
+#[rstest]
+fn test_sb() -> color_eyre::Result<()> {
+    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2, memory::ext};
+    use pchan_utils::setup_tracing;
+
+    setup_tracing();
+    let mut emu = Emu::default();
+    emu.cpu.gpr[10] = 69;
+    emu.cpu.gpr[11] = 0xf;
+    emu.write_many(0x0, &program([sb(10, 11, 2), OpCode(69420)]));
+    PipelineV2::new(&emu).run_once(&mut emu)?;
+    tracing::info!("finished running");
+    tracing::info!(?emu.cpu);
+    assert_eq!(emu.cpu.d_clock, 2);
+    assert_eq!(emu.cpu.pc, 0x4);
+    assert_eq!(emu.read::<u8, ext::Zero>(0xf + 2), 69);
+    tracing::info!("returning from test...");
     Ok(())
 }

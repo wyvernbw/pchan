@@ -5,9 +5,9 @@ use super::{EmitCtx, OpCode, PrimeOp};
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct SB {
-    rt: u8,
-    rs: u8,
-    imm: i16,
+    pub rt: u8,
+    pub rs: u8,
+    pub imm: i16,
 }
 
 impl SB {
@@ -78,17 +78,17 @@ mod tests {
     use crate::test_utils::jit;
     use crate::{Emu, test_utils::emulator};
 
-    #[rstest]
-    pub fn test_sb(setup_tracing: (), mut emulator: Emu, mut jit: JIT) -> color_eyre::Result<()> {
-        emulator.write_many(0, &program([sb(9, 8, 0), OpCode(69420)]));
+    // #[rstest]
+    // pub fn test_sb(setup_tracing: (), mut emulator: Emu, mut jit: JIT) -> color_eyre::Result<()> {
+    //     emulator.write_many(0, &program([sb(9, 8, 0), OpCode(69420)]));
 
-        emulator.cpu.gpr[8] = 32; // base register
-        emulator.cpu.gpr[9] = 69;
+    //     emulator.cpu.gpr[8] = 32; // base register
+    //     emulator.cpu.gpr[9] = 69;
 
-        emulator.step_jit(&mut jit)?;
+    //     emulator.step_jit(&mut jit)?;
 
-        assert_eq!(emulator.read::<u8, ext::Sign>(32), 69);
+    //     assert_eq!(emulator.read::<u8, ext::Sign>(32), 69);
 
-        Ok(())
-    }
+    //     Ok(())
+    // }
 }

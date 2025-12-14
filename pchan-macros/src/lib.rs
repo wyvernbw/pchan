@@ -106,3 +106,23 @@ pub fn derive_opcode(stream: TokenStream) -> TokenStream {
 pub fn opcode(_attr: TokenStream, item: TokenStream) -> TokenStream {
     item
 }
+
+#[proc_macro_attribute]
+pub fn instrument_write(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    format!(
+        r#"#[instrument(
+            level = Level::TRACE,
+            skip(emu, address),
+            fields(
+                address = %hex(address),
+                value = %hex(value),
+                isc = unsafe {{ (*emu).cpu.isc() }}
+            )
+        )]
+        {}
+        "#,
+        item
+    )
+    .parse()
+    .expect("invalid tokens")
+}

@@ -37,7 +37,11 @@
 // allow unused variables in tests to supress the setup tracing warnings
 #![cfg_attr(test, allow(unused_variables))]
 
-use std::simd::{LaneCount, SimdElement, SupportedLaneCount};
+use std::{
+    collections::HashMap,
+    mem::offset_of,
+    simd::{LaneCount, SimdElement, SupportedLaneCount},
+};
 
 use crate::{
     bootloader::Bootloader,
@@ -91,18 +95,19 @@ pub const fn max_simd_width_bytes() -> usize {
 pub const MAX_SIMD_WIDTH: usize = max_simd_width_bytes();
 
 pub const fn max_simd_elements<T>() -> usize {
-    return max_simd_width_bytes() / size_of::<T>();
+    max_simd_width_bytes() / size_of::<T>()
 }
 
 #[derive(Default, derive_more::Debug, Clone)]
+#[repr(C)]
 pub struct Emu {
-    #[debug(skip)]
-    pub mem: Memory,
     pub cpu: Cpu,
-    pub jit_cache: JitCache,
-    pub dynarec_cache: LUTMap<DynarecBlock>,
-    pub inst_cache: InstCache,
+    #[debug(skip)]
+    pub dynarec_cache: HashMap<u32, DynarecBlock>,
+    pub mem: Memory,
     pub boot: Bootloader,
+    pub jit_cache: JitCache,
+    pub inst_cache: InstCache,
 }
 
 pub type InstCache = LUTMap<FetchSummary>;
@@ -110,6 +115,9 @@ pub type InstCache = LUTMap<FetchSummary>;
 use memory::Extend;
 
 impl Emu {
+    const PC_OFFSET: usize = offset_of!(Emu, cpu) + Cpu::PC_OFFSET;
+    const D_CLOCK_OFFSET: usize = offset_of!(Emu, cpu) + Cpu::D_CLOCK_OFFSET;
+
     pub fn read<T, E>(&self, address: u32) -> T::Out
     where
         T: Extend<E> + Copy,
@@ -126,6 +134,9 @@ impl Emu {
         LaneCount<{ Chunk::<T>::LANE_COUNT }>: SupportedLaneCount,
     {
         self.mem.write_many(&self.cpu, address, values);
+    }
+    pub fn reg_offset(reg: u8) -> usize {
+        offset_of!(Self, cpu) + Cpu::reg_offset(reg)
     }
 }
 

@@ -16,7 +16,7 @@ fn dynarec_v2_test_50_adds_complete(c: &mut Criterion) {
     c.bench_function("add_50_complete", |b| {
         b.iter_batched(
             || {
-                _ = emu.borrow_mut().dynarec_cache.take(0x0);
+                _ = emu.borrow_mut().dynarec_cache.remove(&0x0);
                 PipelineV2::new(&emu.borrow())
             },
             |mut pipe| {
