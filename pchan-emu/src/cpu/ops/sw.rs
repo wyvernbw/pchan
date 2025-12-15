@@ -5,9 +5,9 @@ use super::{EmitCtx, OpCode, PrimeOp};
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct SW {
-    rt: u8,
-    rs: u8,
-    imm: i16,
+    pub rt: u8,
+    pub rs: u8,
+    pub imm: i16,
 }
 
 impl SW {

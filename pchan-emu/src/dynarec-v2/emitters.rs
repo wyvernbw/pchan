@@ -6,32 +6,18 @@ use rstest::rstest;
 use crate::Emu;
 use crate::cpu::ops::addiu::*;
 use crate::cpu::ops::sb::*;
+use crate::cpu::ops::sh::*;
 use crate::cpu::ops::subu::*;
+use crate::cpu::ops::sw::*;
 use crate::cpu::ops::{HaltBlock, OpCode};
 use crate::dynarec_v2::Dynarec;
 use crate::dynarec_v2::Reg;
-use crate::memory::Extend;
-use crate::memory::Memory;
+#[cfg(test)]
+use crate::memory;
 use crate::memory::ext;
 use dynasm::dynasm;
 use dynasmrt::DynasmApi;
 use dynasmrt::DynasmLabelApi;
-
-pub trait ResultIntoInner {
-    type IntoInner;
-    fn into_inner(self) -> Self::IntoInner;
-}
-
-impl<T> ResultIntoInner for Result<T, T> {
-    type IntoInner = T;
-
-    fn into_inner(self) -> Self::IntoInner {
-        match self {
-            Ok(ok) => ok,
-            Err(err) => err,
-        }
-    }
-}
 
 #[derive(Default, Debug, Clone, Copy)]
 pub enum Boundary {
@@ -74,18 +60,15 @@ pub trait DynarecOp {
 }
 
 #[enum_dispatch]
-#[derive(Debug, Clone, Copy, Hash, strum::Display)]
+#[derive(Debug, Clone, Copy, Hash, derive_more::Display)]
 pub enum DecodedOpNew {
-    #[strum(transparent)]
     ILLEGAL(ILLEGAL),
-    #[strum(transparent)]
     ADDIU(ADDIU),
-    #[strum(transparent)]
     SUBU(SUBU),
-    #[strum(transparent)]
     HaltBlock(HaltBlock),
-    #[strum(transparent)]
     SB(SB),
+    SH(SH),
+    SW(SW),
 }
 
 #[derive(Debug, Clone, Copy, derive_more::Display, Hash, PartialEq, Eq)]
@@ -124,6 +107,9 @@ impl DecodedOpNew {
                 (0x0, _, _, 0x22 | 0x23) => Self::SUBU(SUBU::new(rd, rs, rt)),
                 (0x8 | 0x9, _, _, _) => Self::ADDIU(ADDIU::new(rs, rt, fields.imm16())),
                 (0x28, _, _, _) => Self::SB(SB::new(rt, rs, fields.imm16())),
+                (0x29, _, _, _) => Self::SH(SH::new(rt, rs, fields.imm16())),
+                (0x2A, _, _, _) => todo!("swl"),
+                (0x2B, _, _, _) => Self::SW(SW::new(rt, rs, fields.imm16())),
                 _ => Self::illegal(),
             }
         })
@@ -252,42 +238,50 @@ fn test_subu(#[case] a: u32, #[case] b: u32, #[case] expected: u32) -> color_eyr
     Ok(())
 }
 
-// fn emit_store_scope(rt: u8, rs: u8, imm: i16, ctx: EmitCtx, f: impl Fn()) {
-//     #[cfg(target_arch = "aarch64")]
-//     {
-//     }
-// }
+fn emit_store<'a, T: 'static>(
+    ctx: EmitCtx<'a>,
+    rt: u8,
+    rs: u8,
+    imm: i16,
+    func_ptr: unsafe extern "C" fn(*mut Emu, u32, T),
+) -> EmitSummary {
+    ctx.dynarec.emit_load_temp_reg(rs, Reg::W(1));
+    ctx.dynarec.emit_load_temp_reg(rt, Reg::W(2));
 
-impl DynarecOp for SB {
-    #[allow(clippy::useless_conversion)]
-    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
-        #[cfg(target_arch = "aarch64")]
-        ctx.dynarec.emit_load_temp_reg(self.rt, Reg::W(2));
+    dynasm!(
+        ctx.dynarec.asm
+        ; .arch aarch64
+        ; add w1, w1, ext::sign(imm) as _
+        ; stp w1, w2, [sp, #-16]!
+    );
 
-        let rs = ctx.dynarec.emit_load_reg(self.rs);
-
-        #[cfg(target_arch = "aarch64")]
+    ctx.dynarec.set_delay_slot(move |ctx| {
         dynasm!(
             ctx.dynarec.asm
             ; .arch aarch64
             ; ldr x3, >func_ptr
             ; b >after_ptr
             ; func_ptr:
-            ; .u64 Emu::write8v2 as usize as _
+            ; .u64 func_ptr as usize as _
             ; after_ptr:
-            ; add w1, WSP(*rs), ext::sign(self.imm) as _
+            ; ldp w1, w2, [sp], #16
             // we have to store x0 since the function call will clobber it
-            // so we can squeeze in rs as well!
-            ; stp x0, X(*rs), [sp, #-16]!
-            // write8
+            ; stp x0, x1, [sp, #-16]!
+            // call to function
             ; blr x3
-            ; ldp x0, X(*rs), [sp], #16
+            ; ldp x0, x1, [sp], #16
 
         );
-
-        rs.restore(ctx.dynarec);
-
         EmitSummary
+    });
+
+    EmitSummary
+}
+
+impl DynarecOp for SB {
+    #[cfg(target_arch = "aarch64")]
+    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+        emit_store(ctx, self.rt, self.rs, self.imm, Emu::write8v2)
     }
 
     fn cycles(&self) -> u16 {
@@ -295,23 +289,54 @@ impl DynarecOp for SB {
     }
 }
 
+impl DynarecOp for SH {
+    #[cfg(target_arch = "aarch64")]
+    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+        emit_store(ctx, self.rt, self.rs, self.imm, Emu::write16v2)
+    }
+    fn cycles(&self) -> u16 {
+        2
+    }
+}
+
+impl DynarecOp for SW {
+    #[cfg(target_arch = "aarch64")]
+    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+        emit_store(ctx, self.rt, self.rs, self.imm, Emu::write32v2)
+    }
+    fn cycles(&self) -> u16 {
+        2
+    }
+}
+
 #[cfg(test)]
 #[rstest]
-fn test_sb() -> color_eyre::Result<()> {
+#[case::sb(69u8, sb(10, 11, 2))]
+#[case::sh(69u8, sh(10, 11, 2))]
+#[case::sw(69u8, sw(10, 11, 2))]
+fn test_stores<T>(#[case] value: T, #[case] instr: OpCode) -> color_eyre::Result<()>
+where
+    T: Copy + std::fmt::Debug + PartialEq,
+    T: const memory::Extend<ext::Zero, Out = u32>,
+{
     use crate::{Emu, cpu::program, dynarec_v2::PipelineV2, memory::ext};
     use pchan_utils::setup_tracing;
 
     setup_tracing();
     let mut emu = Emu::default();
-    emu.cpu.gpr[10] = 69;
+    emu.cpu.gpr[10] = ext::zero(value);
     emu.cpu.gpr[11] = 0xf;
     emu.write_many(0x0, &program([sb(10, 11, 2), OpCode(69420)]));
+
     PipelineV2::new(&emu).run_once(&mut emu)?;
+
     tracing::info!("finished running");
     tracing::info!(?emu.cpu);
+
     assert_eq!(emu.cpu.d_clock, 2);
     assert_eq!(emu.cpu.pc, 0x4);
-    assert_eq!(emu.read::<u8, ext::Zero>(0xf + 2), 69);
+    assert_eq!(emu.read::<T, ext::Zero>(0xf + 2), ext::zero(value));
+
     tracing::info!("returning from test...");
     Ok(())
 }

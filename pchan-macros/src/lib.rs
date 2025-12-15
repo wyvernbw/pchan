@@ -112,11 +112,11 @@ pub fn instrument_write(_attr: TokenStream, item: TokenStream) -> TokenStream {
     format!(
         r#"#[instrument(
             level = Level::TRACE,
-            skip(emu, address),
+            skip(self, address),
             fields(
                 address = %hex(address),
                 value = %hex(value),
-                isc = unsafe {{ (*emu).cpu.isc() }}
+                isc = unsafe {{ (*self).cpu.isc() }}
             )
         )]
         {}

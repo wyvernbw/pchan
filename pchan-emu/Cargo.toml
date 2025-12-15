@@ -29,6 +29,7 @@ petgraph = "0.8.2"
 rapidhash = { version = "4.1.1", features = ["nightly"] }
 rayon = "1.11.0"
 slab.workspace = true
+smallbox = { version = "0.8.8", features = ["nightly"] }
 smallvec = "1.15.1"
 smol = "2.0.2"
 strum = { version = "0.27.2", features = ["derive"] }
@@ -45,13 +46,13 @@ criterion = { version = "0.5", features = ["html_reports"] }
 
 
 [[bench]]
-name = "op_decoding"
+name = "bench_op_decoding"
 harness = false
 
 [[bench]]
-name = "bios_func_1"
+name = "bench_bios_func_1"
 harness = false
 
 [[bench]]
-name = "dynarec_v2"
+name = "bench_dynarec_v2"
 harness = false

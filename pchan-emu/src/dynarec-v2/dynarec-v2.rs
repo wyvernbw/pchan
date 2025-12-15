@@ -3,6 +3,7 @@ use dynasm::dynasm;
 use dynasmrt::Assembler;
 use dynasmrt::DynasmApi;
 use dynasmrt::ExecutableBuffer;
+use smallbox::SmallBox;
 use std::cell::Cell;
 use std::hash::Hash;
 use std::hash::Hasher;
@@ -16,18 +17,16 @@ use tracing::enabled;
 use crate::Emu;
 use crate::cpu::ops::OpCode;
 use crate::cpu::reg_str;
-use crate::dynarec_v2::dynarec_ops::DecodedOpNew;
-use crate::dynarec_v2::dynarec_ops::DynarecOp;
-use crate::dynarec_v2::dynarec_ops::EmitCtx;
-use crate::dynarec_v2::dynarec_ops::EmitSummary;
-use crate::dynarec_v2::dynarec_ops::ResultIntoInner;
+use crate::dynarec_v2::emitters::DecodedOpNew;
+use crate::dynarec_v2::emitters::DynarecOp;
+use crate::dynarec_v2::emitters::EmitCtx;
+use crate::dynarec_v2::emitters::EmitSummary;
 use crate::dynarec_v2::regalloc::*;
 use crate::io::IO;
 use crate::max_simd_elements;
 use crate::memory::ext;
-use crate::{cpu::Cpu, memory::Memory};
 
-pub mod dynarec_ops;
+pub mod emitters;
 pub mod regalloc;
 
 #[cfg(target_arch = "aarch64")]
@@ -35,10 +34,13 @@ type Reloc = dynasmrt::aarch64::Aarch64Relocation;
 #[cfg(target_arch = "x86_64")]
 type Reloc = dynasmrt::x64::X64Relocation;
 
-#[derive(Debug)]
+type DynEmitter = SmallBox<dyn Fn(EmitCtx) -> EmitSummary, [u8; 64]>;
+
+#[derive(derive_more::Debug)]
 pub struct Dynarec {
     reg_alloc: RegAlloc,
-    delay_slot: Option<fn(EmitCtx) -> EmitSummary>,
+    #[debug("{}", self.delay_slot.is_some())]
+    delay_slot: Option<DynEmitter>,
     asm: Assembler<Reloc>,
 }
 
@@ -128,7 +130,7 @@ impl Dynarec {
             exec: Rc::new(exec),
         })
     }
-    fn emit_block_prelude(&mut self, cpu: *const Cpu, mem: *const Memory) {
+    fn emit_block_prelude(&mut self) {
         #[cfg(target_arch = "aarch64")]
         {
             dynasm!(
@@ -314,9 +316,8 @@ impl Dynarec {
         self.reg_alloc.dirty.set(guest_reg as usize, false);
     }
 
-    fn set_delay_slot(&mut self, emitter: impl Into<fn(EmitCtx) -> EmitSummary>) {
-        let emitter = emitter.into();
-        self.delay_slot = Some(emitter);
+    fn set_delay_slot(&mut self, emitter: impl Fn(EmitCtx) -> EmitSummary + 'static) {
+        self.delay_slot = Some(SmallBox::new(emitter) as _);
     }
 }
 
@@ -376,7 +377,7 @@ impl LoadedReg {
 
         self.restored.set(true);
 
-        if let Err(RegAllocError::EvictToStack(evicted_guest, reg)) = self.result {
+        if let Err(RegAllocError::EvictToStack(_, reg)) = self.result {
             let current_guest = dynarec.reg_alloc.reverse_mapping[(*reg).to_idx() as usize];
             if dynarec.reg_alloc.dirty[current_guest as usize] {
                 dynarec.emit_writeback(current_guest, *reg);
@@ -405,9 +406,12 @@ impl LoadedReg {
 
 impl Emu {
     fn linear_fetch(&self) -> impl Iterator<Item = (OpCode, DecodedOpNew)> {
-        self.linear_fetch_no_decode()
+        let mut iter = self
+            .linear_fetch_no_decode()
             .map(|op| (op, DecodedOpNew::new(op)))
             .take_while(|(_, op)| !op.is_boundary())
+            .peekable();
+        std::iter::from_fn(move || iter.next_if(|(_, op)| !op.is_boundary()))
     }
     fn linear_fetch_no_decode(&self) -> impl Iterator<Item = OpCode> {
         const CHUNK: usize = 32;
@@ -517,11 +521,16 @@ fn fetch_and_compile_single_threaded(
     emu: &Emu,
     mut dynarec: Box<Dynarec>,
 ) -> color_eyre::Result<DynarecBlock> {
-    dynarec.emit_block_prelude(&emu.cpu, &emu.mem);
+    dynarec.emit_block_prelude();
 
     let mut hasher = rapidhash::fast::RapidHasher::default();
     let mut op_count = 0;
     let cycles = emu.linear_fetch().fold(0u16, |cycles, (op, decoded)| {
+        if let Some(emitter) = dynarec.delay_slot.take() {
+            emitter(EmitCtx {
+                dynarec: &mut dynarec,
+            });
+        }
         decoded.emit(EmitCtx {
             dynarec: &mut dynarec,
         });
@@ -529,6 +538,11 @@ fn fetch_and_compile_single_threaded(
         op_count += 1;
         cycles + decoded.cycles()
     });
+    if let Some(emitter) = dynarec.delay_slot.take() {
+        emitter(EmitCtx {
+            dynarec: &mut dynarec,
+        });
+    }
     let new_pc = emu.cpu.pc + op_count as u32 * size_of::<OpCode>() as u32;
     dynarec.emit_block_epilogue(cycles, new_pc);
 
@@ -544,18 +558,14 @@ fn fetch_and_compile_single_threaded(
 
 #[cfg(test)]
 mod tests {
-    use std::{ptr, time::Instant};
+
     extern crate test;
 
     use color_eyre::Result;
     use pchan_utils::setup_tracing;
-    use pretty_assertions::assert_eq;
 
     use super::*;
-    use crate::{
-        Emu,
-        cpu::{ops::addiu::*, program},
-    };
+    use crate::Emu;
 
     #[test]
     fn dynarec_minimal_test() -> Result<()> {

@@ -349,8 +349,19 @@ impl Memory {
 impl Emu {
     #[unsafe(no_mangle)]
     #[pchan_macros::instrument_write]
-    pub unsafe extern "C" fn write8v2(emu: *mut Emu, address: u32, value: i32) {
-        tracing::trace!("WRITE");
-        unsafe { (*emu).write(address, value as i8) }
+    pub unsafe extern "C" fn write8v2(self: *mut Emu, address: u32, value: i32) {
+        unsafe { (*self).write(address, value as i8) }
+    }
+
+    #[unsafe(no_mangle)]
+    #[pchan_macros::instrument_write]
+    pub unsafe extern "C" fn write16v2(self: *mut Emu, address: u32, value: i32) {
+        unsafe { (*self).write(address, value as i16) }
+    }
+
+    #[unsafe(no_mangle)]
+    #[pchan_macros::instrument_write]
+    pub unsafe extern "C" fn write32v2(self: *mut Emu, address: u32, value: i32) {
+        unsafe { (*self).write(address, value) }
     }
 }
