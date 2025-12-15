@@ -232,7 +232,7 @@ impl Dynarec {
     }
     fn alloc_reg(&mut self, guest_reg: u8) -> LoadedReg {
         let result = self.reg_alloc.regalloc(guest_reg);
-        LoadedReg::from(result).arm()
+        LoadedReg::from(result)
     }
     fn emit_load_temp_reg(&mut self, guest_reg: u8, host_reg: Reg) {
         debug_assert!(!self.reg_alloc.allocatable[host_reg.to_idx() as usize]);
@@ -269,33 +269,40 @@ impl Dynarec {
                     tracing::trace!("load: guest r{}", guest_reg);
                 }
                 // spill register
-                Err(RegAllocError::EvictToMemory(host_reg)) => {
-                    self.emit_writeback(guest_reg, Reg::new(host_reg));
+                Err(RegAllocError::EvictToMemory(evicted_guest, host_reg)) => {
+                    self.emit_writeback(*evicted_guest, *host_reg);
+                    self.reg_alloc.dirty.set(*evicted_guest as usize, false);
+
                     dynasm!(
                         self.asm
                         ; .arch aarch64
                         ; ldr W(host_reg), [x0, offset]
                     );
                     self.reg_alloc.dirty.set(guest_reg as usize, false);
+
                     tracing::trace!(
-                        "load: guest r{} (evicted previous w{host_reg} to memory)",
-                        guest_reg
+                        "load: guest r{} (evicted previous w{} to memory)",
+                        guest_reg,
+                        (*host_reg).to_idx()
                     );
                 }
-                Err(RegAllocError::EvictToStack(host_reg)) => {
+                Err(RegAllocError::EvictToStack(_, host_reg)) => {
                     dynasm!(
                         self.asm
                         ; .arch aarch64
                         ; str W(host_reg), [sp], #16
+                        ; ldr W(host_reg), [x0, offset]
                     );
                     self.reg_alloc.dirty.set(guest_reg as usize, false);
+
                     tracing::trace!(
-                        "load: guest r{} (evicted previous w{host_reg} to stack)",
-                        guest_reg
+                        "load: guest r{} (evicted previous w{} to stack)",
+                        guest_reg,
+                        (*host_reg).to_idx()
                     );
                 }
             };
-            LoadedReg::from(result).arm()
+            LoadedReg::from(result)
         }
     }
 
@@ -315,25 +322,26 @@ impl Dynarec {
 
 #[derive(Debug, Clone)]
 pub struct LoadedReg {
-    result: Result<u8, RegAllocError>,
+    result: AllocResult,
     reg: Reg,
-    armed: bool,
+    reg_idx: u8,
     restored: Cell<bool>,
 }
 
-impl From<Result<u8, RegAllocError>> for LoadedReg {
-    fn from(result: Result<u8, RegAllocError>) -> Self {
+impl From<AllocResult> for LoadedReg {
+    fn from(result: AllocResult) -> Self {
+        let reg = match &result {
+            Ok(reg) => **reg,
+            Err(
+                RegAllocError::EvictToMemory(_, reg)
+                | RegAllocError::EvictToStack(_, reg)
+                | RegAllocError::AlreadyAllocatedTo(reg),
+            ) => **reg,
+        };
         Self {
-            reg: match &result {
-                Ok(reg) => Reg::new(*reg),
-                Err(
-                    RegAllocError::EvictToMemory(reg)
-                    | RegAllocError::EvictToStack(reg)
-                    | RegAllocError::AlreadyAllocatedTo(reg),
-                ) => Reg::new(*reg),
-            },
+            reg,
+            reg_idx: reg.to_idx(),
             result,
-            armed: false,
             restored: Cell::new(false),
         }
     }
@@ -349,14 +357,7 @@ impl Deref for LoadedReg {
 
 impl AsRef<u8> for LoadedReg {
     fn as_ref(&self) -> &u8 {
-        match &self.result {
-            Ok(reg) => reg,
-            Err(
-                RegAllocError::EvictToMemory(reg)
-                | RegAllocError::EvictToStack(reg)
-                | RegAllocError::AlreadyAllocatedTo(reg),
-            ) => reg,
-        }
+        &self.reg_idx
     }
 }
 
@@ -370,14 +371,17 @@ impl LoadedReg {
     fn reg(&self) -> Reg {
         *self.as_ref()
     }
-    fn arm(mut self) -> LoadedReg {
-        self.armed = true;
-        self
-    }
     fn restore(&self, dynarec: &mut Dynarec) {
         debug_assert!(!self.restored.get(), "loaded reg already restored.");
+
         self.restored.set(true);
-        if let Err(RegAllocError::EvictToStack(reg)) = self.result {
+
+        if let Err(RegAllocError::EvictToStack(evicted_guest, reg)) = self.result {
+            let current_guest = dynarec.reg_alloc.reverse_mapping[(*reg).to_idx() as usize];
+            if dynarec.reg_alloc.dirty[current_guest as usize] {
+                dynarec.emit_writeback(current_guest, *reg);
+            }
+
             #[cfg(target_arch = "aarch64")]
             dynasm!(
                 dynarec.asm

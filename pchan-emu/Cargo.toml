@@ -16,7 +16,7 @@ cranelift-codegen = { version = "0.124", features = ["arm64", "x86", "unwind"] }
 # cranelift-frontend.workspace = true
 
 crossbeam = "0.8.4"
-derive_more = { version = "2.0.1", features = ["add", "debug", "display"] }
+derive_more = { version = "2.0.1", features = ["add", "debug", "deref", "display", "full"] }
 dynasm = "4.0.1"
 dynasmrt = "4.0.1"
 enum_dispatch = "0.3.13"

@@ -4,6 +4,7 @@ use std::ops::Deref;
 
 use bitvec::prelude as bv;
 use bv::Lsb0;
+use derive_more as de;
 use pchan_utils::array;
 
 #[cfg(target_arch = "aarch64")]
@@ -21,8 +22,9 @@ pub struct RegAlloc {
     pub allocatable: RegAllocBitMap,
     /// this is in guest register space
     pub priority: RegAllocBitMap,
+    /// mapping from guest to host register.
     pub mapping: [Option<Reg>; 32],
-    /// mapping from guest to host register. its consider valid for it to map to unallocated registers.
+    /// mapping from host to guest register. its consider valid for it to map to unallocated registers.
     pub reverse_mapping: [u8; 32],
     /// never traverse this - its slow as shit
     pub history: VecDeque<u8>,
@@ -79,30 +81,56 @@ impl Default for RegAlloc {
 /// - `EvictToStack` this is like temporarily assigning a register. the caller *is* responsible for restoring the register off the stack.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RegAllocError {
-    EvictToMemory(u8),
-    EvictToStack(u8),
-    AlreadyAllocatedTo(u8),
+    EvictToMemory(Evicted<Guest>, Allocated),
+    EvictToStack(Evicted<Guest>, Allocated),
+    AlreadyAllocatedTo(Allocated),
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, de::Deref, de::From)]
+pub struct Evicted<T: RegisterType>(T);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, de::Deref, de::From)]
+pub struct Allocated(Reg);
+
+impl From<Allocated> for u8 {
+    fn from(value: Allocated) -> Self {
+        (*value).into()
+    }
 }
 
+impl From<u8> for Allocated {
+    fn from(value: u8) -> Self {
+        Allocated(Reg::new(value))
+    }
+}
+
+pub type Guest = u8;
+pub type Host = Reg;
+
+trait RegisterType {}
+impl RegisterType for Guest {}
+impl RegisterType for Host {}
+
+pub type AllocResult = Result<Allocated, RegAllocError>;
+
 impl RegAlloc {
-    pub fn first_free(&self) -> Option<u8> {
+    pub fn first_free(&self) -> Option<Reg> {
         let [allocated] = self.allocated.into_inner();
         let [allocatable] = self.allocatable.into_inner();
         let allocate_from = allocatable & (!allocated);
         let index = allocate_from.trailing_zeros();
-        Self::ensure_reg(index as _)
+        Self::ensure_reg(index as _).map(Reg::new)
     }
 
     pub fn is_full(&self) -> bool {
         self.first_free().is_none()
     }
 
-    pub fn first_allocatable(&self) -> u8 {
+    pub fn first_allocatable(&self) -> Reg {
         let [allocatable] = self.allocatable.into_inner();
-        allocatable.trailing_zeros() as _
+        let index = allocatable.trailing_zeros() as u8;
+        Reg::new(index)
     }
 
-    pub fn allocated_guest_to_host(&self, guest_reg: u8) -> Option<u8> {
+    pub fn allocated_guest_to_host(&self, guest_reg: u8) -> Option<Reg> {
         self.mapping[guest_reg as usize].map(|reg| reg.into())
     }
 
@@ -127,18 +155,18 @@ impl RegAlloc {
         self.history.push_back(guest_reg);
     }
 
-    pub fn regalloc(&mut self, guest_reg: u8) -> Result<u8, RegAllocError> {
+    pub fn regalloc(&mut self, guest_reg: Guest) -> Result<Allocated, RegAllocError> {
         debug_assert!(guest_reg <= 31);
 
         if let Some(host) = self.allocated_guest_to_host(guest_reg) {
-            return Err(RegAllocError::AlreadyAllocatedTo(host));
+            return Err(RegAllocError::AlreadyAllocatedTo(host.into()));
         }
 
         let prio = self.priority[guest_reg as usize];
         let first_free = self.first_free();
 
         if let Some(free) = first_free {
-            return Ok(self.alloc(guest_reg, free).into());
+            return Ok(self.alloc(guest_reg, free));
         }
 
         let first_low_prio = self.first_allocated_low_priority();
@@ -149,24 +177,26 @@ impl RegAlloc {
                     .allocated_guest_to_host(first_low_prio)
                     .unwrap_or_else(|| unreachable!());
 
-                self.evict_at(first_low_prio_host);
+                let evicted_guest = self.evict_at(first_low_prio_host);
                 let host_reg = self.alloc(guest_reg, first_low_prio_host);
                 let guest_dirty = self.dirty[first_low_prio as usize];
 
                 match (prio, guest_dirty) {
-                    (_, true) => Err(RegAllocError::EvictToMemory(host_reg.into())),
-                    (true, false) => Err(RegAllocError::EvictToMemory(host_reg.into())),
-                    (false, false) => Err(RegAllocError::EvictToStack(host_reg.into())),
+                    (_, true) => Err(RegAllocError::EvictToMemory(evicted_guest, host_reg)),
+                    (true, false) => Err(RegAllocError::EvictToMemory(evicted_guest, host_reg)),
+                    (false, false) => {
+                        Err(RegAllocError::EvictToStack(evicted_guest, host_reg.into()))
+                    }
                 }
             }
             None => {
-                let host_reg = self.evict_any();
-                let guest_dirty = self.dirty[guest_reg as usize];
-                self.alloc(guest_reg, host_reg);
+                let (evicted_guest, evicted_host) = self.evict_any();
+                let guest_dirty = self.dirty[*evicted_guest as usize];
+                let host = self.alloc(guest_reg, *evicted_host);
                 match (prio, guest_dirty) {
-                    (_, true) => Err(RegAllocError::EvictToMemory(host_reg)),
-                    (true, false) => Err(RegAllocError::EvictToMemory(host_reg)),
-                    (false, false) => Err(RegAllocError::EvictToStack(host_reg)),
+                    (_, true) => Err(RegAllocError::EvictToMemory(evicted_guest, host)),
+                    (true, false) => Err(RegAllocError::EvictToMemory(evicted_guest, host)),
+                    (false, false) => Err(RegAllocError::EvictToStack(evicted_guest, host)),
                 }
             }
         }
@@ -174,7 +204,7 @@ impl RegAlloc {
 
     /// evict any register
     /// policy: oldest first
-    fn evict_any(&mut self) -> u8 {
+    fn evict_any(&mut self) -> (Evicted<Guest>, Evicted<Host>) {
         // debug_assert!(self.is_full(), "cannot evict any on non full reg allocator");
         // debug_assert!(
         //     self.first_allocated_low_priority().is_none(),
@@ -183,27 +213,29 @@ impl RegAlloc {
 
         loop {
             let Some(reg) = self.history.pop_front() else {
-                let evict = self
+                let evicted_host = self
                     .first_allocated_low_priority()
                     .and_then(|reg| self.allocated_guest_to_host(reg))
                     .unwrap_or_else(|| self.first_allocatable());
-                return self.evict_at(evict);
+                return (self.evict_at(evicted_host), Evicted(evicted_host));
             };
             let Some(reg) = self.allocated_guest_to_host(reg) else {
                 continue;
             };
-            return self.evict_at(reg);
+            return (self.evict_at(reg), Evicted(reg));
         }
     }
 
-    fn evict_at(&mut self, host: u8) -> u8 {
+    fn evict_at(&mut self, host: Reg) -> Evicted<Guest> {
+        let host = host.to_idx();
         self.allocated.set(host as usize, false);
         let guest = self.reverse_mapping[host as usize];
         self.mapping[guest as usize] = None;
-        host
+        Evicted(guest)
     }
 
-    fn alloc(&mut self, guest_reg: u8, host_reg: u8) -> Reg {
+    fn alloc(&mut self, guest_reg: u8, host_reg: Reg) -> Allocated {
+        let host_reg = host_reg.to_idx();
         self.allocated.set(host_reg as usize, true);
         self.update_history(guest_reg);
 
@@ -212,7 +244,7 @@ impl RegAlloc {
             let reg = Reg::new(host_reg);
             self.mapping[guest_reg as usize] = Some(reg);
             self.reverse_mapping[host_reg as usize] = guest_reg;
-            reg
+            reg.into()
         }
     }
 
@@ -345,17 +377,17 @@ pub mod regalloc_tests {
         let result = regalloc.regalloc(16);
         assert!(result.is_ok());
         #[cfg(target_arch = "aarch64")]
-        assert_matches!(result, Ok(4));
+        assert_eq!(result, Ok(4.into()));
     }
 
     #[rstest]
-    #[case(1, [Ok(4)])]
-    #[case(2, [Ok(4), Ok(5)])]
-    #[case(12, (4..16).map(Ok).collect::<Vec<_>>())]
-    #[case(22, (4..16).chain(19..=28).map(Ok).collect::<Vec<_>>())]
+    #[case(1, [Ok(4.into())])]
+    #[case(2, [Ok(4.into()), Ok(5.into())])]
+    #[case(12, (4..16).map(Into::into).map(Ok).collect::<Vec<_>>())]
+    #[case(22, (4..16).chain(19..=28).map(Into::into).map(Ok).collect::<Vec<_>>())]
     pub fn regalloc_test_multiple_alloc_free(
         #[case] count: usize,
-        #[case] expected: impl Into<Vec<Result<u8, RegAllocError>>>,
+        #[case] expected: impl Into<Vec<AllocResult>>,
     ) {
         let mut regalloc = RegAlloc::default();
         let result = (1..=count)
@@ -366,19 +398,19 @@ pub mod regalloc_tests {
 
     #[rstest]
     // 1 high priority register
-    #[case([23], [Err(RegAllocError::EvictToMemory(4))])]
+    #[case([23], [Err(RegAllocError::EvictToMemory(Evicted(1), 4.into()))])]
     // 2 high priority registers
-    #[case([23, 29], [Err(RegAllocError::EvictToMemory(4)), Err(RegAllocError::EvictToMemory(5))])]
+    #[case([23, 29], [Err(RegAllocError::EvictToMemory(Evicted(1), 4.into())), Err(RegAllocError::EvictToMemory(Evicted(2), 5.into()))])]
     // 1 low priority register
-    #[case([24], [Err(RegAllocError::EvictToStack(4))])]
+    #[case([24], [Err(RegAllocError::EvictToStack(Evicted(1), 4.into()))])]
     // 2 low priority register
     // this evicts a high priority register to the stack and allocates a low priority register in
     // its place. afterwards, that register gets evicted by another low priority register and in
     // the end they use the same host register 24
-    #[case([24, 25], [Err(RegAllocError::EvictToStack(4)), Err(RegAllocError::EvictToStack(4))])]
+    #[case([24, 25], [Err(RegAllocError::EvictToStack(Evicted(1), 4.into())), Err(RegAllocError::EvictToStack(Evicted(24), 4.into()))])]
     pub fn regalloc_test_evictions_after_high_prio(
         #[case] registers_after_full: impl Into<Vec<u8>>,
-        #[case] expected: impl Into<Vec<Result<u8, RegAllocError>>>,
+        #[case] expected: impl Into<Vec<AllocResult>>,
     ) {
         let expected = expected.into();
         let registers_after_full = registers_after_full.into();
@@ -414,7 +446,7 @@ pub mod regalloc_tests {
         let mut regalloc = RegAlloc::default();
         let res_0 = regalloc.regalloc(16);
         let res_1 = regalloc.regalloc(16);
-        assert_matches!(res_0, Ok(4));
-        assert_matches!(res_1, Err(RegAllocError::AlreadyAllocatedTo(4)));
+        assert_eq!(res_0, Ok(4.into()));
+        assert_eq!(res_1, Err(RegAllocError::AlreadyAllocatedTo(4.into())));
     }
 }
