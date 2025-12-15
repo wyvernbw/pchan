@@ -18,6 +18,9 @@ use crate::cpu::ops::nor::*;
 use crate::cpu::ops::or::*;
 use crate::cpu::ops::sb::*;
 use crate::cpu::ops::sh::*;
+use crate::cpu::ops::sllv::*;
+use crate::cpu::ops::srav::*;
+use crate::cpu::ops::srlv::*;
 use crate::cpu::ops::subu::*;
 use crate::cpu::ops::sw::*;
 use crate::cpu::ops::xor::*;
@@ -77,6 +80,9 @@ pub trait DynarecOp {
 #[derive(Debug, Clone, Copy, Hash, derive_more::Display)]
 pub enum DecodedOpNew {
     ILLEGAL(ILLEGAL),
+    SLLV(SLLV),
+    SRLV(SRLV),
+    SRAV(SRAV),
     ADDIU(ADDIU),
     ADDU(ADDU),
     SUBU(SUBU),
@@ -131,6 +137,10 @@ impl DecodedOpNew {
             let rd = fields.rd();
             let funct = fields.funct();
             match (opcode, rs, rt, funct) {
+                (0x0, _, _, 0x4) => Self::SLLV(SLLV::new(rd, rt, rs)),
+                (0x0, _, _, 0x5) => Self::illegal(),
+                (0x0, _, _, 0x6) => Self::SRLV(SRLV::new(rd, rt, rs)),
+                (0x0, _, _, 0x7) => Self::SRAV(SRAV::new(rd, rt, rs)),
                 (0x0, _, _, 0x20 | 0x21) => Self::ADDU(ADDU::new(rd, rs, rt)),
                 (0x0, _, _, 0x22 | 0x23) => Self::SUBU(SUBU::new(rd, rs, rt)),
                 (0x0, _, _, 0x24) => Self::AND(AND::new(rd, rs, rt)),
@@ -587,12 +597,28 @@ fn test_load_delay(#[case] instr: impl Fn(u8, u8, i16) -> OpCode) -> color_eyre:
     Ok(())
 }
 
+#[derive(Debug, Clone, derive_more::Deref)]
+#[deref(forward)]
+pub struct Rd<'a>(&'a LoadedReg);
+#[derive(Debug, Clone, derive_more::Deref)]
+#[deref(forward)]
+pub struct Rs<'a>(&'a LoadedReg);
+#[derive(Debug, Clone, derive_more::Deref)]
+#[deref(forward)]
+pub struct Rt<'a>(&'a LoadedReg);
+
+pub struct AluRegs<'a> {
+    rd: Rd<'a>,
+    rs: Rs<'a>,
+    rt: Rt<'a>,
+}
+
 fn emit_alu(
     mut ctx: EmitCtx,
     rd: u8,
     rs: u8,
     rt: u8,
-    alu_op: impl Fn(&mut EmitCtx, &LoadedReg, &LoadedReg, &LoadedReg),
+    alu_op: impl Fn(&mut EmitCtx, AluRegs),
 ) -> EmitSummary {
     let rda = ctx.dynarec.alloc_reg(rd);
     let rsa = ctx.dynarec.emit_load_reg(rs);
@@ -602,7 +628,7 @@ fn emit_alu(
     dynasm!(
         ctx.dynarec.asm
         ; .arch aarch64
-        ;; alu_op(&mut ctx, &rda, &rsa, &rta)
+        ;; alu_op(&mut ctx, AluRegs { rd: Rd(&rda), rs: Rs(&rsa), rt: Rt(&rta) })
     );
 
     ctx.dynarec.mark_dirty(rd);
@@ -655,12 +681,12 @@ impl DynarecOp for SUBU {
             return EmitSummary;
         }
 
-        emit_alu(ctx, self.rd, self.rs, self.rt, move |ctx, rd, rs, rt| {
+        emit_alu(ctx, self.rd, self.rs, self.rt, move |ctx, regs| {
             #[cfg(target_arch = "aarch64")]
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
-                ; sub W(**rd), W(**rs), W(**rt)
+                ; sub W(**regs.rd), W(**regs.rs), W(**regs.rt)
             )
         })
     }
@@ -674,12 +700,12 @@ impl DynarecOp for ADDU {
         };
 
         match either_zero(self.rs, self.rt) {
-            EitherZero::None => emit_alu(ctx, self.rd, self.rs, self.rt, |ctx, rd, rs, rt| {
+            EitherZero::None => emit_alu(ctx, self.rd, self.rs, self.rt, |ctx, regs| {
                 #[cfg(target_arch = "aarch64")]
                 dynasm!(
                     ctx.dynarec.asm
                     ; .arch aarch64
-                    ; add W(**rd), W(**rs), W(**rt)
+                    ; add W(**regs.rd), W(**regs.rs), W(**regs.rt)
                 )
             }),
             EitherZero::Both => ctx.dynarec.emit_zero(self.rd),
@@ -698,12 +724,12 @@ impl DynarecOp for AND {
         }
 
         match either_zero(self.rs, self.rt) {
-            EitherZero::None => emit_alu(ctx, self.rd, self.rs, self.rt, move |ctx, rd, rs, rt| {
+            EitherZero::None => emit_alu(ctx, self.rd, self.rs, self.rt, move |ctx, regs| {
                 #[cfg(target_arch = "aarch64")]
                 dynasm!(
                     ctx.dynarec.asm
                     ; .arch aarch64
-                    ; and W(**rd), W(**rs), W(**rt)
+                    ; and W(**regs.rd), W(**regs.rs), W(**regs.rt)
                 )
             }),
             EitherZero::Both | EitherZero::One(_) => ctx.dynarec.emit_zero(self.rd),
@@ -719,11 +745,11 @@ impl DynarecOp for OR {
         }
 
         match either_zero(self.rs, self.rt) {
-            EitherZero::None => emit_alu(ctx, self.rd, self.rs, self.rt, move |ctx, rd, rs, rt| {
+            EitherZero::None => emit_alu(ctx, self.rd, self.rs, self.rt, move |ctx, regs| {
                 dynasm!(
                     ctx.dynarec.asm
                     ; .arch aarch64
-                    ; orr W(**rd), W(**rs), W(**rt)
+                    ; orr W(**regs.rd), W(**regs.rs), W(**regs.rt)
                 )
             }),
             EitherZero::Both => ctx.dynarec.emit_zero(self.rd),
@@ -742,11 +768,11 @@ impl DynarecOp for XOR {
         }
 
         match either_zero(self.rs, self.rt) {
-            EitherZero::None => emit_alu(ctx, self.rd, self.rs, self.rt, move |ctx, rd, rs, rt| {
+            EitherZero::None => emit_alu(ctx, self.rd, self.rs, self.rt, move |ctx, regs| {
                 dynasm!(
                     ctx.dynarec.asm
                     ; .arch aarch64
-                    ; eor W(**rd), W(**rs), W(**rt)
+                    ; eor W(**regs.rd), W(**regs.rs), W(**regs.rt)
                 )
             }),
             EitherZero::Both => ctx.dynarec.emit_zero(self.rd),
@@ -764,12 +790,12 @@ impl DynarecOp for NOR {
             return EmitSummary;
         }
         match either_zero(self.rs, self.rt) {
-            EitherZero::None => emit_alu(ctx, self.rd, self.rs, self.rt, move |ctx, rd, rs, rt| {
+            EitherZero::None => emit_alu(ctx, self.rd, self.rs, self.rt, move |ctx, regs| {
                 dynasm!(
                     ctx.dynarec.asm
                     ; .arch aarch64
-                    ; orr W(**rd), W(**rs), W(**rt)
-                    ; mvn W(**rd), W(**rd)
+                    ; orr W(**regs.rd), W(**regs.rs), W(**regs.rt)
+                    ; mvn W(**regs.rd), W(**regs.rd)
                 )
             }),
             EitherZero::Both => ctx.dynarec.emit_immediate_large(self.rd, 0xffff_ffff),
@@ -789,6 +815,71 @@ impl DynarecOp for NOR {
                 EmitSummary
             }
         }
+    }
+}
+
+#[allow(clippy::useless_conversion)]
+fn emit_shift_by_reg<'a>(
+    ctx: EmitCtx<'a>,
+    rd: u8,
+    rs: u8,
+    rt: u8,
+    alu_op: impl Fn(&mut EmitCtx, AluRegs),
+) -> EmitSummary {
+    if rd == 0 {
+        return EmitSummary;
+    }
+
+    if rt == 0 {
+        return ctx.dynarec.emit_zero(rd);
+    }
+
+    if rs == 0 {
+        return ctx.dynarec.emit_load_and_move_into(rd, rt);
+    }
+
+    emit_alu(ctx, rd, rs, rt, alu_op)
+}
+
+impl DynarecOp for SLLV {
+    #[allow(clippy::useless_conversion)]
+    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+        emit_shift_by_reg(ctx, self.rd, self.rs, self.rt, move |ctx, regs| {
+            tracing::info!("emitting sllv via alu...");
+            dynasm!(
+                ctx.dynarec.asm
+                ; .arch aarch64
+                ; lsl W(**regs.rd), W(**regs.rt), W(**regs.rs)
+            )
+        })
+    }
+}
+
+impl DynarecOp for SRLV {
+    #[allow(clippy::useless_conversion)]
+    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+        emit_shift_by_reg(ctx, self.rd, self.rs, self.rt, move |ctx, regs| {
+            tracing::info!("emitting sllv via alu...");
+            dynasm!(
+                ctx.dynarec.asm
+                ; .arch aarch64
+                ; lsr W(**regs.rd), W(**regs.rt), W(**regs.rs)
+            )
+        })
+    }
+}
+
+impl DynarecOp for SRAV {
+    #[allow(clippy::useless_conversion)]
+    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+        emit_shift_by_reg(ctx, self.rd, self.rs, self.rt, move |ctx, regs| {
+            tracing::info!("emitting sllv via alu...");
+            dynasm!(
+                ctx.dynarec.asm
+                ; .arch aarch64
+                ; asr W(**regs.rd), W(**regs.rt), W(**regs.rs)
+            )
+        })
     }
 }
 
@@ -821,6 +912,24 @@ impl DynarecOp for NOR {
 #[case::nor_04(nor, (12, 0xFFFFFFFF), (0, 0), (0, 0))]
 #[case::nor_05(nor, (12, 0), (10, 0xAAAAAAAA), (11, 0x55555555))]
 #[case::nor_06(nor, (12, 0x55555555), (10, 0xAAAAAAAA), (11, 0xAAAAAAAA))]
+#[case::sllv_01(sllv, (12, 0b10100), (10, 0b101), (11, 2))]
+#[case::sllv_02(sllv, (12, 0b101), (10, 0b101), (11, 0))]
+#[case::sllv_03(sllv, (12, 0), (0, 0), (11, 5))]
+#[case::sllv_04(sllv, (12, 0), (0, 0), (0, 0))]
+#[case::sllv_05(sllv, (12, 0x80000000), (10, 1), (11, 31))]
+#[case::sllv_06(sllv, (12, 0x5555_5500), (10, 0xAAAA_AAAA), (11, 7))]
+#[case::srlv_01(srlv, (12, 0b010), (10, 0b10100), (11, 3))]
+#[case::srlv_02(srlv, (12, 0b101), (10, 0b101), (11, 0))]
+#[case::srlv_03(srlv, (12, 0), (10, 0), (11, 5))]
+#[case::srlv_04(srlv, (12, 0), (10, 0), (11, 0))]
+#[case::srlv_05(srlv, (12, 1), (10, 0x80000000), (11, 31))]
+#[case::srlv_06(srlv, (12, 0x0155_5555), (10, 0xAAAA_AAAA), (11, 7))]
+#[case::srav_01(srav, (12, 0b11111111111111111111111111111110), (10, 0b11111111111111111111111111110100u32 as i32 as u32), (11, 3))]
+#[case::srav_02(srav, (12, 0b101), (10, 0b101), (11, 0))]
+#[case::srav_03(srav, (12, 0), (10, 0), (11, 5))]
+#[case::srav_04(srav, (12, 0), (10, 0), (11, 0))]
+#[case::srav_05(srav, (12, 0xFFFFFFFF), (10, 0x80000000), (11, 31))]
+#[case::srav_06(srav, (12, 0xFF555555), (10, 0xAAAA_AAAA), (11, 7))]
 fn test_alu_reg(
     #[case] instr: impl Fn(u8, u8, u8) -> OpCode,
     #[case] expected: (Guest, u32),
