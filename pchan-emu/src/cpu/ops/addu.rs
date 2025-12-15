@@ -8,9 +8,9 @@ use super::PrimeOp;
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 #[allow(clippy::upper_case_acronyms)]
 pub struct ADDU {
-    rd: u8,
-    rs: u8,
-    rt: u8,
+    pub rd: u8,
+    pub rs: u8,
+    pub rt: u8,
 }
 
 impl ADDU {

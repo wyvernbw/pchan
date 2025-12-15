@@ -347,6 +347,59 @@ impl Dynarec {
         }
     }
 
+    #[allow(clippy::useless_conversion)]
+    fn emit_immediate_large(&mut self, guest_reg: Guest, imm: u32) -> EmitSummary {
+        let reg = self.alloc_reg(guest_reg);
+
+        #[cfg(target_arch = "aarch64")]
+        dynasm!(
+            self.asm
+            ; .arch aarch64
+            ; movz W(*reg), imm >> 16
+            ; movk W(*reg), imm >> 16, LSL #16
+        );
+
+        self.mark_dirty(guest_reg);
+        reg.restore(self);
+
+        EmitSummary
+    }
+
+    #[allow(clippy::useless_conversion)]
+    fn emit_immediate(&mut self, guest_reg: Guest, imm: u16) -> EmitSummary {
+        let reg = self.alloc_reg(guest_reg);
+
+        #[cfg(target_arch = "aarch64")]
+        dynasm!(
+            self.asm
+            ; .arch aarch64
+            ; mov W(*reg), imm as _
+        );
+
+        self.mark_dirty(guest_reg);
+        reg.restore(self);
+
+        EmitSummary
+    }
+
+    fn emit_zero(&mut self, guest_reg: Guest) -> EmitSummary {
+        self.emit_immediate(guest_reg, 0)
+    }
+
+    #[allow(clippy::useless_conversion)]
+    fn emit_load_and_move_into(&mut self, target: Guest, reg: Guest) -> EmitSummary {
+        let rd = self.alloc_reg(target);
+        self.emit_load_temp_reg(reg, Reg::W(1));
+        dynasm!(
+            self.asm
+            ; .arch aarch64
+            ; mov W(*rd), w1
+        );
+        self.mark_dirty(target);
+        rd.restore(self);
+        EmitSummary
+    }
+
     fn mark_dirty(&mut self, guest_reg: u8) {
         self.reg_alloc.dirty.set(guest_reg as usize, true);
     }

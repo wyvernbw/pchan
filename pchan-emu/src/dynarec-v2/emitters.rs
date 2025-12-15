@@ -1,21 +1,30 @@
+use crate::dynarec_v2::Guest;
+use std::num::NonZeroU8;
+
 use enum_dispatch::enum_dispatch;
 
 #[cfg(test)]
 use rstest::rstest;
 
 use crate::cpu::ops::addiu::*;
+use crate::cpu::ops::addu::*;
+use crate::cpu::ops::and::*;
 use crate::cpu::ops::lb::*;
 use crate::cpu::ops::lbu::*;
 use crate::cpu::ops::lh::*;
 use crate::cpu::ops::lhu::*;
 use crate::cpu::ops::lw::*;
+use crate::cpu::ops::nor::*;
+use crate::cpu::ops::or::*;
 use crate::cpu::ops::sb::*;
 use crate::cpu::ops::sh::*;
 use crate::cpu::ops::subu::*;
 use crate::cpu::ops::sw::*;
+use crate::cpu::ops::xor::*;
 
 use crate::cpu::ops::{HaltBlock, OpCode};
 use crate::dynarec_v2::Dynarec;
+use crate::dynarec_v2::LoadedReg;
 use crate::dynarec_v2::Reg;
 #[cfg(test)]
 use crate::memory;
@@ -69,7 +78,12 @@ pub trait DynarecOp {
 pub enum DecodedOpNew {
     ILLEGAL(ILLEGAL),
     ADDIU(ADDIU),
+    ADDU(ADDU),
     SUBU(SUBU),
+    AND(AND),
+    OR(OR),
+    XOR(XOR),
+    NOR(NOR),
     HaltBlock(HaltBlock),
     SB(SB),
     SH(SH),
@@ -117,7 +131,12 @@ impl DecodedOpNew {
             let rd = fields.rd();
             let funct = fields.funct();
             match (opcode, rs, rt, funct) {
+                (0x0, _, _, 0x20 | 0x21) => Self::ADDU(ADDU::new(rd, rs, rt)),
                 (0x0, _, _, 0x22 | 0x23) => Self::SUBU(SUBU::new(rd, rs, rt)),
+                (0x0, _, _, 0x24) => Self::AND(AND::new(rd, rs, rt)),
+                (0x0, _, _, 0x25) => Self::OR(OR::new(rd, rs, rt)),
+                (0x0, _, _, 0x26) => Self::XOR(XOR::new(rd, rs, rt)),
+                (0x0, _, _, 0x27) => Self::NOR(NOR::new(rd, rs, rt)),
                 (0x8 | 0x9, _, _, _) => Self::ADDIU(ADDIU::new(rs, rt, fields.imm16())),
                 (0x20, _, _, _) => Self::LB(LB::new(rt, rs, fields.imm16())),
                 (0x21, _, _, _) => Self::LH(LH::new(rt, rs, fields.imm16())),
@@ -212,34 +231,6 @@ impl DynarecOp for HaltBlock {
 
     fn boundary(&self) -> Boundary {
         Boundary::Function
-    }
-}
-
-impl DynarecOp for SUBU {
-    #[allow(clippy::useless_conversion)]
-    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
-        if self.rd == 0 {
-            return EmitSummary;
-        };
-
-        let rd = ctx.dynarec.alloc_reg(self.rd);
-        let rs = ctx.dynarec.emit_load_reg(self.rs);
-        let rt = ctx.dynarec.emit_load_reg(self.rt);
-
-        #[cfg(target_arch = "aarch64")]
-        dynasm!(
-            ctx.dynarec.asm
-            ; .arch aarch64
-            ; sub W(*rd), W(*rs), W(*rt)
-        );
-
-        ctx.dynarec.mark_dirty(self.rd);
-
-        rt.restore(ctx.dynarec);
-        rs.restore(ctx.dynarec);
-        rd.restore(ctx.dynarec);
-
-        EmitSummary
     }
 }
 
@@ -559,6 +550,10 @@ fn test_loads(
 #[cfg(test)]
 #[rstest]
 #[case::lb(lb)]
+#[case::lbu(lbu)]
+#[case::lh(lh)]
+#[case::lhu(lhu)]
+#[case::lw(lw)]
 fn test_load_delay(#[case] instr: impl Fn(u8, u8, i16) -> OpCode) -> color_eyre::Result<()> {
     use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
     use pchan_utils::setup_tracing;
@@ -589,5 +584,264 @@ fn test_load_delay(#[case] instr: impl Fn(u8, u8, i16) -> OpCode) -> color_eyre:
     assert_eq!(emu.cpu.gpr[13], 69 + 420);
 
     tracing::info!("returning from test...");
+    Ok(())
+}
+
+fn emit_alu(
+    mut ctx: EmitCtx,
+    rd: u8,
+    rs: u8,
+    rt: u8,
+    alu_op: impl Fn(&mut EmitCtx, &LoadedReg, &LoadedReg, &LoadedReg),
+) -> EmitSummary {
+    let rda = ctx.dynarec.alloc_reg(rd);
+    let rsa = ctx.dynarec.emit_load_reg(rs);
+    let rta = ctx.dynarec.emit_load_reg(rt);
+
+    #[cfg(target_arch = "aarch64")]
+    dynasm!(
+        ctx.dynarec.asm
+        ; .arch aarch64
+        ;; alu_op(&mut ctx, &rda, &rsa, &rta)
+    );
+
+    ctx.dynarec.mark_dirty(rd);
+
+    rta.restore(ctx.dynarec);
+    rsa.restore(ctx.dynarec);
+    rda.restore(ctx.dynarec);
+
+    EmitSummary
+}
+
+enum EitherZero {
+    None,
+    Both,
+    One(NonZeroU8),
+}
+
+const fn either_zero(rs: u8, rt: u8) -> EitherZero {
+    unsafe {
+        match (rs, rt) {
+            (0, 0) => EitherZero::Both,
+            (a, 0) => EitherZero::One(NonZeroU8::new_unchecked(a)),
+            (0, b) => EitherZero::One(NonZeroU8::new_unchecked(b)),
+            _ => EitherZero::None,
+        }
+    }
+}
+
+impl DynarecOp for SUBU {
+    #[allow(clippy::useless_conversion)]
+    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+        if self.rd == 0 {
+            return EmitSummary;
+        };
+
+        if self.rt == 0 {
+            let rd = ctx.dynarec.alloc_reg(self.rd);
+            ctx.dynarec.emit_load_temp_reg(self.rs, Reg::W(1));
+
+            #[cfg(target_arch = "aarch64")]
+            dynasm!(
+                ctx.dynarec.asm
+                ; .arch aarch64
+                ; mov W(*rd), w1
+            );
+
+            ctx.dynarec.mark_dirty(self.rd);
+            rd.restore(ctx.dynarec);
+
+            return EmitSummary;
+        }
+
+        emit_alu(ctx, self.rd, self.rs, self.rt, move |ctx, rd, rs, rt| {
+            #[cfg(target_arch = "aarch64")]
+            dynasm!(
+                ctx.dynarec.asm
+                ; .arch aarch64
+                ; sub W(**rd), W(**rs), W(**rt)
+            )
+        })
+    }
+}
+
+impl DynarecOp for ADDU {
+    #[allow(clippy::useless_conversion)]
+    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+        if self.rd == 0 {
+            return EmitSummary;
+        };
+
+        match either_zero(self.rs, self.rt) {
+            EitherZero::None => emit_alu(ctx, self.rd, self.rs, self.rt, |ctx, rd, rs, rt| {
+                #[cfg(target_arch = "aarch64")]
+                dynasm!(
+                    ctx.dynarec.asm
+                    ; .arch aarch64
+                    ; add W(**rd), W(**rs), W(**rt)
+                )
+            }),
+            EitherZero::Both => ctx.dynarec.emit_zero(self.rd),
+            EitherZero::One(non_zero) => ctx
+                .dynarec
+                .emit_load_and_move_into(self.rd, non_zero.into()),
+        }
+    }
+}
+
+impl DynarecOp for AND {
+    #[allow(clippy::useless_conversion)]
+    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+        if self.rd == 0 {
+            return EmitSummary;
+        }
+
+        match either_zero(self.rs, self.rt) {
+            EitherZero::None => emit_alu(ctx, self.rd, self.rs, self.rt, move |ctx, rd, rs, rt| {
+                #[cfg(target_arch = "aarch64")]
+                dynasm!(
+                    ctx.dynarec.asm
+                    ; .arch aarch64
+                    ; and W(**rd), W(**rs), W(**rt)
+                )
+            }),
+            EitherZero::Both | EitherZero::One(_) => ctx.dynarec.emit_zero(self.rd),
+        }
+    }
+}
+
+impl DynarecOp for OR {
+    #[allow(clippy::useless_conversion)]
+    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+        if self.rd == 0 {
+            return EmitSummary;
+        }
+
+        match either_zero(self.rs, self.rt) {
+            EitherZero::None => emit_alu(ctx, self.rd, self.rs, self.rt, move |ctx, rd, rs, rt| {
+                dynasm!(
+                    ctx.dynarec.asm
+                    ; .arch aarch64
+                    ; orr W(**rd), W(**rs), W(**rt)
+                )
+            }),
+            EitherZero::Both => ctx.dynarec.emit_zero(self.rd),
+            EitherZero::One(non_zero) => ctx
+                .dynarec
+                .emit_load_and_move_into(self.rd, non_zero.into()),
+        }
+    }
+}
+
+impl DynarecOp for XOR {
+    #[allow(clippy::useless_conversion)]
+    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+        if self.rd == 0 {
+            return EmitSummary;
+        }
+
+        match either_zero(self.rs, self.rt) {
+            EitherZero::None => emit_alu(ctx, self.rd, self.rs, self.rt, move |ctx, rd, rs, rt| {
+                dynasm!(
+                    ctx.dynarec.asm
+                    ; .arch aarch64
+                    ; eor W(**rd), W(**rs), W(**rt)
+                )
+            }),
+            EitherZero::Both => ctx.dynarec.emit_zero(self.rd),
+            EitherZero::One(non_zero) => ctx
+                .dynarec
+                .emit_load_and_move_into(self.rd, non_zero.into()),
+        }
+    }
+}
+
+impl DynarecOp for NOR {
+    #[allow(clippy::useless_conversion)]
+    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+        if self.rd == 0 {
+            return EmitSummary;
+        }
+        match either_zero(self.rs, self.rt) {
+            EitherZero::None => emit_alu(ctx, self.rd, self.rs, self.rt, move |ctx, rd, rs, rt| {
+                dynasm!(
+                    ctx.dynarec.asm
+                    ; .arch aarch64
+                    ; orr W(**rd), W(**rs), W(**rt)
+                    ; mvn W(**rd), W(**rd)
+                )
+            }),
+            EitherZero::Both => ctx.dynarec.emit_immediate_large(self.rd, 0xffff_ffff),
+            EitherZero::One(non_zero) => {
+                let target = self.rd;
+                let reg = non_zero.into();
+                let rd = ctx.dynarec.alloc_reg(target);
+                ctx.dynarec.emit_load_temp_reg(reg, Reg::W(1));
+                dynasm!(
+                    ctx.dynarec.asm
+                    ; .arch aarch64
+                    ; mov W(*rd), w1
+                    ; mvn W(*rd), W(*rd)
+                );
+                ctx.dynarec.mark_dirty(target);
+                rd.restore(ctx.dynarec);
+                EmitSummary
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+#[rstest]
+#[case::subu_01(subu, (12, 93), (10, 100), (11, 7))]
+#[case::subu_02(subu, (12, 100), (10, 100), (0, 0))]
+#[case::addu_01(addu, (12, 21), (10, 19), (11, 2))]
+#[case::addu_02(addu, (0, 0), (10, 69), (11, 15))]
+#[case::addu_03(addu, (12, 0), (0, 0), (0, 0))]
+#[case::addu_04(addu, (12, 15), (10, 15), (0, 0))]
+#[case::and_01(and, (12, 0b1010), (10, 0b1111), (11, 0b1010))]
+#[case::and_02(and, (12, 0), (0, 0), (11, 0b1010))]
+#[case::and_03(and, (12, 0), (11, 0b1010), (0, 0))]
+#[case::and_04(and, (12, 0), (0, 0), (0, 0))]
+#[case::or_01(or, (12, 0b1111), (10, 0b1010), (11, 0b0101))]
+#[case::or_02(or, (12, 0b1010), (10, 0b1010), (0, 0))]
+#[case::or_03(or, (12, 0b0101), (0, 0), (11, 0b0101))]
+#[case::or_04(or, (12, 0), (0, 0), (0, 0))]
+#[case::or_05(or, (12, 0xFFFFFFFF), (10, 0xAAAAAAAA), (11, 0x55555555))]
+#[case::xor_01(xor, (12, 0b0101), (10, 0b1111), (11, 0b1010))]
+#[case::xor_02(xor, (12, 0b1010), (10, 0b1010), (0, 0))]
+#[case::xor_03(xor, (12, 0b0101), (0, 0), (11, 0b0101))]
+#[case::xor_04(xor, (12, 0), (0, 0), (0, 0))]
+#[case::xor_05(xor, (12, 0), (10, 0xAAAAAAAA), (11, 0xAAAAAAAA))]
+#[case::xor_06(xor, (12, 0xFFFFFFFF), (10, 0xAAAAAAAA), (11, 0x55555555))]
+#[case::nor_01(nor, (12, !0b1111), (10, 0b1010), (11, 0b0101))]
+#[case::nor_02(nor, (12, !0b1010), (10, 0b1010), (0, 0))]
+#[case::nor_03(nor, (12, !0b0101), (0, 0), (11, 0b0101))]
+#[case::nor_04(nor, (12, 0xFFFFFFFF), (0, 0), (0, 0))]
+#[case::nor_05(nor, (12, 0), (10, 0xAAAAAAAA), (11, 0x55555555))]
+#[case::nor_06(nor, (12, 0x55555555), (10, 0xAAAAAAAA), (11, 0xAAAAAAAA))]
+fn test_alu_reg(
+    #[case] instr: impl Fn(u8, u8, u8) -> OpCode,
+    #[case] expected: (Guest, u32),
+    #[case] a: (Guest, u32),
+    #[case] b: (Guest, u32),
+) -> color_eyre::Result<()> {
+    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use pchan_utils::setup_tracing;
+
+    setup_tracing();
+    let mut emu = Emu::default();
+    if expected.0 != 0 {
+        emu.cpu.gpr[expected.0 as usize] = 1231123;
+    }
+    emu.cpu.gpr[a.0 as usize] = a.1;
+    emu.cpu.gpr[b.0 as usize] = b.1;
+    emu.write_many(0x0, &program([instr(expected.0, a.0, b.0), OpCode(69420)]));
+    PipelineV2::new(&emu).run_once(&mut emu)?;
+    tracing::info!(?emu.cpu);
+    assert_eq!(emu.cpu.gpr[expected.0 as usize], expected.1);
+    assert_eq!(emu.cpu.d_clock, 1);
+    assert_eq!(emu.cpu.pc, 0x8);
     Ok(())
 }

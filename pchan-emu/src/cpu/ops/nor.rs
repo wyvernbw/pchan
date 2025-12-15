@@ -4,9 +4,9 @@ use std::fmt::Display;
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 #[allow(clippy::upper_case_acronyms)]
 pub struct NOR {
-    rd: u8,
-    rs: u8,
-    rt: u8,
+    pub rd: u8,
+    pub rs: u8,
+    pub rt: u8,
 }
 
 impl NOR {
