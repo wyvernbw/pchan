@@ -206,14 +206,6 @@ impl Memory {
     pub unsafe fn write_impl<T>(ptr: *mut u8, value: T) {
         let ptr = ptr as *mut T;
 
-        if !ptr.is_aligned() {
-            // tracing::error!(
-            //     "emulator triggered unaligned write in an aligned operation. consider the exception handler invoked (not yet implemented)"
-            // );
-            unsafe { std::ptr::write_unaligned(ptr, value) };
-            return;
-        }
-
         unsafe {
             std::ptr::write(ptr, value);
         }
@@ -249,7 +241,7 @@ impl Memory {
         match lut_ptr {
             // fastmem
             Some(region_ptr) => unsafe {
-                let ptr = mem.add(region_ptr as usize).add(offset as usize);
+                let ptr = mem.add(region_ptr as usize + offset as usize);
                 Memory::write_impl(ptr, value);
             },
             // memcheck
@@ -307,7 +299,7 @@ impl Memory {
         }
     }
 
-    fn write_to_cache_control<T>(address: u32, value: T) {
+    fn write_to_cache_control<T>(address: u32, _value: T) {
         match address {
             0xfffe_0130 => {
                 tracing::trace!("side effect");
@@ -370,5 +362,33 @@ impl Emu {
     #[instrument(level = Level::TRACE, skip(self, address), fields(address = %hex(address)))]
     pub unsafe extern "C" fn readi8v2(self: *mut Emu, address: u32) -> i32 {
         unsafe { (*self).read::<i8, ext::Sign>(address) }
+    }
+
+    /// # Safety
+    #[unsafe(no_mangle)]
+    #[instrument(level = Level::TRACE, skip(self, address), fields(address = %hex(address)))]
+    pub unsafe extern "C" fn readu8v2(self: *mut Emu, address: u32) -> u32 {
+        unsafe { (*self).read::<u8, ext::Zero>(address) }
+    }
+
+    /// # Safety
+    #[unsafe(no_mangle)]
+    #[instrument(level = Level::TRACE, skip(self, address), fields(address = %hex(address)))]
+    pub unsafe extern "C" fn readi16v2(self: *mut Emu, address: u32) -> i32 {
+        unsafe { (*self).read::<i16, ext::Sign>(address) }
+    }
+
+    /// # Safety
+    #[unsafe(no_mangle)]
+    #[instrument(level = Level::TRACE, skip(self, address), fields(address = %hex(address)))]
+    pub unsafe extern "C" fn readu16v2(self: *mut Emu, address: u32) -> u32 {
+        unsafe { (*self).read::<u16, ext::Zero>(address) }
+    }
+
+    /// # Safety
+    #[unsafe(no_mangle)]
+    #[instrument(level = Level::TRACE, skip(self, address), fields(address = %hex(address)))]
+    pub unsafe extern "C" fn read32v2(self: *mut Emu, address: u32) -> i32 {
+        unsafe { (*self).read::<i32, ext::NoExt>(address) }
     }
 }

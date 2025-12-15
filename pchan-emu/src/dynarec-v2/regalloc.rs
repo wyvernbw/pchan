@@ -1,6 +1,4 @@
 use std::collections::VecDeque;
-#[cfg(target_arch = "aarch64")]
-use std::ops::Deref;
 
 use bitvec::prelude as bv;
 use bv::Lsb0;
@@ -105,7 +103,7 @@ impl From<u8> for Allocated {
 pub type Guest = u8;
 pub type Host = Reg;
 
-trait RegisterType {}
+pub trait RegisterType {}
 impl RegisterType for Guest {}
 impl RegisterType for Host {}
 
@@ -131,7 +129,7 @@ impl RegAlloc {
     }
 
     pub fn allocated_guest_to_host(&self, guest_reg: u8) -> Option<Reg> {
-        self.mapping[guest_reg as usize].map(|reg| reg.into())
+        self.mapping[guest_reg as usize]
     }
 
     // # Returns
@@ -184,9 +182,7 @@ impl RegAlloc {
                 match (prio, guest_dirty) {
                     (_, true) => Err(RegAllocError::EvictToMemory(evicted_guest, host_reg)),
                     (true, false) => Err(RegAllocError::EvictToMemory(evicted_guest, host_reg)),
-                    (false, false) => {
-                        Err(RegAllocError::EvictToStack(evicted_guest, host_reg.into()))
-                    }
+                    (false, false) => Err(RegAllocError::EvictToStack(evicted_guest, host_reg)),
                 }
             }
             None => {
@@ -366,7 +362,7 @@ pub static REG_MAP: [Option<Reg>; 32] = array![
 
 #[cfg(test)]
 pub mod regalloc_tests {
-    use pretty_assertions::{assert_eq, assert_matches};
+    use pretty_assertions::assert_eq;
     use rstest::rstest;
 
     use super::*;

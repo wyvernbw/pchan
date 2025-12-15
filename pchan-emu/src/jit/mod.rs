@@ -1,12 +1,4 @@
-use std::{
-    cell::RefCell,
-    collections::{HashMap, HashSet},
-    hash::Hash,
-    mem::offset_of,
-    ops::{Index, IndexMut},
-    ptr,
-    sync::Arc,
-};
+use std::{hash::Hash, mem::offset_of, ptr, sync::Arc};
 
 use cranelift::codegen::ir::{self, immediates::Offset32};
 use cranelift_codegen::{
@@ -23,7 +15,7 @@ use crate::{
     cranelift_bs::*,
     dynarec::{CacheUpdates, EntryCache},
     io::IO,
-    memory::{self, Memory, fastmem::LUT},
+    memory::{self, Memory},
 };
 
 #[derive(derive_more::Debug)]

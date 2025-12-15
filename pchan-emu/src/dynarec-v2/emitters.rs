@@ -3,10 +3,11 @@ use enum_dispatch::enum_dispatch;
 #[cfg(test)]
 use rstest::rstest;
 
-use crate::Emu;
 use crate::cpu::ops::addiu::*;
 use crate::cpu::ops::lb::*;
+use crate::cpu::ops::lbu::*;
 use crate::cpu::ops::lh::*;
+use crate::cpu::ops::lhu::*;
 use crate::cpu::ops::lw::*;
 use crate::cpu::ops::sb::*;
 use crate::cpu::ops::sh::*;
@@ -74,18 +75,22 @@ pub enum DecodedOpNew {
     SH(SH),
     SW(SW),
     LB(LB),
+    LBU(LBU),
+    LH(LH),
+    LHU(LHU),
+    LW(LW),
 }
 
 #[derive(Debug, Clone, Copy, derive_more::Display, Hash, PartialEq, Eq)]
 pub struct ILLEGAL;
 
 impl DynarecOp for ILLEGAL {
-    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+    fn emit<'a>(&self, _: EmitCtx<'a>) -> EmitSummary {
         EmitSummary
     }
 
     fn boundary(&self) -> Boundary {
-        Boundary::None
+        Boundary::Function
     }
 }
 
@@ -115,6 +120,13 @@ impl DecodedOpNew {
                 (0x0, _, _, 0x22 | 0x23) => Self::SUBU(SUBU::new(rd, rs, rt)),
                 (0x8 | 0x9, _, _, _) => Self::ADDIU(ADDIU::new(rs, rt, fields.imm16())),
                 (0x20, _, _, _) => Self::LB(LB::new(rt, rs, fields.imm16())),
+                (0x21, _, _, _) => Self::LH(LH::new(rt, rs, fields.imm16())),
+                (0x22, _, _, _) => todo!("lwl"),
+                (0x23, _, _, _) => Self::LW(LW::new(rt, rs, fields.imm16())),
+                (0x24, _, _, _) => Self::LBU(LBU::new(rt, rs, fields.imm16())),
+                (0x25, _, _, _) => Self::LHU(LHU::new(rt, rs, fields.imm16())),
+                (0x26, _, _, _) => todo!("lwr"),
+                (0x27, _, _, _) => Self::illegal(),
                 (0x28, _, _, _) => Self::SB(SB::new(rt, rs, fields.imm16())),
                 (0x29, _, _, _) => Self::SH(SH::new(rt, rs, fields.imm16())),
                 (0x2A, _, _, _) => todo!("swl"),
@@ -251,37 +263,44 @@ fn test_subu(#[case] a: u32, #[case] b: u32, #[case] expected: u32) -> color_eyr
     Ok(())
 }
 
-fn emit_store<'a, T: 'static>(
-    ctx: EmitCtx<'a>,
+fn emit_store(
+    ctx: EmitCtx,
     rt: u8,
     rs: u8,
     imm: i16,
-    func_ptr: unsafe extern "C" fn(*mut Emu, u32, T),
+    func_call: impl Fn(&mut EmitCtx) + 'static,
 ) -> EmitSummary {
     ctx.dynarec.emit_load_temp_reg(rs, Reg::W(1));
     ctx.dynarec.emit_load_temp_reg(rt, Reg::W(2));
 
-    dynasm!(
-        ctx.dynarec.asm
-        ; .arch aarch64
-        ; add w1, w1, ext::sign(imm) as _
-        ; stp w1, w2, [sp, #-16]!
-    );
-
-    ctx.dynarec.set_delay_slot(move |ctx| {
+    if imm > 0xfff {
         dynasm!(
             ctx.dynarec.asm
             ; .arch aarch64
-            ; ldr x3, >func_ptr
-            ; b >after_ptr
-            ; func_ptr:
-            ; .u64 func_ptr as usize as _
-            ; after_ptr:
+            ; mov w3, ext::sign(imm) as _
+            ; add w1, w1, w3
+            ; stp w1, w2, [sp, #-16]!
+        );
+    } else {
+        dynasm!(
+            ctx.dynarec.asm
+            ; .arch aarch64
+            ; add w1, w1, ext::sign(imm) as _
+            ; stp w1, w2, [sp, #-16]!
+        );
+    }
+
+    ctx.dynarec.set_delay_slot(move |mut ctx| {
+        dynasm!(
+            ctx.dynarec.asm
+            ; .arch aarch64
             ; ldp w1, w2, [sp], #16
+            // FIXME: store allocated temp registers as well
+            // need to track caller saved registers in regalloc
             // we have to store x0 since the function call will clobber it
             ; stp x0, x1, [sp, #-16]!
             // call to function
-            ; blr x3
+            ;; func_call(&mut ctx)
             ; ldp x0, x1, [sp], #16
 
         );
@@ -294,7 +313,14 @@ fn emit_store<'a, T: 'static>(
 impl DynarecOp for SB {
     #[cfg(target_arch = "aarch64")]
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
-        emit_store(ctx, self.rt, self.rs, self.imm, Emu::write8v2)
+        emit_store(ctx, self.rt, self.rs, self.imm, move |ctx| {
+            dynasm!(
+                ctx.dynarec.asm
+                ; .arch aarch64
+                ; ldr x3, ->write8v2
+                ; blr x3
+            )
+        })
     }
 
     fn cycles(&self) -> u16 {
@@ -305,7 +331,14 @@ impl DynarecOp for SB {
 impl DynarecOp for SH {
     #[cfg(target_arch = "aarch64")]
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
-        emit_store(ctx, self.rt, self.rs, self.imm, Emu::write16v2)
+        emit_store(ctx, self.rt, self.rs, self.imm, move |ctx| {
+            dynasm!(
+                ctx.dynarec.asm
+                ; .arch aarch64
+                ; ldr x3, ->write16v2
+                ; blr x3
+            )
+        })
     }
     fn cycles(&self) -> u16 {
         2
@@ -315,7 +348,14 @@ impl DynarecOp for SH {
 impl DynarecOp for SW {
     #[cfg(target_arch = "aarch64")]
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
-        emit_store(ctx, self.rt, self.rs, self.imm, Emu::write32v2)
+        emit_store(ctx, self.rt, self.rs, self.imm, move |ctx| {
+            dynasm!(
+                ctx.dynarec.asm
+                ; .arch aarch64
+                ; ldr x3, ->write32v2
+                ; blr x3
+            );
+        })
     }
     fn cycles(&self) -> u16 {
         2
@@ -361,7 +401,7 @@ fn emit_load(
     rt: u8,
     rs: u8,
     imm: i16,
-    func_ptr: unsafe extern "C" fn(*mut Emu, u32) -> i32,
+    func_call: impl Fn(&mut EmitCtx) + 'static,
 ) -> EmitSummary {
     ctx.dynarec.emit_load_temp_reg(rs, Reg::W(1));
     dynasm!(
@@ -371,23 +411,17 @@ fn emit_load(
         ; str w1, [sp, #-16]!
     );
 
-    ctx.dynarec.set_delay_slot(move |ctx| {
+    ctx.dynarec.set_delay_slot(move |mut ctx| {
         let rta = ctx.dynarec.alloc_reg(rt);
         dynasm!(
             ctx.dynarec.asm
             ; .arch aarch64
-            ; ldr x3, >func_ptr
-            ; b >after_ptr
-            ; func_ptr:
-            ; .u64 func_ptr as usize as _
-            ; after_ptr:
-
             ; ldr w1, [sp], #16
             ; stp x0, x1, [sp, #-16]!
             ; stp x2, x3, [sp, #-16]!
             ; stp x4, x5, [sp, #-16]!
             ; stp x6, x7, [sp, #-16]!
-            ; blr x3
+            ;; func_call(&mut ctx)
             ; ldp x6, x7, [sp], #16
             ; ldp x4, x5, [sp], #16
             ; mov W(*rta), w0
@@ -405,7 +439,78 @@ fn emit_load(
 
 impl DynarecOp for LB {
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
-        emit_load(ctx, self.rt, self.rs, self.imm, Emu::readi8v2)
+        emit_load(ctx, self.rt, self.rs, self.imm, move |ctx| {
+            dynasm!(
+                ctx.dynarec.asm
+                ; .arch aarch64
+                ; ldr x3, ->readi8v2
+                ; blr x3
+            )
+        })
+    }
+    fn cycles(&self) -> u16 {
+        2
+    }
+}
+
+impl DynarecOp for LBU {
+    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+        emit_load(ctx, self.rt, self.rs, self.imm, move |ctx| {
+            dynasm!(
+                ctx.dynarec.asm
+                ; .arch aarch64
+                ; ldr x3, ->readu8v2
+                ; blr x3
+            )
+        })
+    }
+    fn cycles(&self) -> u16 {
+        2
+    }
+}
+
+impl DynarecOp for LH {
+    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+        emit_load(ctx, self.rt, self.rs, self.imm, move |ctx| {
+            dynasm!(
+                ctx.dynarec.asm
+                ; .arch aarch64
+                ; ldr x3, ->readi16v2
+                ; blr x3
+            )
+        })
+    }
+    fn cycles(&self) -> u16 {
+        2
+    }
+}
+
+impl DynarecOp for LHU {
+    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+        emit_load(ctx, self.rt, self.rs, self.imm, move |ctx| {
+            dynasm!(
+                ctx.dynarec.asm
+                ; .arch aarch64
+                ; ldr x3, ->readu16v2
+                ; blr x3
+            )
+        })
+    }
+    fn cycles(&self) -> u16 {
+        2
+    }
+}
+
+impl DynarecOp for LW {
+    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+        emit_load(ctx, self.rt, self.rs, self.imm, move |ctx| {
+            dynasm!(
+                ctx.dynarec.asm
+                ; .arch aarch64
+                ; ldr x3, ->read32v2
+                ; blr x3
+            )
+        })
     }
     fn cycles(&self) -> u16 {
         2
@@ -414,11 +519,19 @@ impl DynarecOp for LB {
 
 #[cfg(test)]
 #[rstest]
-#[case::lb(69, lb(10, 11, 2), 69)]
-#[case::lb(-1i32 as u32, lb(10, 11, 2), -1i32 as u32)]
+#[case::lb(69, lb, 69)]
+#[case::lb(-1i32 as u32, lb, -1i32 as u32)]
+#[case::lbu(69, lbu, 69)]
+#[case::lbu(0xFF, lbu, 0xFF)]
+#[case::lh(69, lh, 69)]
+#[case::lh(-1i32 as u32, lh, -1i32 as u32)]
+#[case::lhu(69, lhu, 69)]
+#[case::lhu(0xFFFF, lhu, 0xFFFF)]
+#[case::lw(69, lw, 69)]
+#[case::lw(-1i32 as u32, lw, -1i32 as u32)]
 fn test_loads(
     #[case] value: u32,
-    #[case] instr: OpCode,
+    #[case] instr: impl Fn(u8, u8, i16) -> OpCode,
     #[case] expected: u32,
 ) -> color_eyre::Result<()> {
     use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
@@ -428,7 +541,7 @@ fn test_loads(
     let mut emu = Emu::default();
     emu.cpu.gpr[11] = 0x100;
     emu.write(0x100 + 2, value);
-    emu.write_many(0x0, &program([instr, OpCode(69420)]));
+    emu.write_many(0x0, &program([instr(10, 11, 2), OpCode(69420)]));
 
     PipelineV2::new(&emu).run_once(&mut emu)?;
 

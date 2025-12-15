@@ -3,9 +3,7 @@ use std::fmt::Display;
 use crate::dynarec::prelude::*;
 use tracing::instrument;
 
-use crate::cpu::ops::{
-    BoundaryType, EmitCtx, EmitSummary, MipsOffset, Op, OpCode, PrimeOp, TryFromOpcodeErr,
-};
+use crate::cpu::ops::{BoundaryType, EmitCtx, EmitSummary, MipsOffset, Op, OpCode, PrimeOp};
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 #[allow(clippy::upper_case_acronyms)]

@@ -2,6 +2,7 @@ use color_eyre::eyre::bail;
 use dynasm::dynasm;
 use dynasmrt::Assembler;
 use dynasmrt::DynasmApi;
+use dynasmrt::DynasmLabelApi;
 use dynasmrt::ExecutableBuffer;
 use smallbox::SmallBox;
 use std::cell::Cell;
@@ -137,6 +138,27 @@ impl Dynarec {
             dynasm!(
                 self.asm
                 ; .arch aarch64
+                ; b >after_table
+
+                // -- function table --
+                ; -> write32v2:
+                ; .u64 Emu::write32v2 as usize as _
+                ; -> write16v2:
+                ; .u64 Emu::write16v2 as usize as _
+                ; -> write8v2:
+                ; .u64 Emu::write8v2 as usize as _
+                ; -> readi8v2:
+                ; .u64 Emu::readi8v2 as usize as _
+                ; -> readu8v2:
+                ; .u64 Emu::readu8v2 as usize as _
+                ; -> readi16v2:
+                ; .u64 Emu::readi16v2 as usize as _
+                ; -> readu16v2:
+                ; .u64 Emu::readu16v2 as usize as _
+                ; -> read32v2:
+                ; .u64 Emu::read32v2 as usize as _
+                ; after_table:
+
                 ; stp x19, x20, [sp, -16]!
                 ; stp x21, x22, [sp, -16]!
                 ; stp x23, x24, [sp, -16]!
@@ -148,7 +170,10 @@ impl Dynarec {
     }
     fn emit_writeback_free(asm: &mut Assembler<Reloc>, guest_reg: u8, host_reg: Reg) {
         let offset = Emu::reg_offset(guest_reg) as u32;
-        tracing::trace!("store: guest r{}", guest_reg);
+
+        if enabled!(Level::TRACE) {
+            tracing::trace!("store: guest r{}", guest_reg);
+        }
 
         // emit writeback
         #[cfg(target_arch = "aarch64")]
@@ -172,7 +197,10 @@ impl Dynarec {
         );
 
         let offset = Emu::reg_offset(gr1) as u32;
-        tracing::trace!("store: guest ${} & ${} (pair)", reg_str(gr1), reg_str(gr2));
+
+        if enabled!(Level::TRACE) {
+            tracing::trace!("store: guest ${} & ${} (pair)", reg_str(gr1), reg_str(gr2));
+        }
 
         #[cfg(target_arch = "aarch64")]
         dynasm!(
@@ -210,8 +238,9 @@ impl Dynarec {
             dynasm!(
                 self.asm
                 ; .arch aarch64
-                ; mov w24, new_pc as _
-                ; mov w25, d_clock as _
+                ; movz w24, new_pc >> 16 , LSL #16
+                ; movk w24, new_pc & 0x0000_FFFF
+                ; movz w25, d_clock as _
                 ; stp w24, w25, [x0, Emu::PC_OFFSET as _]
             )
         }
@@ -247,7 +276,9 @@ impl Dynarec {
             ; ldr W(host_reg), [x0, offset]
         );
 
-        tracing::trace!("load: guest r{} to temp reg {:?}", guest_reg, host_reg);
+        if enabled!(Level::TRACE) {
+            tracing::trace!("load: guest r{} to temp reg {:?}", guest_reg, host_reg);
+        }
     }
     fn emit_load_reg(&mut self, guest_reg: u8) -> LoadedReg {
         let offset = Emu::reg_offset(guest_reg) as u32;
@@ -269,7 +300,10 @@ impl Dynarec {
 
                     self.reg_alloc.loaded.set(guest_reg as usize, true);
                     self.reg_alloc.dirty.set(guest_reg as usize, false);
-                    tracing::trace!("load: guest r{}", guest_reg);
+
+                    if enabled!(Level::TRACE) {
+                        tracing::trace!("load: guest r{}", guest_reg);
+                    }
                 }
                 // spill register
                 Err(RegAllocError::EvictToMemory(evicted_guest, host_reg)) => {
@@ -283,11 +317,13 @@ impl Dynarec {
                     );
                     self.reg_alloc.dirty.set(guest_reg as usize, false);
 
-                    tracing::trace!(
-                        "load: guest r{} (evicted previous w{} to memory)",
-                        guest_reg,
-                        (*host_reg).to_idx()
-                    );
+                    if enabled!(Level::TRACE) {
+                        tracing::trace!(
+                            "load: guest r{} (evicted previous w{} to memory)",
+                            guest_reg,
+                            (*host_reg).to_idx()
+                        );
+                    }
                 }
                 Err(RegAllocError::EvictToStack(_, host_reg)) => {
                     dynasm!(
@@ -298,11 +334,13 @@ impl Dynarec {
                     );
                     self.reg_alloc.dirty.set(guest_reg as usize, false);
 
-                    tracing::trace!(
-                        "load: guest r{} (evicted previous w{} to stack)",
-                        guest_reg,
-                        (*host_reg).to_idx()
-                    );
+                    if enabled!(Level::TRACE) {
+                        tracing::trace!(
+                            "load: guest r{} (evicted previous w{} to stack)",
+                            guest_reg,
+                            (*host_reg).to_idx()
+                        );
+                    }
                 }
             };
             LoadedReg::from(result)
@@ -409,8 +447,7 @@ impl Emu {
     fn linear_fetch(&self) -> impl Iterator<Item = (OpCode, DecodedOpNew)> {
         let mut iter = self
             .linear_fetch_no_decode()
-            .map(|op| (op, DecodedOpNew::new(op)))
-            .peekable();
+            .map(|op| (op, DecodedOpNew::new(op)));
         let mut taking = true;
         std::iter::from_fn(move || {
             if !taking {
@@ -559,7 +596,11 @@ fn fetch_and_compile_single_threaded(
             dynarec: &mut dynarec,
         });
     }
-    tracing::info!(?op_count);
+
+    if enabled!(Level::TRACE) {
+        tracing::trace!(?op_count);
+    }
+
     let new_pc = emu.cpu.pc + op_count as u32 * size_of::<OpCode>() as u32;
     dynarec.emit_block_epilogue(cycles, new_pc);
 

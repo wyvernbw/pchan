@@ -4,7 +4,7 @@ use pchan_utils::hex;
 
 use crate::cpu::REG_STR;
 use crate::cpu::ops::{self, BoundaryType, EmitSummary, Op, TryFromOpcodeErr};
-use crate::{cranelift_bs::*, store};
+use crate::store;
 
 use super::{EmitCtx, OpCode, PrimeOp};
 

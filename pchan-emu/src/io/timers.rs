@@ -1,4 +1,4 @@
-use std::ops::{Range, RangeInclusive};
+use std::ops::RangeInclusive;
 
 use crate::{
     cpu::{Cpu, Exception},
@@ -6,7 +6,6 @@ use crate::{
     memory::{Memory, ext},
 };
 use bitfield::bitfield;
-use tracing::instrument;
 
 bitfield! {
     #[derive(Clone, Copy)]
@@ -124,7 +123,7 @@ impl IO {
         let timer_0 = mem.read::<TimerCounterValue, ext::NoExt>(cpu, timer_0_address);
         let timer_0_value = timer_0.value();
         // timer 0 is synced to system clock
-        let (new_timer_0_value, overflowed) = timer_0_value.overflowing_add(cpu.d_clock as _);
+        let (new_timer_0_value, _overflowed) = timer_0_value.overflowing_add(cpu.d_clock as _);
 
         // TODO: timer 1 and 2
 

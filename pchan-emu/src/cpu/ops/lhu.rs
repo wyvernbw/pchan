@@ -4,16 +4,16 @@ use pchan_utils::hex;
 
 use crate::cpu::REG_STR;
 use crate::cpu::ops::{self, BoundaryType, EmitSummary, Op, OpCode, TryFromOpcodeErr};
-use crate::{cranelift_bs::*, load};
+use crate::load;
 
 use super::{EmitCtx, PrimeOp};
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 #[allow(clippy::upper_case_acronyms)]
 pub struct LHU {
-    rt: u8,
-    rs: u8,
-    imm: i16,
+    pub rt: u8,
+    pub rs: u8,
+    pub imm: i16,
 }
 
 impl LHU {
