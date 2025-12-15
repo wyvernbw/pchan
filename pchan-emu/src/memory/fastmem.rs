@@ -6,7 +6,7 @@ use tracing::{Level, instrument};
 use crate::{
     Emu,
     cpu::Cpu,
-    memory::{MEM_MAP, Memory, kb},
+    memory::{MEM_MAP, Memory, ext, kb},
 };
 
 const PAGE_COUNT: usize = 0x10000;
@@ -363,5 +363,12 @@ impl Emu {
     #[pchan_macros::instrument_write]
     pub unsafe extern "C" fn write32v2(self: *mut Emu, address: u32, value: i32) {
         unsafe { (*self).write(address, value) }
+    }
+
+    /// # Safety
+    #[unsafe(no_mangle)]
+    #[instrument(level = Level::TRACE, skip(self, address), fields(address = %hex(address)))]
+    pub unsafe extern "C" fn readi8v2(self: *mut Emu, address: u32) -> i32 {
+        unsafe { (*self).read::<i8, ext::Sign>(address) }
     }
 }

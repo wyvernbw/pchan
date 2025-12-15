@@ -5,10 +5,14 @@ use rstest::rstest;
 
 use crate::Emu;
 use crate::cpu::ops::addiu::*;
+use crate::cpu::ops::lb::*;
+use crate::cpu::ops::lh::*;
+use crate::cpu::ops::lw::*;
 use crate::cpu::ops::sb::*;
 use crate::cpu::ops::sh::*;
 use crate::cpu::ops::subu::*;
 use crate::cpu::ops::sw::*;
+
 use crate::cpu::ops::{HaltBlock, OpCode};
 use crate::dynarec_v2::Dynarec;
 use crate::dynarec_v2::Reg;
@@ -69,6 +73,7 @@ pub enum DecodedOpNew {
     SB(SB),
     SH(SH),
     SW(SW),
+    LB(LB),
 }
 
 #[derive(Debug, Clone, Copy, derive_more::Display, Hash, PartialEq, Eq)]
@@ -89,6 +94,9 @@ impl DecodedOpNew {
         let [op] = Self::decode([fields]);
         op
     }
+    pub const fn is_illegal(&self) -> bool {
+        matches!(self, Self::ILLEGAL(_))
+    }
     pub const fn illegal() -> Self {
         Self::ILLEGAL(ILLEGAL)
     }
@@ -106,6 +114,7 @@ impl DecodedOpNew {
             match (opcode, rs, rt, funct) {
                 (0x0, _, _, 0x22 | 0x23) => Self::SUBU(SUBU::new(rd, rs, rt)),
                 (0x8 | 0x9, _, _, _) => Self::ADDIU(ADDIU::new(rs, rt, fields.imm16())),
+                (0x20, _, _, _) => Self::LB(LB::new(rt, rs, fields.imm16())),
                 (0x28, _, _, _) => Self::SB(SB::new(rt, rs, fields.imm16())),
                 (0x29, _, _, _) => Self::SH(SH::new(rt, rs, fields.imm16())),
                 (0x2A, _, _, _) => todo!("swl"),
@@ -176,13 +185,17 @@ fn test_addiu(#[case] a: u32, #[case] b: u32, #[case] expected: u32) -> color_ey
     tracing::info!(?emu.cpu);
     assert_eq!(emu.cpu.gpr[12], expected);
     assert_eq!(emu.cpu.d_clock, 1);
-    assert_eq!(emu.cpu.pc, 0x4);
+    assert_eq!(emu.cpu.pc, 0x8);
     Ok(())
 }
 
 impl DynarecOp for HaltBlock {
     fn emit<'a>(&self, _: EmitCtx<'a>) -> EmitSummary {
         EmitSummary
+    }
+
+    fn cycles(&self) -> u16 {
+        0
     }
 
     fn boundary(&self) -> Boundary {
@@ -234,7 +247,7 @@ fn test_subu(#[case] a: u32, #[case] b: u32, #[case] expected: u32) -> color_eyr
     tracing::info!(?emu.cpu);
     assert_eq!(emu.cpu.gpr[12], expected);
     assert_eq!(emu.cpu.d_clock, 1);
-    assert_eq!(emu.cpu.pc, 0x4);
+    assert_eq!(emu.cpu.pc, 0x8);
     Ok(())
 }
 
@@ -326,7 +339,7 @@ where
     let mut emu = Emu::default();
     emu.cpu.gpr[10] = ext::zero(value);
     emu.cpu.gpr[11] = 0xf;
-    emu.write_many(0x0, &program([sb(10, 11, 2), OpCode(69420)]));
+    emu.write_many(0x0, &program([instr, OpCode(69420)]));
 
     PipelineV2::new(&emu).run_once(&mut emu)?;
 
@@ -334,8 +347,133 @@ where
     tracing::info!(?emu.cpu);
 
     assert_eq!(emu.cpu.d_clock, 2);
-    assert_eq!(emu.cpu.pc, 0x4);
+    assert_eq!(emu.cpu.pc, 0x8);
     assert_eq!(emu.read::<T, ext::Zero>(0xf + 2), ext::zero(value));
+
+    tracing::info!("returning from test...");
+    Ok(())
+}
+
+#[cfg(target_arch = "aarch64")]
+#[allow(clippy::useless_conversion)]
+fn emit_load(
+    ctx: EmitCtx,
+    rt: u8,
+    rs: u8,
+    imm: i16,
+    func_ptr: unsafe extern "C" fn(*mut Emu, u32) -> i32,
+) -> EmitSummary {
+    ctx.dynarec.emit_load_temp_reg(rs, Reg::W(1));
+    dynasm!(
+        ctx.dynarec.asm
+        ; .arch aarch64
+        ; add w1, w1, ext::sign(imm) as _
+        ; str w1, [sp, #-16]!
+    );
+
+    ctx.dynarec.set_delay_slot(move |ctx| {
+        let rta = ctx.dynarec.alloc_reg(rt);
+        dynasm!(
+            ctx.dynarec.asm
+            ; .arch aarch64
+            ; ldr x3, >func_ptr
+            ; b >after_ptr
+            ; func_ptr:
+            ; .u64 func_ptr as usize as _
+            ; after_ptr:
+
+            ; ldr w1, [sp], #16
+            ; stp x0, x1, [sp, #-16]!
+            ; stp x2, x3, [sp, #-16]!
+            ; stp x4, x5, [sp, #-16]!
+            ; stp x6, x7, [sp, #-16]!
+            ; blr x3
+            ; ldp x6, x7, [sp], #16
+            ; ldp x4, x5, [sp], #16
+            ; mov W(*rta), w0
+            ; ldp x2, x3, [sp], #16
+            ; ldp x0, x1, [sp], #16
+        );
+        ctx.dynarec.mark_dirty(rt);
+
+        rta.restore(ctx.dynarec);
+        EmitSummary
+    });
+
+    EmitSummary
+}
+
+impl DynarecOp for LB {
+    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+        emit_load(ctx, self.rt, self.rs, self.imm, Emu::readi8v2)
+    }
+    fn cycles(&self) -> u16 {
+        2
+    }
+}
+
+#[cfg(test)]
+#[rstest]
+#[case::lb(69, lb(10, 11, 2), 69)]
+#[case::lb(-1i32 as u32, lb(10, 11, 2), -1i32 as u32)]
+fn test_loads(
+    #[case] value: u32,
+    #[case] instr: OpCode,
+    #[case] expected: u32,
+) -> color_eyre::Result<()> {
+    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use pchan_utils::setup_tracing;
+
+    setup_tracing();
+    let mut emu = Emu::default();
+    emu.cpu.gpr[11] = 0x100;
+    emu.write(0x100 + 2, value);
+    emu.write_many(0x0, &program([instr, OpCode(69420)]));
+
+    PipelineV2::new(&emu).run_once(&mut emu)?;
+
+    tracing::info!("finished running");
+    tracing::info!(?emu.cpu);
+
+    assert_eq!(emu.cpu.d_clock, 2);
+    assert_eq!(emu.cpu.pc, 0x8);
+    assert_eq!(emu.cpu.gpr[10], expected);
+
+    tracing::info!("returning from test...");
+    Ok(())
+}
+
+#[cfg(test)]
+#[rstest]
+#[case::lb(lb)]
+fn test_load_delay(#[case] instr: impl Fn(u8, u8, i16) -> OpCode) -> color_eyre::Result<()> {
+    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use pchan_utils::setup_tracing;
+
+    setup_tracing();
+    let mut emu = Emu::default();
+    emu.cpu.gpr[11] = 0x100;
+    emu.write(0x100 + 2, 69);
+    emu.write_many(
+        0x0,
+        &program([
+            instr(10, 11, 2),
+            addiu(12, 10, 420),
+            addiu(13, 10, 420),
+            OpCode(69420),
+        ]),
+    );
+
+    PipelineV2::new(&emu).run_once(&mut emu)?;
+
+    tracing::info!("finished running");
+    tracing::info!(?emu.cpu);
+
+    assert_eq!(emu.cpu.d_clock, 4);
+    assert_eq!(emu.cpu.pc, 0x10);
+    assert_eq!(emu.cpu.gpr[10], 69);
+    assert_eq!(emu.cpu.gpr[12], 420);
+    assert_eq!(emu.cpu.gpr[13], 69 + 420);
 
     tracing::info!("returning from test...");
     Ok(())

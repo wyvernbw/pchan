@@ -5,6 +5,7 @@ use dynasmrt::DynasmApi;
 use dynasmrt::ExecutableBuffer;
 use smallbox::SmallBox;
 use std::cell::Cell;
+use std::collections::VecDeque;
 use std::hash::Hash;
 use std::hash::Hasher;
 use std::ops::Deref;
@@ -39,8 +40,8 @@ type DynEmitter = SmallBox<dyn Fn(EmitCtx) -> EmitSummary, [u8; 64]>;
 #[derive(derive_more::Debug)]
 pub struct Dynarec {
     reg_alloc: RegAlloc,
-    #[debug("{}", self.delay_slot.is_some())]
-    delay_slot: Option<DynEmitter>,
+    #[debug("{}", self.delay_queue.len())]
+    delay_queue: VecDeque<DynEmitter>,
     asm: Assembler<Reloc>,
 }
 
@@ -49,7 +50,7 @@ impl Default for Dynarec {
         let asm = Assembler::new_with_capacity(size_of::<u32>() * 256)
             .expect("failed to create assembler");
         Self {
-            delay_slot: None,
+            delay_queue: VecDeque::with_capacity(2),
             reg_alloc: Default::default(),
             asm,
         }
@@ -317,7 +318,7 @@ impl Dynarec {
     }
 
     fn set_delay_slot(&mut self, emitter: impl Fn(EmitCtx) -> EmitSummary + 'static) {
-        self.delay_slot = Some(SmallBox::new(emitter) as _);
+        self.delay_queue.push_back(SmallBox::new(emitter) as _);
     }
 }
 
@@ -409,9 +410,20 @@ impl Emu {
         let mut iter = self
             .linear_fetch_no_decode()
             .map(|op| (op, DecodedOpNew::new(op)))
-            .take_while(|(_, op)| !op.is_boundary())
             .peekable();
-        std::iter::from_fn(move || iter.next_if(|(_, op)| !op.is_boundary()))
+        let mut taking = true;
+        std::iter::from_fn(move || {
+            if !taking {
+                return None;
+            }
+            let value = iter.next();
+            if let Some((_, op)) = value {
+                if op.is_boundary() {
+                    taking = false;
+                }
+            }
+            value
+        })
     }
     fn linear_fetch_no_decode(&self) -> impl Iterator<Item = OpCode> {
         const CHUNK: usize = 32;
@@ -525,24 +537,29 @@ fn fetch_and_compile_single_threaded(
 
     let mut hasher = rapidhash::fast::RapidHasher::default();
     let mut op_count = 0;
-    let cycles = emu.linear_fetch().fold(0u16, |cycles, (op, decoded)| {
-        if let Some(emitter) = dynarec.delay_slot.take() {
-            emitter(EmitCtx {
+    let (cycles, _) = emu
+        .linear_fetch()
+        .fold((0u16, false), |(cycles, delay), (op, decoded)| {
+            decoded.emit(EmitCtx {
                 dynarec: &mut dynarec,
             });
-        }
-        decoded.emit(EmitCtx {
-            dynarec: &mut dynarec,
+            if delay {
+                if let Some(emitter) = dynarec.delay_queue.pop_front() {
+                    emitter(EmitCtx {
+                        dynarec: &mut dynarec,
+                    });
+                }
+            }
+            hasher.write_u32(op.0);
+            op_count += 1;
+            (cycles + decoded.cycles(), true)
         });
-        hasher.write_u32(op.0);
-        op_count += 1;
-        cycles + decoded.cycles()
-    });
-    if let Some(emitter) = dynarec.delay_slot.take() {
+    if let Some(emitter) = dynarec.delay_queue.pop_front() {
         emitter(EmitCtx {
             dynarec: &mut dynarec,
         });
     }
+    tracing::info!(?op_count);
     let new_pc = emu.cpu.pc + op_count as u32 * size_of::<OpCode>() as u32;
     dynarec.emit_block_epilogue(cycles, new_pc);
 
