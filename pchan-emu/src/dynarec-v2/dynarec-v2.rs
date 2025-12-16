@@ -215,7 +215,7 @@ impl Dynarec {
         Self::emit_writeback_free(&mut self.asm, guest_reg, host_reg);
     }
 
-    fn emit_block_epilogue(&mut self, d_clock: u16, new_pc: u32) {
+    fn emit_block_epilogue(&mut self, d_clock: u32, new_pc: Option<u32>) {
         // emit write back to dirty registers
         self.reg_alloc
             .dirty
@@ -228,22 +228,35 @@ impl Dynarec {
                 self.emit_writeback(guest_reg as _, host_reg.reg());
             });
 
+        const {
+            debug_assert!(Emu::D_CLOCK_OFFSET == Emu::PC_OFFSET + 4);
+        };
+
         // emit pc update & clock update
-        #[cfg(target_arch = "aarch64")]
-        #[allow(clippy::useless_conversion)]
-        {
-            const {
-                debug_assert!(Emu::D_CLOCK_OFFSET == Emu::PC_OFFSET + 4);
-            };
-            dynasm!(
-                self.asm
-                ; .arch aarch64
-                ; movz w24, new_pc >> 16 , LSL #16
-                ; movk w24, new_pc & 0x0000_FFFF
-                ; movz w25, d_clock as _
-                ; stp w24, w25, [x0, Emu::PC_OFFSET as _]
-            )
-        }
+        match new_pc {
+            Some(new_pc) => {
+                #[cfg(target_arch = "aarch64")]
+                dynasm!(
+                    self.asm
+                    ; .arch aarch64
+                    ; movz w24, new_pc >> 16 , LSL #16
+                    ; movk w24, new_pc & 0x0000_FFFF
+                    ; movz w25, d_clock >> 16 , LSL #16
+                    ; movk w25, d_clock & 0x0000_FFFF
+                    ; stp w24, w25, [x0, Emu::PC_OFFSET as _]
+                )
+            }
+            None => {
+                #[cfg(target_arch = "aarch64")]
+                dynasm!(
+                    self.asm
+                    ; .arch aarch64
+                    ; movz w25, d_clock >> 16 , LSL #16
+                    ; movk w25, d_clock & 0x0000_FFFF
+                    ; str w25, [x0, Emu::D_CLOCK_OFFSET as _]
+                )
+            }
+        };
 
         // emit return
         #[cfg(target_arch = "aarch64")]
@@ -362,7 +375,7 @@ impl Dynarec {
         self.mark_dirty(guest_reg);
         reg.restore(self);
 
-        EmitSummary
+        EmitSummary::default()
     }
 
     #[allow(clippy::useless_conversion)]
@@ -379,7 +392,7 @@ impl Dynarec {
         self.mark_dirty(guest_reg);
         reg.restore(self);
 
-        EmitSummary
+        EmitSummary::default()
     }
 
     fn emit_zero(&mut self, guest_reg: Guest) -> EmitSummary {
@@ -397,7 +410,7 @@ impl Dynarec {
         );
         self.mark_dirty(target);
         rd.restore(self);
-        EmitSummary
+        EmitSummary::default()
     }
 
     fn mark_dirty(&mut self, guest_reg: u8) {
@@ -410,6 +423,18 @@ impl Dynarec {
 
     fn set_delay_slot(&mut self, emitter: impl Fn(EmitCtx) -> EmitSummary + 'static) {
         self.delay_queue.push_back(SmallBox::new(emitter) as _);
+    }
+
+    #[allow(clippy::useless_conversion)]
+    fn emit_write_pc(&mut self, temp_reg: Reg, new_pc: u32) {
+        let n = temp_reg.to_idx();
+        #[cfg(target_arch = "aarch64")]
+        dynasm!(self.asm
+            ; .arch aarch64
+            ; movz W(n), new_pc >> 16 , LSL #16
+            ; movk W(n), new_pc & 0x0000_FFFF
+            ; str W(n),  [x0, Emu::PC_OFFSET as _]
+        )
     }
 }
 
@@ -501,15 +526,17 @@ impl Emu {
         let mut iter = self
             .linear_fetch_no_decode()
             .map(|op| (op, DecodedOpNew::new(op)));
-        let mut taking = true;
+        let mut taking: Option<i32> = None;
         std::iter::from_fn(move || {
-            if !taking {
+            taking = taking.map(|x| x - 1);
+            if matches!(taking, Some(0)) {
                 return None;
             }
+
             let value = iter.next();
             if let Some((_, op)) = value {
                 if op.is_boundary() {
-                    taking = false;
+                    taking = Some(2);
                 }
             }
             value
@@ -626,43 +653,123 @@ fn fetch_and_compile_single_threaded(
     dynarec.emit_block_prelude();
 
     let mut hasher = rapidhash::fast::RapidHasher::default();
-    let mut op_count = 0;
-    let (cycles, _) = emu
-        .linear_fetch()
-        .fold((0u16, false), |(cycles, delay), (op, decoded)| {
-            decoded.emit(EmitCtx {
-                dynarec: &mut dynarec,
-            });
-            if delay {
-                if let Some(emitter) = dynarec.delay_queue.pop_front() {
-                    emitter(EmitCtx {
-                        dynarec: &mut dynarec,
-                    });
+
+    type FetchItem = (OpCode, DecodedOpNew);
+    #[derive(Debug)]
+    struct FetchState {
+        op_count: usize,
+        cycles: u32,
+        delay_signal: bool,
+        pc: u32,
+        window: [Option<FetchItem>; 2],
+        hit_boundary: bool,
+        pc_updated: bool,
+    }
+
+    impl FetchState {
+        const fn push_item(&mut self, item: Option<FetchItem>) {
+            if self.window[0].is_some() {
+                unsafe {
+                    self.window.swap_unchecked(0, 1);
                 }
             }
-            hasher.write_u32(op.0);
-            op_count += 1;
-            (cycles + decoded.cycles(), true)
-        });
-    if let Some(emitter) = dynarec.delay_queue.pop_front() {
-        emitter(EmitCtx {
+            self.window[0] = item;
+        }
+        const fn pop_item(&mut self) -> Option<FetchItem> {
+            let item = self.window[1].take();
+            unsafe {
+                self.window.swap_unchecked(0, 1);
+            }
+            item
+        }
+        const fn back(&self) -> Option<&FetchItem> {
+            self.window[1].as_ref()
+        }
+        const fn clear_items(&mut self) {
+            self.window[0] = None;
+            self.window[1] = None;
+        }
+        const fn apply(&mut self, summary: EmitSummary) {
+            self.pc_updated |= summary.pc_updated;
+        }
+    }
+
+    let initial_pc = emu.cpu.pc;
+    let mut state = FetchState {
+        op_count: 0,
+        cycles: 0,
+        delay_signal: false,
+        pc: initial_pc,
+        window: [None; 2],
+        hit_boundary: false,
+        pc_updated: false,
+    };
+
+    let mut iter = emu
+        .linear_fetch_no_decode()
+        .map(|op| (op, DecodedOpNew::new(op)));
+
+    state.push_item(iter.next());
+    state.push_item(iter.next());
+    loop {
+        let Some((opcode, op)) = state.pop_item() else {
+            break;
+        };
+
+        state.cycles += op.cycles() as u32;
+        state.op_count += 1;
+        state.pc = initial_pc + state.op_count as u32 * 0x4;
+        if let Some((_, next)) = state.back() {
+            state.cycles -= next.cycles().min(op.hazard()) as u32;
+        }
+        hasher.write_u32(opcode.0);
+
+        if op.is_hard_boundary() {
+            state.clear_items();
+            state.hit_boundary = true;
+        } else if op.is_boundary() {
+            state.hit_boundary = true;
+        } else if !state.hit_boundary {
+            state.push_item(iter.next());
+        }
+
+        state.apply(op.emit(EmitCtx {
             dynarec: &mut dynarec,
-        });
+            pc: state.pc,
+        }));
+
+        if state.delay_signal {
+            if let Some(emitter) = dynarec.delay_queue.pop_front() {
+                let summary = emitter(EmitCtx {
+                    dynarec: &mut dynarec,
+                    pc: state.pc,
+                });
+                state.apply(summary);
+            }
+        }
+
+        state.delay_signal = true;
+    }
+
+    if let Some(emitter) = dynarec.delay_queue.pop_front() {
+        state.apply(emitter(EmitCtx {
+            dynarec: &mut dynarec,
+            pc: state.pc,
+        }));
     }
 
     if enabled!(Level::TRACE) {
-        tracing::trace!(?op_count);
+        tracing::trace!(?state.op_count);
     }
 
-    let new_pc = emu.cpu.pc + op_count as u32 * size_of::<OpCode>() as u32;
-    dynarec.emit_block_epilogue(cycles, new_pc);
+    dynarec.emit_block_epilogue(state.cycles, (!state.pc_updated).then_some(state.pc));
 
     let func = dynarec.finalize()?;
     let hash = hasher.finish();
 
     Ok(DynarecBlock {
         function: func,
-        op_count,
+        op_count: state.op_count,
         hash,
     })
 }

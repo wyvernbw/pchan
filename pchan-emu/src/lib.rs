@@ -5,6 +5,7 @@
 #![allow(clippy::collapsible_if)]
 #![feature(test)]
 #![feature(arbitrary_self_types_pointers)]
+#![feature(slice_swap_unchecked)]
 #![feature(if_let_guard)]
 #![feature(random)]
 #![feature(stmt_expr_attributes)]

@@ -209,3 +209,7 @@ impl<'a, T> IgnorePoison<'a> for smol::lock::RwLock<T> {
         self.write()
     }
 }
+
+pub fn default<T: Default>() -> T {
+    T::default()
+}

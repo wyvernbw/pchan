@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 bitfield = "0.19.2"
 bitvec = "1.0.1"
-bon = "3.7.2"
+bon = "3.8.1"
 color-eyre = "*"
 const-hex.workspace = true
 const_for = "0.1.5"

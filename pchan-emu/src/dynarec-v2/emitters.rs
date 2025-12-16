@@ -1,6 +1,7 @@
 use crate::dynarec_v2::Guest;
 use std::num::NonZeroU8;
 
+use bon::Builder;
 use enum_dispatch::enum_dispatch;
 
 #[cfg(test)]
@@ -10,6 +11,7 @@ use crate::cpu::ops::addiu::*;
 use crate::cpu::ops::addu::*;
 use crate::cpu::ops::and::*;
 use crate::cpu::ops::andi::*;
+use crate::cpu::ops::j::*;
 use crate::cpu::ops::lb::*;
 use crate::cpu::ops::lbu::*;
 use crate::cpu::ops::lh::*;
@@ -43,25 +45,33 @@ use dynasm::dynasm;
 use dynasmrt::DynasmApi;
 use dynasmrt::DynasmLabelApi;
 
-#[derive(Default, Debug, Clone, Copy)]
-pub enum Boundary {
-    #[default]
-    None = 0,
-    Block,
-    Function,
-}
-
 #[derive(Debug)]
 pub struct EmitCtx<'a> {
     pub dynarec: &'a mut Dynarec,
+    pub pc: u32,
 }
 
-pub struct EmitSummary;
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Boundary {
+    #[default]
+    None,
+    Soft,
+    Hard,
+}
+
+#[derive(Debug, Default, Builder)]
+pub struct EmitSummary {
+    pub pc_updated: bool,
+}
 
 #[enum_dispatch(DecodedOpNew)]
 pub trait DynarecOp {
     fn cycles(&self) -> u16 {
         1
+    }
+
+    fn hazard(&self) -> u16 {
+        0
     }
 
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary;
@@ -70,16 +80,12 @@ pub trait DynarecOp {
         Boundary::None
     }
 
-    fn is_block_boundary(&self) -> bool {
-        matches!(self.boundary(), Boundary::Block)
-    }
-
-    fn is_function_boundary(&self) -> bool {
-        matches!(self.boundary(), Boundary::Function)
-    }
-
     fn is_boundary(&self) -> bool {
-        matches!(self.boundary(), Boundary::Block | Boundary::Function)
+        matches!(self.boundary(), Boundary::Soft | Boundary::Hard)
+    }
+
+    fn is_hard_boundary(&self) -> bool {
+        matches!(self.boundary(), Boundary::Hard)
     }
 }
 
@@ -99,6 +105,7 @@ pub enum DecodedOpNew {
     AND(AND),
     OR(OR),
     XOR(XOR),
+    J(J),
     NOR(NOR),
     HaltBlock(HaltBlock),
     SB(SB),
@@ -120,11 +127,11 @@ pub struct ILLEGAL;
 
 impl DynarecOp for ILLEGAL {
     fn emit<'a>(&self, _: EmitCtx<'a>) -> EmitSummary {
-        EmitSummary
+        EmitSummary::default()
     }
 
     fn boundary(&self) -> Boundary {
-        Boundary::Function
+        Boundary::Hard
     }
 }
 
@@ -164,6 +171,7 @@ impl DecodedOpNew {
                 (0x0, _, _, 0x24) => Self::AND(AND::new(rd, rs, rt)),
                 (0x0, _, _, 0x25) => Self::OR(OR::new(rd, rs, rt)),
                 (0x0, _, _, 0x26) => Self::XOR(XOR::new(rd, rs, rt)),
+                (0x2, _, _, _) => Self::J(J::new(fields.imm26())),
                 (0xE, _, _, _) => Self::XORI(XORI::new(rs, rt, fields.imm16())),
                 (0x0, _, _, 0x27) => Self::NOR(NOR::new(rd, rs, rt)),
                 (0x8 | 0x9, _, _, _) => Self::ADDIU(ADDIU::new(rs, rt, fields.imm16())),
@@ -194,7 +202,7 @@ impl DynarecOp for ADDIU {
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
         // $rt = $zero case
         if self.rt == 0 {
-            return EmitSummary;
+            return EmitSummary::default();
         }
 
         let rt = ctx.dynarec.alloc_reg(self.rt);
@@ -208,8 +216,9 @@ impl DynarecOp for ADDIU {
                 ; mov W(*rt), self.imm as _
             );
 
+            ctx.dynarec.mark_dirty(self.rt);
             rt.restore(ctx.dynarec);
-            return EmitSummary;
+            return EmitSummary::default();
         }
 
         let rs = ctx.dynarec.emit_load_reg(self.rs);
@@ -226,11 +235,7 @@ impl DynarecOp for ADDIU {
         rs.restore(ctx.dynarec);
         rt.restore(ctx.dynarec);
 
-        EmitSummary
-    }
-
-    fn boundary(&self) -> Boundary {
-        Boundary::None
+        EmitSummary::default()
     }
 }
 
@@ -248,22 +253,22 @@ fn test_addiu(#[case] a: u32, #[case] b: u32, #[case] expected: u32) -> color_ey
     PipelineV2::new(&emu).run_once(&mut emu)?;
     tracing::info!(?emu.cpu);
     assert_eq!(emu.cpu.gpr[12], expected);
-    assert_eq!(emu.cpu.d_clock, 1);
+    assert_eq!(emu.cpu.d_clock, 2);
     assert_eq!(emu.cpu.pc, 0x8);
     Ok(())
 }
 
 impl DynarecOp for HaltBlock {
     fn emit<'a>(&self, _: EmitCtx<'a>) -> EmitSummary {
-        EmitSummary
+        EmitSummary::default()
     }
 
     fn cycles(&self) -> u16 {
-        0
+        1
     }
 
     fn boundary(&self) -> Boundary {
-        Boundary::Function
+        Boundary::Hard
     }
 }
 
@@ -282,7 +287,7 @@ fn test_subu(#[case] a: u32, #[case] b: u32, #[case] expected: u32) -> color_eyr
     PipelineV2::new(&emu).run_once(&mut emu)?;
     tracing::info!(?emu.cpu);
     assert_eq!(emu.cpu.gpr[12], expected);
-    assert_eq!(emu.cpu.d_clock, 1);
+    assert_eq!(emu.cpu.d_clock, 2);
     assert_eq!(emu.cpu.pc, 0x8);
     Ok(())
 }
@@ -328,10 +333,10 @@ fn emit_store(
             ; ldp x0, x1, [sp], #16
 
         );
-        EmitSummary
+        EmitSummary::default()
     });
 
-    EmitSummary
+    EmitSummary::default()
 }
 
 impl DynarecOp for SB {
@@ -410,7 +415,7 @@ where
     tracing::info!("finished running");
     tracing::info!(?emu.cpu);
 
-    assert_eq!(emu.cpu.d_clock, 2);
+    assert_eq!(emu.cpu.d_clock, 3);
     assert_eq!(emu.cpu.pc, 0x8);
     assert_eq!(emu.read::<T, ext::Zero>(0xf + 2), ext::zero(value));
 
@@ -455,10 +460,10 @@ fn emit_load(
         ctx.dynarec.mark_dirty(rt);
 
         rta.restore(ctx.dynarec);
-        EmitSummary
+        EmitSummary::default()
     });
 
-    EmitSummary
+    EmitSummary::default()
 }
 
 impl DynarecOp for LB {
@@ -473,6 +478,9 @@ impl DynarecOp for LB {
         })
     }
     fn cycles(&self) -> u16 {
+        3
+    }
+    fn hazard(&self) -> u16 {
         2
     }
 }
@@ -489,6 +497,9 @@ impl DynarecOp for LBU {
         })
     }
     fn cycles(&self) -> u16 {
+        3
+    }
+    fn hazard(&self) -> u16 {
         2
     }
 }
@@ -505,6 +516,9 @@ impl DynarecOp for LH {
         })
     }
     fn cycles(&self) -> u16 {
+        3
+    }
+    fn hazard(&self) -> u16 {
         2
     }
 }
@@ -521,6 +535,9 @@ impl DynarecOp for LHU {
         })
     }
     fn cycles(&self) -> u16 {
+        3
+    }
+    fn hazard(&self) -> u16 {
         2
     }
 }
@@ -537,6 +554,9 @@ impl DynarecOp for LW {
         })
     }
     fn cycles(&self) -> u16 {
+        3
+    }
+    fn hazard(&self) -> u16 {
         2
     }
 }
@@ -572,7 +592,7 @@ fn test_loads(
     tracing::info!("finished running");
     tracing::info!(?emu.cpu);
 
-    assert_eq!(emu.cpu.d_clock, 2);
+    assert_eq!(emu.cpu.d_clock, 3);
     assert_eq!(emu.cpu.pc, 0x8);
     assert_eq!(emu.cpu.gpr[10], expected);
 
@@ -610,7 +630,7 @@ fn test_load_delay(#[case] instr: impl Fn(u8, u8, i16) -> OpCode) -> color_eyre:
     tracing::info!("finished running");
     tracing::info!(?emu.cpu);
 
-    assert_eq!(emu.cpu.d_clock, 4);
+    assert_eq!(emu.cpu.d_clock, 5);
     assert_eq!(emu.cpu.pc, 0x10);
     assert_eq!(emu.cpu.gpr[10], 69);
     assert_eq!(emu.cpu.gpr[12], 420);
@@ -660,7 +680,7 @@ fn emit_alu_reg(
     rsa.restore(ctx.dynarec);
     rda.restore(ctx.dynarec);
 
-    EmitSummary
+    EmitSummary::default()
 }
 
 enum EitherZero {
@@ -684,7 +704,7 @@ impl DynarecOp for SUBU {
     #[allow(clippy::useless_conversion)]
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
         if self.rd == 0 {
-            return EmitSummary;
+            return EmitSummary::default();
         };
 
         if self.rt == 0 {
@@ -701,7 +721,7 @@ impl DynarecOp for SUBU {
             ctx.dynarec.mark_dirty(self.rd);
             rd.restore(ctx.dynarec);
 
-            return EmitSummary;
+            return EmitSummary::default();
         }
 
         emit_alu_reg(ctx, self.rd, self.rs, self.rt, move |ctx, regs| {
@@ -719,7 +739,7 @@ impl DynarecOp for ADDU {
     #[allow(clippy::useless_conversion)]
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
         if self.rd == 0 {
-            return EmitSummary;
+            return EmitSummary::default();
         };
 
         match either_zero(self.rs, self.rt) {
@@ -743,7 +763,7 @@ impl DynarecOp for AND {
     #[allow(clippy::useless_conversion)]
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
         if self.rd == 0 {
-            return EmitSummary;
+            return EmitSummary::default();
         }
 
         match either_zero(self.rs, self.rt) {
@@ -764,7 +784,7 @@ impl DynarecOp for OR {
     #[allow(clippy::useless_conversion)]
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
         if self.rd == 0 {
-            return EmitSummary;
+            return EmitSummary::default();
         }
 
         match either_zero(self.rs, self.rt) {
@@ -787,7 +807,7 @@ impl DynarecOp for XOR {
     #[allow(clippy::useless_conversion)]
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
         if self.rd == 0 {
-            return EmitSummary;
+            return EmitSummary::default();
         }
 
         match either_zero(self.rs, self.rt) {
@@ -810,7 +830,7 @@ impl DynarecOp for NOR {
     #[allow(clippy::useless_conversion)]
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
         if self.rd == 0 {
-            return EmitSummary;
+            return EmitSummary::default();
         }
         match either_zero(self.rs, self.rt) {
             EitherZero::None => emit_alu_reg(ctx, self.rd, self.rs, self.rt, move |ctx, regs| {
@@ -835,7 +855,7 @@ impl DynarecOp for NOR {
                 );
                 ctx.dynarec.mark_dirty(target);
                 rd.restore(ctx.dynarec);
-                EmitSummary
+                EmitSummary::default()
             }
         }
     }
@@ -850,7 +870,7 @@ fn emit_shift_by_reg<'a>(
     alu_op: impl Fn(&mut EmitCtx, AluRegs),
 ) -> EmitSummary {
     if rd == 0 {
-        return EmitSummary;
+        return EmitSummary::default();
     }
 
     if rt == 0 {
@@ -973,7 +993,7 @@ fn test_alu_reg(
     PipelineV2::new(&emu).run_once(&mut emu)?;
     tracing::info!(?emu.cpu);
     assert_eq!(emu.cpu.gpr[expected.0 as usize], expected.1);
-    assert_eq!(emu.cpu.d_clock, 1);
+    assert_eq!(emu.cpu.d_clock, 2);
     assert_eq!(emu.cpu.pc, 0x8);
     Ok(())
 }
@@ -992,7 +1012,7 @@ fn emit_shift_imm(
     emitter: impl Fn(&mut Dynarec, ShiftImm),
 ) -> EmitSummary {
     if rd == 0 {
-        return EmitSummary;
+        return EmitSummary::default();
     }
 
     if imm == 0 {
@@ -1014,7 +1034,7 @@ fn emit_shift_imm(
     rt.restore(ctx.dynarec);
     rd.restore(ctx.dynarec);
 
-    EmitSummary
+    EmitSummary::default()
 }
 
 impl DynarecOp for SLL {
@@ -1109,14 +1129,14 @@ fn emit_alu_imm(
     rsa.restore(ctx.dynarec);
     rta.restore(ctx.dynarec);
 
-    EmitSummary
+    EmitSummary::default()
 }
 
 impl DynarecOp for ANDI {
     #[allow(clippy::useless_conversion)]
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
         match (self.rt, self.rs, self.imm) {
-            (0, _, _) => EmitSummary,
+            (0, _, _) => EmitSummary::default(),
             (_, 0, _) | (_, _, 0) => ctx.dynarec.emit_zero(self.rt),
             _ => emit_alu_imm(
                 ctx,
@@ -1145,7 +1165,7 @@ impl DynarecOp for ORI {
                 rt: 0,
                 rs: _,
                 imm: _,
-            } => EmitSummary,
+            } => EmitSummary::default(),
             Self {
                 rt: _,
                 rs: 0,
@@ -1183,7 +1203,7 @@ impl DynarecOp for XORI {
                 rt: 0,
                 rs: _,
                 imm: _,
-            } => EmitSummary,
+            } => EmitSummary::default(),
             Self {
                 rt: _,
                 rs: 0,
@@ -1267,7 +1287,7 @@ fn test_alu_imm<I: Into<i16>>(
     PipelineV2::new(&emu).run_once(&mut emu)?;
     tracing::info!(?emu.cpu);
     assert_eq!(emu.cpu.gpr[expected.0 as usize], expected.1);
-    assert_eq!(emu.cpu.d_clock, 1);
+    assert_eq!(emu.cpu.d_clock, 2);
     assert_eq!(emu.cpu.pc, 0x8);
 
     Ok(())
@@ -1277,7 +1297,7 @@ impl DynarecOp for LUI {
     #[allow(clippy::useless_conversion)]
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
         if self.rt == 0 {
-            return EmitSummary;
+            return EmitSummary::default();
         }
         let rt = ctx.dynarec.emit_load_reg(self.rt);
 
@@ -1291,7 +1311,7 @@ impl DynarecOp for LUI {
         ctx.dynarec.mark_dirty(self.rt);
         rt.restore(ctx.dynarec);
 
-        EmitSummary
+        EmitSummary::default()
     }
 }
 
@@ -1318,8 +1338,60 @@ fn test_lui(
     PipelineV2::new(&emu).run_once(&mut emu)?;
     tracing::info!(?emu.cpu);
     assert_eq!(emu.cpu.gpr[rt as usize], expected);
-    assert_eq!(emu.cpu.d_clock, 1);
+    assert_eq!(emu.cpu.d_clock, 2);
     assert_eq!(emu.cpu.pc, 0x8);
+
+    Ok(())
+}
+
+impl DynarecOp for J {
+    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+        let new_pc = (self.imm << 2) + (ctx.pc & 0xf0000000);
+        ctx.dynarec.set_delay_slot(move |ctx| {
+            ctx.dynarec.emit_write_pc(Reg::W(3), new_pc);
+            EmitSummary::builder().pc_updated(true).build()
+        });
+        EmitSummary::default()
+    }
+
+    fn cycles(&self) -> u16 {
+        3
+    }
+
+    fn hazard(&self) -> u16 {
+        2
+    }
+
+    fn boundary(&self) -> Boundary {
+        Boundary::Soft
+    }
+}
+
+#[cfg(test)]
+#[rstest]
+#[case(0x0, 0x0000_1000)]
+fn test_j(#[case] initial_pc: u32, #[case] jump_imm: u32) -> color_eyre::Result<()> {
+    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use pchan_utils::setup_tracing;
+
+    setup_tracing();
+    let mut emu = Emu::default();
+    emu.cpu.pc = initial_pc;
+    emu.write_many(
+        initial_pc,
+        &program([
+            j(jump_imm),
+            addiu(9, 0, 69),
+            addiu(9, 0, 420),
+            OpCode(69420),
+        ]),
+    );
+    let new_pc = (jump_imm << 2) + (emu.cpu.pc & 0xf0000000);
+    PipelineV2::new(&emu).run_once(&mut emu)?;
+    tracing::info!(?emu.cpu);
+    assert_eq!(emu.cpu.gpr[9], 69);
+    assert_eq!(emu.cpu.d_clock, 3);
+    assert_eq!(emu.cpu.pc, new_pc);
 
     Ok(())
 }
