@@ -166,7 +166,7 @@ impl Default for Cop1 {
 
 pub type Reg = u8;
 
-const RA: Reg = 31;
+pub(crate) const RA: Reg = 31;
 const SP: Reg = 29;
 
 pub static REG_STR: &[&str] = &array![

@@ -43,6 +43,7 @@ pub struct Dynarec {
     reg_alloc: RegAlloc,
     #[debug("{}", self.delay_queue.len())]
     delay_queue: VecDeque<DynEmitter>,
+    #[debug(skip)]
     asm: Assembler<Reloc>,
 }
 
@@ -368,8 +369,8 @@ impl Dynarec {
         dynasm!(
             self.asm
             ; .arch aarch64
-            ; movz W(*reg), imm >> 16
-            ; movk W(*reg), imm >> 16, LSL #16
+            ; movz W(*reg), imm >> 16, LSL #16
+            ; movk W(*reg), imm & 0x0000_ffff
         );
 
         self.mark_dirty(guest_reg);
@@ -716,9 +717,11 @@ fn fetch_and_compile_single_threaded(
             break;
         };
 
+        state.pc = initial_pc + state.op_count as u32 * 0x4;
+
         state.cycles += op.cycles() as u32;
         state.op_count += 1;
-        state.pc = initial_pc + state.op_count as u32 * 0x4;
+
         if let Some((_, next)) = state.back() {
             state.cycles -= next.cycles().min(op.hazard()) as u32;
         }
@@ -750,6 +753,8 @@ fn fetch_and_compile_single_threaded(
 
         state.delay_signal = true;
     }
+
+    state.pc = initial_pc + state.op_count as u32 * 0x4;
 
     if let Some(emitter) = dynarec.delay_queue.pop_front() {
         state.apply(emitter(EmitCtx {

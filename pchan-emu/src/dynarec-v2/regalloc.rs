@@ -12,19 +12,23 @@ type RegAllocBitMap = bv::BitArray<[u32; 1]>;
 #[cfg(target_arch = "x86_64")]
 type RegAllocBitMap = bv::BitArray<[u16; 1]>;
 
-#[derive(Debug, Clone)]
+#[derive(de::Debug, Clone)]
 pub struct RegAlloc {
     pub loaded: bv::BitArray<[u32; 1]>,
     pub dirty: bv::BitArray<[u32; 1]>,
     pub allocated: RegAllocBitMap,
+    #[debug(skip)]
     pub allocatable: RegAllocBitMap,
     /// this is in guest register space
+    #[debug(skip)]
     pub priority: RegAllocBitMap,
     /// mapping from guest to host register.
     pub mapping: [Option<Reg>; 32],
     /// mapping from host to guest register. its consider valid for it to map to unallocated registers.
+    #[debug(skip)]
     pub reverse_mapping: [u8; 32],
     /// never traverse this - its slow as shit
+    #[debug("history: {} registers", history.len())]
     pub history: VecDeque<u8>,
 }
 

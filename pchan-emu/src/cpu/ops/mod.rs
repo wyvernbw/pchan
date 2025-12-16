@@ -823,7 +823,6 @@ impl DecodedOp {
                 (0x3C..=0x3F, _, _, _) => Self::illegal(),
 
                 // j type
-                (0x2, _, _, _) => Self::J(J::new(fields.imm26())),
                 (0x3, _, _, _) => Self::JAL(JAL::new(fields.imm26())),
 
                 // cop reg

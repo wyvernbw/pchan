@@ -1,3 +1,5 @@
+use crate::Emu;
+use crate::cpu;
 use crate::dynarec_v2::Guest;
 use std::num::NonZeroU8;
 
@@ -12,6 +14,9 @@ use crate::cpu::ops::addu::*;
 use crate::cpu::ops::and::*;
 use crate::cpu::ops::andi::*;
 use crate::cpu::ops::j::*;
+use crate::cpu::ops::jal::*;
+use crate::cpu::ops::jalr::*;
+use crate::cpu::ops::jr::*;
 use crate::cpu::ops::lb::*;
 use crate::cpu::ops::lbu::*;
 use crate::cpu::ops::lh::*;
@@ -99,6 +104,8 @@ pub enum DecodedOpNew {
     SLLV(SLLV),
     SRLV(SRLV),
     SRAV(SRAV),
+    JR(JR),
+    JALR(JALR),
     ADDIU(ADDIU),
     ADDU(ADDU),
     SUBU(SUBU),
@@ -106,6 +113,7 @@ pub enum DecodedOpNew {
     OR(OR),
     XOR(XOR),
     J(J),
+    JAL(JAL),
     NOR(NOR),
     HaltBlock(HaltBlock),
     SB(SB),
@@ -166,12 +174,15 @@ impl DecodedOpNew {
                 (0x0, _, _, 0x5) => Self::illegal(),
                 (0x0, _, _, 0x6) => Self::SRLV(SRLV::new(rd, rt, rs)),
                 (0x0, _, _, 0x7) => Self::SRAV(SRAV::new(rd, rt, rs)),
+                (0x0, _, _, 0x8) => Self::JR(JR::new(rs)),
+                (0x0, _, _, 0x9) => Self::JALR(JALR::new(rd, rs)),
                 (0x0, _, _, 0x20 | 0x21) => Self::ADDU(ADDU::new(rd, rs, rt)),
                 (0x0, _, _, 0x22 | 0x23) => Self::SUBU(SUBU::new(rd, rs, rt)),
                 (0x0, _, _, 0x24) => Self::AND(AND::new(rd, rs, rt)),
                 (0x0, _, _, 0x25) => Self::OR(OR::new(rd, rs, rt)),
                 (0x0, _, _, 0x26) => Self::XOR(XOR::new(rd, rs, rt)),
                 (0x2, _, _, _) => Self::J(J::new(fields.imm26())),
+                (0x3, _, _, _) => Self::JAL(JAL::new(fields.imm26())),
                 (0xE, _, _, _) => Self::XORI(XORI::new(rs, rt, fields.imm16())),
                 (0x0, _, _, 0x27) => Self::NOR(NOR::new(rd, rs, rt)),
                 (0x8 | 0x9, _, _, _) => Self::ADDIU(ADDIU::new(rs, rt, fields.imm16())),
@@ -1392,6 +1403,194 @@ fn test_j(#[case] initial_pc: u32, #[case] jump_imm: u32) -> color_eyre::Result<
     assert_eq!(emu.cpu.gpr[9], 69);
     assert_eq!(emu.cpu.d_clock, 3);
     assert_eq!(emu.cpu.pc, new_pc);
+
+    Ok(())
+}
+
+impl DynarecOp for JAL {
+    fn cycles(&self) -> u16 {
+        3
+    }
+    fn hazard(&self) -> u16 {
+        2
+    }
+    fn boundary(&self) -> Boundary {
+        Boundary::Soft
+    }
+    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+        let new_pc = (self.imm << 2) + (ctx.pc & 0xf0000000);
+        let return_address = ctx.pc + 0x8;
+        ctx.dynarec.set_delay_slot(move |ctx| {
+            ctx.dynarec.emit_write_pc(Reg::W(3), new_pc);
+            ctx.dynarec.emit_immediate_large(cpu::RA, return_address);
+
+            EmitSummary::builder().pc_updated(true).build()
+        });
+        EmitSummary::default()
+    }
+}
+
+#[cfg(test)]
+#[rstest]
+#[case(0x0, 0x0000_1000)]
+fn test_jal(#[case] initial_pc: u32, #[case] jump_imm: u32) -> color_eyre::Result<()> {
+    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use pchan_utils::setup_tracing;
+
+    setup_tracing();
+    let mut emu = Emu::default();
+    emu.cpu.pc = initial_pc;
+    emu.write_many(
+        initial_pc,
+        &program([
+            jal(jump_imm),
+            addiu(9, 0, 69),
+            addiu(9, 0, 420),
+            OpCode(69420),
+        ]),
+    );
+    let new_pc = (jump_imm << 2) + (emu.cpu.pc & 0xf0000000);
+    PipelineV2::new(&emu).run_once(&mut emu)?;
+    tracing::info!(?emu.cpu);
+    assert_eq!(emu.cpu.gpr[9], 69);
+    assert_eq!(emu.cpu.d_clock, 3);
+    assert_eq!(emu.cpu.pc, new_pc);
+    assert_eq!(emu.cpu.gpr[cpu::RA as usize], initial_pc + 0x8);
+
+    Ok(())
+}
+
+impl DynarecOp for JR {
+    fn cycles(&self) -> u16 {
+        3
+    }
+    fn hazard(&self) -> u16 {
+        2
+    }
+    fn boundary(&self) -> Boundary {
+        Boundary::Soft
+    }
+    #[allow(clippy::useless_conversion)]
+    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+        let dest = ctx.dynarec.emit_load_reg(self.rs);
+
+        #[cfg(target_arch = "aarch64")]
+        dynasm!(
+            ctx.dynarec.asm
+            ; .arch aarch64
+            ; str W(*dest), [sp, #-16]!
+        );
+
+        ctx.dynarec.set_delay_slot(move |ctx| {
+            #[cfg(target_arch = "aarch64")]
+            dynasm!(
+                ctx.dynarec.asm
+                ; .arch aarch64
+                ; ldr w3, [sp], #16
+                ; str w3, [x0, Emu::PC_OFFSET as _]
+            );
+
+            EmitSummary::builder().pc_updated(true).build()
+        });
+        EmitSummary::default()
+    }
+}
+
+#[cfg(test)]
+#[rstest]
+#[case(0x0, (9, 0x0000_1000))]
+fn test_jr(#[case] initial_pc: u32, #[case] rs: (Guest, u32)) -> color_eyre::Result<()> {
+    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use pchan_utils::setup_tracing;
+
+    setup_tracing();
+    let mut emu = Emu::default();
+    emu.cpu.pc = initial_pc;
+    emu.cpu.gpr[rs.0 as usize] = rs.1;
+    emu.write_many(
+        initial_pc,
+        &program([jr(rs.0), addiu(9, 0, 69), addiu(9, 0, 420), OpCode(69420)]),
+    );
+    PipelineV2::new(&emu).run_once(&mut emu)?;
+    tracing::info!(?emu.cpu);
+    assert_eq!(emu.cpu.gpr[9], 69);
+    assert_eq!(emu.cpu.d_clock, 3);
+    assert_eq!(emu.cpu.pc, rs.1);
+
+    Ok(())
+}
+
+impl DynarecOp for JALR {
+    fn cycles(&self) -> u16 {
+        3
+    }
+    fn hazard(&self) -> u16 {
+        2
+    }
+    fn boundary(&self) -> Boundary {
+        Boundary::Soft
+    }
+    #[allow(clippy::useless_conversion)]
+    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+        let dest = ctx.dynarec.emit_load_reg(self.rs);
+
+        #[cfg(target_arch = "aarch64")]
+        dynasm!(
+            ctx.dynarec.asm
+            ; .arch aarch64
+            ; str W(*dest), [sp, #-16]!
+        );
+
+        let rd = self.rd;
+        // we know the delay slots runs at old pc + 4
+        ctx.dynarec.set_delay_slot(move |ctx| {
+            #[cfg(target_arch = "aarch64")]
+            dynasm!(
+                ctx.dynarec.asm
+                ; .arch aarch64
+                ; ldr w3, [sp], #16
+                ; str w3, [x0, Emu::PC_OFFSET as _]
+            );
+
+            let ret_address = ctx.pc + 0x4;
+            ctx.dynarec.emit_immediate_large(rd, ret_address);
+
+            EmitSummary::builder().pc_updated(true).build()
+        });
+        EmitSummary::default()
+    }
+}
+
+#[cfg(test)]
+#[rstest]
+#[case(0x0, (9, 0x0000_1000), 10)]
+fn test_jalr(
+    #[case] initial_pc: u32,
+    #[case] rs: (Guest, u32),
+    #[case] rd: Guest,
+) -> color_eyre::Result<()> {
+    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use pchan_utils::setup_tracing;
+
+    setup_tracing();
+    let mut emu = Emu::default();
+    emu.cpu.pc = initial_pc;
+    emu.cpu.gpr[rs.0 as usize] = rs.1;
+    emu.write_many(
+        initial_pc,
+        &program([
+            jalr(rd, rs.0),
+            addiu(9, 0, 69),
+            addiu(9, 0, 420),
+            OpCode(69420),
+        ]),
+    );
+    PipelineV2::new(&emu).run_once(&mut emu)?;
+    tracing::info!(?emu.cpu);
+    assert_eq!(emu.cpu.gpr[9], 69);
+    assert_eq!(emu.cpu.d_clock, 3);
+    assert_eq!(emu.cpu.pc, rs.1);
+    assert_eq!(emu.cpu.gpr[rd as usize], initial_pc + 0x8);
 
     Ok(())
 }
