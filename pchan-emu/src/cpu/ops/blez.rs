@@ -8,8 +8,8 @@ use crate::dynarec::prelude::*;
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 #[allow(clippy::upper_case_acronyms)]
 pub struct BLEZ {
-    rs: u8,
-    imm: i16,
+    pub rs: u8,
+    pub imm: i16,
 }
 
 impl BLEZ {
@@ -53,10 +53,9 @@ impl Op for BLEZ {
 
     fn into_opcode(self) -> crate::cpu::ops::OpCode {
         OpCode::default()
-            .with_primary(PrimeOp::BcondZ)
-            .set_bits(16..21, 0b00001)
+            .with_primary(PrimeOp::BLEZ)
             .set_bits(21..26, self.rs as u32)
-            .set_bits(0..16, (self.imm) as u32)
+            .set_bits(0..16, ext::sign(self.imm) as _)
     }
 
     fn hazard(&self) -> Option<u32> {

@@ -13,6 +13,12 @@ use crate::cpu::ops::addiu::*;
 use crate::cpu::ops::addu::*;
 use crate::cpu::ops::and::*;
 use crate::cpu::ops::andi::*;
+use crate::cpu::ops::beq::*;
+use crate::cpu::ops::bgez::*;
+use crate::cpu::ops::bgtz::*;
+use crate::cpu::ops::blez::*;
+use crate::cpu::ops::bltz::*;
+use crate::cpu::ops::bne::*;
 use crate::cpu::ops::j::*;
 use crate::cpu::ops::jal::*;
 use crate::cpu::ops::jalr::*;
@@ -112,9 +118,15 @@ pub enum DecodedOpNew {
     AND(AND),
     OR(OR),
     XOR(XOR),
+    BLTZ(BLTZ),
+    BGEZ(BGEZ),
     J(J),
     JAL(JAL),
+    BLEZ(BLEZ),
+    BGTZ(BGTZ),
     NOR(NOR),
+    BEQ(BEQ),
+    BNE(BNE),
     HaltBlock(HaltBlock),
     SB(SB),
     SH(SH),
@@ -181,11 +193,17 @@ impl DecodedOpNew {
                 (0x0, _, _, 0x24) => Self::AND(AND::new(rd, rs, rt)),
                 (0x0, _, _, 0x25) => Self::OR(OR::new(rd, rs, rt)),
                 (0x0, _, _, 0x26) => Self::XOR(XOR::new(rd, rs, rt)),
+                (0x1, _, 0x0, _) => Self::BLTZ(BLTZ::new(rs, fields.imm16())),
+                (0x1, _, 0x1, _) => Self::BGEZ(BGEZ::new(rs, fields.imm16())),
                 (0x2, _, _, _) => Self::J(J::new(fields.imm26())),
                 (0x3, _, _, _) => Self::JAL(JAL::new(fields.imm26())),
+                (0x6, _, _, _) => Self::BLEZ(BLEZ::new(rs, fields.imm16())),
+                (0x7, _, _, _) => Self::BGTZ(BGTZ::new(rs, fields.imm16())),
                 (0xE, _, _, _) => Self::XORI(XORI::new(rs, rt, fields.imm16())),
                 (0x0, _, _, 0x27) => Self::NOR(NOR::new(rd, rs, rt)),
                 (0x8 | 0x9, _, _, _) => Self::ADDIU(ADDIU::new(rs, rt, fields.imm16())),
+                (0x4, _, _, _) => Self::BEQ(BEQ::new(rs, rt, fields.imm16())),
+                (0x5, _, _, _) => Self::BNE(BNE::new(rs, rt, fields.imm16())),
                 (0xC, _, _, _) => Self::ANDI(ANDI::new(rs, rt, fields.imm16())),
                 (0xD, _, _, _) => Self::ORI(ORI::new(rs, rt, fields.imm16())),
                 (0xF, _, _, _) => Self::LUI(LUI::new(rt, fields.imm16())),
@@ -1591,6 +1609,335 @@ fn test_jalr(
     assert_eq!(emu.cpu.d_clock, 3);
     assert_eq!(emu.cpu.pc, rs.1);
     assert_eq!(emu.cpu.gpr[rd as usize], initial_pc + 0x8);
+
+    Ok(())
+}
+
+/// `selector` must look something like
+/// ```
+/// dynasm!(
+///     ctx.dynarec.asm
+///     ; csel w2, w3, w2, {SELECTOR}
+/// );
+/// ```
+#[allow(clippy::useless_conversion)]
+#[cfg(target_arch = "aarch64")]
+fn emit_branch(
+    ctx: EmitCtx,
+    rs: u8,
+    rt: u8,
+    imm: i16,
+    selector: impl Fn(&mut EmitCtx) + 'static,
+) -> EmitSummary {
+    let rs = ctx.dynarec.emit_load_reg(rs);
+    let rt = ctx.dynarec.emit_load_reg(rt);
+
+    // calculate branch value
+    dynasm!(
+        ctx.dynarec.asm
+        ; .arch aarch64
+        ; stp W(*rs), W(*rt), [sp, #-16]!
+    );
+
+    let branch_dest = (ctx.pc + 0x4).wrapping_add_signed(ext::sign(imm) << 2);
+    ctx.dynarec.set_delay_slot(move |mut ctx| {
+        dynasm!(
+            ctx.dynarec.asm
+            ; .arch aarch64
+            ; ldp w2, w3, [sp], #16
+            ; cmp w2, w3
+
+            ; movz w2, (ctx.pc + 0x4) >> 16, lsl #16
+            ; movk w2, (ctx.pc + 0x4) & 0x0000_ffff
+            ; movz w3, branch_dest >> 16, lsl #16
+            ; movk w3, branch_dest & 0x0000_ffff
+            ;; selector(&mut ctx)
+            ; str w2, [x0, Emu::PC_OFFSET as _]
+        );
+
+        EmitSummary::builder().pc_updated(true).build()
+    });
+
+    rt.restore(ctx.dynarec);
+    rs.restore(ctx.dynarec);
+
+    EmitSummary::default()
+}
+
+impl DynarecOp for BEQ {
+    fn cycles(&self) -> u16 {
+        3
+    }
+    fn hazard(&self) -> u16 {
+        2
+    }
+    fn boundary(&self) -> Boundary {
+        Boundary::Soft
+    }
+    #[allow(clippy::useless_conversion)]
+    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+        #[cfg(target_arch = "aarch64")]
+        emit_branch(ctx, self.rs, self.rt, self.imm, move |ctx| {
+            dynasm!(
+                ctx.dynarec.asm
+                ; .arch aarch64
+                ; csel w2, w3, w2, eq
+            )
+        })
+    }
+}
+
+impl DynarecOp for BNE {
+    fn cycles(&self) -> u16 {
+        3
+    }
+    fn hazard(&self) -> u16 {
+        2
+    }
+    fn boundary(&self) -> Boundary {
+        Boundary::Soft
+    }
+    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+        #[cfg(target_arch = "aarch64")]
+        emit_branch(ctx, self.rs, self.rt, self.imm, move |ctx| {
+            dynasm!(
+                ctx.dynarec.asm
+                ; .arch aarch64
+                ; csel w2, w3, w2, ne
+            )
+        })
+    }
+}
+
+#[cfg(test)]
+#[rstest]
+// beq
+#[case::beq_01(beq, 0x1000, (5, 100), (6, 100), 0x10, 0x1000 + 0x4 + (0x10 << 2))]
+#[case::beq_02(beq, 0x1000, (5, 100), (6, 200), 0x10, 0x1000 + 0x8)]
+#[case::beq_03(beq, 0x2000, (7, 0), (8, 0), 0x20, 0x2000 + 0x4 + (0x20 << 2))]
+#[case::beq_04(beq, 0x3000, (3, 42), (4, 43), -0x8, 0x3000 + 0x8)]
+#[case::beq_05(beq, 0x4000, (1, 0xFFFF), (2, 0xFFFF), 0x0, 0x4000 + 0x4)]
+#[case::beq_06(beq, 0x5000, (10, 0xDEADBEEF), (11, 0xDEADBEEF), 0x7FF, 0x5000 + 0x4 + (0x7FF << 2))]
+// bne
+#[case::bne_01(bne, 0x1000, (5, 100), (6, 200), 0x10, 0x1000 + 0x4 + (0x10 << 2))]
+#[case::bne_02(bne, 0x1000, (5, 100), (6, 100), 0x10, 0x1000 + 0x8)]
+#[case::bne_03(bne, 0x2000, (7, 0), (8, 1), 0x20, 0x2000 + 0x4 + (0x20 << 2))]
+#[case::bne_04(bne, 0x3000, (3, 0), (4, 0), -0x8, 0x3000 + 0x8)]
+#[case::bne_05(bne, 0x5000, (10, 0xDEADBEEF), (11, 0xDEADBEEE), 0x7FF, 0x5000 + 0x4 + (0x7FF << 2))]
+#[case::bne_06(bne, 0x6000, (12, 100), (13, 200), 0x0, 0x6000 + 0x4)]
+fn test_branch(
+    #[case] instr: impl Fn(Guest, Guest, i16) -> OpCode,
+    #[case] initial_pc: u32,
+    #[case] rs: (Guest, u32),
+    #[case] rt: (Guest, u32),
+    #[case] offset: i16,
+    #[case] expected_pc: u32,
+) -> color_eyre::Result<()> {
+    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use pchan_utils::setup_tracing;
+
+    setup_tracing();
+    let mut emu = Emu::default();
+    emu.cpu.pc = initial_pc;
+    emu.cpu.gpr[rs.0 as usize] = rs.1;
+    emu.cpu.gpr[rt.0 as usize] = rt.1;
+
+    emu.write_many(initial_pc, &program([instr(rs.0, rt.0, offset)]));
+    emu.write_many(initial_pc + ext::zero(offset), &program([OpCode(69420)]));
+
+    PipelineV2::new(&emu).run_once(&mut emu)?;
+    tracing::info!(?emu.cpu);
+    assert_eq!(emu.cpu.pc, expected_pc);
+
+    Ok(())
+}
+/// `selector` must look something like
+/// ```
+/// dynasm!(
+///     ctx.dynarec.asm
+///     ; csel w2, w3, w2, {SELECTOR}
+/// );
+/// ```
+#[allow(clippy::useless_conversion)]
+#[cfg(target_arch = "aarch64")]
+fn emit_branch_zero(
+    ctx: EmitCtx,
+    rs: u8,
+    imm: i16,
+    selector: impl Fn(&mut EmitCtx) + 'static,
+) -> EmitSummary {
+    let rs = ctx.dynarec.emit_load_reg(rs);
+
+    // calculate branch value
+    dynasm!(
+        ctx.dynarec.asm
+        ; .arch aarch64
+        ; str W(*rs), [sp, #-16]!
+    );
+
+    let branch_dest = (ctx.pc + 0x4).wrapping_add_signed(ext::sign(imm) << 2);
+    ctx.dynarec.set_delay_slot(move |mut ctx| {
+        dynasm!(
+            ctx.dynarec.asm
+            ; .arch aarch64
+            ; ldr w2, [sp], #16
+            ; cmp w2, #0
+
+            ; movz w2, (ctx.pc + 0x4) >> 16, lsl #16
+            ; movk w2, (ctx.pc + 0x4) & 0x0000_ffff
+            ; movz w3, branch_dest >> 16, lsl #16
+            ; movk w3, branch_dest & 0x0000_ffff
+            ;; selector(&mut ctx)
+            ; str w2, [x0, Emu::PC_OFFSET as _]
+        );
+
+        EmitSummary::builder().pc_updated(true).build()
+    });
+
+    rs.restore(ctx.dynarec);
+
+    EmitSummary::default()
+}
+
+impl DynarecOp for BLTZ {
+    fn cycles(&self) -> u16 {
+        3
+    }
+    fn hazard(&self) -> u16 {
+        2
+    }
+    fn boundary(&self) -> Boundary {
+        Boundary::Soft
+    }
+    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+        #[cfg(target_arch = "aarch64")]
+        emit_branch_zero(ctx, self.rs, self.imm, move |ctx| {
+            dynasm!(
+                ctx.dynarec.asm
+                ; .arch aarch64
+                ; csel w2, w3, w2, lt
+            )
+        })
+    }
+}
+
+impl DynarecOp for BGEZ {
+    fn cycles(&self) -> u16 {
+        3
+    }
+    fn hazard(&self) -> u16 {
+        2
+    }
+    fn boundary(&self) -> Boundary {
+        Boundary::Soft
+    }
+    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+        #[cfg(target_arch = "aarch64")]
+        emit_branch_zero(ctx, self.rs, self.imm, move |ctx| {
+            dynasm!(
+                ctx.dynarec.asm
+                ; .arch aarch64
+                ; csel w2, w3, w2, ge
+            )
+        })
+    }
+}
+
+impl DynarecOp for BLEZ {
+    fn cycles(&self) -> u16 {
+        3
+    }
+    fn hazard(&self) -> u16 {
+        2
+    }
+    fn boundary(&self) -> Boundary {
+        Boundary::Soft
+    }
+    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+        #[cfg(target_arch = "aarch64")]
+        emit_branch_zero(ctx, self.rs, self.imm, move |ctx| {
+            dynasm!(
+                ctx.dynarec.asm
+                ; .arch aarch64
+                ; csel w2, w3, w2, le
+            )
+        })
+    }
+}
+
+impl DynarecOp for BGTZ {
+    fn cycles(&self) -> u16 {
+        3
+    }
+    fn hazard(&self) -> u16 {
+        2
+    }
+    fn boundary(&self) -> Boundary {
+        Boundary::Soft
+    }
+    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+        #[cfg(target_arch = "aarch64")]
+        emit_branch_zero(ctx, self.rs, self.imm, move |ctx| {
+            dynasm!(
+                ctx.dynarec.asm
+                ; .arch aarch64
+                ; csel w2, w3, w2, gt
+            )
+        })
+    }
+}
+
+#[cfg(test)]
+#[rstest]
+// bltz - branch if less than zero
+#[case::bltz_01(bltz, 0x1000, (5, -1i32 as u32), 0x10, 0x1000 + 0x4 + (0x10 << 2))]
+#[case::bltz_02(bltz, 0x1000, (5, 0), 0x10, 0x1000 + 0x8)]
+#[case::bltz_03(bltz, 0x1000, (5, 100), 0x10, 0x1000 + 0x8)]
+#[case::bltz_04(bltz, 0x2000, (7, 0x80000000), 0x20, 0x2000 + 0x4 + (0x20 << 2))]
+#[case::bltz_05(bltz, 0x3000, (3, 0x7FFFFFFF), -0x8, 0x3000 + 0x8)]
+#[case::bltz_06(bltz, 0x4000, (1, -42i32 as u32), 0x0, 0x4000 + 0x4)]
+// bgez - branch if greater than or equal to zero
+#[case::bgez_01(bgez, 0x1000, (5, 0), 0x10, 0x1000 + 0x4 + (0x10 << 2))]
+#[case::bgez_02(bgez, 0x1000, (5, 100), 0x10, 0x1000 + 0x4 + (0x10 << 2))]
+#[case::bgez_03(bgez, 0x1000, (5, -1i32 as u32), 0x10, 0x1000 + 0x8)]
+#[case::bgez_04(bgez, 0x2000, (7, 0x7FFFFFFF), 0x20, 0x2000 + 0x4 + (0x20 << 2))]
+#[case::bgez_05(bgez, 0x3000, (3, 0x80000000), -0x8, 0x3000 + 0x8)]
+#[case::bgez_06(bgez, 0x4000, (1, 0), 0x0, 0x4000 + 0x4)]
+// blez - branch if less than or equal to zero
+#[case::blez_01(blez, 0x1000, (5, 0), 0x10, 0x1000 + 0x4 + (0x10 << 2))]
+#[case::blez_02(blez, 0x1000, (5, -1i32 as u32), 0x10, 0x1000 + 0x4 + (0x10 << 2))]
+#[case::blez_03(blez, 0x1000, (5, 100), 0x10, 0x1000 + 0x8)]
+#[case::blez_04(blez, 0x2000, (7, 0x80000000), 0x20, 0x2000 + 0x4 + (0x20 << 2))]
+#[case::blez_05(blez, 0x3000, (3, 0x7FFFFFFF), -0x8, 0x3000 + 0x8)]
+#[case::blez_06(blez, 0x4000, (1, -42i32 as u32), 0x0, 0x4000 + 0x4)]
+// bgtz - branch if greater than zero
+#[case::bgtz_01(bgtz, 0x1000, (5, 100), 0x10, 0x1000 + 0x4 + (0x10 << 2))]
+#[case::bgtz_02(bgtz, 0x1000, (5, 0), 0x10, 0x1000 + 0x8)]
+#[case::bgtz_03(bgtz, 0x1000, (5, -1i32 as u32), 0x10, 0x1000 + 0x8)]
+#[case::bgtz_04(bgtz, 0x2000, (7, 0x7FFFFFFF), 0x20, 0x2000 + 0x4 + (0x20 << 2))]
+#[case::bgtz_05(bgtz, 0x3000, (3, 0x80000000), -0x8, 0x3000 + 0x8)]
+#[case::bgtz_06(bgtz, 0x4000, (1, 1), 0x0, 0x4000 + 0x4)]
+fn test_branch_zero(
+    #[case] instr: impl Fn(Guest, i16) -> OpCode,
+    #[case] initial_pc: u32,
+    #[case] rs: (Guest, u32),
+    #[case] offset: i16,
+    #[case] expected_pc: u32,
+) -> color_eyre::Result<()> {
+    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use pchan_utils::setup_tracing;
+
+    setup_tracing();
+    let mut emu = Emu::default();
+    emu.cpu.pc = initial_pc;
+    emu.cpu.gpr[rs.0 as usize] = rs.1;
+
+    emu.write_many(initial_pc, &program([instr(rs.0, offset)]));
+    emu.write_many(initial_pc + ext::zero(offset), &program([OpCode(69420)]));
+
+    PipelineV2::new(&emu).run_once(&mut emu)?;
+    tracing::info!(?emu.cpu);
+    assert_eq!(emu.cpu.pc, expected_pc);
 
     Ok(())
 }

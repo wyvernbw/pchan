@@ -7,9 +7,9 @@ use crate::dynarec::prelude::*;
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 #[allow(clippy::upper_case_acronyms)]
 pub struct BEQ {
-    rs: u8,
-    rt: u8,
-    imm: i16,
+    pub rs: u8,
+    pub rt: u8,
+    pub imm: i16,
 }
 
 impl BEQ {
