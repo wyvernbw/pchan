@@ -18,8 +18,11 @@ use crate::cpu::ops::nor::*;
 use crate::cpu::ops::or::*;
 use crate::cpu::ops::sb::*;
 use crate::cpu::ops::sh::*;
+use crate::cpu::ops::sll::*;
 use crate::cpu::ops::sllv::*;
+use crate::cpu::ops::sra::*;
 use crate::cpu::ops::srav::*;
+use crate::cpu::ops::srl::*;
 use crate::cpu::ops::srlv::*;
 use crate::cpu::ops::subu::*;
 use crate::cpu::ops::sw::*;
@@ -80,6 +83,9 @@ pub trait DynarecOp {
 #[derive(Debug, Clone, Copy, Hash, derive_more::Display)]
 pub enum DecodedOpNew {
     ILLEGAL(ILLEGAL),
+    SLL(SLL),
+    SRL(SRL),
+    SRA(SRA),
     SLLV(SLLV),
     SRLV(SRLV),
     SRAV(SRAV),
@@ -137,6 +143,10 @@ impl DecodedOpNew {
             let rd = fields.rd();
             let funct = fields.funct();
             match (opcode, rs, rt, funct) {
+                (0x0, _, _, 0x0) => Self::SLL(SLL::new(rd, rt, fields.shamt() as i8)),
+                (0x0, _, _, 0x1) => Self::illegal(),
+                (0x0, _, _, 0x2) => Self::SRL(SRL::new(rd, rt, fields.shamt() as i8)),
+                (0x0, _, _, 0x3) => Self::SRA(SRA::new(rd, rt, fields.shamt() as i8)),
                 (0x0, _, _, 0x4) => Self::SLLV(SLLV::new(rd, rt, rs)),
                 (0x0, _, _, 0x5) => Self::illegal(),
                 (0x0, _, _, 0x6) => Self::SRLV(SRLV::new(rd, rt, rs)),
@@ -952,5 +962,149 @@ fn test_alu_reg(
     assert_eq!(emu.cpu.gpr[expected.0 as usize], expected.1);
     assert_eq!(emu.cpu.d_clock, 1);
     assert_eq!(emu.cpu.pc, 0x8);
+    Ok(())
+}
+
+pub struct ShiftImm<'a> {
+    rd: Rd<'a>,
+    rt: Rt<'a>,
+    imm: i8,
+}
+
+fn emit_shift_imm(
+    ctx: &mut EmitCtx,
+    rd: Guest,
+    rt: Guest,
+    imm: i8,
+    emitter: impl Fn(&mut Dynarec, ShiftImm),
+) -> EmitSummary {
+    if rd == 0 {
+        return EmitSummary;
+    }
+
+    if imm == 0 {
+        return ctx.dynarec.emit_load_and_move_into(rd, rt);
+    }
+
+    let reg = [ctx.dynarec.alloc_reg(rd), ctx.dynarec.emit_load_reg(rt)];
+    ctx.dynarec.register_scope(reg, move |dynarec, [rd, rt]| {
+        emitter(
+            dynarec,
+            ShiftImm {
+                rd: Rd(rd),
+                rt: Rt(rt),
+                imm,
+            },
+        );
+        EmitSummary
+    })
+}
+
+impl DynarecOp for SLL {
+    #[allow(clippy::useless_conversion)]
+    fn emit<'a>(&self, mut ctx: EmitCtx<'a>) -> EmitSummary {
+        emit_shift_imm(
+            &mut ctx,
+            self.rd,
+            self.rt,
+            self.imm,
+            move |dynarec, ShiftImm { rd, rt, imm }| {
+                #[cfg(target_arch = "aarch64")]
+                dynasm!(
+                    dynarec.asm
+                    ; .arch aarch64
+                    ; lsl W(**rd), W(**rt), imm as _
+                );
+
+                dynarec.mark_dirty(self.rd);
+            },
+        )
+    }
+}
+
+impl DynarecOp for SRL {
+    #[allow(clippy::useless_conversion)]
+    fn emit<'a>(&self, mut ctx: EmitCtx<'a>) -> EmitSummary {
+        emit_shift_imm(
+            &mut ctx,
+            self.rd,
+            self.rt,
+            self.imm,
+            move |dynarec, ShiftImm { rd, rt, imm }| {
+                #[cfg(target_arch = "aarch64")]
+                dynasm!(
+                    dynarec.asm
+                    ; .arch aarch64
+                    ; lsr W(**rd), W(**rt), imm as _
+                );
+                dynarec.mark_dirty(self.rd);
+            },
+        )
+    }
+}
+
+impl DynarecOp for SRA {
+    #[allow(clippy::useless_conversion)]
+    fn emit<'a>(&self, mut ctx: EmitCtx<'a>) -> EmitSummary {
+        emit_shift_imm(
+            &mut ctx,
+            self.rd,
+            self.rt,
+            self.imm,
+            move |dynarec, ShiftImm { rd, rt, imm }| {
+                #[cfg(target_arch = "aarch64")]
+                dynasm!(
+                    dynarec.asm
+                    ; .arch aarch64
+                    ; asr W(**rd), W(**rt), imm as _
+                );
+                dynarec.mark_dirty(self.rd);
+            },
+        )
+    }
+}
+
+#[cfg(test)]
+#[rstest]
+#[case::sll_01(sll, (12, 0b10100), (10, 0b101), 2)]
+#[case::sll_02(sll, (12, 0b101), (10, 0b101), 0)]
+#[case::sll_03(sll, (12, 0), (0, 0), 5)]
+#[case::sll_04(sll, (12, 0), (0, 0), 0)]
+#[case::sll_05(sll, (12, 0x80000000), (10, 1), 31)]
+#[case::sll_06(sll, (12, 0x5555_5500), (10, 0xAAAA_AAAA), 7)]
+#[case::srl_01(srl, (12, 0b010), (10, 0b10100), 3)]
+#[case::srl_02(srl, (12, 0b101), (10, 0b101), 0)]
+#[case::srl_03(srl, (12, 0), (10, 0), 5)]
+#[case::srl_04(srl, (12, 0), (10, 0), 0)]
+#[case::srl_05(srl, (12, 1), (10, 0x80000000), 31)]
+#[case::srl_06(srl, (12, 0x0155_5555), (10, 0xAAAA_AAAA), 7)]
+#[case::sra_01(sra, (12, 0b11111111111111111111111111111110), (10, 0b11111111111111111111111111110100u32 as i32 as u32), 3)]
+#[case::sra_02(sra, (12, 0b101), (10, 0b101), 0)]
+#[case::sra_03(sra, (12, 0), (10, 0), 5)]
+#[case::sra_04(sra, (12, 0), (10, 0), 0)]
+#[case::sra_05(sra, (12, 0xFFFFFFFF), (10, 0x80000000), 31)]
+#[case::sra_06(sra, (12, 0xFF555555), (10, 0xAAAA_AAAA), 7)]
+fn test_alu_imm<I: Into<i16>>(
+    #[case] instr: impl Fn(u8, u8, I) -> OpCode,
+    #[case] expected: (Guest, u32),
+    #[case] a: (Guest, u32),
+    #[case] b: I,
+) -> color_eyre::Result<()> {
+    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use pchan_utils::setup_tracing;
+
+    setup_tracing();
+    let mut emu = Emu::default();
+    if expected.0 != 0 {
+        emu.cpu.gpr[expected.0 as usize] = 1231123;
+    }
+    emu.cpu.gpr[a.0 as usize] = a.1;
+    emu.write_many(0x0, &program([instr(expected.0, a.0, b), OpCode(69420)]));
+    PipelineV2::new(&emu).run_once(&mut emu)?;
+    tracing::info!(?emu.cpu);
+    assert_eq!(emu.cpu.gpr[expected.0 as usize], expected.1);
+    assert_eq!(emu.cpu.d_clock, 1);
+    assert_eq!(emu.cpu.pc, 0x8);
+
     Ok(())
 }

@@ -411,6 +411,18 @@ impl Dynarec {
     fn set_delay_slot(&mut self, emitter: impl Fn(EmitCtx) -> EmitSummary + 'static) {
         self.delay_queue.push_back(SmallBox::new(emitter) as _);
     }
+
+    fn register_scope<const N: usize>(
+        &mut self,
+        reg: [LoadedReg; N],
+        f: impl Fn(&mut Self, &[LoadedReg; N]) -> EmitSummary,
+    ) -> EmitSummary {
+        let ret = f(self, &reg);
+        for r in reg {
+            r.restore(self);
+        }
+        ret
+    }
 }
 
 #[derive(Debug, Clone)]

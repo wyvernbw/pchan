@@ -4,9 +4,9 @@ use std::fmt::Display;
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 #[allow(clippy::upper_case_acronyms)]
 pub struct SRL {
-    rd: u8,
-    rt: u8,
-    imm: i8,
+    pub rd: u8,
+    pub rt: u8,
+    pub imm: i8,
 }
 
 impl SRL {
