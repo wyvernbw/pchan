@@ -412,6 +412,7 @@ impl Dynarec {
         self.delay_queue.push_back(SmallBox::new(emitter) as _);
     }
 
+    #[inline(always)]
     fn register_scope<const N: usize>(
         &mut self,
         reg: [LoadedReg; N],

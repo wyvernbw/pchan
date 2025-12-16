@@ -13,6 +13,7 @@ use crate::cpu::ops::lb::*;
 use crate::cpu::ops::lbu::*;
 use crate::cpu::ops::lh::*;
 use crate::cpu::ops::lhu::*;
+use crate::cpu::ops::lui::*;
 use crate::cpu::ops::lw::*;
 use crate::cpu::ops::nor::*;
 use crate::cpu::ops::or::*;
@@ -100,6 +101,7 @@ pub enum DecodedOpNew {
     SB(SB),
     SH(SH),
     SW(SW),
+    LUI(LUI),
     LB(LB),
     LBU(LBU),
     LH(LH),
@@ -158,6 +160,8 @@ impl DecodedOpNew {
                 (0x0, _, _, 0x26) => Self::XOR(XOR::new(rd, rs, rt)),
                 (0x0, _, _, 0x27) => Self::NOR(NOR::new(rd, rs, rt)),
                 (0x8 | 0x9, _, _, _) => Self::ADDIU(ADDIU::new(rs, rt, fields.imm16())),
+                (0xF, _, _, _) => Self::LUI(LUI::new(rt, fields.imm16())),
+                (0x14..=0x1F, _, _, _) => Self::illegal(),
                 (0x20, _, _, _) => Self::LB(LB::new(rt, rs, fields.imm16())),
                 (0x21, _, _, _) => Self::LH(LH::new(rt, rs, fields.imm16())),
                 (0x22, _, _, _) => todo!("lwl"),
@@ -1103,6 +1107,56 @@ fn test_alu_imm<I: Into<i16>>(
     PipelineV2::new(&emu).run_once(&mut emu)?;
     tracing::info!(?emu.cpu);
     assert_eq!(emu.cpu.gpr[expected.0 as usize], expected.1);
+    assert_eq!(emu.cpu.d_clock, 1);
+    assert_eq!(emu.cpu.pc, 0x8);
+
+    Ok(())
+}
+
+impl DynarecOp for LUI {
+    #[allow(clippy::useless_conversion)]
+    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+        if self.rt == 0 {
+            return EmitSummary;
+        }
+        let rt = ctx.dynarec.emit_load_reg(self.rt);
+        ctx.dynarec.register_scope([rt], |dynarec, [rt]| {
+            #[cfg(target_arch = "aarch64")]
+            dynasm!(
+                dynarec.asm
+                ; .arch aarch64
+                ; movk W(**rt), ext::zero(self.imm) as _, LSL #16
+            );
+            dynarec.mark_dirty(self.rt);
+
+            EmitSummary
+        })
+    }
+}
+
+#[cfg(test)]
+#[rstest]
+#[case(0x0, 12, 0x1234, 0x12340000)]
+#[case(0x5678, 9, 0x1234, 0x12345678)]
+#[case(0x0, 0, 0x1234, 0x0)]
+fn test_lui(
+    #[case] initial: u32,
+    #[case] rt: Guest,
+    #[case] imm: i16,
+    #[case] expected: u32,
+) -> color_eyre::Result<()> {
+    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use pchan_utils::setup_tracing;
+
+    setup_tracing();
+    let mut emu = Emu::default();
+    if rt != 0 {
+        emu.cpu.gpr[rt as usize] = initial;
+    }
+    emu.write_many(0x0, &program([lui(rt, imm), OpCode(69420)]));
+    PipelineV2::new(&emu).run_once(&mut emu)?;
+    tracing::info!(?emu.cpu);
+    assert_eq!(emu.cpu.gpr[rt as usize], expected);
     assert_eq!(emu.cpu.d_clock, 1);
     assert_eq!(emu.cpu.pc, 0x8);
 
