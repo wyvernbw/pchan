@@ -4,13 +4,13 @@ use std::fmt::Display;
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 #[allow(clippy::upper_case_acronyms)]
 pub struct ORI {
-    rs: u8,
-    rt: u8,
-    imm: u16,
+    pub rs: u8,
+    pub rt: u8,
+    pub imm: i16,
 }
 
 impl ORI {
-    pub const fn new(rs: u8, rt: u8, imm: u16) -> Self {
+    pub const fn new(rs: u8, rt: u8, imm: i16) -> Self {
         Self { rs, rt, imm }
     }
 }
@@ -23,7 +23,7 @@ impl TryFrom<OpCode> for ORI {
         Ok(ORI {
             rt: opcode.bits(16..21) as u8,
             rs: opcode.bits(21..26) as u8,
-            imm: opcode.bits(0..16) as u16,
+            imm: opcode.bits(0..16) as i16,
         })
     }
 }
@@ -87,7 +87,7 @@ impl Op for ORI {
 }
 
 #[inline]
-pub fn ori(rt: u8, rs: u8, imm: u16) -> OpCode {
+pub fn ori(rt: u8, rs: u8, imm: i16) -> OpCode {
     ORI { rt, rs, imm }.into_opcode()
 }
 
@@ -112,7 +112,7 @@ mod tests {
         mut emulator: Emu,
         mut jit: crate::jit::JIT,
         #[case] a: i16,
-        #[case] b: u16,
+        #[case] b: i16,
         #[case] expected: u32,
     ) -> color_eyre::Result<()> {
         emulator.write_many(
@@ -130,7 +130,7 @@ mod tests {
         setup_tracing: (),
         mut emulator: Emu,
         mut jit: crate::jit::JIT,
-        #[case] imm: u16,
+        #[case] imm: i16,
     ) -> color_eyre::Result<()> {
         emulator.write_many(0x0, &program([ori(10, 0, imm), OpCode(69420)]));
         let summary = emulator.step_jit_summarize::<JitSummary>(&mut jit)?;

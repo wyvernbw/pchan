@@ -47,7 +47,7 @@ fn write_to_address(setup_tracing: (), #[case] base: u32) -> color_eyre::Result<
         addiu(8, 0, 0),
         addiu(10, 0, 256),
         lui(9, (base >> 16) as i16),
-        ori(9, 9, (base & 0x0000_FFFF) as u16),
+        ori(9, 9, (base & 0x0000_FFFF) as i16),
         addu(11, 8, 9),
         sw(8, 11, 0),
         addiu(8, 8, 4),

@@ -9,6 +9,7 @@ use rstest::rstest;
 use crate::cpu::ops::addiu::*;
 use crate::cpu::ops::addu::*;
 use crate::cpu::ops::and::*;
+use crate::cpu::ops::andi::*;
 use crate::cpu::ops::lb::*;
 use crate::cpu::ops::lbu::*;
 use crate::cpu::ops::lh::*;
@@ -17,6 +18,7 @@ use crate::cpu::ops::lui::*;
 use crate::cpu::ops::lw::*;
 use crate::cpu::ops::nor::*;
 use crate::cpu::ops::or::*;
+use crate::cpu::ops::ori::*;
 use crate::cpu::ops::sb::*;
 use crate::cpu::ops::sh::*;
 use crate::cpu::ops::sll::*;
@@ -28,6 +30,7 @@ use crate::cpu::ops::srlv::*;
 use crate::cpu::ops::subu::*;
 use crate::cpu::ops::sw::*;
 use crate::cpu::ops::xor::*;
+use crate::cpu::ops::xori::*;
 
 use crate::cpu::ops::{HaltBlock, OpCode};
 use crate::dynarec_v2::Dynarec;
@@ -101,6 +104,9 @@ pub enum DecodedOpNew {
     SB(SB),
     SH(SH),
     SW(SW),
+    ANDI(ANDI),
+    ORI(ORI),
+    XORI(XORI),
     LUI(LUI),
     LB(LB),
     LBU(LBU),
@@ -158,8 +164,11 @@ impl DecodedOpNew {
                 (0x0, _, _, 0x24) => Self::AND(AND::new(rd, rs, rt)),
                 (0x0, _, _, 0x25) => Self::OR(OR::new(rd, rs, rt)),
                 (0x0, _, _, 0x26) => Self::XOR(XOR::new(rd, rs, rt)),
+                (0xE, _, _, _) => Self::XORI(XORI::new(rs, rt, fields.imm16())),
                 (0x0, _, _, 0x27) => Self::NOR(NOR::new(rd, rs, rt)),
                 (0x8 | 0x9, _, _, _) => Self::ADDIU(ADDIU::new(rs, rt, fields.imm16())),
+                (0xC, _, _, _) => Self::ANDI(ANDI::new(rs, rt, fields.imm16())),
+                (0xD, _, _, _) => Self::ORI(ORI::new(rs, rt, fields.imm16())),
                 (0xF, _, _, _) => Self::LUI(LUI::new(rt, fields.imm16())),
                 (0x14..=0x1F, _, _, _) => Self::illegal(),
                 (0x20, _, _, _) => Self::LB(LB::new(rt, rs, fields.imm16())),
@@ -627,7 +636,7 @@ pub struct AluRegs<'a> {
     rt: Rt<'a>,
 }
 
-fn emit_alu(
+fn emit_alu_reg(
     mut ctx: EmitCtx,
     rd: u8,
     rs: u8,
@@ -695,7 +704,7 @@ impl DynarecOp for SUBU {
             return EmitSummary;
         }
 
-        emit_alu(ctx, self.rd, self.rs, self.rt, move |ctx, regs| {
+        emit_alu_reg(ctx, self.rd, self.rs, self.rt, move |ctx, regs| {
             #[cfg(target_arch = "aarch64")]
             dynasm!(
                 ctx.dynarec.asm
@@ -714,7 +723,7 @@ impl DynarecOp for ADDU {
         };
 
         match either_zero(self.rs, self.rt) {
-            EitherZero::None => emit_alu(ctx, self.rd, self.rs, self.rt, |ctx, regs| {
+            EitherZero::None => emit_alu_reg(ctx, self.rd, self.rs, self.rt, |ctx, regs| {
                 #[cfg(target_arch = "aarch64")]
                 dynasm!(
                     ctx.dynarec.asm
@@ -738,7 +747,7 @@ impl DynarecOp for AND {
         }
 
         match either_zero(self.rs, self.rt) {
-            EitherZero::None => emit_alu(ctx, self.rd, self.rs, self.rt, move |ctx, regs| {
+            EitherZero::None => emit_alu_reg(ctx, self.rd, self.rs, self.rt, move |ctx, regs| {
                 #[cfg(target_arch = "aarch64")]
                 dynasm!(
                     ctx.dynarec.asm
@@ -759,7 +768,7 @@ impl DynarecOp for OR {
         }
 
         match either_zero(self.rs, self.rt) {
-            EitherZero::None => emit_alu(ctx, self.rd, self.rs, self.rt, move |ctx, regs| {
+            EitherZero::None => emit_alu_reg(ctx, self.rd, self.rs, self.rt, move |ctx, regs| {
                 dynasm!(
                     ctx.dynarec.asm
                     ; .arch aarch64
@@ -782,7 +791,7 @@ impl DynarecOp for XOR {
         }
 
         match either_zero(self.rs, self.rt) {
-            EitherZero::None => emit_alu(ctx, self.rd, self.rs, self.rt, move |ctx, regs| {
+            EitherZero::None => emit_alu_reg(ctx, self.rd, self.rs, self.rt, move |ctx, regs| {
                 dynasm!(
                     ctx.dynarec.asm
                     ; .arch aarch64
@@ -804,7 +813,7 @@ impl DynarecOp for NOR {
             return EmitSummary;
         }
         match either_zero(self.rs, self.rt) {
-            EitherZero::None => emit_alu(ctx, self.rd, self.rs, self.rt, move |ctx, regs| {
+            EitherZero::None => emit_alu_reg(ctx, self.rd, self.rs, self.rt, move |ctx, regs| {
                 dynasm!(
                     ctx.dynarec.asm
                     ; .arch aarch64
@@ -852,7 +861,7 @@ fn emit_shift_by_reg<'a>(
         return ctx.dynarec.emit_load_and_move_into(rd, rt);
     }
 
-    emit_alu(ctx, rd, rs, rt, alu_op)
+    emit_alu_reg(ctx, rd, rs, rt, alu_op)
 }
 
 impl DynarecOp for SLLV {
@@ -990,18 +999,22 @@ fn emit_shift_imm(
         return ctx.dynarec.emit_load_and_move_into(rd, rt);
     }
 
-    let reg = [ctx.dynarec.alloc_reg(rd), ctx.dynarec.emit_load_reg(rt)];
-    ctx.dynarec.register_scope(reg, move |dynarec, [rd, rt]| {
-        emitter(
-            dynarec,
-            ShiftImm {
-                rd: Rd(rd),
-                rt: Rt(rt),
-                imm,
-            },
-        );
-        EmitSummary
-    })
+    let rd = ctx.dynarec.alloc_reg(rd);
+    let rt = ctx.dynarec.emit_load_reg(rt);
+
+    emitter(
+        ctx.dynarec,
+        ShiftImm {
+            rd: Rd(&rd),
+            rt: Rt(&rt),
+            imm,
+        },
+    );
+
+    rt.restore(ctx.dynarec);
+    rd.restore(ctx.dynarec);
+
+    EmitSummary
 }
 
 impl DynarecOp for SLL {
@@ -1068,6 +1081,138 @@ impl DynarecOp for SRA {
     }
 }
 
+pub struct AluImm<'a> {
+    rt: Rt<'a>,
+    rs: Rs<'a>,
+    imm: i16,
+}
+
+fn emit_alu_imm(
+    mut ctx: EmitCtx,
+    rt: Guest,
+    rs: Guest,
+    imm: i16,
+    alu_op: impl Fn(&mut EmitCtx, AluImm),
+) -> EmitSummary {
+    let rta = ctx.dynarec.alloc_reg(rt);
+    let rsa = ctx.dynarec.emit_load_reg(rs);
+
+    #[cfg(target_arch = "aarch64")]
+    dynasm!(
+        ctx.dynarec.asm
+        ; .arch aarch64
+        ;; alu_op(&mut ctx, AluImm { rt: Rt(&rta), rs: Rs(&rsa), imm})
+    );
+
+    ctx.dynarec.mark_dirty(rt);
+
+    rsa.restore(ctx.dynarec);
+    rta.restore(ctx.dynarec);
+
+    EmitSummary
+}
+
+impl DynarecOp for ANDI {
+    #[allow(clippy::useless_conversion)]
+    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+        match (self.rt, self.rs, self.imm) {
+            (0, _, _) => EmitSummary,
+            (_, 0, _) | (_, _, 0) => ctx.dynarec.emit_zero(self.rt),
+            _ => emit_alu_imm(
+                ctx,
+                self.rt,
+                self.rs,
+                self.imm as _,
+                move |ctx, AluImm { rt, rs, imm }| {
+                    #[cfg(target_arch = "aarch64")]
+                    dynasm!(
+                        ctx.dynarec.asm
+                        ; .arch aarch64
+                        ; mov w3, ext::zero(imm)
+                        ; and W(**rt), W(**rs), w3
+                    );
+                },
+            ),
+        }
+    }
+}
+
+impl DynarecOp for ORI {
+    #[allow(clippy::useless_conversion)]
+    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+        match self {
+            Self {
+                rt: 0,
+                rs: _,
+                imm: _,
+            } => EmitSummary,
+            Self {
+                rt: _,
+                rs: 0,
+                imm: _,
+            } => ctx.dynarec.emit_immediate(self.rt, self.imm),
+            Self {
+                rt: _,
+                rs: _,
+                imm: 0,
+            } => ctx.dynarec.emit_load_and_move_into(self.rt, self.rs),
+            _ => emit_alu_imm(
+                ctx,
+                self.rt,
+                self.rs,
+                self.imm as _,
+                move |ctx, AluImm { rt, rs, imm }| {
+                    #[cfg(target_arch = "aarch64")]
+                    dynasm!(
+                        ctx.dynarec.asm
+                        ; .arch aarch64
+                        ; mov w3, ext::zero(imm)
+                        ; orr W(**rt), W(**rs), w3
+                    );
+                },
+            ),
+        }
+    }
+}
+
+impl DynarecOp for XORI {
+    #[allow(clippy::useless_conversion)]
+    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+        match self {
+            Self {
+                rt: 0,
+                rs: _,
+                imm: _,
+            } => EmitSummary,
+            Self {
+                rt: _,
+                rs: 0,
+                imm: _,
+            } => ctx.dynarec.emit_immediate(self.rt, self.imm),
+            Self {
+                rt: _,
+                rs: _,
+                imm: 0,
+            } => ctx.dynarec.emit_load_and_move_into(self.rt, self.rs),
+            _ => emit_alu_imm(
+                ctx,
+                self.rt,
+                self.rs,
+                self.imm as _,
+                move |ctx, AluImm { rt, rs, imm }| {
+                    #[cfg(target_arch = "aarch64")]
+                    dynasm!(
+                        ctx.dynarec.asm
+                        ; .arch aarch64
+                        ; mov w3, ext::zero(imm)
+                        ; eor W(**rt), W(**rs), w3
+                    );
+                },
+            ),
+        }
+    }
+}
+
 #[cfg(test)]
 #[rstest]
 #[case::sll_01(sll, (12, 0b10100), (10, 0b101), 2)]
@@ -1088,6 +1233,21 @@ impl DynarecOp for SRA {
 #[case::sra_04(sra, (12, 0), (10, 0), 0)]
 #[case::sra_05(sra, (12, 0xFFFFFFFF), (10, 0x80000000), 31)]
 #[case::sra_06(sra, (12, 0xFF555555), (10, 0xAAAA_AAAA), 7)]
+#[case::andi_01(andi, (12, 0b1010), (10, 0b1111), 0b1010i16)]
+#[case::andi_02(andi, (12, 0), (0, 0), 0b1010i16)]
+#[case::andi_03(andi, (12, 0), (11, 0b1010), 0i16)]
+#[case::andi_04(andi, (12, 0), (0, 0), 0i16)]
+#[case::ori_01(ori, (12, 0b1111), (10, 0b1010), 0b0101)]
+#[case::ori_02(ori, (12, 0b1010), (10, 0b1010), 0)]
+#[case::ori_03(ori, (12, 0b0101), (0, 0), 0b0101)]
+#[case::ori_04(ori, (12, 0), (0, 0), 0)]
+#[case::ori_05(ori, (12, 0xAAAAFFFF), (10, 0xAAAAAAAA), 0xFFFFu16 as i16)]
+#[case::xori_01(xori, (12, 0b0101), (10, 0b1111), 0b1010)]
+#[case::xori_02(xori, (12, 0b1010), (10, 0b1010), 0)]
+#[case::xori_03(xori, (12, 0b0101), (0, 0), 0b0101)]
+#[case::xori_04(xori, (12, 0), (0, 0), 0)]
+#[case::xori_05(xori, (12, 0xAAAA5555), (10, 0xAAAAAAAA), 0xFFFFu16 as i16)]
+#[case::xori_06(xori, (12, 0xAAAAFFFF), (10, 0xAAAAAAAA), 0x5555)]
 fn test_alu_imm<I: Into<i16>>(
     #[case] instr: impl Fn(u8, u8, I) -> OpCode,
     #[case] expected: (Guest, u32),
@@ -1120,17 +1280,18 @@ impl DynarecOp for LUI {
             return EmitSummary;
         }
         let rt = ctx.dynarec.emit_load_reg(self.rt);
-        ctx.dynarec.register_scope([rt], |dynarec, [rt]| {
-            #[cfg(target_arch = "aarch64")]
-            dynasm!(
-                dynarec.asm
-                ; .arch aarch64
-                ; movk W(**rt), ext::zero(self.imm) as _, LSL #16
-            );
-            dynarec.mark_dirty(self.rt);
 
-            EmitSummary
-        })
+        #[cfg(target_arch = "aarch64")]
+        dynasm!(
+            ctx.dynarec.asm
+            ; .arch aarch64
+            ; movk W(*rt), ext::zero(self.imm) as _, LSL #16
+        );
+
+        ctx.dynarec.mark_dirty(self.rt);
+        rt.restore(ctx.dynarec);
+
+        EmitSummary
     }
 }
 
