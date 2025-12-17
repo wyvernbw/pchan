@@ -7,6 +7,7 @@ edition = "2024"
 bitfield = "0.19.2"
 bitvec = "1.0.1"
 bon = "3.8.1"
+circular-buffer = "1.2.0"
 color-eyre = "*"
 const-hex.workspace = true
 const_for = "0.1.5"
@@ -29,6 +30,7 @@ pchan-utils = { workspace = true }
 petgraph = "0.8.2"
 rapidhash = { version = "4.1.1", features = ["nightly"] }
 rayon = "1.11.0"
+ringbuf = "0.4.8"
 slab.workspace = true
 smallbox = { version = "0.8.8", features = ["nightly"] }
 smallvec = "1.15.1"

@@ -87,7 +87,7 @@ impl DynarecBlock {
             (self.function.func)(emu)
         };
 
-        IO::run_timer_pipeline(&mut emu.cpu, &mut emu.mem);
+        emu.run_io();
     }
 }
 

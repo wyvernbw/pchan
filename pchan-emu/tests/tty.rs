@@ -1,0 +1,21 @@
+#[cfg(test)]
+#[test]
+fn run() -> color_eyre::Result<()> {
+    use pchan_emu::{Emu, dynarec_v2::PipelineV2};
+    use pchan_utils::setup_tracing;
+
+    setup_tracing();
+    let mut emu = Emu::default();
+    emu.boot.load_bios(&mut emu.mem, &emu.cpu)?;
+    emu.cpu.jump_to_bios();
+
+    loop {
+        PipelineV2::new(&emu).run_once(&mut emu)?;
+        match inquire::prompt_confirmation("continue?") {
+            Ok(true) => {}
+            _ => break,
+        }
+    }
+
+    Ok(())
+}

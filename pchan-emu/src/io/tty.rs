@@ -1,0 +1,60 @@
+use std::sync::Arc;
+
+use crate::Emu;
+
+#[derive(Debug, Clone)]
+pub struct Tty {
+    buf: Box<[u8]>,
+    end: usize,
+    mode: TtyMode,
+}
+
+#[derive(derive_more::Debug, Clone)]
+pub enum TtyMode {
+    Stdout,
+    Tracing,
+    Channeled(flume::Sender<Arc<str>>),
+    Silent,
+}
+
+impl Default for Tty {
+    fn default() -> Self {
+        Self {
+            buf: vec![0u8; 1024].into_boxed_slice(),
+            end: 0,
+            mode: TtyMode::Stdout,
+        }
+    }
+}
+
+impl Tty {
+    pub fn putchar(&mut self, c: char) {
+        if self.end == 1024 {
+            tracing::error!("tty buffer overflow");
+            return;
+        }
+        self.buf[self.end] = c as _;
+        self.end += 1;
+        if c == '\n' {
+            self.flush();
+        }
+    }
+
+    pub fn flush(&mut self) -> color_eyre::Result<()> {
+        let string = str::from_utf8(self.buf.as_ref())?;
+        match &mut self.mode {
+            TtyMode::Stdout => {
+                print!("{}", string);
+            }
+            TtyMode::Tracing => {
+                tracing::info!("{}", string);
+            }
+            TtyMode::Channeled(tx) => {
+                tx.send(string.to_owned().into())?;
+            }
+            TtyMode::Silent => {}
+        }
+        self.end = 0;
+        Ok(())
+    }
+}

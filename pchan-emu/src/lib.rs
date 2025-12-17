@@ -4,6 +4,7 @@
 #![allow(incomplete_features)]
 #![allow(clippy::collapsible_if)]
 #![feature(test)]
+#![feature(mut_ref)]
 #![feature(arbitrary_self_types_pointers)]
 #![feature(slice_swap_unchecked)]
 #![feature(if_let_guard)]
@@ -52,6 +53,7 @@ use crate::{
     cpu::Cpu,
     dynarec::{FetchSummary, prelude::PureInstBuilder},
     dynarec_v2::DynarecBlock,
+    io::tty::Tty,
     jit::{JitCache, LUTMap},
     memory::{Chunk, Memory},
 };
@@ -111,10 +113,9 @@ pub struct Emu {
     pub mem: Memory,
     pub boot: Bootloader,
     pub jit_cache: JitCache,
-    pub inst_cache: InstCache,
+    pub inst_cache: LUTMap<FetchSummary>,
+    pub tty: Tty,
 }
-
-pub type InstCache = LUTMap<FetchSummary>;
 
 use memory::Extend;
 
