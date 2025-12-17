@@ -26,8 +26,7 @@ pub struct Cpu {
     pub hilo: u64,
     pub cop0: Cop0,
     pub cop1: Cop1,
-    #[debug(skip)]
-    pub _pad_cop2_gte: [u64; 32],
+    pub cop2: Cop2,
 }
 
 macro_rules! coprocessor_definition {
@@ -36,13 +35,14 @@ macro_rules! coprocessor_definition {
         #[repr(C)]
         pub struct $n {
             #[debug("{:#?}", reg.iter() .enumerate() .filter(|(_, x)| x != &&0) .map(|(i, x)|format!("${}={}", REG_STR[i], hex(*x))) .collect::<Vec<String>>())]
-            pub reg: [u32; 64],
+            pub reg: [u32; 32],
         }
     };
 }
 
 coprocessor_definition!(Cop0);
 coprocessor_definition!(Cop1);
+coprocessor_definition!(Cop2);
 
 bitfield! {
     pub struct Cop0StatusReg(u32);
@@ -54,7 +54,7 @@ bitfield! {
 
 impl Default for Cop0 {
     fn default() -> Self {
-        let mut reg = [0u32; 64];
+        let mut reg = [0u32; 32];
 
         let mut r12 = Cop0StatusReg(0);
         r12.set_bev(true);
@@ -114,10 +114,30 @@ impl Cpu {
     pub const D_CLOCK_OFFSET: usize = offset_of!(Self, d_clock);
 
     pub const fn reg_offset(reg: u8) -> usize {
-        use std::mem::offset_of;
-
         (offset_of!(Cpu, gpr) + size_of::<u32>() * reg as usize)
     }
+
+    pub const fn cop_reg_offset(cop: u8, reg: u8) -> usize {
+        match cop {
+            0 => Self::cop0_reg_offset(reg),
+            1 => Self::cop1_reg_offset(reg),
+            2 => Self::cop2_reg_offset(reg),
+            _ => todo!(),
+        }
+    }
+
+    pub const fn cop0_reg_offset(reg: u8) -> usize {
+        offset_of!(Cpu, cop0) + offset_of!(Cop0, reg) + size_of::<u32>() * reg as usize
+    }
+
+    pub const fn cop1_reg_offset(reg: u8) -> usize {
+        offset_of!(Cpu, cop1) + offset_of!(Cop1, reg) + size_of::<u32>() * reg as usize
+    }
+
+    pub const fn cop2_reg_offset(reg: u8) -> usize {
+        offset_of!(Cpu, cop2) + offset_of!(Cop2, reg) + size_of::<u32>() * reg as usize
+    }
+
     #[instrument(ret)]
     pub fn handle_exception(&mut self, exception: Exception) {
         let cause = self.cop0.reg[13];
@@ -160,7 +180,13 @@ impl Cpu {
 
 impl Default for Cop1 {
     fn default() -> Self {
-        Self { reg: [0; 64] }
+        Self { reg: [0; 32] }
+    }
+}
+
+impl Default for Cop2 {
+    fn default() -> Self {
+        Self { reg: [0; 32] }
     }
 }
 

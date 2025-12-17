@@ -10,7 +10,10 @@ fn run() -> color_eyre::Result<()> {
     emu.cpu.jump_to_bios();
 
     loop {
+        use pchan_utils::hex;
+
         PipelineV2::new(&emu).run_once(&mut emu)?;
+        tracing::info!(pc = hex(emu.cpu.pc));
         match inquire::prompt_confirmation("continue?") {
             Ok(true) => {}
             _ => break,

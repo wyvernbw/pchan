@@ -1,5 +1,6 @@
 use crate::Emu;
 use crate::cpu;
+use crate::cpu::Cpu;
 use crate::dynarec_v2::Guest;
 use std::num::NonZeroU8;
 
@@ -29,6 +30,7 @@ use crate::cpu::ops::lh::*;
 use crate::cpu::ops::lhu::*;
 use crate::cpu::ops::lui::*;
 use crate::cpu::ops::lw::*;
+use crate::cpu::ops::mtc::*;
 use crate::cpu::ops::nor::*;
 use crate::cpu::ops::or::*;
 use crate::cpu::ops::ori::*;
@@ -135,6 +137,7 @@ pub enum DecodedOpNew {
     ORI(ORI),
     XORI(XORI),
     LUI(LUI),
+    MTCn(MTCn),
     LB(LB),
     LBU(LBU),
     LH(LH),
@@ -235,7 +238,7 @@ impl DecodedOpNew {
                 (0x10, 0x10, _, 0x10) => todo!("rfe"),
                 (0x10..=0x13, 0x0, _, 0x0) => todo!("mfcn"),
                 (0x10..=0x13, 0x2, _, 0x0) => todo!("cfcn"),
-                (0x10..=0x13, 0x4, _, 0x0) => todo!("mtcn"),
+                (0x10..=0x13, 0x4, _, 0x0) => Self::MTCn(MTCn::new(fields.cop(), rt, rd)),
                 (0x10..=0x13, 0x8, 0, _) => todo!("bcnf"),
                 (0x10..=0x13, 0x8, 1, _) => todo!("bcnt"),
                 (0x10..=0x13, 0x6, _, 0x0) => todo!("ctcn"),
@@ -1978,6 +1981,65 @@ fn test_branch_zero(
     PipelineV2::new(&emu).run_once(&mut emu)?;
     tracing::info!(?emu.cpu);
     assert_eq!(emu.cpu.pc, expected_pc);
+
+    Ok(())
+}
+
+impl DynarecOp for MTCn {
+    fn cycles(&self) -> u16 {
+        match self.cop {
+            0 => 1,
+            1 => 1,
+            2 => 3,
+            3 => 1,
+            _ => unreachable!(),
+        }
+    }
+    #[allow(clippy::useless_conversion)]
+    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+        let rt = ctx.dynarec.emit_load_reg(self.rt);
+
+        #[cfg(target_arch = "aarch64")]
+        dynasm!(
+            ctx.dynarec.asm
+            ; .arch aarch64
+            ; str W(*rt), [x0, Cpu::cop_reg_offset(self.cop, self.rd) as _]
+        );
+
+        rt.restore(ctx.dynarec);
+        EmitSummary::default()
+    }
+}
+
+#[cfg(test)]
+#[rstest]
+#[case(0, 5, 10)]
+#[case(2, 5, 10)]
+#[case(2, 31, 10)] // really pushing it
+fn test_mtcn(#[case] cop: u8, #[case] rd: u8, #[case] rt: u8) -> color_eyre::Result<()> {
+    use crate::{
+        Emu,
+        cpu::{ops::Op, program},
+        dynarec_v2::PipelineV2,
+    };
+    use pchan_utils::setup_tracing;
+
+    setup_tracing();
+    let mut emu = Emu::default();
+    emu.cpu.gpr[rt as usize] = 69;
+
+    emu.write_many(
+        0x0,
+        &program([MTCn::new(cop, rt, rd).into_opcode(), OpCode(69420)]),
+    );
+
+    PipelineV2::new(&emu).run_once(&mut emu)?;
+    tracing::info!(?emu.cpu);
+    match cop {
+        0 => assert_eq!(emu.cpu.cop0.reg[rd as usize], 69),
+        2 => assert_eq!(emu.cpu.cop2.reg[rd as usize], 69),
+        _ => panic!("get out"),
+    }
 
     Ok(())
 }

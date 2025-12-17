@@ -4,9 +4,9 @@ use crate::dynarec::prelude::*;
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct MTCn {
-    cop: u8,
-    rt: u8,
-    rd: u8,
+    pub cop: u8,
+    pub rt: u8,
+    pub rd: u8,
 }
 
 impl MTCn {

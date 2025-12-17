@@ -714,7 +714,7 @@ impl JIT {
         let offset = match cop {
             0 => offset_of!(Cpu, cop0),
             1 => offset_of!(Cpu, cop1),
-            2 => offset_of!(Cpu, _pad_cop2_gte),
+            2 => offset_of!(Cpu, cop2),
             _ => panic!("invalid coprocessor"),
         };
         let offset = offset + idx * size_of::<u32>();
