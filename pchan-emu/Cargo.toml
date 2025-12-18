@@ -3,6 +3,9 @@ name = "pchan-emu"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+fetch-channel = []
+
 [dependencies]
 bitfield = "0.19.2"
 bitvec = "1.0.1"

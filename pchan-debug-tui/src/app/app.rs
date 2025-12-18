@@ -8,12 +8,14 @@ use std::time::{Duration, Instant};
 
 use color_eyre::eyre::{Result, eyre};
 use flume::{Receiver, Sender};
-use pchan_emu::Emu;
 use pchan_emu::cpu::ops::{BoundaryType, Op};
 use pchan_emu::cpu::reg_str;
 use pchan_emu::dynarec::FetchSummary;
 use pchan_emu::dynarec::pipeline::{EmuDynarecPipeline, EmuDynarecPipelineReport};
+use pchan_emu::dynarec_v2::emitters::DynarecOp;
+use pchan_emu::dynarec_v2::{FetchedOp, PipelineV2};
 use pchan_emu::jit::JIT;
+use pchan_emu::{Emu, dynarec_v2};
 use pchan_utils::{IgnorePoison, hex};
 use ratatui::crossterm::event::KeyModifiers;
 use ratatui::layout::Flex;
@@ -95,7 +97,7 @@ pub fn run(config: AppConfig, mut terminal: DefaultTerminal) -> Result<()> {
     let (emu_info_tx, emu_info_rx) = flume::unbounded();
 
     let emu_2 = emu.clone();
-    exec.spawn(emu_task(emu_2, config_rx, emu_cmd_rx, emu_info_tx))
+    exec.spawn(emu_task_v2(emu_2, config_rx, emu_cmd_rx, emu_info_tx))
         .detach();
 
     let future = exec.run(async {
@@ -123,6 +125,7 @@ pub fn run(config: AppConfig, mut terminal: DefaultTerminal) -> Result<()> {
             first_time_setup_state: FirstTimeSetupState::default(),
             main_page_state: MainPageState {
                 fetch_summary: None,
+                fetch_summary_v2: None,
                 emu_state: EmuState::Uninitialized.into(),
                 cpu_inspector_state: CpuInspectorState {
                     emu: None,
@@ -185,6 +188,9 @@ pub fn run(config: AppConfig, mut terminal: DefaultTerminal) -> Result<()> {
                             EmuInfo::Fetch(fetch_summary) => {
                                 app_state.main_page_state.fetch_summary = Some(fetch_summary);
                             }
+                            EmuInfo::FetchV2(fetch_summary) => {
+                                app_state.main_page_state.fetch_summary_v2 = Some(fetch_summary);
+                            }
                             EmuInfo::StateUpdate(emu_state) => {
                                 app_state.main_page_state.emu_state = emu_state.into();
                             }
@@ -230,6 +236,7 @@ pub enum EmuInfo {
     FrequencyUpdate(f64),
     StateUpdate(EmuState),
     Fetch(FetchSummary),
+    FetchV2(Vec<FetchedOp>),
     Ref(Arc<RwLock<Emu>>),
 }
 
@@ -301,6 +308,107 @@ async fn emu_task(
                 .await?;
             Ok(pipeline)
         };
+
+    loop {
+        // if let Ok(new_config) = config_rx.try_recv() {
+        //     config = new_config;
+        // }
+        for cmd in emu_cmd_rx.try_iter() {
+            match cmd {
+                EmuCmd::StepJit => {
+                    pipeline = step_jit(pipeline).await?;
+                }
+                EmuCmd::Run => {
+                    running = true;
+                }
+                EmuCmd::Pause => {
+                    running = false;
+                }
+                EmuCmd::AddBreakpoint(addr) => {
+                    breakpoints.insert(addr);
+                }
+            };
+        }
+        if running {
+            pipeline = step_jit(pipeline).await?;
+            if breakpoints.contains(&emu.get().cpu.pc) {
+                running = false;
+            }
+        }
+        smol::future::yield_now().await;
+    }
+}
+
+async fn emu_task_v2(
+    emu: Arc<RwLock<Emu>>,
+    config_rx: Receiver<AppConfig>,
+    emu_cmd_rx: Receiver<EmuCmd>,
+    emu_info_tx: Sender<EmuInfo>,
+) -> Result<()> {
+    emu_info_tx.send(EmuInfo::StateUpdate(EmuState::Uninitialized))?;
+
+    emu_info_tx.send(EmuInfo::StateUpdate(EmuState::WaitingForConfig))?;
+    let Ok(config) = config_rx.recv() else {
+        emu_info_tx.send(EmuInfo::StateUpdate(EmuState::Error(eyre!(
+            "emu thread received config with no bios path"
+        ))))?;
+        return Err(eyre!("emu thread received config with no bios path"));
+    };
+    emu_info_tx.send(EmuInfo::StateUpdate(EmuState::SettingUp))?;
+    {
+        let mut emu = emu.get_mut();
+
+        emu.boot
+            .set_bios_path(config.bios_path.expect("config must contain bios path"));
+        match emu.load_bios() {
+            Ok(()) => {}
+            Err(err) => {
+                emu_info_tx.send(EmuInfo::StateUpdate(EmuState::Error(err)))?;
+                return Ok(());
+            }
+        }
+        emu.jump_to_bios();
+    }
+    emu_info_tx.send(EmuInfo::StateUpdate(EmuState::Running))?;
+    emu_info_tx.send(EmuInfo::Ref(emu.clone()))?;
+
+    let mut pipeline = {
+        let emu = emu.get();
+        PipelineV2::new(&emu)
+    };
+
+    let mut breakpoints = HashSet::<u32>::new();
+    let mut running = false;
+    let mut elapsed = Duration::new(0, 0);
+    let mut step_jit = async |mut pipeline: PipelineV2| -> color_eyre::Result<PipelineV2> {
+        {
+            let mut emu = emu.get_mut();
+            let now = Instant::now();
+            pipeline = pipeline.step(&mut emu)?;
+            elapsed += now.elapsed();
+        }
+        let fetch = dynarec_v2::FETCH_CHANNEL.1.try_iter().collect::<Vec<_>>();
+        if !fetch.is_empty() {
+            emu_info_tx.send_async(EmuInfo::FetchV2(fetch)).await?;
+        }
+        if let PipelineV2::Init { .. } = pipeline {
+            let cycles_elapsed = emu.get().cpu.d_clock as f64;
+            let frequency = cycles_elapsed / elapsed.as_secs_f64();
+            elapsed = Duration::new(0, 0);
+            emu_info_tx
+                .send_async(EmuInfo::FrequencyUpdate(frequency))
+                .await?;
+        }
+        emu_info_tx
+            .send_async(EmuInfo::PipelineUpdate(EmuDynarecPipelineReport {
+                current: "N/A",
+                next: "N/A",
+                progress: 0,
+                elapsed: Duration::from_micros(1),
+            }))
+            .await?;
+        Ok(pipeline)
+    };
 
     loop {
         // if let Ok(new_config) = config_rx.try_recv() {
@@ -458,6 +566,7 @@ pub struct MainPageState {
     emu: Option<Arc<RwLock<Emu>>>,
     emu_cmd_tx: Sender<EmuCmd>,
     fetch_summary: Option<FetchSummary>,
+    fetch_summary_v2: Option<Vec<FetchedOp>>,
     ops_list_state: OpsListState,
     cpu_inspector_state: CpuInspectorState,
     action_state: ActionState,
@@ -503,6 +612,34 @@ impl OpsListData {
                                 _,
                                 Some(BoundaryType::Block { .. } | BoundaryType::BlockSplit { .. }),
                             ) => Style::new().red(),
+                            (true, _) => Style::new().fg(Color::Rgb(250 - 15, 250 - 15, 250 - 15)),
+                            (false, _) => Style::new(),
+                        },
+                    ),
+                )
+            })
+            .insert_between(
+                |a, b| a.0.abs_diff(*b.0).ge(&8),
+                || (&0u32, Span::from("...").style(Style::new().dim())),
+            )
+            .map(|(_, line)| line.into())
+            .collect::<Vec<Line>>();
+        let mut hasher = DefaultHasher::new();
+        decoded_ops.hash(&mut hasher);
+        Self {
+            ops: decoded_ops,
+            hash: hasher.finish(),
+        }
+    }
+    pub fn from_fetch_v2(decoded_ops: &[FetchedOp]) -> Self {
+        let decoded_ops = decoded_ops
+            .iter()
+            .map(|(address, op)| {
+                (
+                    address,
+                    Span::raw(format!("{}   {}", hex(*address), op)).style(
+                        match (address.shr(2) % 2u32 == 0u32, op.is_boundary()) {
+                            (_, true) => Style::new().red(),
                             (true, _) => Style::new().fg(Color::Rgb(250 - 15, 250 - 15, 250 - 15)),
                             (false, _) => Style::new(),
                         },
@@ -635,18 +772,18 @@ impl<'a> Component for MainPage<'a> {
         ops_block.render(ops, buf);
         let ops = ops_inner;
 
-        match (&mut state.ops_list_state.data, &mut state.fetch_summary) {
+        match (&mut state.ops_list_state.data, &mut state.fetch_summary_v2) {
             (None, None) => {}
             (None, Some(fetch_summary)) => {
-                state.ops_list_state.data = Some(OpsListData::from_fetch(fetch_summary));
+                state.ops_list_state.data = Some(OpsListData::from_fetch_v2(fetch_summary));
             }
             (Some(_), None) => {} // unreachable in practice (probably)
             (Some(old), Some(new)) => {
                 let mut hasher = DefaultHasher::new();
-                new.decoded_ops.hash(&mut hasher);
+                new.hash(&mut hasher);
                 let new_hash = hasher.finish();
                 if old.hash != new_hash {
-                    state.ops_list_state.data = Some(OpsListData::from_fetch(new));
+                    state.ops_list_state.data = Some(OpsListData::from_fetch_v2(new));
                 }
             }
         };

@@ -4,6 +4,8 @@ use dynasmrt::Assembler;
 use dynasmrt::DynasmApi;
 use dynasmrt::DynasmLabelApi;
 use dynasmrt::ExecutableBuffer;
+use flume::Receiver;
+use flume::Sender;
 use pchan_utils::hex;
 use smallbox::SmallBox;
 use std::cell::Cell;
@@ -13,6 +15,8 @@ use std::hash::Hasher;
 use std::ops::Deref;
 use std::rc::Rc;
 use std::simd::Simd;
+use std::sync::Arc;
+use std::sync::LazyLock;
 use tracing::Instrument;
 use tracing::Level;
 use tracing::enabled;
@@ -30,6 +34,12 @@ use crate::memory::ext;
 
 pub mod emitters;
 pub mod regalloc;
+
+#[cfg(feature = "fetch-channel")]
+pub type FetchedOp = (u32, DecodedOpNew);
+#[cfg(feature = "fetch-channel")]
+pub static FETCH_CHANNEL: LazyLock<(Sender<FetchedOp>, Receiver<FetchedOp>)> =
+    LazyLock::new(|| flume::bounded(1024));
 
 #[cfg(target_arch = "aarch64")]
 type Reloc = dynasmrt::aarch64::Aarch64Relocation;
@@ -62,7 +72,7 @@ impl Default for Dynarec {
 #[derive(Debug, Clone)]
 pub struct DynarecFunction {
     func: fn(*mut Emu),
-    exec: Rc<ExecutableBuffer>,
+    exec: Arc<ExecutableBuffer>,
 }
 
 #[derive(Debug, Clone)]
@@ -131,7 +141,7 @@ impl Dynarec {
         let func = unsafe { std::mem::transmute::<*const u8, fn(_)>(exec.as_ptr()) };
         Ok(DynarecFunction {
             func,
-            exec: Rc::new(exec),
+            exec: Arc::new(exec),
         })
     }
     fn emit_block_prelude(&mut self) {
@@ -748,6 +758,10 @@ fn fetch_and_compile_single_threaded(
             dynarec: &mut dynarec,
             pc: state.pc,
         }));
+
+        if cfg!(feature = "fetch-channel") {
+            let _ = FETCH_CHANNEL.0.send((state.pc, op));
+        }
 
         if state.delay_signal {
             if let Some(emitter) = dynarec.delay_queue.pop_front() {
