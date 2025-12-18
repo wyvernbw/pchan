@@ -91,15 +91,6 @@ impl Memory {
     /// this is never safe, live fast die young
     #[inline(always)]
     pub unsafe fn read_raw<T: Copy>(&self, cpu: &Cpu, address: u32) -> T {
-        if cpu.isc() {
-            let address = address & 0xFFF;
-            unsafe {
-                let ptr = self.buf.as_ptr().add(address as usize);
-                let ptr = ptr as *const T;
-                return std::ptr::read_unaligned(ptr);
-            }
-        }
-
         let page = address >> 16;
         let offset = address & 0xFFFF;
 
@@ -110,7 +101,7 @@ impl Memory {
             // fastmem
             Some(region_ptr) => unsafe {
                 let ptr = mem.add(region_ptr as usize).add(offset as usize);
-                std::ptr::read_unaligned(ptr as *const T)
+                std::ptr::read(ptr as *const T)
             },
             // memcheck
             None => {
@@ -222,12 +213,6 @@ impl Memory {
     pub unsafe fn write_raw<T: Copy>(&mut self, cpu: &Cpu, address: u32, value: T) {
         // FIXME: cache isolation check on fast path is stupid
         // also not all addresses are cached, so this is straight wrong
-        // let address = address & 0xFFF;
-        // unsafe {
-        //     let ptr = self.cache.as_mut_ptr().add(address as usize);
-        //     Memory::write_impl(ptr, value);
-        //     return;
-        // }
         if cpu.isc() {
             return;
         }
@@ -342,18 +327,21 @@ impl Emu {
     #[unsafe(no_mangle)]
     #[pchan_macros::instrument_write]
     pub unsafe extern "C" fn write8v2(self: *mut Emu, address: u32, value: i32) {
+        tracing::trace!("write");
         unsafe { (*self).write(address, value as i8) }
     }
 
     #[unsafe(no_mangle)]
     #[pchan_macros::instrument_write]
     pub unsafe extern "C" fn write16v2(self: *mut Emu, address: u32, value: i32) {
+        tracing::trace!("write");
         unsafe { (*self).write(address, value as i16) }
     }
 
     #[unsafe(no_mangle)]
     #[pchan_macros::instrument_write]
     pub unsafe extern "C" fn write32v2(self: *mut Emu, address: u32, value: i32) {
+        tracing::trace!("write");
         unsafe { (*self).write(address, value) }
     }
 

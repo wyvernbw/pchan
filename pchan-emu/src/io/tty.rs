@@ -1,9 +1,8 @@
 use std::sync::Arc;
 
-use crate::Emu;
-
-#[derive(Debug, Clone)]
+#[derive(derive_more::Debug, Clone)]
 pub struct Tty {
+    #[debug("buf: {}/1024", self.end)]
     buf: Box<[u8]>,
     end: usize,
     mode: TtyMode,

@@ -112,7 +112,9 @@ pub struct Emu {
     pub dynarec_cache: HashMap<u32, DynarecBlock>,
     pub mem: Memory,
     pub boot: Bootloader,
+    #[debug(skip)]
     pub jit_cache: JitCache,
+    #[debug(skip)]
     pub inst_cache: LUTMap<FetchSummary>,
     pub tty: Tty,
 }

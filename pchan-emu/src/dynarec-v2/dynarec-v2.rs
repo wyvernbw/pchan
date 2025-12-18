@@ -4,6 +4,7 @@ use dynasmrt::Assembler;
 use dynasmrt::DynasmApi;
 use dynasmrt::DynasmLabelApi;
 use dynasmrt::ExecutableBuffer;
+use pchan_utils::hex;
 use smallbox::SmallBox;
 use std::cell::Cell;
 use std::collections::VecDeque;
@@ -24,7 +25,6 @@ use crate::dynarec_v2::emitters::DynarecOp;
 use crate::dynarec_v2::emitters::EmitCtx;
 use crate::dynarec_v2::emitters::EmitSummary;
 use crate::dynarec_v2::regalloc::*;
-use crate::io::IO;
 use crate::max_simd_elements;
 use crate::memory::ext;
 
@@ -70,6 +70,7 @@ pub struct DynarecBlock {
     function: DynarecFunction,
     hash: u64,
     op_count: usize,
+    is_loop: bool,
 }
 
 type DynarecBlockArgs<'a> = (&'a mut Emu, bool);
@@ -120,11 +121,11 @@ impl Dynarec {
             }
         };
 
-        if enabled!(Level::TRACE) {
+        if enabled!(Level::DEBUG) {
             use std::fs::File;
             use std::io::Write;
             File::create("/tmp/jit_code.bin")?.write_all(exec.as_ref())?;
-            tracing::trace!("Wrote {} bytes to /tmp/jit_code.bin", exec.len());
+            tracing::debug!("Wrote {} bytes to /tmp/jit_code.bin", exec.len());
         }
 
         let func = unsafe { std::mem::transmute::<*const u8, fn(_)>(exec.as_ptr()) };
@@ -618,8 +619,16 @@ impl PipelineV2 {
                     }
                 }
             },
-            PipelineV2::Compiled { pc, func, dynarec } => {
+            PipelineV2::Compiled {
+                pc,
+                mut func,
+                dynarec,
+            } => {
                 func(emu, false);
+                while emu.cpu.pc == pc {
+                    func.is_loop = true;
+                    func(emu, false);
+                }
                 Ok(PipelineV2::Called { pc, func, dynarec })
             }
             PipelineV2::Called { pc, func, dynarec } => {
@@ -636,13 +645,12 @@ impl PipelineV2 {
 }
 
 fn fast_hash(emu: &Emu, op_count: usize) -> u64 {
+    let mut hasher = rapidhash::fast::RapidHasher::default();
     let ops = emu
         .linear_fetch_no_decode()
         .take(op_count)
         .map(|op| op.0)
-        .collect::<Vec<_>>();
-    let mut hasher = rapidhash::fast::RapidHasher::default();
-    ops.hash(&mut hasher);
+        .for_each(|op| hasher.write_u32(op));
 
     hasher.finish()
 }
@@ -745,12 +753,14 @@ fn fetch_and_compile_single_threaded(
             if let Some(emitter) = dynarec.delay_queue.pop_front() {
                 let summary = emitter(EmitCtx {
                     dynarec: &mut dynarec,
-                    pc: state.pc,
+                    // -4 because delayed effects think they are the same instruction
+                    pc: state.pc - 0x4,
                 });
                 state.apply(summary);
             }
         }
 
+        tracing::trace!(pc = hex(state.pc), %op);
         state.delay_signal = true;
     }
 
@@ -775,6 +785,7 @@ fn fetch_and_compile_single_threaded(
     Ok(DynarecBlock {
         function: func,
         op_count: state.op_count,
+        is_loop: false,
         hash,
     })
 }
