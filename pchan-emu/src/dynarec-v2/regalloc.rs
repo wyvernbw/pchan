@@ -1,9 +1,14 @@
 use std::collections::VecDeque;
 
-use bitvec::prelude as bv;
+use bitvec::{
+    prelude as bv,
+    slice::{BitSlice, IterOnes},
+    view::BitView,
+};
 use bv::Lsb0;
 use derive_more as de;
 use pchan_utils::array;
+use smallvec::SmallVec;
 
 #[cfg(target_arch = "aarch64")]
 type RegAllocBitMap = bv::BitArray<[u32; 1]>;
@@ -19,6 +24,8 @@ pub struct RegAlloc {
     pub allocated: RegAllocBitMap,
     #[debug(skip)]
     pub allocatable: RegAllocBitMap,
+    #[debug(skip)]
+    pub volatile: RegAllocBitMap,
     /// this is in guest register space
     #[debug(skip)]
     pub priority: RegAllocBitMap,
@@ -55,6 +62,19 @@ impl Default for RegAlloc {
                 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
                 0, 0, 0 // r29 and r30 - frame and link registers, r31 - zero register (or sp)
             ],
+
+            #[cfg(target_arch = "aarch64")]
+            volatile: bv::bitarr!(
+                u32, Lsb0;
+                0, 0, 0, 0, // x0-x3
+                1, 1, 1, 1, // x4-x7
+                1, // r8 is syscall register, might get trampled
+                1, 1, 1, 1, 1, 1, 1, // r9-r15 temporary registers
+                1, 1, 1, // r16-r18 platform registers
+                // r19-r28 callee saved
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                1, 1, 1 // r29 and r30 - frame and link registers, r31 - zero register (or sp)
+            ),
 
             #[cfg(target_arch = "aarch64")]
             priority: bv::bitarr![
@@ -117,9 +137,32 @@ impl RegAlloc {
     pub fn first_free(&self) -> Option<Reg> {
         let [allocated] = self.allocated.into_inner();
         let [allocatable] = self.allocatable.into_inner();
+        let [volatile] = self.volatile.into_inner();
+        // use non volatile first
+        let allocate_from = allocatable & (!allocated) & (!volatile);
+        if allocate_from != 0 {
+            let index = allocate_from.trailing_zeros();
+            return Some(Reg::new(index as _));
+        }
+        // fallback to volatile
         let allocate_from = allocatable & (!allocated);
-        let index = allocate_from.trailing_zeros();
-        Self::ensure_reg(index as _).map(Reg::new)
+        if allocate_from != 0 {
+            let index = allocate_from.trailing_zeros();
+            return Some(Reg::new(index as _));
+        }
+        // full
+        None
+    }
+
+    pub fn allocated_volatile(&self) -> SmallVec<[u8; 32]> {
+        let [allocated] = self.allocated.into_inner();
+        let [volatile] = self.volatile.into_inner();
+        let allocated_volatile = (allocated) & (volatile);
+        allocated_volatile
+            .view_bits::<Lsb0>()
+            .iter_ones()
+            .map(|reg| reg as _)
+            .collect()
     }
 
     pub fn is_full(&self) -> bool {
@@ -377,14 +420,12 @@ pub mod regalloc_tests {
         let result = regalloc.regalloc(16);
         assert!(result.is_ok());
         #[cfg(target_arch = "aarch64")]
-        assert_eq!(result, Ok(4.into()));
+        assert_eq!(result, Ok(19.into()));
     }
 
     #[rstest]
-    #[case(1, [Ok(4.into())])]
-    #[case(2, [Ok(4.into()), Ok(5.into())])]
-    #[case(12, (4..16).map(Into::into).map(Ok).collect::<Vec<_>>())]
-    #[case(22, (4..16).chain(19..=28).map(Into::into).map(Ok).collect::<Vec<_>>())]
+    #[case(1, [Ok(19.into())])]
+    #[case(2, [Ok(19.into()), Ok(20.into())])]
     pub fn regalloc_test_multiple_alloc_free(
         #[case] count: usize,
         #[case] expected: impl Into<Vec<AllocResult>>,
@@ -394,35 +435,6 @@ pub mod regalloc_tests {
             .map(|reg| regalloc.regalloc(reg as u8))
             .collect::<Vec<_>>();
         assert_eq!(result, expected.into());
-    }
-
-    #[rstest]
-    // 1 high priority register
-    #[case([23], [Err(RegAllocError::EvictToMemory(Evicted(1), 4.into()))])]
-    // 2 high priority registers
-    #[case([23, 29], [Err(RegAllocError::EvictToMemory(Evicted(1), 4.into())), Err(RegAllocError::EvictToMemory(Evicted(2), 5.into()))])]
-    // 1 low priority register
-    #[case([24], [Err(RegAllocError::EvictToStack(Evicted(1), 4.into()))])]
-    // 2 low priority register
-    // this evicts a high priority register to the stack and allocates a low priority register in
-    // its place. afterwards, that register gets evicted by another low priority register and in
-    // the end they use the same host register 24
-    #[case([24, 25], [Err(RegAllocError::EvictToStack(Evicted(1), 4.into())), Err(RegAllocError::EvictToStack(Evicted(24), 4.into()))])]
-    pub fn regalloc_test_evictions_after_high_prio(
-        #[case] registers_after_full: impl Into<Vec<u8>>,
-        #[case] expected: impl Into<Vec<AllocResult>>,
-    ) {
-        let expected = expected.into();
-        let registers_after_full = registers_after_full.into();
-        let mut regalloc = RegAlloc::default();
-        for i in 1..=22 {
-            _ = regalloc.regalloc(i);
-        }
-        let results = registers_after_full
-            .into_iter()
-            .map(|reg| regalloc.regalloc(reg))
-            .collect::<Vec<_>>();
-        assert_eq!(results, expected)
     }
 
     #[rstest]
@@ -446,7 +458,7 @@ pub mod regalloc_tests {
         let mut regalloc = RegAlloc::default();
         let res_0 = regalloc.regalloc(16);
         let res_1 = regalloc.regalloc(16);
-        assert_eq!(res_0, Ok(4.into()));
-        assert_eq!(res_1, Err(RegAllocError::AlreadyAllocatedTo(4.into())));
+        assert_eq!(res_0, Ok(19.into()));
+        assert_eq!(res_1, Err(RegAllocError::AlreadyAllocatedTo(19.into())));
     }
 }

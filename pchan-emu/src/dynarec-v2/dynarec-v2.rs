@@ -8,6 +8,7 @@ use flume::Receiver;
 use flume::Sender;
 use pchan_utils::hex;
 use smallbox::SmallBox;
+use smallvec::SmallVec;
 use std::cell::Cell;
 use std::collections::VecDeque;
 use std::hash::Hash;
@@ -448,6 +449,88 @@ impl Dynarec {
             ; str W(n),  [x0, Emu::PC_OFFSET as _]
         )
     }
+
+    #[allow(clippy::useless_conversion)]
+    fn emit_save_volatile_registers(&mut self) -> SmallVec<[u8; 32]> {
+        #[cfg(target_arch = "aarch64")]
+        dynasm!(
+            self.asm
+            ; .arch aarch64
+            ; str x0, [sp, #-16]!
+        );
+        self.reg_alloc
+            .allocated_volatile()
+            .into_iter()
+            .inspect(|reg| {
+                #[cfg(target_arch = "aarch64")]
+                dynasm!(
+                    self.asm
+                    ; .arch aarch64
+                    ; str X(*reg), [sp, #-16]!
+                );
+            })
+            .collect()
+        // for reg in self.reg_alloc.allocated_volatile().chunks(2) {
+        //     match reg {
+        //         [a, b] => {
+        //             #[cfg(target_arch = "aarch64")]
+        //             dynasm!(
+        //                 self.asm
+        //                 ; .arch aarch64
+        //                 ; stp X(*a), X(*b), [sp, #-16]!
+        //             );
+        //         }
+        //         [reg] => {
+        //             #[cfg(target_arch = "aarch64")]
+        //             dynasm!(
+        //                 self.asm
+        //                 ; .arch aarch64
+        //                 ; str X(*reg), [sp, #-16]!
+        //             );
+        //         }
+        //         _ => unreachable!(),
+        //     };
+        // }
+    }
+
+    #[allow(clippy::useless_conversion)]
+    fn emit_restore_saved_registers(&mut self, saved: impl DoubleEndedIterator<Item = u8>) {
+        saved.into_iter().rev().for_each(|reg| {
+            #[cfg(target_arch = "aarch64")]
+            dynasm!(
+                self.asm
+                ; .arch aarch64
+                ; ldr X(reg), [sp], #16
+            );
+        });
+        #[cfg(target_arch = "aarch64")]
+        dynasm!(
+            self.asm
+            ; .arch aarch64
+            ; ldr x0, [sp], #16
+        );
+        // for reg in self.reg_alloc.allocated_volatile().chunks(2).rev() {
+        //     match reg {
+        //         [a, b] => {
+        //             #[cfg(target_arch = "aarch64")]
+        //             dynasm!(
+        //                 self.asm
+        //                 ; .arch aarch64
+        //                 ; ldp X(*a), X(*b), [sp], #16
+        //             );
+        //         }
+        //         [reg] => {
+        //             #[cfg(target_arch = "aarch64")]
+        //             dynasm!(
+        //                 self.asm
+        //                 ; .arch aarch64
+        //                 ; ldr X(*reg), [sp], #16
+        //             );
+        //         }
+        //         _ => unreachable!(),
+        //     };
+        // }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -656,8 +739,7 @@ impl PipelineV2 {
 
 fn fast_hash(emu: &Emu, op_count: usize) -> u64 {
     let mut hasher = rapidhash::fast::RapidHasher::default();
-    let ops = emu
-        .linear_fetch_no_decode()
+    emu.linear_fetch_no_decode()
         .take(op_count)
         .map(|op| op.0)
         .for_each(|op| hasher.write_u32(op));
@@ -759,7 +841,8 @@ fn fetch_and_compile_single_threaded(
             pc: state.pc,
         }));
 
-        if cfg!(feature = "fetch-channel") {
+        #[cfg(feature = "fetch-channel")]
+        {
             let _ = FETCH_CHANNEL.0.send((state.pc, op));
         }
 

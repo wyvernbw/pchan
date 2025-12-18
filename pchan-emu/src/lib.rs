@@ -6,6 +6,7 @@
 #![feature(test)]
 #![feature(mut_ref)]
 #![feature(arbitrary_self_types_pointers)]
+#![feature(impl_trait_in_fn_trait_return)]
 #![feature(slice_swap_unchecked)]
 #![feature(if_let_guard)]
 #![feature(random)]

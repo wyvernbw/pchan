@@ -377,6 +377,19 @@ fn test_subu(#[case] a: u32, #[case] b: u32, #[case] expected: u32) -> color_eyr
     assert_eq!(emu.cpu.pc, 0x8);
     Ok(())
 }
+
+fn emit_call(ctx: &mut EmitCtx, emitter: impl Fn(&mut Dynarec)) {
+    #[cfg(target_arch = "aarch64")]
+    dynasm!(
+        ctx.dynarec.asm
+        ; .arch aarch64
+        ;; let saved = ctx.dynarec.emit_save_volatile_registers()
+        ;; emitter(ctx.dynarec)
+        ;; ctx.dynarec.emit_restore_saved_registers(saved.into_iter())
+    );
+}
+
+#[allow(clippy::useless_conversion)]
 fn emit_store(
     ctx: EmitCtx,
     rt: u8,
@@ -417,17 +430,11 @@ fn emit_store(
             // need to track caller saved registers in regalloc
             // we have to store x0 since the function call will clobber it
             // call to function
-            ; stp x0, x1, [sp, #-16]!
-            ; stp x2, x3, [sp, #-16]!
-            ; stp x4, x5, [sp, #-16]!
-            ; stp x6, x7, [sp, #-16]!
+            ;; let saved = ctx.dynarec.emit_save_volatile_registers()
             ; fmov w1, S(s(9))
             ; fmov w2, S(s(10))
             ;; func_call(&mut ctx)
-            ; ldp x6, x7, [sp], #16
-            ; ldp x4, x5, [sp], #16
-            ; ldp x2, x3, [sp], #16
-            ; ldp x0, x1, [sp], #16
+            ;; ctx.dynarec.emit_restore_saved_registers(saved.into_iter())
 
         );
         EmitSummary::default()
@@ -545,17 +552,12 @@ fn emit_load(
             ctx.dynarec.asm
             ; .arch aarch64
             // ; ldr w1, [sp], #16
-            ; stp x0, x1, [sp, #-16]!
-            ; stp x2, x3, [sp, #-16]!
-            ; stp x4, x5, [sp, #-16]!
-            ; stp x6, x7, [sp, #-16]!
+            ;; let saved = ctx.dynarec.emit_save_volatile_registers()
             ; fmov w1, S(s(8))
             ;; func_call(&mut ctx)
-            ; ldp x6, x7, [sp], #16
-            ; ldp x4, x5, [sp], #16
-            ; mov W(*rta), w0
-            ; ldp x2, x3, [sp], #16
-            ; ldp x0, x1, [sp], #16
+            ; fmov S(s(8)), w0 // place return value in s8+
+            ;; ctx.dynarec.emit_restore_saved_registers(saved.into_iter())
+            ; fmov W(*rta), S(s(8))
         );
         ctx.dynarec.mark_dirty(rt);
 
