@@ -35,7 +35,7 @@ impl Tty {
         self.buf[self.end] = c as _;
         self.end += 1;
         if c == '\n' {
-            self.flush();
+            _ = self.flush();
         }
     }
 
@@ -55,5 +55,11 @@ impl Tty {
         }
         self.end = 0;
         Ok(())
+    }
+
+    pub fn set_channeled(&mut self) -> flume::Receiver<Arc<str>> {
+        let (tx, rx) = flume::bounded(1024);
+        self.mode = TtyMode::Channeled(tx);
+        rx
     }
 }

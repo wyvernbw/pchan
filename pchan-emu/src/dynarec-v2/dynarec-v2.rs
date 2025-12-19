@@ -649,6 +649,15 @@ impl Emu {
     }
 }
 
+#[derive(strum::EnumCount, strum::EnumDiscriminants, strum::EnumIs)]
+#[strum_discriminants(derive(
+    strum::Display,
+    strum::VariantArray,
+    strum::EnumCount,
+    strum::EnumIter
+))]
+#[strum_discriminants(name(PipelineV2Stage))]
+#[strum_discriminants(repr(u8))]
 pub enum PipelineV2 {
     Uninit,
     Init {
@@ -676,6 +685,9 @@ impl PipelineV2 {
             dynarec: Box::new(Dynarec::default()),
             pc: emu.cpu.pc,
         }
+    }
+    pub fn stage(&self) -> PipelineV2Stage {
+        self.into()
     }
     pub fn run_once(mut self, emu: &mut Emu) -> color_eyre::Result<Self> {
         for _ in 0..3 {

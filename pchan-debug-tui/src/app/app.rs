@@ -6,6 +6,7 @@ use std::ops::Shr;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
+use circular_buffer::CircularBuffer;
 use color_eyre::eyre::{Result, eyre};
 use flume::{Receiver, Sender};
 use pchan_emu::cpu::ops::{BoundaryType, Op};
@@ -13,7 +14,7 @@ use pchan_emu::cpu::reg_str;
 use pchan_emu::dynarec::FetchSummary;
 use pchan_emu::dynarec::pipeline::{EmuDynarecPipeline, EmuDynarecPipelineReport};
 use pchan_emu::dynarec_v2::emitters::DynarecOp;
-use pchan_emu::dynarec_v2::{FetchedOp, PipelineV2};
+use pchan_emu::dynarec_v2::{FetchedOp, PipelineV2, PipelineV2Stage};
 use pchan_emu::jit::JIT;
 use pchan_emu::{Emu, dynarec_v2};
 use pchan_utils::{IgnorePoison, hex};
@@ -27,7 +28,7 @@ use ratatui::widgets::{
 };
 use ratatui::{DefaultTerminal, crossterm::event};
 use smol::LocalExecutor;
-use strum::IntoEnumIterator;
+use strum::{EnumCount, IntoEnumIterator};
 use tui_input::Input;
 use tui_input::backend::crossterm::EventHandler;
 
@@ -91,7 +92,9 @@ macro_rules! key {
 pub fn run(config: AppConfig, mut terminal: DefaultTerminal) -> Result<()> {
     let exec = LocalExecutor::new();
 
-    let emu = Arc::new(RwLock::new(Emu::default()));
+    let mut emu = Emu::default();
+    let log_rx = emu.tty.set_channeled();
+    let emu = Arc::new(RwLock::new(emu));
     let (config_tx, config_rx) = flume::unbounded();
     let (emu_cmd_tx, emu_cmd_rx) = flume::unbounded();
     let (emu_info_tx, emu_info_rx) = flume::unbounded();
@@ -159,7 +162,12 @@ pub fn run(config: AppConfig, mut terminal: DefaultTerminal) -> Result<()> {
                         mode: MemoryInspectorAddressBarMode::Normal,
                     },
                 },
+                tty_state: TtyState {
+                    output: CircularBuffer::new(),
+                    log_rx,
+                },
             },
+            pipeline_report_v2: PipelineV2Stage::Uninit,
         };
 
         loop {
@@ -170,11 +178,14 @@ pub fn run(config: AppConfig, mut terminal: DefaultTerminal) -> Result<()> {
                 let result: color_eyre::Result<()> = try {
                     let mut app = App(app_state.focus.props());
                     if let Ok(true) = event::poll(Duration::from_millis(0)) {
-                        let event = event::read()?;
+                        let event = event::read().map_err(|err| err.into())?;
                         app.handle_input(event, &mut app_state, frame.area())?;
                     }
                     for info in emu_info_rx.try_iter() {
                         match info {
+                            EmuInfo::PipelineUpdateV2(stage) => {
+                                app_state.pipeline_report_v2 = stage;
+                            }
                             EmuInfo::PipelineUpdate(report) => {
                                 app_state.pipeline_report = report;
                                 app_state.main_page_state.memory_inspector_state.fetch();
@@ -233,6 +244,7 @@ pub enum EmuState {
 
 pub enum EmuInfo {
     PipelineUpdate(EmuDynarecPipelineReport),
+    PipelineUpdateV2(PipelineV2Stage),
     FrequencyUpdate(f64),
     StateUpdate(EmuState),
     Fetch(FetchSummary),
@@ -391,7 +403,7 @@ async fn emu_task_v2(
         if !fetch.is_empty() {
             emu_info_tx.send_async(EmuInfo::FetchV2(fetch)).await?;
         }
-        if let PipelineV2::Init { .. } = pipeline {
+        if pipeline.is_init() {
             let cycles_elapsed = emu.get().cpu.d_clock as f64;
             let frequency = cycles_elapsed / elapsed.as_secs_f64();
             elapsed = Duration::new(0, 0);
@@ -400,12 +412,7 @@ async fn emu_task_v2(
                 .await?;
         }
         emu_info_tx
-            .send_async(EmuInfo::PipelineUpdate(EmuDynarecPipelineReport {
-                current: "N/A",
-                next: "N/A",
-                progress: 0,
-                elapsed: Duration::from_micros(1),
-            }))
+            .send_async(EmuInfo::PipelineUpdateV2(pipeline.stage()))
             .await?;
         Ok(pipeline)
     };
@@ -458,6 +465,7 @@ pub struct AppState {
     error: Option<color_eyre::Report>,
     emu: Option<Arc<RwLock<Emu>>>,
     pipeline_report: EmuDynarecPipelineReport,
+    pipeline_report_v2: PipelineV2Stage,
     frequency: Option<f64>,
 
     modeline_state: ModelineState,
@@ -506,7 +514,7 @@ impl Component for App {
                 }
             }
             Screen::Main => {
-                MainPage(self.0.prop(), &state.pipeline_report, state.frequency).handle_input(
+                MainPage(self.0.prop(), state.pipeline_report_v2, state.frequency).handle_input(
                     event,
                     &mut state.main_page_state,
                     area,
@@ -533,7 +541,7 @@ impl Component for App {
                     &mut state.first_time_setup_state,
                 )?;
             }
-            Screen::Main => MainPage(self.0.prop(), &state.pipeline_report, state.frequency)
+            Screen::Main => MainPage(self.0.prop(), state.pipeline_report_v2, state.frequency)
                 .render(area, buf, &mut state.main_page_state)?,
         }
 
@@ -556,11 +564,7 @@ pub enum MainPageFocus {
     OpsList,
 }
 
-pub struct MainPage<'a>(
-    FocusProp<MainPage<'a>>,
-    &'a EmuDynarecPipelineReport,
-    Option<f64>,
-);
+pub struct MainPage(FocusProp<MainPage>, PipelineV2Stage, Option<f64>);
 pub struct MainPageState {
     emu_state: Arc<EmuState>,
     emu: Option<Arc<RwLock<Emu>>>,
@@ -571,6 +575,7 @@ pub struct MainPageState {
     cpu_inspector_state: CpuInspectorState,
     action_state: ActionState,
     memory_inspector_state: MemoryInspectorState,
+    tty_state: TtyState,
 }
 
 pub struct OpsList(Arc<EmuState>, FocusProp<OpsList>);
@@ -752,16 +757,17 @@ impl Component for OpsList {
     }
 }
 
-impl<'a> Component for MainPage<'a> {
+impl Component for MainPage {
     type ComponentState = MainPageState;
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::ComponentState) -> Result<()> {
-        let [ops, mid, memory] = Layout::horizontal([
+        let [left, mid, memory] = Layout::horizontal([
             Constraint::Ratio(1, 3),
             Constraint::Ratio(1, 4),
             Constraint::Min(32),
         ])
         .areas(area);
+        let [ops, tty] = Layout::vertical([Constraint::Min(1), Constraint::Max(12)]).areas(left);
         let ops_focus = self.0.prop::<OpsList>();
         let ops_block = Block::bordered()
             .border_type(BorderType::Rounded)
@@ -807,6 +813,13 @@ impl<'a> Component for MainPage<'a> {
             buf,
             &mut state.cpu_inspector_state,
         )?;
+
+        let tty_block = Block::bordered()
+            .border_type(BorderType::Rounded)
+            .title("tty");
+        let tty_inner = tty_block.inner(tty);
+        tty_block.render(tty, buf);
+        Tty.render(tty_inner, buf, &mut state.tty_state)?;
 
         let actions_block = Block::bordered()
             .border_type(BorderType::Rounded)
@@ -863,6 +876,38 @@ impl<'a> Component for MainPage<'a> {
             &mut state.memory_inspector_state,
             area,
         )?;
+        Ok(())
+    }
+}
+
+pub struct Tty;
+pub struct TtyState {
+    output: CircularBuffer<256, Arc<str>>,
+    log_rx: Receiver<Arc<str>>,
+}
+
+impl Component for Tty {
+    type ComponentState = TtyState;
+    type ComponentSummary = ();
+
+    fn handle_input(
+        &mut self,
+        _: event::Event,
+        _: &mut Self::ComponentState,
+        _: Rect,
+    ) -> Result<Self::ComponentSummary> {
+        Ok(())
+    }
+
+    fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::ComponentState) -> Result<()> {
+        for line in state.log_rx.try_iter() {
+            state.output.push_back(line);
+        }
+        Widget::render(
+            List::new(state.output.iter().map(|line| Line::from(&**line))),
+            area,
+            buf,
+        );
         Ok(())
     }
 }
@@ -1168,7 +1213,8 @@ impl<'a> Component for Cop0Tab<'a> {
 
 pub struct Actions<'a>(
     &'a Sender<EmuCmd>,
-    &'a EmuDynarecPipelineReport,
+    // &'a EmuDynarecPipelineReport,
+    PipelineV2Stage,
     FocusProp<ActionsAddBreakpoint>,
     Option<f64>,
 );
@@ -1249,14 +1295,14 @@ impl<'a> Component for Actions<'a> {
         let [actions, report, stage_list] =
             Layout::vertical([Constraint::Max(6), Constraint::Max(3), Constraint::Max(6)])
                 .areas(area);
-        Paragraph::new(format!(
-            "<n>  next: {} 
+        Paragraph::new(
+            "<n>  next
             <r>  run 
             <ba> add breakpoint
             <bd> delete breakpoint
-            ",
-            self.1.next
-        ))
+            "
+            .to_string(),
+        )
         .wrap(Wrap { trim: true })
         .render(actions, buf);
 
@@ -1269,35 +1315,26 @@ impl<'a> Component for Actions<'a> {
         LineGauge::default()
             .block(
                 Block::new()
-                    .title(format!("Emu Stage :: {} @ {}", self.1.current, freq))
+                    .title(format!("Emu Stage :: {} @ {}", self.1, freq))
                     .title_style(Style::new().bold()),
             )
             .unfilled_style(Style::new().dark_gray())
             .filled_style(Style::new().green().on_black())
             .line_set(symbols::line::THICK)
-            .ratio(self.1.progress as f64 / { EmuDynarecPipeline::max_progress() as f64 })
+            .ratio(self.1 as u8 as f64 / { PipelineV2::COUNT.saturating_sub(1) as f64 })
             .render(line_area, buf);
-        Paragraph::new(format!("elapsed: {}us", self.1.elapsed.as_micros()))
-            .render(elapsed_area, buf);
 
-        let progress = [
-            "ready",
-            "fetched",
-            "try cache",
-            "emitted",
-            "called",
-            "cached",
-        ]
-        .into_iter()
-        .enumerate()
-        .map(|(i, state)| (i, format!(" - {}", state)))
-        .map(|(i, state)| {
-            Line::from(state).style(if i <= self.1.progress {
-                Style::new().white()
-            } else {
-                Style::new().dark_gray()
-            })
-        });
+        let progress = PipelineV2Stage::iter()
+            .skip(1)
+            .enumerate()
+            .map(|(i, state)| (i, format!(" - {}", state)))
+            .map(|(i, state)| {
+                Line::from(state).style(if i as u8 <= (self.1 as u8).saturating_sub(1) {
+                    Style::new().white()
+                } else {
+                    Style::new().dark_gray()
+                })
+            });
         Text::from_iter(progress).render(stage_list, buf);
 
         // TODO: break out into separate component
