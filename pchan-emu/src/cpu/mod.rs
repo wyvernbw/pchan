@@ -8,7 +8,7 @@ use crate::cpu::ops::OpCode;
 
 pub mod ops;
 
-#[derive(Default, derive_more::Debug, Clone)]
+#[derive(Default, derive_more::Debug, Clone, Hash)]
 #[repr(C)]
 pub struct Cpu {
     #[debug("{:#?}",
@@ -31,7 +31,7 @@ pub struct Cpu {
 
 macro_rules! coprocessor_definition {
     ($n:ident) => {
-        #[derive(derive_more::Debug, Clone)]
+        #[derive(derive_more::Debug, Clone, Hash)]
         #[repr(C)]
         pub struct $n {
             #[debug("{:#?}", reg.iter() .enumerate() .filter(|(_, x)| x != &&0) .map(|(i, x)|format!("${}={}", REG_STR[i], hex(*x))) .collect::<Vec<String>>())]

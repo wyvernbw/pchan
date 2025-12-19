@@ -58,6 +58,9 @@ pub struct Dynarec {
     asm: Assembler<Reloc>,
 }
 
+unsafe impl Send for Dynarec {}
+unsafe impl Sync for Dynarec {}
+
 impl Default for Dynarec {
     fn default() -> Self {
         let asm = Assembler::new_with_capacity(size_of::<u32>() * 256)

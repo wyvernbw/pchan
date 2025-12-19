@@ -42,6 +42,9 @@ pub struct JIT {
     pub func_table: FunctionTable,
 }
 
+unsafe impl Send for JIT {}
+unsafe impl Sync for JIT {}
+
 #[derive(derive_more::Debug, Default, Clone)]
 pub struct JitCache {
     pub fn_map: LUTMap<BlockFn>,

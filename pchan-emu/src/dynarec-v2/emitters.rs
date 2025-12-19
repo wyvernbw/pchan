@@ -39,6 +39,8 @@ use crate::cpu::ops::sb::*;
 use crate::cpu::ops::sh::*;
 use crate::cpu::ops::sll::*;
 use crate::cpu::ops::sllv::*;
+use crate::cpu::ops::sltiu::*;
+use crate::cpu::ops::sltu::*;
 use crate::cpu::ops::sra::*;
 use crate::cpu::ops::srav::*;
 use crate::cpu::ops::srl::*;
@@ -97,6 +99,7 @@ pub trait DynarecOp {
         0
     }
 
+    #[allow(clippy::useless_conversion)]
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary;
 
     fn boundary(&self) -> Boundary {
@@ -125,7 +128,6 @@ pub enum DecodedOpNew {
     SRAV(SRAV),
     JR(JR),
     JALR(JALR),
-    ADDIU(ADDIU),
     ADDU(ADDU),
     SUBU(SUBU),
     AND(AND),
@@ -138,12 +140,15 @@ pub enum DecodedOpNew {
     BLEZ(BLEZ),
     BGTZ(BGTZ),
     NOR(NOR),
+    SLTU(SLTU),
     BEQ(BEQ),
     BNE(BNE),
     HaltBlock(HaltBlock),
     SB(SB),
     SH(SH),
     SW(SW),
+    ADDIU(ADDIU),
+    SLTIU(SLTIU),
     ANDI(ANDI),
     ORI(ORI),
     XORI(XORI),
@@ -229,7 +234,7 @@ impl DecodedOpNew {
                 (0x0, _, _, 0x27) => Self::NOR(NOR::new(rd, rs, rt)),
                 (0x0, _, _, 0x28..=0x29) => Self::illegal(),
                 (0x0, _, _, 0x2A) => todo!("slt"),
-                (0x0, _, _, 0x2B) => todo!("sltu"),
+                (0x0, _, _, 0x2B) => Self::SLTU(SLTU::new(rd, rs, rt)),
                 (0x0, _, _, 0x2C..) => Self::illegal(),
                 (0x1, _, 0x0, _) => Self::BLTZ(BLTZ::new(rs, fields.imm16())),
                 (0x1, _, 0x1, _) => Self::BGEZ(BGEZ::new(rs, fields.imm16())),
@@ -244,7 +249,7 @@ impl DecodedOpNew {
                 (0x7, _, _, _) => Self::BGTZ(BGTZ::new(rs, fields.imm16())),
                 (0x8 | 0x9, _, _, _) => Self::ADDIU(ADDIU::new(rs, rt, fields.imm16())),
                 (0xA, _, _, _) => todo!("slti"),
-                (0xB, _, _, _) => todo!("sltiu"),
+                (0xB, _, _, _) => Self::SLTIU(SLTIU::new(rt, rs, fields.imm16())),
                 (0xC, _, _, _) => Self::ANDI(ANDI::new(rs, rt, fields.imm16())),
                 (0xD, _, _, _) => Self::ORI(ORI::new(rs, rt, fields.imm16())),
                 (0xE, _, _, _) => Self::XORI(XORI::new(rs, rt, fields.imm16())),
@@ -291,10 +296,10 @@ impl DynarecOp for ADDIU {
             return EmitSummary::default();
         }
 
-        let rt = ctx.dynarec.alloc_reg(self.rt);
-
         // $rs = $zero case
         if self.rs == 0 {
+            let rt = ctx.dynarec.alloc_reg(self.rt);
+
             #[cfg(target_arch = "aarch64")]
             dynasm!(
                 ctx.dynarec.asm
@@ -308,6 +313,7 @@ impl DynarecOp for ADDIU {
         }
 
         let rs = ctx.dynarec.emit_load_reg(self.rs);
+        let rt = ctx.dynarec.alloc_reg(self.rt);
 
         if (self.imm as u16) < 4096 {
             #[cfg(target_arch = "aarch64")]
@@ -337,8 +343,8 @@ impl DynarecOp for ADDIU {
 
         ctx.dynarec.mark_dirty(self.rt);
 
-        rs.restore(ctx.dynarec);
         rt.restore(ctx.dynarec);
+        rs.restore(ctx.dynarec);
 
         EmitSummary::default()
     }
@@ -784,9 +790,9 @@ fn emit_alu_reg(
     rt: u8,
     alu_op: impl Fn(&mut EmitCtx, AluRegs),
 ) -> EmitSummary {
-    let rda = ctx.dynarec.alloc_reg(rd);
     let rsa = ctx.dynarec.emit_load_reg(rs);
     let rta = ctx.dynarec.emit_load_reg(rt);
+    let rda = ctx.dynarec.alloc_reg(rd);
 
     #[cfg(target_arch = "aarch64")]
     dynasm!(
@@ -797,9 +803,9 @@ fn emit_alu_reg(
 
     ctx.dynarec.mark_dirty(rd);
 
+    rda.restore(ctx.dynarec);
     rta.restore(ctx.dynarec);
     rsa.restore(ctx.dynarec);
-    rda.restore(ctx.dynarec);
 
     EmitSummary::default()
 }
@@ -829,8 +835,8 @@ impl DynarecOp for SUBU {
         };
 
         if self.rt == 0 {
-            let rd = ctx.dynarec.alloc_reg(self.rd);
             ctx.dynarec.emit_load_temp_reg(self.rs, Reg::W(1));
+            let rd = ctx.dynarec.alloc_reg(self.rd);
 
             #[cfg(target_arch = "aarch64")]
             dynasm!(
@@ -966,8 +972,8 @@ impl DynarecOp for NOR {
             EitherZero::One(non_zero) => {
                 let target = self.rd;
                 let reg = non_zero.into();
-                let rd = ctx.dynarec.alloc_reg(target);
                 ctx.dynarec.emit_load_temp_reg(reg, Reg::W(1));
+                let rd = ctx.dynarec.alloc_reg(target);
                 dynasm!(
                     ctx.dynarec.asm
                     ; .arch aarch64
@@ -1140,8 +1146,8 @@ fn emit_shift_imm(
         return ctx.dynarec.emit_load_and_move_into(rd, rt);
     }
 
-    let rd = ctx.dynarec.alloc_reg(rd);
     let rt = ctx.dynarec.emit_load_reg(rt);
+    let rd = ctx.dynarec.alloc_reg(rd);
 
     emitter(
         ctx.dynarec,
@@ -1152,8 +1158,8 @@ fn emit_shift_imm(
         },
     );
 
-    rt.restore(ctx.dynarec);
     rd.restore(ctx.dynarec);
+    rt.restore(ctx.dynarec);
 
     EmitSummary::default()
 }
@@ -1235,8 +1241,8 @@ fn emit_alu_imm(
     imm: i16,
     alu_op: impl Fn(&mut EmitCtx, AluImm),
 ) -> EmitSummary {
-    let rta = ctx.dynarec.alloc_reg(rt);
     let rsa = ctx.dynarec.emit_load_reg(rs);
+    let rta = ctx.dynarec.alloc_reg(rt);
 
     #[cfg(target_arch = "aarch64")]
     dynasm!(
@@ -1247,8 +1253,8 @@ fn emit_alu_imm(
 
     ctx.dynarec.mark_dirty(rt);
 
-    rsa.restore(ctx.dynarec);
     rta.restore(ctx.dynarec);
+    rsa.restore(ctx.dynarec);
 
     EmitSummary::default()
 }
@@ -2182,4 +2188,48 @@ fn test_store_loop() -> color_eyre::Result<()> {
     tracing::info!(?emu.cpu);
 
     Ok(())
+}
+
+impl DynarecOp for SLTU {
+    #[allow(clippy::useless_conversion)]
+    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+        let rs = ctx.dynarec.emit_load_reg(self.rs);
+        let rt = ctx.dynarec.emit_load_reg(self.rt);
+        let rd = ctx.dynarec.alloc_reg(self.rd);
+
+        #[cfg(target_arch = "aarch64")]
+        dynasm!(
+            ctx.dynarec.asm
+            ; .arch aarch64
+            ; cmp W(*rs), W(*rt)
+            ; cset W(*rd), lo
+        );
+
+        rd.restore(ctx.dynarec);
+        rt.restore(ctx.dynarec);
+        rs.restore(ctx.dynarec);
+
+        EmitSummary::default()
+    }
+}
+
+impl DynarecOp for SLTIU {
+    #[allow(clippy::useless_conversion)]
+    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+        let rt = ctx.dynarec.emit_load_reg(self.rt);
+        let rs = ctx.dynarec.emit_load_reg(self.rs);
+
+        #[cfg(target_arch = "aarch64")]
+        dynasm!(
+            ctx.dynarec.asm
+            ; .arch aarch64
+            ; cmp WSP(*rs), ext::zero(self.imm)
+            ; cset W(*rt), lo
+        );
+
+        rs.restore(ctx.dynarec);
+        rt.restore(ctx.dynarec);
+
+        EmitSummary::default()
+    }
 }
