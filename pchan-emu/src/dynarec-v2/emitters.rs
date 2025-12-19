@@ -309,12 +309,31 @@ impl DynarecOp for ADDIU {
 
         let rs = ctx.dynarec.emit_load_reg(self.rs);
 
-        #[cfg(target_arch = "aarch64")]
-        dynasm!(
-            ctx.dynarec.asm
-            ; .arch aarch64
-            ; add WSP(*rt), WSP(*rs), self.imm as _
-        );
+        if (self.imm as u16) < 4096 {
+            #[cfg(target_arch = "aarch64")]
+            dynasm!(
+                ctx.dynarec.asm
+                ; .arch aarch64
+                ; add WSP(*rt), WSP(*rs), self.imm as _
+            );
+        } else if self.imm < 0 {
+            #[cfg(target_arch = "aarch64")]
+            dynasm!(
+                ctx.dynarec.asm
+                ; .arch aarch64
+                ; movz w1, ext::zero(self.imm)    // Load as unsigned
+                ; sxth w1, w1                   // Sign-extend to 32-bit
+                ; add WSP(*rt), WSP(*rs), w1
+            );
+        } else {
+            #[cfg(target_arch = "aarch64")]
+            dynasm!(
+                ctx.dynarec.asm
+                ; .arch aarch64
+                ; mov w1, self.imm as _
+                ; add WSP(*rt), WSP(*rs), w1
+            );
+        }
 
         ctx.dynarec.mark_dirty(self.rt);
 
