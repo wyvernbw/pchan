@@ -6,48 +6,27 @@
 #![feature(test)]
 #![feature(mut_ref)]
 #![feature(arbitrary_self_types_pointers)]
-#![feature(impl_trait_in_fn_trait_return)]
 #![feature(slice_swap_unchecked)]
-#![feature(if_let_guard)]
 #![feature(random)]
 #![feature(stmt_expr_attributes)]
-#![feature(ptr_as_ref_unchecked)]
-#![feature(const_for)]
-#![feature(assert_matches)]
-#![feature(slice_concat_trait)]
-#![feature(slice_as_array)]
 #![feature(const_clone)]
 #![feature(const_default)]
 #![feature(derive_const)]
-#![feature(hash_map_macro)]
-#![feature(iter_map_windows)]
-#![feature(iterator_try_collect)]
 #![feature(const_convert)]
-#![feature(explicit_tail_calls)]
 #![feature(associated_type_defaults)]
-#![feature(trait_alias)]
 #![feature(unboxed_closures)]
 #![feature(fn_traits)]
 #![feature(const_ops)]
-#![feature(impl_trait_in_assoc_type)]
 #![feature(const_trait_impl)]
 #![feature(debug_closure_helpers)]
 #![feature(iter_intersperse)]
 #![feature(generic_const_exprs)]
 #![feature(portable_simd)]
-#![feature(iter_collect_into)]
-#![feature(custom_inner_attributes)]
-#![feature(iter_array_chunks)]
 #![feature(try_blocks)]
-#![feature(box_as_ptr)]
 // allow unused variables in tests to supress the setup tracing warnings
 #![cfg_attr(test, allow(unused_variables))]
 
-use std::{
-    collections::HashMap,
-    mem::offset_of,
-    simd::{LaneCount, SimdElement, SupportedLaneCount},
-};
+use std::{collections::HashMap, mem::offset_of};
 
 use crate::{
     bootloader::Bootloader,
@@ -56,7 +35,7 @@ use crate::{
     dynarec_v2::DynarecBlock,
     io::tty::Tty,
     jit::{JitCache, LUTMap},
-    memory::{Chunk, Memory},
+    memory::Memory,
 };
 
 pub mod cranelift_bs {
@@ -137,10 +116,7 @@ impl Emu {
         self.mem.write(&self.cpu, address, value);
     }
 
-    pub fn write_many<T: SimdElement>(&mut self, address: u32, values: &[T])
-    where
-        LaneCount<{ Chunk::<T>::LANE_COUNT }>: SupportedLaneCount,
-    {
+    pub fn write_many<T: Copy>(&mut self, address: u32, values: &[T]) {
         self.mem.write_many(&self.cpu, address, values);
     }
     pub fn reg_offset(reg: u8) -> usize {

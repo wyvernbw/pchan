@@ -1197,18 +1197,6 @@ checksum = "1d674e81391d1e1ab681a28d99df07927c6d4aa5b027d7da16ba32d1d21ecd99"
 
 [[package]]
 name = "flume"
-version = "0.11.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da0e4dd2a88388a1f4ccc7c9ce104604dab68d9f408dc34cd45823d5a9069095"
-dependencies = [
- "futures-core",
- "futures-sink",
- "nanorand",
- "spin",
-]
-
-[[package]]
-name = "flume"
 version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5e139bc46ca777eb5efaf62df0ab8cc5fd400866427e56c68b22e414e53bd3be"
@@ -1732,15 +1720,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bc0287524726960e07b119cebd01678f852f147742ae0d925e6a520dca956126"
 
 [[package]]
-name = "nanorand"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a51313c5820b0b02bd422f4b44776fbf47961755c74ce64afc73bfad10226c3"
-dependencies = [
- "getrandom 0.2.16",
-]
-
-[[package]]
 name = "nu-ansi-term"
 version = "0.50.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1854,11 +1833,12 @@ dependencies = [
 name = "pchan-debug-tui"
 version = "0.1.0"
 dependencies = [
+ "circular-buffer",
  "color-eyre",
  "confy",
  "const-hex",
  "derive_more",
- "flume 0.11.1",
+ "flume",
  "pchan-emu",
  "pchan-macros",
  "pchan-utils",
@@ -1892,7 +1872,7 @@ dependencies = [
  "dynasm",
  "dynasmrt",
  "enum_dispatch",
- "flume 0.12.0",
+ "flume",
  "inquire",
  "itertools 0.14.0",
  "panic-message",

@@ -140,11 +140,6 @@ impl const Extend<Zero> for i16 {
     }
 }
 
-pub struct Chunk<El>(PhantomData<El>);
-impl<El> Chunk<El> {
-    pub const LANE_COUNT: usize = MAX_SIMD_WIDTH / size_of::<El>();
-}
-
 impl Memory {
     pub fn read<T, E>(&self, cpu: &Cpu, address: u32) -> T::Out
     where
@@ -160,27 +155,10 @@ impl Memory {
         }
     }
 
-    pub fn write_many<T: SimdElement>(&mut self, cpu: &Cpu, address: u32, values: &[T])
-    where
-        LaneCount<{ Chunk::<T>::LANE_COUNT }>: SupportedLaneCount,
-    {
-        let data = values.chunks_exact(Chunk::<T>::LANE_COUNT);
-        let remaining = data.remainder();
-        let data = data.map(|data| Simd::<T, { Chunk::<T>::LANE_COUNT }>::from_slice(data));
-
-        let mut ptr = 0;
-        for el in data {
-            self.write(cpu, address + ptr, el);
-
-            let offset = size_of_val(&el) as u32;
-            ptr += offset;
-        }
-
-        for el in remaining.iter().cloned() {
-            self.write(cpu, address + ptr, el);
-
-            let offset = size_of_val(&el) as u32;
-            ptr += offset;
+    pub fn write_many<T: Copy>(&mut self, cpu: &Cpu, mut address: u32, values: &[T]) {
+        for value in values.iter().copied() {
+            self.write(cpu, address, value);
+            address += size_of::<T>() as u32;
         }
     }
 }
