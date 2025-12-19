@@ -10,7 +10,7 @@ use circular_buffer::CircularBuffer;
 use color_eyre::eyre::{Result, eyre};
 use flume::{Receiver, Sender};
 use pchan_emu::cpu::ops::{BoundaryType, Op};
-use pchan_emu::cpu::reg_str;
+use pchan_emu::cpu::{Cpu, reg_str};
 use pchan_emu::dynarec::FetchSummary;
 use pchan_emu::dynarec::pipeline::{EmuDynarecPipeline, EmuDynarecPipelineReport};
 use pchan_emu::dynarec_v2::emitters::DynarecOp;
@@ -27,7 +27,7 @@ use ratatui::widgets::{
     TableState, Tabs, Wrap,
 };
 use ratatui::{DefaultTerminal, crossterm::event};
-use smol::LocalExecutor;
+use smol::{Executor, LocalExecutor};
 use strum::{EnumCount, IntoEnumIterator};
 use tui_input::Input;
 use tui_input::backend::crossterm::EventHandler;
@@ -37,7 +37,7 @@ use crate::app::component::Component;
 use crate::app::first_time_setup::{FirstTimeSetup, FirstTimeSetupState};
 use crate::app::focus::{Focus, FocusProp, FocusProvider};
 use crate::app::modeline::{Command, Mode, Modeline, ModelineState};
-use crate::utils::InsertBetweenExt;
+use crate::utils::{Cached, InsertBetweenExt};
 
 pub mod component;
 pub mod first_time_setup;
@@ -90,10 +90,12 @@ macro_rules! key {
 }
 
 pub fn run(config: AppConfig, mut terminal: DefaultTerminal) -> Result<()> {
-    let exec = LocalExecutor::new();
+    // let exec = LocalExecutor::new();
+    let exec = Executor::new();
 
     let mut emu = Emu::default();
     let log_rx = emu.tty.set_channeled();
+    let cpu_state = Cached::new(emu.cpu.clone());
     let emu = Arc::new(RwLock::new(emu));
     let (config_tx, config_rx) = flume::unbounded();
     let (emu_cmd_tx, emu_cmd_rx) = flume::unbounded();
@@ -132,6 +134,7 @@ pub fn run(config: AppConfig, mut terminal: DefaultTerminal) -> Result<()> {
                 emu_state: EmuState::Uninitialized.into(),
                 cpu_inspector_state: CpuInspectorState {
                     emu: None,
+                    cpu_state,
                     current_tab: CpuInspectorTab::Cpu,
                     cpu_tab_state: CpuTabState {
                         table_state: TableState::default(),
@@ -393,12 +396,13 @@ async fn emu_task_v2(
     let mut running = false;
     let mut elapsed = Duration::new(0, 0);
     let mut step_jit = async |mut pipeline: PipelineV2| -> color_eyre::Result<PipelineV2> {
-        {
-            let mut emu = emu.get_mut();
-            let now = Instant::now();
+        let new_emu = emu.clone();
+        let pipeline = smol::unblock(move || -> color_eyre::Result<PipelineV2> {
+            let mut emu = new_emu.get_mut();
             pipeline = pipeline.step(&mut emu)?;
-            elapsed += now.elapsed();
-        }
+            Ok(pipeline)
+        })
+        .await?;
         let fetch = dynarec_v2::FETCH_CHANNEL.1.try_iter().collect::<Vec<_>>();
         if !fetch.is_empty() {
             emu_info_tx.send_async(EmuInfo::FetchV2(fetch)).await?;
@@ -915,6 +919,7 @@ impl Component for Tty {
 pub struct CpuInspector(FocusProp<Self>);
 pub struct CpuInspectorState {
     emu: Option<Arc<RwLock<Emu>>>,
+    cpu_state: Cached<Cpu>,
     current_tab: CpuInspectorTab,
     cpu_tab_state: CpuTabState,
     cop0_tab_state: Cop0TabState,
@@ -970,10 +975,10 @@ impl Component for CpuInspector {
         };
         match state.current_tab {
             CpuInspectorTab::Cpu => {
-                CpuTab(emu).handle_input(event, &mut state.cpu_tab_state, area)?;
+                CpuTab(&state.cpu_state).handle_input(event, &mut state.cpu_tab_state, area)?;
             }
             CpuInspectorTab::Cop0 => {
-                Cop0Tab(emu).handle_input(event, &mut state.cop0_tab_state, area)?
+                Cop0Tab(&state.cpu_state).handle_input(event, &mut state.cop0_tab_state, area)?
             }
             CpuInspectorTab::Gte => {}
         }
@@ -994,11 +999,14 @@ impl Component for CpuInspector {
                 return Ok(());
             }
         };
+        if let Ok(emu) = emu.try_read() {
+            state.cpu_state.update(&emu.cpu);
+        }
 
         let [summary_area, tabs_area] =
             Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(area);
 
-        Paragraph::new(format!("PC: 0x{:08x}", emu.get().cpu.pc)).render(summary_area, buf);
+        Paragraph::new(format!("PC: 0x{:08x}", state.cpu_state.pc)).render(summary_area, buf);
 
         let [tabs_area, tabs_inner] =
             Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(tabs_area);
@@ -1010,10 +1018,10 @@ impl Component for CpuInspector {
             .render(tabs_area, buf);
         match state.current_tab {
             CpuInspectorTab::Cpu => {
-                CpuTab(emu).render(tabs_inner, buf, &mut state.cpu_tab_state)?
+                CpuTab(&state.cpu_state).render(tabs_inner, buf, &mut state.cpu_tab_state)?
             }
             CpuInspectorTab::Cop0 => {
-                Cop0Tab(emu).render(tabs_inner, buf, &mut state.cop0_tab_state)?
+                Cop0Tab(&state.cpu_state).render(tabs_inner, buf, &mut state.cop0_tab_state)?
             }
             CpuInspectorTab::Gte => {}
         }
@@ -1042,7 +1050,7 @@ impl CpuInspectorTab {
     }
 }
 
-pub struct CpuTab<'a>(&'a RwLock<Emu>);
+pub struct CpuTab<'a>(&'a Cached<Cpu>);
 pub struct CpuTabState {
     table_state: TableState,
     show_zero: bool,
@@ -1074,8 +1082,7 @@ impl<'a> Component for CpuTab<'a> {
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::ComponentState) -> Result<()> {
         let rows = {
-            let emu = self.0.get();
-            emu.cpu
+            self.0
                 .gpr
                 .iter()
                 .enumerate()
@@ -1125,7 +1132,7 @@ impl<'a> Component for CpuTab<'a> {
     }
 }
 
-pub struct Cop0Tab<'a>(&'a RwLock<Emu>);
+pub struct Cop0Tab<'a>(&'a Cached<Cpu>);
 pub struct Cop0TabState {
     table_state: TableState,
     show_zero: bool,
@@ -1159,8 +1166,7 @@ impl<'a> Component for Cop0Tab<'a> {
         let [table, value] =
             Layout::vertical([Constraint::Min(2), Constraint::Length(3)]).areas(area);
         let rows = {
-            let emu = self.0.get();
-            emu.cpu
+            self.0
                 .cop0
                 .reg
                 .iter()
@@ -1396,7 +1402,9 @@ impl MemoryInspectorState {
             return;
         };
 
-        let emu = &self.emu.get();
+        let Ok(emu) = &self.emu.try_read() else {
+            return;
+        };
 
         self.loaded.clear();
         (self.loaded_address..)
