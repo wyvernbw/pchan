@@ -6,20 +6,21 @@ use std::{
 
 use thiserror::Error;
 
+use crate::{Bus, io::IO};
 use crate::{
-    cpu::Cpu,
-    memory::{Memory, buffer, from_kb, kb},
+    Emu,
+    memory::{buffer, from_kb, kb},
 };
 
 #[derive(derive_more::Debug, Clone)]
-pub struct Bootloader {
+pub struct BootloaderState {
     bios_path: PathBuf,
 }
 
-impl Default for Bootloader {
+impl Default for BootloaderState {
     fn default() -> Self {
         let bios_path = std::env::var("PCHAN_BIOS").unwrap_or("./SCPH1001.BIN".to_owned());
-        Bootloader {
+        BootloaderState {
             bios_path: bios_path.into(),
         }
     }
@@ -33,22 +34,24 @@ pub enum BootError {
     BiosReadError(std::io::Error),
 }
 
-impl Bootloader {
-    pub fn set_bios_path(&mut self, path: impl AsRef<Path>) {
-        self.bios_path = path.as_ref().to_path_buf();
+pub trait Bootloader: Bus + IO {
+    fn set_bios_path(&mut self, path: impl AsRef<Path>) {
+        self.bootloader_mut().bios_path = path.as_ref().to_path_buf();
     }
-    pub fn load_bios(&self, mem: &mut Memory, cpu: &Cpu) -> Result<(), BootError> {
+    fn load_bios(&mut self) -> Result<(), BootError> {
         let mut bios_file =
-            fs::File::open(&self.bios_path).map_err(BootError::BiosFileOpenError)?;
+            fs::File::open(&self.bootloader().bios_path).map_err(BootError::BiosFileOpenError)?;
         let mut bios = buffer(kb(524));
         let _ = bios_file
             .read(&mut bios)
             .map_err(BootError::BiosReadError)?;
         let bios_slice = &bios[..kb(512)];
 
-        mem.write_many(cpu, 0xBFC0_0000, bios_slice);
+        self.write_many(0xBFC0_0000, bios_slice);
         tracing::info!("loaded bios: {}kb", from_kb(bios_slice.len()));
 
         Ok(())
     }
 }
+
+impl Bootloader for Emu {}

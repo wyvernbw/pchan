@@ -130,10 +130,6 @@ impl Emu {
 
 #[bon]
 impl Emu {
-    pub fn load_bios(&mut self) -> color_eyre::Result<()> {
-        self.boot.load_bios(&mut self.mem, &self.cpu)?;
-        Ok(())
-    }
     pub fn jump_to_bios(&mut self) {
         self.cpu.jump_to_bios();
     }

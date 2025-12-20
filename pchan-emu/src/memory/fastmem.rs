@@ -1,12 +1,8 @@
 use std::sync::LazyLock;
 
-use pchan_utils::hex;
-use tracing::{Level, instrument};
-
 use crate::{
-    Emu,
-    cpu::Cpu,
-    memory::{MEM_MAP, Memory, ext, kb},
+    Bus, Emu,
+    memory::{MEM_MAP, kb},
 };
 
 const PAGE_COUNT: usize = 0x10000;
@@ -78,305 +74,61 @@ fn generate_page_tables() -> Lut {
     }
 }
 
-impl Memory {
-    #[inline(always)]
-    pub fn util_fast_map_address(address: u32) -> Option<u32> {
-        let page = address >> 16;
-        let offset = address & 0xFFFF;
-        let lut_ptr = LUT.read[page as usize];
-        lut_ptr.map(|region_ptr| region_ptr + offset)
-    }
-    /// # Safety
-    ///
-    /// this is never safe, live fast die young
-    #[inline(always)]
-    pub unsafe fn read_raw<T: Copy>(&self, cpu: &Cpu, address: u32) -> T {
+#[inline(always)]
+pub fn util_fast_map_address(address: u32) -> Option<u32> {
+    let page = address >> 16;
+    let offset = address & 0xFFFF;
+    let lut_ptr = LUT.read[page as usize];
+    lut_ptr.map(|region_ptr| region_ptr + offset)
+}
+
+pub type FastmemResult<T> = Result<T, ()>;
+
+pub trait Fastmem: Bus {
+    fn read<T: Copy>(&self, address: u32) -> FastmemResult<T>;
+    fn write<T: Copy>(&mut self, address: u32, value: T) -> FastmemResult<()>;
+}
+
+impl Fastmem for Emu {
+    fn read<T: Copy>(&self, address: u32) -> FastmemResult<T> {
         let page = address >> 16;
         let offset = address & 0xFFFF;
 
         let lut_ptr = LUT.read[page as usize];
-        let mem = self.buf.as_ptr();
+        let mem = self.mem().buf.as_ptr();
 
         match lut_ptr {
             // fastmem
             Some(region_ptr) => unsafe {
                 let ptr = mem.add(region_ptr as usize).add(offset as usize);
-                std::ptr::read(ptr as *const T)
+                Ok(std::ptr::read(ptr as *const T))
             },
             // memcheck
-            None => {
-                let _span = tracing::trace_span!("memcheck").entered();
-                let address = address & 0x1fff_ffff;
-                match address {
-                    0xfffe0000.. => {
-                        let ptr = mem
-                            .wrapping_add(offset as usize)
-                            .wrapping_add(MEM_MAP.cache_control);
-                        // tracing::trace!("read in cache control");
-                        unsafe { *(ptr as *const T) }
-                    }
-                    0x1f801000..0x1f803000 => {
-                        let ptr = mem.wrapping_add(offset as usize).wrapping_add(MEM_MAP.io);
-                        match address {
-                            0x1f801800..0x1f801804 => {
-                                todo!("read from cdrom mapped memory");
-                            }
-                            0x1f801810..=0x1f801814 => {
-                                todo!("read from gpu mapped memory");
-                            }
-                            0x1f801100..=0x1f801108
-                            | 0x1f801110..=0x1f801118
-                            | 0x1f801120..=0x1f801128 => {
-                                tracing::trace!("read to timer registers");
-                                unsafe { *(ptr as *const T) }
-                            }
-                            _ => unsafe {
-                                tracing::error!("read from unsupported io mapped region");
-                                *(ptr as *const T)
-                            },
-                        }
-                    }
-
-                    _ => {
-                        // panic!("unsupported region for {}!", hex(address));
-                        unsafe { std::mem::zeroed() }
-                    }
-                }
-            }
+            None => Err(Memcheck),
         }
     }
 
-    /// # Safety
-    ///
-    /// this is never safe, live fast die young
-    #[unsafe(no_mangle)]
-    #[instrument(level = Level::TRACE, skip(cpu, self, address), fields(address = %hex(address), isc = cpu.isc()))]
-    pub unsafe extern "C-unwind" fn read32(&self, cpu: &Cpu, address: u32) -> i32 {
-        unsafe { self.read_raw::<i32>(cpu, address) }
-    }
-
-    /// # Safety
-    ///
-    /// this is never safe, live fast die young
-    #[unsafe(no_mangle)]
-    #[instrument(level = Level::TRACE, skip(self, address, cpu), fields(address = %hex(address), isc = cpu.isc()))]
-    pub unsafe extern "C-unwind" fn readi16(&self, cpu: &Cpu, address: u32) -> i32 {
-        unsafe { self.read_raw::<i16>(cpu, address) as i32 }
-    }
-
-    /// # Safety
-    ///
-    /// this is never safe, live fast die young
-    #[unsafe(no_mangle)]
-    #[instrument(level = Level::TRACE, skip(self, address, cpu), fields(address = %hex(address), isc = cpu.isc()))]
-    pub unsafe extern "C-unwind" fn readi8(&self, cpu: &Cpu, address: u32) -> i32 {
-        unsafe { self.read_raw::<i8>(cpu, address) as i32 }
-    }
-
-    /// # Safety
-    ///
-    /// this is never safe, live fast die young
-    #[unsafe(no_mangle)]
-    #[instrument(level = Level::TRACE, skip(self, address, cpu), fields(address = %hex(address), isc = cpu.isc()))]
-    pub unsafe extern "C-unwind" fn readu16(&self, cpu: &Cpu, address: u32) -> i32 {
-        unsafe { self.read_raw::<u16>(cpu, address) as u32 as i32 }
-    }
-
-    /// # Safety
-    ///
-    /// this is never safe, live fast die young
-    #[unsafe(no_mangle)]
-    #[instrument(level = Level::TRACE, skip(self, address, cpu), fields(address = %hex(address), isc = cpu.isc()))]
-    pub unsafe extern "C-unwind" fn readu8(&self, cpu: &Cpu, address: u32) -> i32 {
-        unsafe { self.read_raw::<u8>(cpu, address) as u32 as i32 }
-    }
-}
-
-impl Memory {
-    /// # SAFETY
-    pub unsafe fn write_impl<T>(ptr: *mut u8, value: T) {
-        let ptr = ptr as *mut T;
-
-        unsafe {
-            std::ptr::write(ptr, value);
-        }
-    }
-    /// # write
-    ///
-    /// aligned write generic over T.
-    /// checks for alignment against T itself, so simd instructions are valid.
-    ///
-    /// # SAFETY
-    ///
-    /// here be segfaults... should be fine tho
-    #[inline(always)]
-    pub unsafe fn write_raw<T: Copy>(&mut self, cpu: &Cpu, address: u32, value: T) {
+    fn write<T: Copy>(&mut self, address: u32, value: T) -> FastmemResult<()> {
         // FIXME: cache isolation check on fast path is stupid
         // also not all addresses are cached, so this is straight wrong
-        if cpu.isc() {
-            return;
+        if self.cpu().isc() {
+            return Ok(());
         }
 
         let page = address >> 16;
         let offset = address & 0x0000_FFFF;
 
         let lut_ptr = LUT.read[page as usize];
-        let mem = self.buf.as_mut_ptr();
+        let mem = self.mem_mut().buf.as_mut_ptr();
 
-        match lut_ptr {
-            // fastmem
-            Some(region_ptr) => unsafe {
+        if let Some(region_ptr) = lut_ptr {
+            unsafe {
                 let ptr = mem.add(region_ptr as usize + offset as usize);
-                Memory::write_impl(ptr, value);
-            },
-            // memcheck
-            None => {
-                let _span = tracing::trace_span!("memcheck").entered();
-                let address = address & 0x1fff_ffff;
-                match address {
-                    0x1ffe0000.. => {
-                        let ptr = mem
-                            .wrapping_add(offset as usize)
-                            .wrapping_add(MEM_MAP.cache_control);
-                        unsafe {
-                            Memory::write_impl(ptr, value);
-                        };
-                        Memory::write_to_cache_control(address, value);
-                    }
-                    0x1f801000..0x1f803000 => {
-                        let ptr = mem.wrapping_add(offset as usize).wrapping_add(MEM_MAP.io);
-
-                        match address {
-                            0x1F801070 => {
-                                // I_STAT
-                                debug_assert_eq!(size_of::<T>(), 4);
-                                unsafe {
-                                    Memory::write_impl(ptr, value);
-                                }
-                            }
-
-                            0x1F801074 => {
-                                // I_MASK
-                                unsafe {
-                                    Memory::write_impl(ptr, value);
-                                }
-                                // Maybe check if any pending interrupts should now fire
-                            }
-
-                            0x1f801800..0x1f801804 => {
-                                todo!("write to cdrom mapped memory")
-                            }
-
-                            0x1f801810..=0x1f801814 => {
-                                todo!("write to gpu mapped memory");
-                            }
-
-                            _ => unsafe {
-                                Memory::write_impl(ptr, value);
-                            },
-                        }
-                    }
-                    _ => {
-                        // panic!("unsupported region!");
-                    }
-                }
+                std::ptr::write(ptr as *mut _, value);
             }
+            Ok(())
+        } else {
+            Err(Memcheck)
         }
-    }
-
-    fn write_to_cache_control<T>(address: u32, _value: T) {
-        match address {
-            0xfffe_0130 => {
-                tracing::trace!("side effect");
-            }
-            _ => {
-                // tracing::error!("unsupported cache control address");
-            }
-        }
-    }
-
-    /// # Safety
-    ///
-    /// this is never safe, live fast die young
-    #[unsafe(no_mangle)]
-    #[instrument(level = Level::TRACE, skip(self, address, cpu), fields(address = %hex(address), value = %hex(value), isc = cpu.isc()))]
-    pub unsafe extern "C-unwind" fn write32(&mut self, cpu: &Cpu, address: u32, value: i32) {
-        unsafe { self.write_raw(cpu, address, value) }
-    }
-
-    /// # Safety
-    ///
-    /// this is never safe, live fast die young
-    #[unsafe(no_mangle)]
-    #[instrument(level = Level::TRACE, skip(self, address, cpu), fields(address = %hex(address), value = %hex(value), isc = cpu.isc()))]
-    pub unsafe extern "C-unwind" fn write16(&mut self, cpu: &Cpu, address: u32, value: i32) {
-        unsafe { self.write_raw(cpu, address, value as i16) }
-    }
-
-    /// # Safety
-    ///
-    /// this is never safe, live fast die young
-    #[unsafe(no_mangle)]
-    #[instrument(level = Level::TRACE, skip(self, address, cpu), fields(address = %hex(address), value = %hex(value), isc = cpu.isc()))]
-    pub unsafe extern "C-unwind" fn write8(&mut self, cpu: &Cpu, address: u32, value: i32) {
-        unsafe { self.write_raw(cpu, address, value as i8) }
-    }
-}
-
-impl Emu {
-    #[unsafe(no_mangle)]
-    #[pchan_macros::instrument_write]
-    pub unsafe extern "C" fn write8v2(self: *mut Emu, address: u32, value: i32) {
-        tracing::trace!("write");
-        unsafe { (*self).write(address, value as i8) }
-    }
-
-    #[unsafe(no_mangle)]
-    #[pchan_macros::instrument_write]
-    pub unsafe extern "C" fn write16v2(self: *mut Emu, address: u32, value: i32) {
-        tracing::trace!("write");
-        unsafe { (*self).write(address, value as i16) }
-    }
-
-    #[unsafe(no_mangle)]
-    #[pchan_macros::instrument_write]
-    pub unsafe extern "C" fn write32v2(self: *mut Emu, address: u32, value: i32) {
-        tracing::trace!("write");
-        unsafe { (*self).write(address, value) }
-    }
-
-    /// # Safety
-    #[unsafe(no_mangle)]
-    #[instrument(level = Level::TRACE, skip(self, address), fields(address = %hex(address)))]
-    pub unsafe extern "C" fn readi8v2(self: *mut Emu, address: u32) -> i32 {
-        unsafe { (*self).read::<i8, ext::Sign>(address) }
-    }
-
-    /// # Safety
-    #[unsafe(no_mangle)]
-    #[instrument(level = Level::TRACE, skip(self, address), fields(address = %hex(address)))]
-    pub unsafe extern "C" fn readu8v2(self: *mut Emu, address: u32) -> u32 {
-        unsafe { (*self).read::<u8, ext::Zero>(address) }
-    }
-
-    /// # Safety
-    #[unsafe(no_mangle)]
-    #[instrument(level = Level::TRACE, skip(self, address), fields(address = %hex(address)))]
-    pub unsafe extern "C" fn readi16v2(self: *mut Emu, address: u32) -> i32 {
-        unsafe { (*self).read::<i16, ext::Sign>(address) }
-    }
-
-    /// # Safety
-    #[unsafe(no_mangle)]
-    #[instrument(level = Level::TRACE, skip(self, address), fields(address = %hex(address)))]
-    pub unsafe extern "C" fn readu16v2(self: *mut Emu, address: u32) -> u32 {
-        unsafe { (*self).read::<u16, ext::Zero>(address) }
-    }
-
-    /// # Safety
-    #[unsafe(no_mangle)]
-    #[instrument(level = Level::TRACE, skip(self, address), fields(address = %hex(address)))]
-    pub unsafe extern "C" fn read32v2(self: *mut Emu, address: u32) -> i32 {
-        unsafe { (*self).read::<i32, ext::NoExt>(address) }
     }
 }

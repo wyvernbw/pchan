@@ -118,6 +118,7 @@ mod tests {
 
     use crate::cpu::program;
     use crate::dynarec::prelude::*;
+    use crate::io::IO;
     use crate::jit::JIT;
     use crate::test_utils::jit;
     use crate::{Emu, test_utils::emulator};

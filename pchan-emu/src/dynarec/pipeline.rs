@@ -301,6 +301,7 @@ pub mod tests {
 
     use crate::{
         Emu,
+        bootloader::Bootloader,
         dynarec::{TryCacheSummary, pipeline::EmuDynarecPipeline},
         jit::{JIT, hash_ops},
     };

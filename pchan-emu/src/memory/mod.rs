@@ -1,12 +1,3 @@
-use std::{
-    marker::PhantomData,
-    simd::{LaneCount, Simd, SimdElement, SupportedLaneCount},
-};
-
-use pchan_utils::MAX_SIMD_WIDTH;
-
-use crate::cpu::Cpu;
-
 pub mod fastmem;
 
 pub const fn kb(value: usize) -> usize {
@@ -137,29 +128,6 @@ impl const Extend<Zero> for i16 {
     type Out = u32;
     fn ext(self) -> Self::Out {
         self as u16 as u32
-    }
-}
-
-impl Memory {
-    pub fn read<T, E>(&self, cpu: &Cpu, address: u32) -> T::Out
-    where
-        T: Extend<E> + Copy,
-    {
-        let read = unsafe { self.read_raw(cpu, address) };
-        T::ext(read)
-    }
-
-    pub fn write<T: Copy>(&mut self, cpu: &Cpu, address: u32, value: T) {
-        unsafe {
-            self.write_raw(cpu, address, value);
-        }
-    }
-
-    pub fn write_many<T: Copy>(&mut self, cpu: &Cpu, mut address: u32, values: &[T]) {
-        for value in values.iter().copied() {
-            self.write(cpu, address, value);
-            address += size_of::<T>() as u32;
-        }
     }
 }
 

@@ -1,6 +1,7 @@
 use std::ops::RangeInclusive;
 
 use crate::{
+    Bus, Emu,
     cpu::{Cpu, Exception},
     io::IO,
     memory::{Memory, ext},
@@ -71,59 +72,55 @@ pub struct AdvanceTimerSummary {
     timer_0_new: u16,
 }
 
-impl IO {
-    pub fn run_timer_pipeline(cpu: &mut Cpu, mem: &mut Memory) {
-        let adv = IO::advance_timers(cpu, mem);
-        IO::trigger_timer_updates(cpu, mem, adv);
+pub trait Timers: Bus + IO {
+    fn run_timer_pipeline(&mut self) {
+        let adv = self.advance_timers();
+        self.trigger_timer_updates(adv);
     }
 
-    pub fn timer_counter_mode(cpu: &Cpu, mem: &Memory, timer: u8) -> TimerCounterMode {
+    fn timer_counter_mode(&self, timer: u8) -> TimerCounterMode {
         debug_assert!((0..=4).contains(&timer));
 
         let timer_address = 0x1f801104 + timer as u32 * 0x10;
 
-        mem.read::<TimerCounterMode, ext::NoExt>(cpu, timer_address)
+        self.read::<TimerCounterMode>(timer_address)
     }
 
-    pub fn timer_counter_target(cpu: &Cpu, mem: &Memory, timer: u8) -> TimerCounterTarget {
+    fn timer_counter_target(&self, timer: u8) -> TimerCounterTarget {
         debug_assert!((0..=4).contains(&timer));
 
         let timer_address = 0x1f801108 + timer as u32 * 0x10;
 
-        mem.read::<TimerCounterTarget, ext::NoExt>(cpu, timer_address)
+        self.read::<TimerCounterTarget>(timer_address)
     }
 
-    pub fn timer_counter_value(cpu: &Cpu, mem: &Memory, timer: u8) -> TimerCounterValue {
+    fn timer_counter_value(&self, timer: u8) -> TimerCounterValue {
         debug_assert!((0..=4).contains(&timer));
 
         let timer_address = 0x1f801100 + timer as u32 * 0x10;
 
-        mem.read::<TimerCounterValue, ext::NoExt>(cpu, timer_address)
+        self.read::<TimerCounterValue>(timer_address)
     }
 
-    pub fn set_timer_counter_value(
-        cpu: &Cpu,
-        mem: &mut Memory,
-        timer: u8,
-        value: TimerCounterValue,
-    ) {
+    fn set_timer_counter_value(&mut self, timer: u8, value: TimerCounterValue) {
         debug_assert!((0..=4).contains(&timer));
         let timer_address = 0x1f801100 + timer as u32 * 0x10;
-        mem.write(cpu, timer_address, value);
+        self.write(timer_address, value);
     }
 
-    pub fn set_timer_counter_mode(cpu: &Cpu, mem: &mut Memory, timer: u8, value: TimerCounterMode) {
+    fn set_timer_counter_mode(&mut self, timer: u8, value: TimerCounterMode) {
         debug_assert!((0..=4).contains(&timer));
         let timer_address = 0x1f801104 + timer as u32 * 0x10;
-        mem.write(cpu, timer_address, value);
+        self.write(timer_address, value);
     }
 
-    pub fn advance_timers(cpu: &Cpu, mem: &Memory) -> AdvanceTimerSummary {
+    fn advance_timers(&self) -> AdvanceTimerSummary {
         let timer_0_address = 0x1f801100;
-        let timer_0 = mem.read::<TimerCounterValue, ext::NoExt>(cpu, timer_0_address);
+        let timer_0 = self.read::<TimerCounterValue>(timer_0_address);
         let timer_0_value = timer_0.value();
         // timer 0 is synced to system clock
-        let (new_timer_0_value, _overflowed) = timer_0_value.overflowing_add(cpu.d_clock as _);
+        let (new_timer_0_value, _overflowed) =
+            timer_0_value.overflowing_add(self.cpu().d_clock as _);
 
         // TODO: timer 1 and 2
 
@@ -133,7 +130,7 @@ impl IO {
         }
     }
 
-    pub fn check_target_range(
+    fn check_target_range(
         mut timer_mode: TimerCounterMode,
         mut timer_value: TimerCounterValue,
         range: impl Into<RangeInclusive<u16>>,
@@ -157,12 +154,12 @@ impl IO {
         (timer_mode, timer_value)
     }
 
-    pub fn trigger_timer_updates(cpu: &mut Cpu, mem: &mut Memory, adv: AdvanceTimerSummary) {
+    fn trigger_timer_updates(&mut self, adv: AdvanceTimerSummary) {
         // timer 0
-        let timer_0_mode = IO::timer_counter_mode(cpu, mem, 0);
-        let timer_0_target = IO::timer_counter_target(cpu, mem, 0);
+        let timer_0_mode = self.timer_counter_mode(0);
+        let timer_0_target = self.timer_counter_target(0);
         let mut new_timer_0_mode = timer_0_mode;
-        let mut new_timer_0_value = IO::timer_counter_value(cpu, mem, 0);
+        let mut new_timer_0_value = self.timer_counter_value(0);
 
         let overflowed = adv.timer_0_new < adv.timer_0_old;
 
@@ -182,14 +179,14 @@ impl IO {
         let (new_timer_0_mode, new_timer_0_value) = match overflowed {
             true => {
                 // check both ranges
-                let (mode, value) = IO::check_target_range(
+                let (mode, value) = Self::check_target_range(
                     new_timer_0_mode,
                     new_timer_0_value,
                     adv.timer_0_old..=u16::MAX,
                     target_value,
                     adv.timer_0_new,
                 );
-                let (mode, value) = IO::check_target_range(
+                let (mode, value) = Self::check_target_range(
                     mode,
                     value,
                     0..=adv.timer_0_new,
@@ -198,7 +195,7 @@ impl IO {
                 );
                 (mode, value)
             }
-            false => IO::check_target_range(
+            false => Self::check_target_range(
                 new_timer_0_mode,
                 new_timer_0_value,
                 adv.timer_0_old..=adv.timer_0_new,
@@ -207,11 +204,13 @@ impl IO {
             ),
         };
 
-        IO::set_timer_counter_value(cpu, mem, 0, new_timer_0_value);
-        IO::set_timer_counter_mode(cpu, mem, 0, new_timer_0_mode);
+        self.set_timer_counter_value(0, new_timer_0_value);
+        self.set_timer_counter_mode(0, new_timer_0_mode);
 
         if new_timer_0_mode.irq() {
-            cpu.handle_exception(Exception::Interrupt);
+            self.cpu_mut().handle_exception(Exception::Interrupt);
         }
     }
 }
+
+impl Timers for Emu {}

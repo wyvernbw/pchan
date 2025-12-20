@@ -29,7 +29,7 @@
 use std::{collections::HashMap, mem::offset_of};
 
 use crate::{
-    bootloader::Bootloader,
+    bootloader::BootloaderState,
     cpu::Cpu,
     dynarec::{FetchSummary, prelude::PureInstBuilder},
     dynarec_v2::DynarecBlock,
@@ -47,6 +47,7 @@ pub mod cranelift_bs {
     pub use cranelift::prelude::*;
 }
 
+pub mod bindings;
 pub mod bootloader;
 pub mod cpu;
 #[path = "./dynarec/dynarec.rs"]
@@ -91,7 +92,7 @@ pub struct Emu {
     #[debug(skip)]
     pub dynarec_cache: HashMap<u32, DynarecBlock>,
     pub mem: Memory,
-    pub boot: Bootloader,
+    pub boot: BootloaderState,
     #[debug(skip)]
     pub jit_cache: JitCache,
     #[debug(skip)]
@@ -99,26 +100,10 @@ pub struct Emu {
     pub tty: Tty,
 }
 
-use memory::Extend;
-
 impl Emu {
     const PC_OFFSET: usize = offset_of!(Emu, cpu) + Cpu::PC_OFFSET;
     const D_CLOCK_OFFSET: usize = offset_of!(Emu, cpu) + Cpu::D_CLOCK_OFFSET;
 
-    pub fn read<T, E>(&self, address: u32) -> T::Out
-    where
-        T: Extend<E> + Copy,
-    {
-        self.mem.read::<T, E>(&self.cpu, address)
-    }
-
-    pub fn write<T: Copy>(&mut self, address: u32, value: T) {
-        self.mem.write(&self.cpu, address, value);
-    }
-
-    pub fn write_many<T: Copy>(&mut self, address: u32, values: &[T]) {
-        self.mem.write_many(&self.cpu, address, values);
-    }
     pub fn reg_offset(reg: u8) -> usize {
         offset_of!(Self, cpu) + Cpu::reg_offset(reg)
     }
@@ -211,6 +196,42 @@ impl<'a> FnBuilderExt<'a> for FunctionBuilder<'a> {
             builder: self,
             block: current_block,
         }
+    }
+}
+
+pub trait Bus {
+    fn mem_mut(&mut self) -> &mut Memory;
+    fn mem(&self) -> &Memory;
+    fn cpu_mut(&mut self) -> &mut Cpu;
+    fn cpu(&self) -> &Cpu;
+    fn bootloader_mut(&mut self) -> &mut BootloaderState;
+    fn bootloader(&mut self) -> &BootloaderState;
+}
+
+impl Bus for Emu {
+    #[inline(always)]
+    fn mem_mut(&mut self) -> &mut Memory {
+        &mut self.mem
+    }
+    #[inline(always)]
+    fn cpu(&self) -> &Cpu {
+        &self.cpu
+    }
+    #[inline(always)]
+    fn mem(&self) -> &Memory {
+        &self.mem
+    }
+    #[inline(always)]
+    fn cpu_mut(&mut self) -> &mut Cpu {
+        &mut self.cpu
+    }
+    #[inline(always)]
+    fn bootloader_mut(&mut self) -> &mut BootloaderState {
+        &mut self.boot
+    }
+    #[inline(always)]
+    fn bootloader(&mut self) -> &BootloaderState {
+        &self.boot
     }
 }
 

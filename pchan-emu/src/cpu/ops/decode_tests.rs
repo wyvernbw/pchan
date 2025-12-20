@@ -4,6 +4,7 @@ use pretty_assertions::assert_eq;
 use rstest::rstest;
 
 use crate::Emu;
+use crate::bootloader::Bootloader;
 use crate::cpu::ops::DecodedOp;
 use crate::dynarec::prelude::*;
 

@@ -15,7 +15,7 @@ use crate::{
     cranelift_bs::*,
     dynarec::{CacheUpdates, EntryCache},
     io::IO,
-    memory::{self, Memory},
+    memory::{self, Memory, fastmem},
 };
 
 #[derive(derive_more::Debug)]
@@ -104,20 +104,20 @@ impl<T, S: LUTMapStorage<Inner = T>> Default for LUTMap<T, S> {
 
 impl<T, S: LUTMapStorage<Inner = T>> LUTMap<T, S> {
     pub fn insert(&mut self, address: u32, func: T) -> &T {
-        let idx = Memory::util_fast_map_address(address).expect("address not executable");
+        let idx = fastmem::util_fast_map_address(address).expect("address not executable");
         self.0.as_mut()[idx as usize] = Some(func);
         self.0.as_ref()[idx as usize].as_ref().unwrap()
     }
     pub fn get(&self, address: u32) -> Option<&T> {
-        let idx = Memory::util_fast_map_address(address).expect("address not executable");
+        let idx = fastmem::util_fast_map_address(address).expect("address not executable");
         self.0.as_ref()[idx as usize].as_ref()
     }
     pub fn get_mut(&mut self, address: u32) -> Option<&mut T> {
-        let idx = Memory::util_fast_map_address(address).expect("address not executable");
+        let idx = fastmem::util_fast_map_address(address).expect("address not executable");
         self.0.as_mut()[idx as usize].as_mut()
     }
     pub fn take(&mut self, address: u32) -> Option<T> {
-        let idx = Memory::util_fast_map_address(address).expect("address not executable");
+        let idx = fastmem::util_fast_map_address(address).expect("address not executable");
         self.0.as_mut()[idx as usize].take()
     }
 }
@@ -169,17 +169,18 @@ impl Default for JIT {
             .finish(settings::Flags::new(flags))
             .unwrap();
         let mut jit_builder = JITBuilder::with_isa(isa, default_libcall_names());
-        jit_builder
-            .symbol("read32", Memory::read32 as *const u8)
-            .symbol("readi16", Memory::readi16 as *const u8)
-            .symbol("readi8", Memory::readi8 as *const u8)
-            .symbol("readu16", Memory::readu16 as *const u8)
-            .symbol("readu8", Memory::readu8 as *const u8)
-            .symbol("write32", Memory::write32 as *const u8)
-            .symbol("write16", Memory::write16 as *const u8)
-            .symbol("write8", Memory::write8 as *const u8)
-            .symbol("handle_rfe", Cpu::handle_rfe as *const u8)
-            .symbol("handle_break", Cpu::handle_break as *const u8);
+        // FIXME: outdated bindings
+        // jit_builder
+        //     .symbol("read32", Memory::read32 as *const u8)
+        //     .symbol("readi16", Memory::readi16 as *const u8)
+        //     .symbol("readi8", Memory::readi8 as *const u8)
+        //     .symbol("readu16", Memory::readu16 as *const u8)
+        //     .symbol("readu8", Memory::readu8 as *const u8)
+        //     .symbol("write32", Memory::write32 as *const u8)
+        //     .symbol("write16", Memory::write16 as *const u8)
+        //     .symbol("write8", Memory::write8 as *const u8)
+        //     .symbol("handle_rfe", Cpu::handle_rfe as *const u8)
+        //     .symbol("handle_break", Cpu::handle_break as *const u8);
 
         let mut module = JITModule::new(jit_builder);
         let ptr = module.target_config().pointer_type();
@@ -929,7 +930,7 @@ impl BlockFn {
             (self.fn_ptr)(ptr::from_mut(&mut emu.cpu), ptr::from_mut(&mut emu.mem))
         };
 
-        IO::run_timer_pipeline(&mut emu.cpu, &mut emu.mem);
+        emu.run_io();
     }
 }
 
