@@ -34,6 +34,7 @@ use crate::cpu::ops::lh::*;
 use crate::cpu::ops::lhu::*;
 use crate::cpu::ops::lui::*;
 use crate::cpu::ops::lw::*;
+use crate::cpu::ops::mfc::*;
 use crate::cpu::ops::mtc::*;
 use crate::cpu::ops::nor::*;
 use crate::cpu::ops::or::*;
@@ -156,6 +157,7 @@ pub enum DecodedOpNew {
     ORI(ORI),
     XORI(XORI),
     LUI(LUI),
+    MFCn(MFCn),
     MTCn(MTCn),
     LB(LB),
     LBU(LBU),
@@ -258,7 +260,7 @@ impl DecodedOpNew {
                 (0xE, _, _, _) => Self::XORI(XORI::new(rs, rt, fields.imm16())),
                 (0xF, _, _, _) => Self::LUI(LUI::new(rt, fields.imm16())),
                 (0x10, 0x10, _, 0x10) => todo!("rfe"),
-                (0x10..=0x13, 0x0, _, 0x0) => todo!("mfcn"),
+                (0x10..=0x13, 0x0, _, 0x0) => Self::MFCn(MFCn::new(fields.cop(), rt, rd)),
                 (0x10..=0x13, 0x2, _, 0x0) => todo!("cfcn"),
                 (0x10..=0x13, 0x4, _, 0x0) => Self::MTCn(MTCn::new(fields.cop(), rt, rd)),
                 (0x10..=0x13, 0x8, 0, _) => todo!("bcnf"),
@@ -326,6 +328,29 @@ impl Dynarec {
             }
         }
     }
+
+    pub fn emit_imm16(&mut self, dest: Reg, imm: i16) {
+        #[cfg(target_arch = "aarch64")]
+        {
+            match imm {
+                ..0 => {
+                    dynasm!(
+                        self.asm
+                        ; .arch aarch64
+                        ; movz W(dest), ext::zero(imm)    // Load as unsigned
+                        ; sxth W(dest), W(dest)              // Sign-extend to 32-bit
+                    );
+                }
+                0.. => {
+                    dynasm!(
+                        self.asm
+                        ; .arch aarch64
+                        ; mov W(dest), ext::zero(imm)
+                    );
+                }
+            }
+        }
+    }
 }
 
 impl DynarecOp for ADDIU {
@@ -340,12 +365,7 @@ impl DynarecOp for ADDIU {
         if self.rs == 0 {
             let rt = ctx.dynarec.alloc_reg(self.rt);
 
-            #[cfg(target_arch = "aarch64")]
-            dynasm!(
-                ctx.dynarec.asm
-                ; .arch aarch64
-                ; mov W(*rt), self.imm as _
-            );
+            ctx.dynarec.emit_imm16(rt.reg(), self.imm);
 
             ctx.dynarec.mark_dirty(self.rt);
             rt.restore(ctx.dynarec);
@@ -1197,6 +1217,8 @@ fn emit_shift_imm(
             imm,
         },
     );
+
+    ctx.dynarec.mark_dirty(*rd);
 
     rd.restore(ctx.dynarec);
     rt.restore(ctx.dynarec);
@@ -2245,6 +2267,8 @@ impl DynarecOp for SLTU {
             ; cset W(*rd), lo
         );
 
+        ctx.dynarec.mark_dirty(*rd);
+
         rd.restore(ctx.dynarec);
         rt.restore(ctx.dynarec);
         rs.restore(ctx.dynarec);
@@ -2267,7 +2291,29 @@ impl DynarecOp for SLTIU {
             ; cset W(*rt), lo
         );
 
+        ctx.dynarec.mark_dirty(*rt);
+
         rs.restore(ctx.dynarec);
+        rt.restore(ctx.dynarec);
+
+        EmitSummary::default()
+    }
+}
+
+impl DynarecOp for MFCn {
+    #[allow(clippy::useless_conversion)]
+    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+        let rt = ctx.dynarec.alloc_reg(self.rt);
+
+        #[cfg(target_arch = "aarch64")]
+        dynasm!(
+            ctx.dynarec.asm
+            ; .arch aarch64
+            ; ldr W(*rt), [x0, Cpu::cop_reg_offset(self.cop, self.rd) as _]
+        );
+
+        ctx.dynarec.mark_dirty(*rt);
+
         rt.restore(ctx.dynarec);
 
         EmitSummary::default()

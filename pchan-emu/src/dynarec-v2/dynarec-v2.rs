@@ -406,17 +406,9 @@ impl Dynarec {
     #[allow(clippy::useless_conversion)]
     fn emit_immediate(&mut self, guest_reg: Guest, imm: i16) -> EmitSummary {
         let reg = self.alloc_reg(guest_reg);
-
-        #[cfg(target_arch = "aarch64")]
-        dynasm!(
-            self.asm
-            ; .arch aarch64
-            ; mov W(*reg), imm as _
-        );
-
+        self.emit_imm16(reg.reg(), imm);
         self.mark_dirty(guest_reg);
         reg.restore(self);
-
         EmitSummary::default()
     }
 

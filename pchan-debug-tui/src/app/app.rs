@@ -397,12 +397,15 @@ async fn emu_task_v2(
     let mut elapsed = Duration::new(0, 0);
     let mut step_jit = async |mut pipeline: PipelineV2| -> color_eyre::Result<PipelineV2> {
         let new_emu = emu.clone();
-        let pipeline = smol::unblock(move || -> color_eyre::Result<PipelineV2> {
-            let mut emu = new_emu.get_mut();
-            pipeline = pipeline.step(&mut emu)?;
-            Ok(pipeline)
-        })
-        .await?;
+        let (pipeline, took) =
+            smol::unblock(move || -> color_eyre::Result<(PipelineV2, Duration)> {
+                let mut emu = new_emu.get_mut();
+                let now = Instant::now();
+                pipeline = pipeline.step(&mut emu)?;
+                Ok((pipeline, now.elapsed()))
+            })
+            .await?;
+        elapsed += took;
         let fetch = dynarec_v2::FETCH_CHANNEL.1.try_iter().collect::<Vec<_>>();
         if !fetch.is_empty() {
             emu_info_tx.send_async(EmuInfo::FetchV2(fetch)).await?;
