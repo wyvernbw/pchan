@@ -1,4 +1,3 @@
-#![feature(slice_as_array)]
 #![feature(portable_simd)]
 #![allow(unused_variables)]
 

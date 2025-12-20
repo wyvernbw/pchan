@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 use color_eyre::Result;
 use serde::{Deserialize, Serialize};
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 use tui_logger::TuiTracingSubscriberLayer;
 
 #[path = "./app/app.rs"]
@@ -35,9 +35,17 @@ impl AppConfig {
 fn main() -> Result<()> {
     color_eyre::install()?;
     tui_logger::init_logger(tui_logger::LevelFilter::Trace)?;
-    tracing_subscriber::registry()
-        .with(TuiTracingSubscriberLayer)
+    let logs = confy::get_configuration_file_path("pchan-debugger", Some("logs.txt"))?;
+    let logs = std::fs::File::create(logs)?;
+    tracing_subscriber::fmt()
+        .with_writer(logs)
+        .with_env_filter(EnvFilter::from_env("PCHAN_LOG"))
+        .with_ansi(false)
+        .with_filter_reloading()
         .init();
+    // tracing_subscriber::registry()
+    //     .with(TuiTracingSubscriberLayer)
+    //     .init();
 
     let app_config: AppConfig = confy::load("pchan-debugger", Some("config"))?;
 

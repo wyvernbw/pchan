@@ -2,10 +2,13 @@ use crate::Emu;
 use crate::cpu;
 use crate::cpu::Cpu;
 use crate::cpu::ops::NOP;
+use crate::cpu::ops::nop;
 use crate::dynarec_v2::Guest;
 use std::num::NonZeroU8;
 
 use bon::Builder;
+use bon::bon;
+use bon::builder;
 use enum_dispatch::enum_dispatch;
 
 #[cfg(test)]
@@ -288,6 +291,43 @@ impl DecodedOpNew {
     }
 }
 
+#[bon]
+impl Dynarec {
+    #[builder]
+    pub fn emit_add_imm16(&mut self, dest: Reg, base: Reg, offset: i16, temp: Option<Reg>) {
+        let temp = temp.unwrap_or(Reg::W(3));
+        #[cfg(target_arch = "aarch64")]
+        {
+            match offset {
+                ..0 => {
+                    dynasm!(
+                        self.asm
+                        ; .arch aarch64
+                        ; movz W(temp), ext::zero(offset)    // Load as unsigned
+                        ; sxth W(temp), W(temp)              // Sign-extend to 32-bit
+                        ; add WSP(dest), WSP(base), W(temp)
+                    );
+                }
+                0..4096 => {
+                    dynasm!(
+                        self.asm
+                        ; .arch aarch64
+                        ; add WSP(dest), WSP(base), ext::zero(offset)
+                    );
+                }
+                4096.. => {
+                    dynasm!(
+                        self.asm
+                        ; .arch aarch64
+                        ; mov W(temp), ext::zero(offset)
+                        ; add WSP(dest), WSP(base), W(temp)
+                    );
+                }
+            }
+        }
+    }
+}
+
 impl DynarecOp for ADDIU {
     #[allow(clippy::useless_conversion)]
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
@@ -315,31 +355,12 @@ impl DynarecOp for ADDIU {
         let rs = ctx.dynarec.emit_load_reg(self.rs);
         let rt = ctx.dynarec.alloc_reg(self.rt);
 
-        if (self.imm as u16) < 4096 {
-            #[cfg(target_arch = "aarch64")]
-            dynasm!(
-                ctx.dynarec.asm
-                ; .arch aarch64
-                ; add WSP(*rt), WSP(*rs), self.imm as _
-            );
-        } else if self.imm < 0 {
-            #[cfg(target_arch = "aarch64")]
-            dynasm!(
-                ctx.dynarec.asm
-                ; .arch aarch64
-                ; movz w1, ext::zero(self.imm)    // Load as unsigned
-                ; sxth w1, w1                   // Sign-extend to 32-bit
-                ; add WSP(*rt), WSP(*rs), w1
-            );
-        } else {
-            #[cfg(target_arch = "aarch64")]
-            dynasm!(
-                ctx.dynarec.asm
-                ; .arch aarch64
-                ; mov w1, self.imm as _
-                ; add WSP(*rt), WSP(*rs), w1
-            );
-        }
+        ctx.dynarec
+            .emit_add_imm16()
+            .dest(rt.reg())
+            .base(rs.reg())
+            .offset(self.imm)
+            .call();
 
         ctx.dynarec.mark_dirty(self.rt);
 
@@ -426,26 +447,14 @@ fn emit_store(
     ctx.dynarec.emit_load_temp_reg(rs, Reg::W(1));
     ctx.dynarec.emit_load_temp_reg(rt, Reg::W(2));
 
-    if imm > 0xfff {
-        dynasm!(
-            ctx.dynarec.asm
-            ; .arch aarch64
-            ; mov w3, ext::sign(imm) as _
-            ; add w1, w1, w3
-            // ; stp w1, w2, [sp, #-16]!
-            ; fmov S(s(9)), w1
-            ; fmov S(s(10)), w2
-        );
-    } else {
-        dynasm!(
-            ctx.dynarec.asm
-            ; .arch aarch64
-            ; add w1, w1, ext::sign(imm) as _
-            // ; stp w1, w2, [sp, #-16]!
-            ; fmov S(s(9)), w1
-            ; fmov S(s(10)), w2
-        );
-    }
+    dynasm!(
+        ctx.dynarec.asm
+        ; .arch aarch64
+        ;; ctx.dynarec.emit_add_imm16().dest(Reg::W(1)).base(Reg::W(1)).offset(imm).call()
+        // ; stp w1, w2, [sp, #-16]!
+        ; fmov S(s(9)), w1
+        ; fmov S(s(10)), w2
+    );
 
     ctx.dynarec.set_delay_slot(move |mut ctx| {
         dynasm!(
@@ -552,6 +561,38 @@ where
     Ok(())
 }
 
+#[cfg(test)]
+#[rstest]
+fn test_weird_store() -> color_eyre::Result<()> {
+    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use pchan_utils::setup_tracing;
+
+    setup_tracing();
+    let mut emu = Emu::default();
+    emu.cpu.pc = 0xbfc01a60;
+    emu.cpu.gpr[cpu::SP as usize] = 0x801ffee8;
+    emu.cpu.gpr[cpu::RA as usize] = 0xbfc06ed4;
+    emu.write_many(
+        emu.cpu.pc,
+        &program([
+            addiu(cpu::SP, cpu::SP, -0x0018),
+            sw(cpu::RA, cpu::SP, 0x0014),
+            nop(),
+            OpCode(69420),
+        ]),
+    );
+
+    PipelineV2::new(&emu).run_once(&mut emu)?;
+
+    tracing::info!("finished running");
+    tracing::info!(?emu.cpu);
+
+    let result = emu.read::<u32, _>(0x801ffee4);
+    assert_eq!(result, 0xbfc06ed4);
+
+    Ok(())
+}
+
 #[cfg(target_arch = "aarch64")]
 #[allow(clippy::useless_conversion)]
 fn emit_load(
@@ -566,8 +607,7 @@ fn emit_load(
     dynasm!(
         ctx.dynarec.asm
         ; .arch aarch64
-        ; add w1, w1, ext::sign(imm) as _
-        // ; str w1, [sp, #-16]!
+        ;; ctx.dynarec.emit_add_imm16().dest(Reg::W(1)).base(Reg::W(1)).offset(imm).call()
         ; fmov S(s(8)), w1
     );
 

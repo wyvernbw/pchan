@@ -193,7 +193,7 @@ impl Default for Cop2 {
 pub type Reg = u8;
 
 pub(crate) const RA: Reg = 31;
-const SP: Reg = 29;
+pub(crate) const SP: Reg = 29;
 
 pub static REG_STR: &[&str] = &array![
      0 => "zero",

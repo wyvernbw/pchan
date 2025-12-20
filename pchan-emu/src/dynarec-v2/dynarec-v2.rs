@@ -298,16 +298,25 @@ impl Dynarec {
     fn emit_load_temp_reg(&mut self, guest_reg: u8, host_reg: Reg) {
         debug_assert!(!self.reg_alloc.allocatable[host_reg.to_idx() as usize]);
 
+        if enabled!(Level::TRACE) {
+            tracing::trace!("load: guest r{} to temp reg {:?}", guest_reg, host_reg);
+        }
+
+        if let Some(allocated) = self.reg_alloc.mapping[guest_reg as usize] {
+            dynasm!(
+                self.asm
+                ; .arch aarch64
+                ; mov W(host_reg), W(allocated)
+            );
+            return;
+        }
+
         let offset = Emu::reg_offset(guest_reg) as u32;
         dynasm!(
             self.asm
             ; .arch aarch64
             ; ldr W(host_reg), [x0, offset]
         );
-
-        if enabled!(Level::TRACE) {
-            tracing::trace!("load: guest r{} to temp reg {:?}", guest_reg, host_reg);
-        }
     }
     fn emit_load_reg(&mut self, guest_reg: u8) -> LoadedReg {
         let offset = Emu::reg_offset(guest_reg) as u32;
