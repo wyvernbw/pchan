@@ -1520,7 +1520,7 @@ impl DynarecOp for LUI {
         dynasm!(
             ctx.dynarec.asm
             ; .arch aarch64
-            ; movk W(*rt), ext::zero(self.imm) as _, LSL #16
+            ; movz W(*rt), ext::zero(self.imm) as _, LSL #16
         );
 
         ctx.dynarec.mark_dirty(self.rt);
