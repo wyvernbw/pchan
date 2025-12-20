@@ -402,16 +402,25 @@ impl Dynarec {
     }
 
     #[allow(clippy::useless_conversion)]
-    fn emit_immediate(&mut self, guest_reg: Guest, imm: i16) -> EmitSummary {
+    fn emit_immediate_sext(&mut self, guest_reg: Guest, imm: i16) -> EmitSummary {
         let reg = self.alloc_reg(guest_reg);
-        self.emit_imm16(reg.reg(), imm);
+        self.emit_imm16_sext(reg.reg(), imm);
+        self.mark_dirty(guest_reg);
+        reg.restore(self);
+        EmitSummary::default()
+    }
+
+    #[allow(clippy::useless_conversion)]
+    fn emit_immediate_uext(&mut self, guest_reg: Guest, imm: i16) -> EmitSummary {
+        let reg = self.alloc_reg(guest_reg);
+        self.emit_imm16_uext(reg.reg(), imm);
         self.mark_dirty(guest_reg);
         reg.restore(self);
         EmitSummary::default()
     }
 
     fn emit_zero(&mut self, guest_reg: Guest) -> EmitSummary {
-        self.emit_immediate(guest_reg, 0)
+        self.emit_immediate_uext(guest_reg, 0)
     }
 
     #[allow(clippy::useless_conversion)]
@@ -640,13 +649,11 @@ impl Emu {
         })
     }
     fn linear_fetch_no_decode(&self) -> impl Iterator<Item = OpCode> {
-        const CHUNK: usize = 32;
         (self.cpu.pc..)
-            .step_by(size_of::<u32>() * CHUNK)
-            .flat_map(|address| {
-                self.read::<[Simd<u32, 4>; CHUNK / max_simd_elements::<u32>()]>(address)
-            })
-            .flat_map(|value| value.to_array())
+            // .step_by(0x4)
+            .step_by(max_simd_elements::<u32>() * size_of::<u32>())
+            .flat_map(|address| self.read::<Simd<u32, 4>>(address).to_array())
+            // .map(|address| self.read(address))
             .map(OpCode)
     }
 }
@@ -673,6 +680,7 @@ pub enum PipelineV2 {
     },
     Called {
         pc: u32,
+        times: usize,
         func: DynarecBlock,
         dynarec: Option<Box<Dynarec>>,
     },
@@ -732,13 +740,22 @@ impl PipelineV2 {
                 dynarec,
             } => {
                 func(emu, false);
+                let mut count = 1;
                 while emu.cpu.pc == pc {
                     func.is_loop = true;
                     func(emu, false);
+                    count += 1;
                 }
-                Ok(PipelineV2::Called { pc, func, dynarec })
+                Ok(PipelineV2::Called {
+                    times: count,
+                    pc,
+                    func,
+                    dynarec,
+                })
             }
-            PipelineV2::Called { pc, func, dynarec } => {
+            PipelineV2::Called {
+                pc, func, dynarec, ..
+            } => {
                 emu.dynarec_cache.insert(pc, func);
                 Ok(PipelineV2::Cached { dynarec })
             }

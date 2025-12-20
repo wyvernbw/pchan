@@ -174,6 +174,7 @@ pub fn run(config: AppConfig, mut terminal: DefaultTerminal) -> Result<()> {
             pipeline_report_v2: PipelineV2Stage::Uninit,
         };
 
+        let mut freq_updates_received = 0;
         loop {
             if app_state.exit {
                 return Ok(());
@@ -211,9 +212,14 @@ pub fn run(config: AppConfig, mut terminal: DefaultTerminal) -> Result<()> {
                             }
                             EmuInfo::FrequencyUpdate(new) => match app_state.frequency {
                                 Some(freq) => {
-                                    app_state.frequency = Some((freq + new) / 2.0);
+                                    freq_updates_received += 1usize;
+                                    app_state.frequency =
+                                        Some(freq + new / freq_updates_received as f64);
                                 }
-                                None => app_state.frequency = Some(new),
+                                None => {
+                                    app_state.frequency = Some(new);
+                                    freq_updates_received = 1;
+                                }
                             },
                         }
                     }
@@ -311,8 +317,8 @@ async fn emu_task_v2(
         if !fetch.is_empty() {
             emu_info_tx.send_async(EmuInfo::FetchV2(fetch)).await?;
         }
-        if pipeline.is_init() {
-            let cycles_elapsed = emu.get().cpu.d_clock as f64;
+        if let PipelineV2::Called { times, .. } = &pipeline {
+            let cycles_elapsed = emu.get().cpu.d_clock as f64 * *times as f64;
             let frequency = cycles_elapsed / elapsed.as_secs_f64();
             elapsed = Duration::new(0, 0);
             emu_info_tx

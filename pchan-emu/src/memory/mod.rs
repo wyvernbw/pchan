@@ -45,6 +45,16 @@ pub static MEM_MAP: MemMap = MemMap {
     cache_control: kb(2048) + kb(64) + kb(64) + kb(64) + kb(2048) + kb(512),
 };
 
+pub static GUEST_MEM_MAP: MemMap = MemMap {
+    ram: 0,
+    scratch: 0x1F80_0000,
+    io: 0x1f801000,
+    exp_2: 0x1f802000,
+    exp_3: 0x1fa00000,
+    bios: 0x1fc00000,
+    cache_control: 0xfffe0000,
+};
+
 static MEM_SIZE: usize = kb(2048) + kb(64) + kb(64) + kb(64) + kb(2048) + kb(512) + kb(64);
 // const MEM_SIZE: usize = 600 * 1024 * 1024;
 static MEM_KB: usize = from_kb(MEM_SIZE) + 1;
@@ -60,16 +70,22 @@ impl Default for MemoryState {
 
 impl MemoryState {
     #[inline(always)]
-    pub fn read_region<T: Copy>(&self, region: usize, address: u32) -> T {
-        let offset = address & 0xFFFF;
-        let idx = region + offset as usize;
+    pub fn read_region<T: Copy>(&self, host_region: usize, guest_region: usize, address: u32) -> T {
+        let offset = (address & 0x1fff_ffff) as usize - (guest_region & 0x1fff_ffff);
+        let idx = host_region + offset;
         let slice = &self.buf[idx..];
         unsafe { slice.as_ptr().cast::<T>().read() }
     }
     #[inline(always)]
-    pub fn write_region<T: Copy>(&mut self, region: usize, address: u32, value: T) {
-        let offset = address & 0xFFFF;
-        let idx = region + offset as usize;
+    pub fn write_region<T: Copy>(
+        &mut self,
+        host_region: usize,
+        guest_region: usize,
+        address: u32,
+        value: T,
+    ) {
+        let offset = (address & 0x1fff_ffff) as usize - (guest_region & 0x1fff_ffff);
+        let idx = host_region + offset;
         let slice = &mut self.buf[idx..];
         unsafe {
             slice.as_mut_ptr().cast::<T>().write(value);

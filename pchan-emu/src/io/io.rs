@@ -1,7 +1,8 @@
 use pchan_utils::hex;
+use tracing::instrument;
 
 use crate::io::timers::Timers;
-use crate::memory::Extend;
+use crate::memory::{Extend, GUEST_MEM_MAP, MEM_MAP};
 use crate::{
     Bus, Emu,
     io::cdrom::CDRom,
@@ -52,6 +53,66 @@ pub trait IO: Bus {
     }
 }
 
+pub type IOResult<T> = Result<T, UnhandledIO>;
+
+trait GenericIOFallback: Bus {
+    #[instrument(skip(self))]
+    fn read<T: Copy>(&self, address: u32) -> IOResult<T> {
+        match address {
+            0x1f801000..0x1fa00000 => {
+                tracing::trace!("fallback to generic io read");
+                Ok(self
+                    .mem()
+                    .read_region(MEM_MAP.io, GUEST_MEM_MAP.io, address))
+            }
+            _ => Err(UnhandledIO(address)),
+        }
+    }
+    fn write<T: Copy>(&mut self, address: u32, value: T) -> Result<(), UnhandledIO> {
+        match address {
+            0x1f801000..0x1fa00000 => {
+                tracing::trace!("fallback to generic io write");
+                self.mem_mut()
+                    .write_region(MEM_MAP.io, GUEST_MEM_MAP.io, address, value);
+                Ok(())
+            }
+            _ => Err(UnhandledIO(address)),
+        }
+    }
+}
+
+impl GenericIOFallback for Emu {}
+
+trait CacheControl: Bus {
+    #[instrument(skip(self))]
+    fn read<T: Copy>(&self, address: u32) -> IOResult<T> {
+        match address {
+            0xfffe0130 => Ok(self.mem().read_region(
+                MEM_MAP.cache_control,
+                GUEST_MEM_MAP.cache_control,
+                address,
+            )),
+            _ => Err(UnhandledIO(address)),
+        }
+    }
+    fn write<T: Copy>(&mut self, address: u32, value: T) -> IOResult<()> {
+        match address {
+            0xfffe0130 => {
+                self.mem_mut().write_region(
+                    MEM_MAP.cache_control,
+                    GUEST_MEM_MAP.cache_control,
+                    address,
+                    value,
+                );
+                Ok(())
+            }
+            _ => Err(UnhandledIO(address)),
+        }
+    }
+}
+
+impl CacheControl for Emu {}
+
 #[derive(thiserror::Error, Debug, Clone, Copy)]
 #[error("unhandled io at address {}", hex(self.0))]
 pub struct UnhandledIO(pub u32);
@@ -60,7 +121,9 @@ impl IO for Emu {
     fn read<T: Copy>(&self, address: u32) -> T {
         let result = Fastmem::read::<T>(self, address)
             .or_else(|_| Timers::read_timers(self, address))
-            .or_else(|_| CDRom::read::<T>(self, address));
+            .or_else(|_| CDRom::read::<T>(self, address))
+            .or_else(|_| GenericIOFallback::read::<T>(self, address))
+            .or_else(|_| CacheControl::read::<T>(self, address));
         match result {
             Ok(value) => value,
             Err(err) => panic!("{}", err),
@@ -70,7 +133,9 @@ impl IO for Emu {
     fn write<T: Copy>(&mut self, address: u32, value: T) {
         let result = Fastmem::write::<T>(self, address, value)
             .or_else(|_| Timers::write_timers(self, address, value))
-            .or_else(|_| CDRom::write::<T>(self, address, value));
+            .or_else(|_| CDRom::write::<T>(self, address, value))
+            .or_else(|_| GenericIOFallback::write::<T>(self, address, value))
+            .or_else(|_| CacheControl::write::<T>(self, address, value));
         if let Err(err) = result {
             panic!("{}", err);
         }

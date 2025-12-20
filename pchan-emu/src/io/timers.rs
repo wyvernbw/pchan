@@ -4,7 +4,7 @@ use crate::{
     Bus, Emu,
     cpu::Exception,
     io::{IO, UnhandledIO},
-    memory::MEM_MAP,
+    memory::{GUEST_MEM_MAP, MEM_MAP},
 };
 use bitfield::bitfield;
 
@@ -77,7 +77,9 @@ pub trait Timers: Bus + IO {
         match address {
             0x1f801100..=0x1f801108 | 0x1f801110..=0x1f801118 | 0x1f801120..=0x1f801128 => {
                 tracing::trace!("read to timer registers");
-                Ok(self.mem().read_region(MEM_MAP.io, address))
+                Ok(self
+                    .mem()
+                    .read_region(MEM_MAP.io, GUEST_MEM_MAP.io, address))
             }
             _ => Err(UnhandledIO(address)),
         }
@@ -87,7 +89,8 @@ pub trait Timers: Bus + IO {
         match address {
             0x1f801100..=0x1f801108 | 0x1f801110..=0x1f801118 | 0x1f801120..=0x1f801128 => {
                 tracing::trace!("write to timer registers");
-                self.mem_mut().write_region(MEM_MAP.io, address, value);
+                self.mem_mut()
+                    .write_region(MEM_MAP.io, GUEST_MEM_MAP.io, address, value);
                 Ok(())
             }
             _ => Err(UnhandledIO(address)),

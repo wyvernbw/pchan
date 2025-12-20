@@ -6,7 +6,11 @@ use std::{
 
 use thiserror::Error;
 
-use crate::{Bus, io::IO};
+use crate::{
+    Bus,
+    io::IO,
+    memory::{GUEST_MEM_MAP, MEM_MAP},
+};
 use crate::{
     Emu,
     memory::{buffer, from_kb, kb},
@@ -47,7 +51,17 @@ pub trait Bootloader: Bus + IO {
             .map_err(BootError::BiosReadError)?;
         let bios_slice = &bios[..kb(512)];
 
-        self.write_many(0xBFC0_0000, bios_slice);
+        // NOTE: we cannot use the typical IO interace here because bios
+        // is technically not writeable
+        {
+            let this = &mut *self;
+            let mut address = 0xBFC0_0000;
+            for value in bios_slice.iter().copied() {
+                this.mem_mut()
+                    .write_region(MEM_MAP.bios, GUEST_MEM_MAP.bios, address, value);
+                address += 0x1;
+            }
+        };
         tracing::info!("loaded bios: {}kb", from_kb(bios_slice.len()));
 
         Ok(())

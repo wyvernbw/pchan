@@ -12,6 +12,7 @@ use bon::bon;
 use bon::builder;
 use enum_dispatch::enum_dispatch;
 
+use pchan_utils::hex;
 #[cfg(test)]
 use rstest::rstest;
 
@@ -267,7 +268,9 @@ impl DecodedOpNew {
                 (0x10..=0x13, 0x8, 0, _) => todo!("bcnf"),
                 (0x10..=0x13, 0x8, 1, _) => todo!("bcnt"),
                 (0x10..=0x13, 0x6, _, 0x0) => todo!("ctcn"),
-                (0x10..=0x13, 0x10..=0x1F, _, _) => todo!("cop{} imm25", fields.cop()),
+                (0x10..=0x13, 0x10..=0x1F, _, _) => {
+                    todo!("cop{} imm25 {}", fields.cop(), hex(fields.imm26()))
+                }
                 (0x14..=0x1F, _, _, _) => Self::illegal(),
                 (0x20, _, _, _) => Self::LB(LB::new(rt, rs, fields.imm16())),
                 (0x21, _, _, _) => Self::LH(LH::new(rt, rs, fields.imm16())),
@@ -330,7 +333,7 @@ impl Dynarec {
         }
     }
 
-    pub fn emit_imm16(&mut self, dest: Reg, imm: i16) {
+    pub fn emit_imm16_sext(&mut self, dest: Reg, imm: i16) {
         #[cfg(target_arch = "aarch64")]
         {
             match imm {
@@ -340,6 +343,28 @@ impl Dynarec {
                         ; .arch aarch64
                         ; movz W(dest), ext::zero(imm)    // Load as unsigned
                         ; sxth W(dest), W(dest)              // Sign-extend to 32-bit
+                    );
+                }
+                0.. => {
+                    dynasm!(
+                        self.asm
+                        ; .arch aarch64
+                        ; mov W(dest), ext::zero(imm)
+                    );
+                }
+            }
+        }
+    }
+
+    pub fn emit_imm16_uext(&mut self, dest: Reg, imm: i16) {
+        #[cfg(target_arch = "aarch64")]
+        {
+            match imm {
+                ..0 => {
+                    dynasm!(
+                        self.asm
+                        ; .arch aarch64
+                        ; movz W(dest), ext::zero(imm)    // Load as unsigned
                     );
                 }
                 0.. => {
@@ -366,7 +391,7 @@ impl DynarecOp for ADDIU {
         if self.rs == 0 {
             let rt = ctx.dynarec.alloc_reg(self.rt);
 
-            ctx.dynarec.emit_imm16(rt.reg(), self.imm);
+            ctx.dynarec.emit_imm16_sext(rt.reg(), self.imm);
 
             ctx.dynarec.mark_dirty(self.rt);
             rt.restore(ctx.dynarec);
@@ -1360,7 +1385,7 @@ impl DynarecOp for ORI {
                 rt: _,
                 rs: 0,
                 imm: _,
-            } => ctx.dynarec.emit_immediate(self.rt, self.imm),
+            } => ctx.dynarec.emit_immediate_uext(self.rt, self.imm),
             Self {
                 rt: _,
                 rs: _,
@@ -1398,7 +1423,7 @@ impl DynarecOp for XORI {
                 rt: _,
                 rs: 0,
                 imm: _,
-            } => ctx.dynarec.emit_immediate(self.rt, self.imm),
+            } => ctx.dynarec.emit_immediate_uext(self.rt, self.imm),
             Self {
                 rt: _,
                 rs: _,
