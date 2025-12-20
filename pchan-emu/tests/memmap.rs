@@ -3,6 +3,7 @@
 
 use pchan_emu::Emu;
 use pchan_emu::dynarec::prelude::*;
+use pchan_emu::dynarec_v2::PipelineV2;
 use pchan_emu::jit::JIT;
 use pchan_emu::memory::ext;
 use pchan_utils::setup_tracing;
@@ -39,8 +40,9 @@ use rstest::rstest;
 #[case::kseg0_bios(0x9FC0_0000)]
 #[case::kseg1_bios(0xBFC0_0000)]
 fn write_to_address(setup_tracing: (), #[case] base: u32) -> color_eyre::Result<()> {
+    use pchan_emu::io::IO;
+
     let mut emu = Emu::default();
-    let mut jit = JIT::default();
     emu.cpu.pc = 0xBFC0_0000;
     let main = program([
         addiu(8, 0, 0),
@@ -55,8 +57,8 @@ fn write_to_address(setup_tracing: (), #[case] base: u32) -> color_eyre::Result<
         OpCode(69420),
     ]);
     emu.write_many::<u32>(0xBFC0_0000, &main);
-    let summary = emu.step_jit_summarize::<JitSummary>(&mut jit)?;
-    tracing::info!(?summary.function);
+
+    PipelineV2::new(&emu).run_once(&mut emu)?;
 
     assert_eq!(emu.cpu.gpr[9], base);
     assert_eq!(emu.cpu.gpr[8], 256);
@@ -64,13 +66,11 @@ fn write_to_address(setup_tracing: (), #[case] base: u32) -> color_eyre::Result<
     tracing::info!(?base);
     let mut address = base;
     for i in 0..16 {
-        let value = emu.read::<u32, ext::NoExt>(address);
+        let value = emu.read::<u32>(address);
         tracing::info!(?value);
         assert_eq!(value, i * 4);
         address += 4;
     }
-
-    tracing::info!(?summary.function);
 
     Ok(())
 }

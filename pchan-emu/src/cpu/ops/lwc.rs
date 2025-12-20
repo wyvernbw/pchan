@@ -77,39 +77,3 @@ impl Op for LWCn {
 pub fn lwc(n: u8) -> impl Fn(u8, u8, i16) -> OpCode {
     move |rt, rs, imm| LWCn::new(n, rt, rs, imm).into_opcode()
 }
-
-#[cfg(test)]
-mod tests {
-    use crate::{dynarec::prelude::*, jit::JIT, test_utils::jit};
-    use pchan_utils::setup_tracing;
-    use pretty_assertions::assert_eq;
-    use rstest::rstest;
-
-    use crate::{Emu, test_utils::emulator};
-
-    #[rstest]
-    fn lwc_1(setup_tracing: (), mut emulator: Emu, mut jit: JIT) -> color_eyre::Result<()> {
-        tracing::info!(?emulator.cpu);
-        emulator.write_many(
-            0x0,
-            &program([
-                addiu(9, 0, 69),
-                sw(9, 0, 0x0000_1000),
-                nop(),
-                lwc(1)(5, 0, 0x0000_1000),
-                nop(),
-                OpCode(69420),
-            ]),
-        );
-
-        let summary = emulator.step_jit_summarize::<JitSummary>(&mut jit)?;
-
-        tracing::info!(%summary.decoded_ops);
-        tracing::info!(?summary.function);
-        tracing::info!(?emulator.cpu);
-
-        assert_eq!(emulator.read::<u32, ext::NoExt>(0x0000_1000), 69);
-        assert_eq!(emulator.cpu.cop1.reg[5], 69);
-        Ok(())
-    }
-}

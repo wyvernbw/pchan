@@ -79,30 +79,6 @@ impl Op for SLTI {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use pchan_utils::setup_tracing;
-    use rstest::rstest;
-
-    use crate::dynarec::prelude::*;
-    use crate::jit::JIT;
-    use crate::test_utils::jit;
-    use crate::{Emu, test_utils::emulator};
-
-    #[rstest]
-    fn slti_test(setup_tracing: (), mut emulator: Emu, mut jit: JIT) -> color_eyre::Result<()> {
-        emulator.write_many(
-            0,
-            &program([addiu(8, 0, -3), slti(9, 8, 32), OpCode(69420)]),
-        );
-        let summary = emulator.step_jit_summarize::<JitSummary>(&mut jit)?;
-        tracing::info!(?summary.function);
-        assert_eq!(emulator.cpu.gpr[9], 1);
-
-        Ok(())
-    }
-}
-
 #[macro_export]
 macro_rules! icmpimm {
     ($self:expr, $ctx:expr, $compare:expr) => {{

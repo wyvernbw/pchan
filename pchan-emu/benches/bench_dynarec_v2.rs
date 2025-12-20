@@ -6,6 +6,7 @@ use pchan_emu::{
     cpu::ops::{OpCode, sw::*},
     dynarec::prelude::addiu,
     dynarec_v2::PipelineV2,
+    io::IO,
     memory::kb,
 };
 use pchan_utils::setup_tracing;

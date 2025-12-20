@@ -4,6 +4,7 @@ use crate::cpu::Cpu;
 use crate::cpu::ops::NOP;
 use crate::cpu::ops::nop;
 use crate::dynarec_v2::Guest;
+use crate::io::IO;
 use std::num::NonZeroU8;
 
 use bon::Builder;
@@ -395,7 +396,7 @@ impl DynarecOp for ADDIU {
 #[rstest]
 #[case(10, 2, 12)]
 fn test_addiu(#[case] a: u32, #[case] b: u32, #[case] expected: u32) -> color_eyre::Result<()> {
-    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2, io::IO};
     use pchan_utils::setup_tracing;
 
     setup_tracing();
@@ -428,7 +429,7 @@ impl DynarecOp for HaltBlock {
 #[rstest]
 #[case(10, 2, 8)]
 fn test_subu(#[case] a: u32, #[case] b: u32, #[case] expected: u32) -> color_eyre::Result<()> {
-    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2, io::IO};
     use pchan_utils::setup_tracing;
 
     setup_tracing();
@@ -559,7 +560,7 @@ where
     T: Copy + std::fmt::Debug + PartialEq,
     T: const memory::Extend<ext::Zero, Out = u32>,
 {
-    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2, memory::ext};
+    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2, io::IO, memory::ext};
     use pchan_utils::setup_tracing;
 
     setup_tracing();
@@ -575,7 +576,7 @@ where
 
     assert_eq!(emu.cpu.d_clock, 3);
     assert_eq!(emu.cpu.pc, 0x8);
-    assert_eq!(emu.read::<T, ext::Zero>(0xf + 2), ext::zero(value));
+    assert_eq!(emu.read_ext::<T, ext::Zero>(0xf + 2), ext::zero(value));
 
     tracing::info!("returning from test...");
     Ok(())
@@ -607,7 +608,7 @@ fn test_weird_store() -> color_eyre::Result<()> {
     tracing::info!("finished running");
     tracing::info!(?emu.cpu);
 
-    let result = emu.read::<u32, _>(0x801ffee4);
+    let result = emu.read::<u32>(0x801ffee4);
     assert_eq!(result, 0xbfc06ed4);
 
     Ok(())

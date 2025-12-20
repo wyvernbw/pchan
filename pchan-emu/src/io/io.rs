@@ -1,3 +1,5 @@
+use pchan_utils::hex;
+
 use crate::io::timers::Timers;
 use crate::memory::Extend;
 use crate::{
@@ -50,16 +52,27 @@ pub trait IO: Bus {
     }
 }
 
+#[derive(thiserror::Error, Debug, Clone, Copy)]
+#[error("unhandled io at address {}", hex(self.0))]
+pub struct UnhandledIO(pub u32);
+
 impl IO for Emu {
     fn read<T: Copy>(&self, address: u32) -> T {
-        Fastmem::read::<T>(self, address)
-            .and_then(|_| CDRom::read(self, address))
-            //* .and_then(|_| Timers::read(self, address)); *//
-            // etc.
-            .expect("unhandled read")
+        let result = Fastmem::read::<T>(self, address)
+            .or_else(|_| Timers::read_timers(self, address))
+            .or_else(|_| CDRom::read::<T>(self, address));
+        match result {
+            Ok(value) => value,
+            Err(err) => panic!("{}", err),
+        }
     }
 
     fn write<T: Copy>(&mut self, address: u32, value: T) {
-        todo!()
+        let result = Fastmem::write::<T>(self, address, value)
+            .or_else(|_| Timers::write_timers(self, address, value))
+            .or_else(|_| CDRom::write::<T>(self, address, value));
+        if let Err(err) = result {
+            panic!("{}", err);
+        }
     }
 }

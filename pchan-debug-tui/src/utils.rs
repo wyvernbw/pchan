@@ -115,10 +115,6 @@ pub trait CachedOptionExt<T> {
 
 impl<T: Hash + Clone> CachedOptionExt<T> for Option<Cached<T>> {
     fn update(&mut self, from: &T) -> Option<bool> {
-        if let Some(inner) = self {
-            Some(inner.update(from))
-        } else {
-            None
-        }
+        self.as_mut().map(|inner| inner.update(from))
     }
 }

@@ -2,6 +2,7 @@ use color_eyre::eyre::ContextCompat;
 use criterion::*;
 use pchan_emu::{
     Emu,
+    bootloader::Bootloader,
     dynarec::pipeline::EmuDynarecPipeline,
     jit::{BlockFn, JIT},
 };

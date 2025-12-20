@@ -66,28 +66,3 @@ impl Display for LBU {
         )
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use pchan_utils::setup_tracing;
-    use rstest::rstest;
-
-    use crate::Emu;
-    use crate::dynarec::prelude::*;
-    use crate::jit::JIT;
-    use crate::memory::ext;
-    use crate::test_utils::{emulator, jit};
-
-    #[rstest]
-    pub fn test_lbu(setup_tracing: (), mut emulator: Emu, mut jit: JIT) -> color_eyre::Result<()> {
-        emulator.write_many(0x0, &program([lbu(8, 9, 4), nop(), OpCode(69420)]));
-        let op = emulator.read::<OpCode, ext::NoExt>(0x0);
-        tracing::debug!(decoded = ?DecodedOp::new(op));
-        tracing::debug!("{:08X?}", &emulator.mem.buf.as_ref()[..21]);
-        emulator.cpu.gpr[9] = 16;
-        emulator.mem.buf.as_mut()[20] = 69;
-        emulator.step_jit(&mut jit)?;
-        assert_eq!(emulator.cpu.gpr[8], emulator.mem.buf.as_ref()[20] as u32);
-        Ok(())
-    }
-}

@@ -11,10 +11,8 @@ use smallbox::SmallBox;
 use smallvec::SmallVec;
 use std::cell::Cell;
 use std::collections::VecDeque;
-use std::hash::Hash;
 use std::hash::Hasher;
 use std::ops::Deref;
-use std::rc::Rc;
 use std::simd::Simd;
 use std::sync::Arc;
 use std::sync::LazyLock;
@@ -30,8 +28,8 @@ use crate::dynarec_v2::emitters::DynarecOp;
 use crate::dynarec_v2::emitters::EmitCtx;
 use crate::dynarec_v2::emitters::EmitSummary;
 use crate::dynarec_v2::regalloc::*;
+use crate::io::IO;
 use crate::max_simd_elements;
-use crate::memory::ext;
 
 pub mod emitters;
 pub mod regalloc;
@@ -158,21 +156,21 @@ impl Dynarec {
 
                 // -- function table --
                 ; -> write32v2:
-                ; .u64 Emu::write32v2 as usize as _
+                ; .u64 Emu::write32v2 as *const () as _
                 ; -> write16v2:
-                ; .u64 Emu::write16v2 as usize as _
+                ; .u64 Emu::write16v2 as *const () as _
                 ; -> write8v2:
-                ; .u64 Emu::write8v2 as usize as _
+                ; .u64 Emu::write8v2 as *const () as _
                 ; -> readi8v2:
-                ; .u64 Emu::readi8v2 as usize as _
+                ; .u64 Emu::readi8v2 as *const () as _
                 ; -> readu8v2:
-                ; .u64 Emu::readu8v2 as usize as _
+                ; .u64 Emu::readu8v2 as *const () as _
                 ; -> readi16v2:
-                ; .u64 Emu::readi16v2 as usize as _
+                ; .u64 Emu::readi16v2 as *const () as _
                 ; -> readu16v2:
-                ; .u64 Emu::readu16v2 as usize as _
+                ; .u64 Emu::readu16v2 as *const () as _
                 ; -> read32v2:
-                ; .u64 Emu::read32v2 as usize as _
+                ; .u64 Emu::read32v2 as *const () as _
                 ; after_table:
 
                 ; stp x19, x20, [sp, -16]!
@@ -646,7 +644,7 @@ impl Emu {
         (self.cpu.pc..)
             .step_by(size_of::<u32>() * CHUNK)
             .flat_map(|address| {
-                self.read::<[Simd<u32, 4>; CHUNK / max_simd_elements::<u32>()], ext::NoExt>(address)
+                self.read::<[Simd<u32, 4>; CHUNK / max_simd_elements::<u32>()]>(address)
             })
             .flat_map(|value| value.to_array())
             .map(OpCode)

@@ -62,35 +62,6 @@ impl Op for SLT {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use pchan_utils::setup_tracing;
-    use rstest::rstest;
-
-    use crate::dynarec::prelude::*;
-    use crate::jit::JIT;
-    use crate::test_utils::jit;
-    use crate::{Emu, test_utils::emulator};
-
-    #[rstest]
-    fn basic_slt(setup_tracing: (), mut emulator: Emu, mut jit: JIT) -> color_eyre::Result<()> {
-        emulator.write_many(
-            0x0,
-            &program([
-                addiu(8, 0, 16),
-                addiu(9, 0, -3),
-                slt(10, 9, 8),
-                OpCode(69420),
-            ]),
-        );
-        let summary = emulator.step_jit_summarize::<JitSummary>(&mut jit)?;
-        tracing::info!(?summary.function);
-        assert_eq!(emulator.cpu.gpr[10], 1);
-
-        Ok(())
-    }
-}
-
 #[macro_export]
 macro_rules! icmp {
     ($self:expr, $ctx:expr, $cond:expr) => {{

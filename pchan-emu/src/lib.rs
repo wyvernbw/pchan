@@ -35,7 +35,7 @@ use crate::{
     dynarec_v2::DynarecBlock,
     io::tty::Tty,
     jit::{JitCache, LUTMap},
-    memory::Memory,
+    memory::MemoryState,
 };
 
 pub mod cranelift_bs {
@@ -91,7 +91,7 @@ pub struct Emu {
     pub cpu: Cpu,
     #[debug(skip)]
     pub dynarec_cache: HashMap<u32, DynarecBlock>,
-    pub mem: Memory,
+    pub mem: MemoryState,
     pub boot: BootloaderState,
     #[debug(skip)]
     pub jit_cache: JitCache,
@@ -200,8 +200,8 @@ impl<'a> FnBuilderExt<'a> for FunctionBuilder<'a> {
 }
 
 pub trait Bus {
-    fn mem_mut(&mut self) -> &mut Memory;
-    fn mem(&self) -> &Memory;
+    fn mem_mut(&mut self) -> &mut MemoryState;
+    fn mem(&self) -> &MemoryState;
     fn cpu_mut(&mut self) -> &mut Cpu;
     fn cpu(&self) -> &Cpu;
     fn bootloader_mut(&mut self) -> &mut BootloaderState;
@@ -210,7 +210,7 @@ pub trait Bus {
 
 impl Bus for Emu {
     #[inline(always)]
-    fn mem_mut(&mut self) -> &mut Memory {
+    fn mem_mut(&mut self) -> &mut MemoryState {
         &mut self.mem
     }
     #[inline(always)]
@@ -218,7 +218,7 @@ impl Bus for Emu {
         &self.cpu
     }
     #[inline(always)]
-    fn mem(&self) -> &Memory {
+    fn mem(&self) -> &MemoryState {
         &self.mem
     }
     #[inline(always)]

@@ -122,6 +122,7 @@ impl Op for BGTZ {
 
 #[cfg(test)]
 mod tests {
+    use crate::io::IO;
     use pchan_utils::setup_tracing;
     use pretty_assertions::assert_eq;
     use rstest::rstest;

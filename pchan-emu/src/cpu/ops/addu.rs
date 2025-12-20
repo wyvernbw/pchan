@@ -100,6 +100,7 @@ mod tests {
 
     use crate::{
         Emu,
+        io::IO,
         jit::JIT,
         test_utils::{emulator, jit},
     };

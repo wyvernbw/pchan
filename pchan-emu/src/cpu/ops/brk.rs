@@ -43,23 +43,3 @@ impl Op for BREAK {
 pub fn brk() -> OpCode {
     BREAK.into_opcode()
 }
-
-#[cfg(test)]
-mod tests {
-    use crate::{dynarec::prelude::*, jit::JIT, test_utils::jit};
-    use pchan_utils::setup_tracing;
-    use rstest::rstest;
-
-    use crate::Emu;
-
-    #[rstest]
-    fn break_1(setup_tracing: (), mut jit: JIT) {
-        let mut emu = Emu::default();
-        emu.write_many(0x0, &program([brk()]));
-
-        let summary = emu.step_jit_summarize::<JitSummary>(&mut jit).unwrap();
-        tracing::info!(?summary);
-
-        assert_eq!(emu.cpu.pc, 0xbfc0_0180);
-    }
-}

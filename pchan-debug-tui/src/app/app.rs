@@ -9,13 +9,14 @@ use std::time::{Duration, Instant};
 use circular_buffer::CircularBuffer;
 use color_eyre::eyre::{Result, eyre};
 use flume::{Receiver, Sender};
+use pchan_emu::bootloader::Bootloader;
 use pchan_emu::cpu::ops::{BoundaryType, Op};
 use pchan_emu::cpu::{Cpu, reg_str};
 use pchan_emu::dynarec::FetchSummary;
-use pchan_emu::dynarec::pipeline::{EmuDynarecPipeline, EmuDynarecPipelineReport};
+use pchan_emu::dynarec::pipeline::EmuDynarecPipelineReport;
 use pchan_emu::dynarec_v2::emitters::DynarecOp;
 use pchan_emu::dynarec_v2::{FetchedOp, PipelineV2, PipelineV2Stage};
-use pchan_emu::jit::JIT;
+use pchan_emu::io::IO;
 use pchan_emu::{Emu, dynarec_v2};
 use pchan_utils::{IgnorePoison, hex};
 use ratatui::crossterm::event::KeyModifiers;
@@ -27,7 +28,7 @@ use ratatui::widgets::{
     TableState, Tabs, Wrap,
 };
 use ratatui::{DefaultTerminal, crossterm::event};
-use smol::{Executor, LocalExecutor};
+use smol::Executor;
 use strum::{EnumCount, IntoEnumIterator};
 use tui_input::Input;
 use tui_input::backend::crossterm::EventHandler;
@@ -255,105 +256,6 @@ pub enum EmuInfo {
     Ref(Arc<RwLock<Emu>>),
 }
 
-async fn emu_task(
-    emu: Arc<RwLock<Emu>>,
-    config_rx: Receiver<AppConfig>,
-    emu_cmd_rx: Receiver<EmuCmd>,
-    emu_info_tx: Sender<EmuInfo>,
-) -> Result<()> {
-    emu_info_tx.send(EmuInfo::StateUpdate(EmuState::Uninitialized))?;
-
-    emu_info_tx.send(EmuInfo::StateUpdate(EmuState::WaitingForConfig))?;
-    let Ok(config) = config_rx.recv() else {
-        emu_info_tx.send(EmuInfo::StateUpdate(EmuState::Error(eyre!(
-            "emu thread received config with no bios path"
-        ))))?;
-        return Err(eyre!("emu thread received config with no bios path"));
-    };
-    emu_info_tx.send(EmuInfo::StateUpdate(EmuState::SettingUp))?;
-    {
-        let mut emu = emu.get_mut();
-
-        emu.boot
-            .set_bios_path(config.bios_path.expect("config must contain bios path"));
-        match emu.load_bios() {
-            Ok(()) => {}
-            Err(err) => {
-                emu_info_tx.send(EmuInfo::StateUpdate(EmuState::Error(err)))?;
-                return Ok(());
-            }
-        }
-        emu.jump_to_bios();
-    }
-    emu_info_tx.send(EmuInfo::StateUpdate(EmuState::Running))?;
-    emu_info_tx.send(EmuInfo::Ref(emu.clone()))?;
-
-    let mut pipeline = {
-        let emu = emu.get();
-        EmuDynarecPipeline::from_emu(&emu)
-    };
-
-    let mut breakpoints = HashSet::<u32>::new();
-    let mut jit = JIT::default();
-    let mut running = false;
-    let mut elapsed = Duration::new(0, 0);
-    let mut step_jit =
-        async |mut pipeline: EmuDynarecPipeline| -> color_eyre::Result<EmuDynarecPipeline> {
-            {
-                let mut emu = emu.get_mut();
-                let now = Instant::now();
-                pipeline = pipeline.step(&mut emu, &mut jit)?;
-                elapsed += now.elapsed();
-            }
-            if let Some(fetch) = pipeline.as_fetch() {
-                emu_info_tx
-                    .send_async(EmuInfo::Fetch(fetch.clone()))
-                    .await?;
-            }
-            if let EmuDynarecPipeline::Init { .. } = pipeline {
-                let cycles_elapsed = emu.get().cpu.d_clock as f64;
-                let frequency = cycles_elapsed / elapsed.as_secs_f64();
-                elapsed = Duration::new(0, 0);
-                emu_info_tx
-                    .send_async(EmuInfo::FrequencyUpdate(frequency))
-                    .await?;
-            }
-            emu_info_tx
-                .send_async(EmuInfo::PipelineUpdate(pipeline.report()))
-                .await?;
-            Ok(pipeline)
-        };
-
-    loop {
-        // if let Ok(new_config) = config_rx.try_recv() {
-        //     config = new_config;
-        // }
-        for cmd in emu_cmd_rx.try_iter() {
-            match cmd {
-                EmuCmd::StepJit => {
-                    pipeline = step_jit(pipeline).await?;
-                }
-                EmuCmd::Run => {
-                    running = true;
-                }
-                EmuCmd::Pause => {
-                    running = false;
-                }
-                EmuCmd::AddBreakpoint(addr) => {
-                    breakpoints.insert(addr);
-                }
-            };
-        }
-        if running {
-            pipeline = step_jit(pipeline).await?;
-            if breakpoints.contains(&emu.get().cpu.pc) {
-                running = false;
-            }
-        }
-        smol::future::yield_now().await;
-    }
-}
-
 async fn emu_task_v2(
     emu: Arc<RwLock<Emu>>,
     config_rx: Receiver<AppConfig>,
@@ -373,12 +275,11 @@ async fn emu_task_v2(
     {
         let mut emu = emu.get_mut();
 
-        emu.boot
-            .set_bios_path(config.bios_path.expect("config must contain bios path"));
+        emu.set_bios_path(config.bios_path.expect("config must contain bios path"));
         match emu.load_bios() {
             Ok(()) => {}
             Err(err) => {
-                emu_info_tx.send(EmuInfo::StateUpdate(EmuState::Error(err)))?;
+                emu_info_tx.send(EmuInfo::StateUpdate(EmuState::Error(err.into())))?;
                 return Ok(());
             }
         }
@@ -973,9 +874,6 @@ impl Component for CpuInspector {
             }
             _ => {}
         };
-        let Some(emu) = state.emu.as_deref() else {
-            return Ok(());
-        };
         match state.current_tab {
             CpuInspectorTab::Cpu => {
                 CpuTab(&state.cpu_state).handle_input(event, &mut state.cpu_tab_state, area)?;
@@ -1412,7 +1310,7 @@ impl MemoryInspectorState {
         self.loaded.clear();
         (self.loaded_address..)
             .take((rows * MemoryInspector::COLUMNS) as usize)
-            .map(|address| emu.read::<u8, pchan_emu::memory::ext::NoExt>(address))
+            .map(|address| emu.read::<u8>(address))
             .map(|byte| const_hex::const_encode::<_, false>(&[byte]))
             .collect_into(&mut self.loaded);
 

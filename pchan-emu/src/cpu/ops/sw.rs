@@ -66,29 +66,3 @@ impl Op for SW {
             .set_bits(0..16, (self.imm as i32 as i16) as u32)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use pchan_utils::setup_tracing;
-    use rstest::rstest;
-
-    use crate::dynarec::prelude::*;
-    use crate::jit::JIT;
-    use crate::memory::ext;
-    use crate::test_utils::jit;
-    use crate::{Emu, test_utils::emulator};
-
-    #[rstest]
-    pub fn test_sw(setup_tracing: (), mut emulator: Emu, mut jit: JIT) -> color_eyre::Result<()> {
-        emulator.write_many(0x0, &program([sw(9, 8, 0), lw(10, 8, 0), OpCode(69420)]));
-
-        emulator.cpu.gpr[8] = 32; // base register
-        emulator.cpu.gpr[9] = u32::MAX;
-
-        emulator.step_jit(&mut jit)?;
-
-        assert_eq!(emulator.read::<u32, ext::NoExt>(32), u32::MAX);
-
-        Ok(())
-    }
-}

@@ -2,9 +2,9 @@ use std::ops::RangeInclusive;
 
 use crate::{
     Bus, Emu,
-    cpu::{Cpu, Exception},
-    io::IO,
-    memory::{Memory, ext},
+    cpu::Exception,
+    io::{IO, UnhandledIO},
+    memory::MEM_MAP,
 };
 use bitfield::bitfield;
 
@@ -73,6 +73,27 @@ pub struct AdvanceTimerSummary {
 }
 
 pub trait Timers: Bus + IO {
+    fn read_timers<T: Copy>(&self, address: u32) -> Result<T, UnhandledIO> {
+        match address {
+            0x1f801100..=0x1f801108 | 0x1f801110..=0x1f801118 | 0x1f801120..=0x1f801128 => {
+                tracing::trace!("read to timer registers");
+                Ok(self.mem().read_region(MEM_MAP.io, address))
+            }
+            _ => Err(UnhandledIO(address)),
+        }
+    }
+
+    fn write_timers<T: Copy>(&mut self, address: u32, value: T) -> Result<(), UnhandledIO> {
+        match address {
+            0x1f801100..=0x1f801108 | 0x1f801110..=0x1f801118 | 0x1f801120..=0x1f801128 => {
+                tracing::trace!("write to timer registers");
+                self.mem_mut().write_region(MEM_MAP.io, address, value);
+                Ok(())
+            }
+            _ => Err(UnhandledIO(address)),
+        }
+    }
+
     fn run_timer_pipeline(&mut self) {
         let adv = self.advance_timers();
         self.trigger_timer_updates(adv);

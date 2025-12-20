@@ -3,8 +3,8 @@ use crate::{
     cpu::Reg,
     cranelift_bs::*,
     dynarec::{pipeline::EmuDynarecPipeline, sparse_queue::SparseQueue},
+    io::IO,
     jit::{BlockFn, FuncRefTable, LUTMap},
-    memory::ext,
 };
 use std::{borrow::Cow, collections::HashMap, ops::Range, rc::Rc};
 
@@ -268,7 +268,7 @@ impl Emu {
             let mut nop_sequence = 0;
 
             while pc < u32::MAX {
-                let opcode = self.read::<OpCode, ext::NoExt>(pc);
+                let opcode = self.read::<OpCode>(pc);
                 let op = DecodedOp::new(opcode);
                 let block_boundary = op.is_block_boundary();
                 if enabled!(Level::TRACE) {

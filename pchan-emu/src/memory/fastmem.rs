@@ -2,6 +2,7 @@ use std::sync::LazyLock;
 
 use crate::{
     Bus, Emu,
+    io::UnhandledIO,
     memory::{MEM_MAP, kb},
 };
 
@@ -82,7 +83,7 @@ pub fn util_fast_map_address(address: u32) -> Option<u32> {
     lut_ptr.map(|region_ptr| region_ptr + offset)
 }
 
-pub type FastmemResult<T> = Result<T, ()>;
+pub type FastmemResult<T> = Result<T, UnhandledIO>;
 
 pub trait Fastmem: Bus {
     fn read<T: Copy>(&self, address: u32) -> FastmemResult<T>;
@@ -104,7 +105,7 @@ impl Fastmem for Emu {
                 Ok(std::ptr::read(ptr as *const T))
             },
             // memcheck
-            None => Err(Memcheck),
+            None => Err(UnhandledIO(address)),
         }
     }
 
@@ -128,7 +129,7 @@ impl Fastmem for Emu {
             }
             Ok(())
         } else {
-            Err(Memcheck)
+            Err(UnhandledIO(address))
         }
     }
 }

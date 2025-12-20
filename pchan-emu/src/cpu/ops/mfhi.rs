@@ -64,6 +64,7 @@ mod tests {
 
     use crate::Emu;
     use crate::dynarec::prelude::*;
+    use crate::io::IO;
     use crate::test_utils::{emulator, jit};
 
     #[rstest]

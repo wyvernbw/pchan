@@ -15,7 +15,7 @@ use crate::{
     cranelift_bs::*,
     dynarec::{CacheUpdates, EntryCache},
     io::IO,
-    memory::{self, Memory, fastmem},
+    memory::{self, MemoryState, fastmem},
 };
 
 #[derive(derive_more::Debug)]
@@ -168,7 +168,7 @@ impl Default for JIT {
             .unwrap()
             .finish(settings::Flags::new(flags))
             .unwrap();
-        let mut jit_builder = JITBuilder::with_isa(isa, default_libcall_names());
+        let jit_builder = JITBuilder::with_isa(isa, default_libcall_names());
         // FIXME: outdated bindings
         // jit_builder
         //     .symbol("read32", Memory::read32 as *const u8)
@@ -895,7 +895,7 @@ impl JIT {
     }
 }
 
-type BlockFnPtr = fn(*mut Cpu, *mut Memory);
+type BlockFnPtr = fn(*mut Cpu, *mut MemoryState);
 
 /// # BlockFn
 ///

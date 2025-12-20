@@ -35,30 +35,30 @@ impl Emu {
     /// # Safety
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn readi8v2(self: *mut Emu, address: u32) -> i32 {
-        unsafe { IO::read_ext::<i8, ext::Sign>(&mut *self, address) }
+        unsafe { IO::read_ext::<i8, ext::Sign>(&*self, address) }
     }
 
     /// # Safety
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn readu8v2(self: *mut Emu, address: u32) -> u32 {
-        unsafe { IO::read_ext::<u8, ext::Zero>(&mut *self, address) }
+        unsafe { IO::read_ext::<u8, ext::Zero>(&*self, address) }
     }
 
     /// # Safety
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn readi16v2(self: *mut Emu, address: u32) -> i32 {
-        unsafe { IO::read_ext::<i16, ext::Sign>(&mut *self, address) }
+        unsafe { IO::read_ext::<i16, ext::Sign>(&*self, address) }
     }
 
     /// # Safety
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn readu16v2(self: *mut Emu, address: u32) -> u32 {
-        unsafe { IO::read_ext::<u16, ext::Zero>(&mut *self, address) }
+        unsafe { IO::read_ext::<u16, ext::Zero>(&*self, address) }
     }
 
     /// # Safety
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn read32v2(self: *mut Emu, address: u32) -> i32 {
-        unsafe { IO::read_ext::<i32, ext::NoExt>(&mut *self, address) }
+        unsafe { IO::read_ext::<i32, ext::NoExt>(&*self, address) }
     }
 }

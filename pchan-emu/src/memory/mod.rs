@@ -20,19 +20,19 @@ pub type Buffer = Box<[u8]>;
 
 #[derive(derive_more::Debug, Clone)]
 #[debug("memory:{}kb", MEM_SIZE/1024)]
-pub struct Memory {
+pub struct MemoryState {
     pub buf: Buffer,
     pub cache: Buffer,
 }
 
 pub struct MemMap {
-    ram: usize,
-    scratch: usize,
-    io: usize,
-    exp_2: usize,
-    exp_3: usize,
-    bios: usize,
-    cache_control: usize,
+    pub ram: usize,
+    pub scratch: usize,
+    pub io: usize,
+    pub exp_2: usize,
+    pub exp_3: usize,
+    pub bios: usize,
+    pub cache_control: usize,
 }
 
 pub static MEM_MAP: MemMap = MemMap {
@@ -49,11 +49,30 @@ static MEM_SIZE: usize = kb(2048) + kb(64) + kb(64) + kb(64) + kb(2048) + kb(512
 // const MEM_SIZE: usize = 600 * 1024 * 1024;
 static MEM_KB: usize = from_kb(MEM_SIZE) + 1;
 
-impl Default for Memory {
+impl Default for MemoryState {
     fn default() -> Self {
-        Memory {
+        MemoryState {
             buf: buffer(MEM_SIZE),
             cache: buffer(4096),
+        }
+    }
+}
+
+impl MemoryState {
+    #[inline(always)]
+    pub fn read_region<T: Copy>(&self, region: usize, address: u32) -> T {
+        let offset = address & 0xFFFF;
+        let idx = region + offset as usize;
+        let slice = &self.buf[idx..];
+        unsafe { slice.as_ptr().cast::<T>().read() }
+    }
+    #[inline(always)]
+    pub fn write_region<T: Copy>(&mut self, region: usize, address: u32, value: T) {
+        let offset = address & 0xFFFF;
+        let idx = region + offset as usize;
+        let slice = &mut self.buf[idx..];
+        unsafe {
+            slice.as_mut_ptr().cast::<T>().write(value);
         }
     }
 }

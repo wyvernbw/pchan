@@ -86,6 +86,7 @@ pub fn and(rd: u8, rs: u8, rt: u8) -> OpCode {
 
 #[cfg(test)]
 mod tests {
+    use crate::io::IO;
     use pchan_utils::setup_tracing;
     use pretty_assertions::assert_eq;
     use rstest::rstest;

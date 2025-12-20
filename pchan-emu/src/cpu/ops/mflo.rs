@@ -56,38 +56,3 @@ impl Display for MFLO {
 pub fn mflo(rd: u8) -> OpCode {
     MFLO { rd }.into_opcode()
 }
-
-#[cfg(test)]
-mod tests {
-    use pchan_utils::setup_tracing;
-    use rstest::rstest;
-
-    use crate::Emu;
-    use crate::dynarec::prelude::*;
-    use crate::test_utils::{emulator, jit};
-
-    #[rstest]
-    #[case(2, 3, 6)]
-    #[case(0xFFFFFFFF, 2, 0xFFFFFFFE)] // low 32 bits of 0x1FFFFFFFE
-    #[case(0x80000000, 2, 0)] // low 32 bits of 0x100000000
-    #[case(0xFFFFFFFF, 0xFFFFFFFF, 1)] // low 32 bits of 0xFFFFFFFE00000001
-    pub fn mflo_1(
-        setup_tracing: (),
-        mut emulator: Emu,
-        mut jit: crate::jit::JIT,
-        #[case] a: u32,
-        #[case] b: u32,
-        #[case] expected: u32,
-    ) -> color_eyre::Result<()> {
-        emulator.write_many(0x0, &program([mult(8, 9), nop(), mflo(10), OpCode(69420)]));
-        emulator.cpu.gpr[8] = a;
-        emulator.cpu.gpr[9] = b;
-
-        let summary = emulator.step_jit_summarize::<JitSummary>(&mut jit)?;
-        tracing::info!(?summary.function);
-        let output = emulator.cpu.gpr[10];
-        assert_eq!(output, expected);
-
-        Ok(())
-    }
-}

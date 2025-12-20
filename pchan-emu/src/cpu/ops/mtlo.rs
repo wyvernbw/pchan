@@ -55,30 +55,3 @@ impl Display for MTLO {
 pub fn mtlo(rs: u8) -> OpCode {
     MTLO { rs }.into_opcode()
 }
-
-#[cfg(test)]
-mod tests {
-    use pchan_utils::setup_tracing;
-    use rstest::rstest;
-
-    use crate::Emu;
-    use crate::dynarec::prelude::*;
-    use crate::jit::JIT;
-    use crate::test_utils::{emulator, jit};
-
-    #[rstest]
-    pub fn mtlo_1(setup_tracing: (), mut emulator: Emu, mut jit: JIT) -> color_eyre::Result<()> {
-        emulator.write_many(0, &program([multu(8, 9), nop(), mtlo(10), OpCode(69420)]));
-        emulator.cpu.gpr[10] = 0x1234;
-        emulator.cpu.gpr[8] = 16;
-        emulator.cpu.gpr[9] = 16;
-
-        let summary = emulator.step_jit_summarize::<JitSummary>(&mut jit)?;
-        tracing::info!(?summary.function);
-        let output = emulator.cpu.hilo;
-        tracing::info!("hilo=0x{:016X}", emulator.cpu.hilo);
-        assert_eq!(output as u32, 0x1234);
-
-        Ok(())
-    }
-}

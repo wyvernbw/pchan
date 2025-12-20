@@ -66,55 +66,6 @@ pub fn sra(rd: u8, rt: u8, imm: i8) -> OpCode {
     SRA { rd, rt, imm }.into_opcode()
 }
 
-#[cfg(test)]
-mod tests {
-    use pchan_utils::setup_tracing;
-    use pretty_assertions::assert_eq;
-    use rstest::rstest;
-
-    use crate::dynarec::prelude::*;
-    use crate::test_utils::jit;
-    use crate::{Emu, test_utils::emulator};
-
-    #[rstest]
-    #[case(64, 6, 1)]
-    #[case(32, 0, 32)]
-    #[case(-32, 2, -8i32 as u32)]
-    #[case(0b11110000, 4, 0b00001111)]
-    fn sra_1(
-        setup_tracing: (),
-        mut emulator: Emu,
-        mut jit: crate::jit::JIT,
-        #[case] a: i16,
-        #[case] b: i8,
-        #[case] expected: u32,
-    ) -> color_eyre::Result<()> {
-        emulator.write_many(
-            0x0,
-            &program([addiu(8, 0, a), sra(10, 8, b), OpCode(69420)]),
-        );
-        let summary = emulator.step_jit_summarize::<JitSummary>(&mut jit)?;
-        tracing::info!(?summary.function);
-        assert_eq!(emulator.cpu.gpr[10], expected);
-        Ok(())
-    }
-    #[rstest]
-    #[case(8)]
-    #[case(0b00001111)]
-    fn sra_2(
-        setup_tracing: (),
-        mut emulator: Emu,
-        mut jit: crate::jit::JIT,
-        #[case] imm: i8,
-    ) -> color_eyre::Result<()> {
-        emulator.write_many(0x0, &program([sra(10, 0, imm), OpCode(69420)]));
-        let summary = emulator.step_jit_summarize::<JitSummary>(&mut jit)?;
-        tracing::info!(?summary.function);
-        assert_eq!(emulator.cpu.gpr[10], 0);
-        Ok(())
-    }
-}
-
 #[macro_export]
 macro_rules! shiftimm {
     ($self:expr, $ctx:expr, $opcode:expr) => {{

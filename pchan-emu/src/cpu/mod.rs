@@ -178,12 +178,14 @@ impl Cpu {
     }
 }
 
+#[allow(clippy::derivable_impls)]
 impl Default for Cop1 {
     fn default() -> Self {
         Self { reg: [0; 32] }
     }
 }
 
+#[allow(clippy::derivable_impls)]
 impl Default for Cop2 {
     fn default() -> Self {
         Self { reg: [0; 32] }

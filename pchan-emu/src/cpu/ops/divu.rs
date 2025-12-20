@@ -46,6 +46,7 @@ impl Op for DIVU {
 
 #[cfg(test)]
 mod tests {
+    use crate::io::IO;
     use crate::{dynarec::prelude::*, test_utils::jit};
     use pchan_utils::setup_tracing;
     use rstest::rstest;
