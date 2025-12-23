@@ -103,6 +103,7 @@ pub const trait Extend<E> {
 impl<T> const Extend<NoExt> for T {
     type Out = Self;
 
+    #[inline(always)]
     fn ext(self) -> Self::Out {
         self
     }
@@ -110,6 +111,7 @@ impl<T> const Extend<NoExt> for T {
 
 impl const Extend<Sign> for u8 {
     type Out = i32;
+    #[inline(always)]
     fn ext(self) -> Self::Out {
         self as i8 as i32
     }
@@ -117,6 +119,7 @@ impl const Extend<Sign> for u8 {
 
 impl const Extend<Zero> for u8 {
     type Out = u32;
+    #[inline(always)]
     fn ext(self) -> Self::Out {
         self as u32
     }
@@ -124,6 +127,7 @@ impl const Extend<Zero> for u8 {
 
 impl const Extend<Sign> for u16 {
     type Out = i32;
+    #[inline(always)]
     fn ext(self) -> Self::Out {
         self as i16 as i32
     }
@@ -131,6 +135,7 @@ impl const Extend<Sign> for u16 {
 
 impl const Extend<Zero> for u16 {
     type Out = u32;
+    #[inline(always)]
     fn ext(self) -> Self::Out {
         self as u32
     }
@@ -138,6 +143,7 @@ impl const Extend<Zero> for u16 {
 
 impl const Extend<Sign> for i8 {
     type Out = i32;
+    #[inline(always)]
     fn ext(self) -> Self::Out {
         self as i32
     }
@@ -145,6 +151,7 @@ impl const Extend<Sign> for i8 {
 
 impl const Extend<Zero> for i8 {
     type Out = u32;
+    #[inline(always)]
     fn ext(self) -> Self::Out {
         self as u8 as u32
     }
@@ -152,6 +159,7 @@ impl const Extend<Zero> for i8 {
 
 impl const Extend<Sign> for i16 {
     type Out = i32;
+    #[inline(always)]
     fn ext(self) -> Self::Out {
         self as i32
     }
@@ -159,6 +167,7 @@ impl const Extend<Sign> for i16 {
 
 impl const Extend<Zero> for i16 {
     type Out = u32;
+    #[inline(always)]
     fn ext(self) -> Self::Out {
         self as u16 as u32
     }
@@ -171,6 +180,7 @@ pub mod ext {
 
     use super::Extend;
 
+    #[inline(always)]
     pub const fn extend<T, E>(value: T) -> T::Out
     where
         T: const Extend<E>,
@@ -178,6 +188,7 @@ pub mod ext {
         value.ext()
     }
 
+    #[inline(always)]
     pub const fn sign<T>(value: T) -> T::Out
     where
         T: const Extend<Sign>,
@@ -185,6 +196,7 @@ pub mod ext {
         value.ext()
     }
 
+    #[inline(always)]
     pub const fn zero<T>(value: T) -> T::Out
     where
         T: const Extend<Zero>,

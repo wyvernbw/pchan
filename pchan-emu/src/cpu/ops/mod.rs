@@ -799,7 +799,7 @@ impl DecodedOp {
                 (0x7, _, _, _) => Self::BGTZ(BGTZ::new(rs, fields.imm16())),
                 (0x8 | 0x9, _, _, _) => Self::ADDIU(ADDIU::new(rs, rt, fields.imm16())),
                 (0xA, _, _, _) => Self::SLTI(SLTI::new(rt, rs, fields.imm16())),
-                (0xB, _, _, _) => Self::SLTIU(SLTIU::new(rt, rs, fields.imm16())),
+                (0xB, _, _, _) => Self::SLTIU(SLTIU::new(rt, rs, fields.imm16() as u16)),
                 (0xC, _, _, _) => Self::ANDI(ANDI::new(rs, rt, fields.imm16())),
                 (0xD, _, _, _) => Self::ORI(ORI::new(rs, rt, fields.imm16())),
                 (0xE, _, _, _) => Self::XORI(XORI::new(rs, rt, fields.imm16())),

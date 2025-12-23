@@ -5,16 +5,16 @@ use std::fmt::Display;
 pub struct SLTIU {
     pub rt: u8,
     pub rs: u8,
-    pub imm: i16,
+    pub imm: u16,
 }
 
 impl SLTIU {
-    pub const fn new(rt: u8, rs: u8, imm: i16) -> Self {
+    pub const fn new(rt: u8, rs: u8, imm: u16) -> Self {
         Self { rt, rs, imm }
     }
 }
 
-pub fn sltiu(rt: u8, rs: u8, imm: i16) -> OpCode {
+pub fn sltiu(rt: u8, rs: u8, imm: u16) -> OpCode {
     SLTIU { rs, rt, imm }.into_opcode()
 }
 
@@ -36,7 +36,7 @@ impl TryFrom<OpCode> for SLTIU {
     fn try_from(value: OpCode) -> Result<Self, Self::Error> {
         let value = value.as_primary(PrimeOp::SLTIU)?;
         Ok(SLTIU {
-            imm: value.bits(0..16) as i16,
+            imm: value.bits(0..16) as u16,
             rt: value.bits(16..21) as u8,
             rs: value.bits(21..26) as u8,
         })
