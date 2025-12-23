@@ -57,6 +57,7 @@ impl Emu {
     }
 
     /// # Safety
+    /// safety my ass
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn read32v2(self: *mut Emu, address: u32) -> i32 {
         unsafe { IO::read_ext::<i32, ext::NoExt>(&*self, address) }

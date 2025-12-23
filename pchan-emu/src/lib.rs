@@ -107,12 +107,26 @@ impl Emu {
     pub fn reg_offset(reg: u8) -> usize {
         offset_of!(Self, cpu) + Cpu::reg_offset(reg)
     }
+
+    pub fn panic(&self, panic_msg: &str) -> ! {
+        panic!(
+            r#"
+            emulator panicked at pc={} with:
+            {panic_msg}
+
+            state = {:?}
+            "#,
+            hex(self.cpu.pc),
+            self
+        )
+    }
 }
 
 use cranelift::{
     codegen::ir::{Inst, Opcode},
     prelude::*,
 };
+use pchan_utils::hex;
 
 pub trait IntoInst {
     fn into_inst(self) -> Inst;

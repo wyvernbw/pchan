@@ -74,6 +74,7 @@ pub struct AdvanceTimerSummary {
 
 pub trait Timers: Bus + IO {
     fn read_timers<T: Copy>(&self, address: u32) -> Result<T, UnhandledIO> {
+        let address = address & 0x1fffffff;
         match address {
             0x1f801100..=0x1f801108 | 0x1f801110..=0x1f801118 | 0x1f801120..=0x1f801128 => {
                 tracing::trace!("read to timer registers");
@@ -86,6 +87,7 @@ pub trait Timers: Bus + IO {
     }
 
     fn write_timers<T: Copy>(&mut self, address: u32, value: T) -> Result<(), UnhandledIO> {
+        let address = address & 0x1fffffff;
         match address {
             0x1f801100..=0x1f801108 | 0x1f801110..=0x1f801118 | 0x1f801120..=0x1f801128 => {
                 tracing::trace!("write to timer registers");

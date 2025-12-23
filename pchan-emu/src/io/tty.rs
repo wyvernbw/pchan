@@ -40,7 +40,7 @@ impl Tty {
     }
 
     pub fn flush(&mut self) -> color_eyre::Result<()> {
-        let string = str::from_utf8(self.buf.as_ref())?;
+        let string = str::from_utf8(&self.buf.as_ref()[..self.end])?;
         match &mut self.mode {
             TtyMode::Stdout => {
                 print!("{}", string);

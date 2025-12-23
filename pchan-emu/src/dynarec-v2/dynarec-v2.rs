@@ -61,7 +61,7 @@ unsafe impl Sync for Dynarec {}
 
 impl Default for Dynarec {
     fn default() -> Self {
-        let asm = Assembler::new_with_capacity(size_of::<u32>() * 256)
+        let asm = Assembler::new_with_capacity(size_of::<u64>() * 128)
             .expect("failed to create assembler");
         Self {
             delay_queue: VecDeque::with_capacity(2),
@@ -291,6 +291,28 @@ impl Dynarec {
     }
     fn alloc_reg(&mut self, guest_reg: u8) -> LoadedReg {
         let result = self.reg_alloc.regalloc(guest_reg);
+        match result {
+            // no op case
+            Err(RegAllocError::AlreadyAllocatedTo(_)) => {}
+            // new allocation
+            Ok(_) => {
+                self.reg_alloc.dirty.set(guest_reg as usize, false);
+            }
+            // spill register
+            Err(RegAllocError::EvictToMemory(evicted_guest, host_reg)) => {
+                self.emit_writeback(*evicted_guest, *host_reg);
+                self.reg_alloc.dirty.set(*evicted_guest as usize, false);
+                self.reg_alloc.dirty.set(guest_reg as usize, false);
+            }
+            Err(RegAllocError::EvictToStack(_, host_reg)) => {
+                dynasm!(
+                    self.asm
+                    ; .arch aarch64
+                    ; str W(host_reg), [sp], #16
+                );
+                self.reg_alloc.dirty.set(guest_reg as usize, false);
+            }
+        };
         LoadedReg::from(result)
     }
     fn emit_load_temp_reg(&mut self, guest_reg: u8, host_reg: Reg) {
@@ -309,78 +331,52 @@ impl Dynarec {
             return;
         }
 
-        let offset = Emu::reg_offset(guest_reg) as u32;
-        dynasm!(
-            self.asm
-            ; .arch aarch64
-            ; ldr W(host_reg), [x0, offset]
-        );
+        if guest_reg == 0 {
+            dynasm!(
+                self.asm
+                ; .arch aarch64
+                ; mov W(host_reg), 0
+            );
+        } else {
+            let offset = Emu::reg_offset(guest_reg) as u32;
+            dynasm!(
+                self.asm
+                ; .arch aarch64
+                ; ldr W(host_reg), [x0, offset]
+            );
+        }
     }
     fn emit_load_reg(&mut self, guest_reg: u8) -> LoadedReg {
         let offset = Emu::reg_offset(guest_reg) as u32;
 
-        #[cfg(target_arch = "aarch64")]
-        #[allow(clippy::useless_conversion)]
-        {
-            let result = self.reg_alloc.regalloc(guest_reg);
-            match result {
-                // no op case
-                Err(RegAllocError::AlreadyAllocatedTo(_)) => {}
-                // new allocation
-                Ok(host_reg) => {
-                    dynasm!(
-                        self.asm
-                        ; .arch aarch64
-                        ; ldr W(host_reg), [x0, offset]
-                    );
-
-                    self.reg_alloc.loaded.set(guest_reg as usize, true);
-                    self.reg_alloc.dirty.set(guest_reg as usize, false);
-
-                    if enabled!(Level::TRACE) {
-                        tracing::trace!("load: guest r{}", guest_reg);
+        let host_reg = self.alloc_reg(guest_reg);
+        match host_reg.result {
+            Err(RegAllocError::AlreadyAllocatedTo(_)) => {}
+            _ => {
+                if guest_reg == 0 {
+                    #[cfg(target_arch = "aarch64")]
+                    #[allow(clippy::useless_conversion)]
+                    {
+                        dynasm!(
+                            self.asm
+                            ; .arch aarch64
+                            ; mov W(*host_reg), 0
+                        );
                     }
-                }
-                // spill register
-                Err(RegAllocError::EvictToMemory(evicted_guest, host_reg)) => {
-                    self.emit_writeback(*evicted_guest, *host_reg);
-                    self.reg_alloc.dirty.set(*evicted_guest as usize, false);
-
-                    dynasm!(
-                        self.asm
-                        ; .arch aarch64
-                        ; ldr W(host_reg), [x0, offset]
-                    );
-                    self.reg_alloc.dirty.set(guest_reg as usize, false);
-
-                    if enabled!(Level::TRACE) {
-                        tracing::trace!(
-                            "load: guest r{} (evicted previous w{} to memory)",
-                            guest_reg,
-                            (*host_reg).to_idx()
+                } else {
+                    #[cfg(target_arch = "aarch64")]
+                    #[allow(clippy::useless_conversion)]
+                    {
+                        dynasm!(
+                            self.asm
+                            ; .arch aarch64
+                            ; ldr W(*host_reg), [x0, offset]
                         );
                     }
                 }
-                Err(RegAllocError::EvictToStack(_, host_reg)) => {
-                    dynasm!(
-                        self.asm
-                        ; .arch aarch64
-                        ; str W(host_reg), [sp], #16
-                        ; ldr W(host_reg), [x0, offset]
-                    );
-                    self.reg_alloc.dirty.set(guest_reg as usize, false);
-
-                    if enabled!(Level::TRACE) {
-                        tracing::trace!(
-                            "load: guest r{} (evicted previous w{} to stack)",
-                            guest_reg,
-                            (*host_reg).to_idx()
-                        );
-                    }
-                }
-            };
-            LoadedReg::from(result)
+            }
         }
+        host_reg
     }
 
     #[allow(clippy::useless_conversion)]
@@ -791,7 +787,6 @@ fn fetch_and_compile_single_threaded(
     struct FetchState {
         op_count: usize,
         cycles: u32,
-        delay_signal: bool,
         pc: u32,
         window: [Option<FetchItem>; 2],
         hit_boundary: bool,
@@ -830,7 +825,6 @@ fn fetch_and_compile_single_threaded(
     let mut state = FetchState {
         op_count: 0,
         cycles: 0,
-        delay_signal: false,
         pc: initial_pc,
         window: [None; 2],
         hit_boundary: false,
@@ -867,6 +861,8 @@ fn fetch_and_compile_single_threaded(
             state.push_item(iter.next());
         }
 
+        let delay_slot = dynarec.delay_queue.pop_front();
+
         state.apply(op.emit(EmitCtx {
             dynarec: &mut dynarec,
             pc: state.pc,
@@ -877,22 +873,19 @@ fn fetch_and_compile_single_threaded(
             let _ = FETCH_CHANNEL.0.send((state.pc, op));
         }
 
-        if state.delay_signal {
-            if let Some(emitter) = dynarec.delay_queue.pop_front() {
-                let summary = emitter(EmitCtx {
-                    dynarec: &mut dynarec,
-                    // -4 because delayed effects think they are the same instruction
-                    pc: state.pc - 0x4,
-                });
-                state.apply(summary);
-            }
+        if let Some(emitter) = delay_slot {
+            let summary = emitter(EmitCtx {
+                dynarec: &mut dynarec,
+                // -4 because delayed effects think they are the same instruction
+                pc: state.pc - 0x4,
+            });
+            state.apply(summary);
         }
 
         tracing::trace!(pc = hex(state.pc), %op);
-        state.delay_signal = true;
     }
 
-    state.pc = initial_pc + state.op_count as u32 * 0x4;
+    state.pc = initial_pc + (state.op_count as u32) * 0x4;
 
     if let Some(emitter) = dynarec.delay_queue.pop_front() {
         state.apply(emitter(EmitCtx {

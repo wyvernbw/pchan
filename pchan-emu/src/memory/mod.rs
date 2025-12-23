@@ -22,7 +22,6 @@ pub type Buffer = Box<[u8]>;
 #[debug("memory:{}kb", MEM_SIZE/1024)]
 pub struct MemoryState {
     pub buf: Buffer,
-    pub cache: Buffer,
 }
 
 pub struct MemMap {
@@ -63,7 +62,6 @@ impl Default for MemoryState {
     fn default() -> Self {
         MemoryState {
             buf: buffer(MEM_SIZE),
-            cache: buffer(4096),
         }
     }
 }

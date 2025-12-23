@@ -3,11 +3,7 @@ use tracing::instrument;
 
 use crate::io::timers::Timers;
 use crate::memory::{Extend, GUEST_MEM_MAP, MEM_MAP};
-use crate::{
-    Bus, Emu,
-    io::cdrom::CDRom,
-    memory::{ext, fastmem::Fastmem},
-};
+use crate::{Bus, Emu, io::cdrom::CDRom, memory::fastmem::Fastmem};
 
 pub mod cdrom;
 pub mod timers;
@@ -31,6 +27,8 @@ impl Emu {
 }
 
 pub trait IO: Bus {
+    fn try_read<T: Copy>(&self, address: u32) -> IOResult<T>;
+    fn try_write<T: Copy>(&mut self, address: u32, value: T) -> IOResult<()>;
     fn read<T: Copy>(&self, address: u32) -> T;
     fn write<T: Copy>(&mut self, address: u32, value: T);
     fn write_many<T: Copy>(&mut self, mut address: u32, values: &[T]) {
@@ -58,6 +56,7 @@ pub type IOResult<T> = Result<T, UnhandledIO>;
 trait GenericIOFallback: Bus {
     #[instrument(skip(self))]
     fn read<T: Copy>(&self, address: u32) -> IOResult<T> {
+        let address = address & 0x1fffffff;
         match address {
             0x1f801000..0x1fa00000 => {
                 tracing::trace!("fallback to generic io read");
@@ -69,6 +68,7 @@ trait GenericIOFallback: Bus {
         }
     }
     fn write<T: Copy>(&mut self, address: u32, value: T) -> Result<(), UnhandledIO> {
+        let address = address & 0x1fffffff;
         match address {
             0x1f801000..0x1fa00000 => {
                 tracing::trace!("fallback to generic io write");
@@ -119,25 +119,31 @@ pub struct UnhandledIO(pub u32);
 
 impl IO for Emu {
     fn read<T: Copy>(&self, address: u32) -> T {
-        let result = Fastmem::read::<T>(self, address)
-            .or_else(|_| Timers::read_timers(self, address))
-            .or_else(|_| CDRom::read::<T>(self, address))
-            .or_else(|_| GenericIOFallback::read::<T>(self, address))
-            .or_else(|_| CacheControl::read::<T>(self, address));
-        match result {
+        match self.try_read(address) {
             Ok(value) => value,
-            Err(err) => panic!("{}", err),
+            Err(err) => self.panic(&format!("{}", err)),
         }
     }
 
     fn write<T: Copy>(&mut self, address: u32, value: T) {
-        let result = Fastmem::write::<T>(self, address, value)
+        if let Err(err) = self.try_write(address, value) {
+            self.panic(&format!("{}", err));
+        }
+    }
+
+    fn try_read<T: Copy>(&self, address: u32) -> IOResult<T> {
+        Fastmem::read::<T>(self, address)
+            .or_else(|_| Timers::read_timers(self, address))
+            .or_else(|_| CDRom::read::<T>(self, address))
+            .or_else(|_| GenericIOFallback::read::<T>(self, address))
+            .or_else(|_| CacheControl::read::<T>(self, address))
+    }
+
+    fn try_write<T: Copy>(&mut self, address: u32, value: T) -> IOResult<()> {
+        Fastmem::write::<T>(self, address, value)
             .or_else(|_| Timers::write_timers(self, address, value))
             .or_else(|_| CDRom::write::<T>(self, address, value))
             .or_else(|_| GenericIOFallback::write::<T>(self, address, value))
-            .or_else(|_| CacheControl::write::<T>(self, address, value));
-        if let Err(err) = result {
-            panic!("{}", err);
-        }
+            .or_else(|_| CacheControl::write::<T>(self, address, value))
     }
 }

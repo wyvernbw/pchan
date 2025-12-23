@@ -815,6 +815,7 @@ impl Component for Tty {
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::ComponentState) -> Result<()> {
         for line in state.log_rx.try_iter() {
+            tracing::info!("{}", line.trim());
             state.output.push_back(line);
         }
         Widget::render(
@@ -1316,7 +1317,8 @@ impl MemoryInspectorState {
         self.loaded.clear();
         (self.loaded_address..)
             .take((rows * MemoryInspector::COLUMNS) as usize)
-            .map(|address| emu.read::<u8>(address))
+            .map(|address| emu.try_read::<u8>(address))
+            .map(|byte| byte.unwrap_or(0x0))
             .map(|byte| const_hex::const_encode::<_, false>(&[byte]))
             .collect_into(&mut self.loaded);
 
@@ -1333,7 +1335,7 @@ impl MemoryInspectorState {
             return;
         };
         let cols = MemoryInspector::COLUMNS as u32;
-        let page = self.loaded_address..(self.loaded_address + (rows as u32 * cols));
+        let page = self.loaded_address..(self.loaded_address.saturating_add(rows as u32 * cols));
         if !page.contains(&addr) {
             self.loaded_address = addr.next_multiple_of(cols) - cols;
             // pagination
