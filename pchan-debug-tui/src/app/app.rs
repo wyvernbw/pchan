@@ -231,7 +231,7 @@ pub fn run(config: AppConfig, mut terminal: DefaultTerminal) -> Result<()> {
                     app_state.error = Some(err);
                 }
             })?;
-            smol::future::yield_now().await;
+            smol::Timer::after(Duration::from_secs_f64(1.0 / 90.0)).await;
         }
     });
     smol::block_on(future)

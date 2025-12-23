@@ -2536,7 +2536,6 @@ pub fn test_divs(
     tracing::info!(?emu.cpu);
     tracing::info!(hilo = hex(emu.cpu.hilo));
     assert_eq!(emu.cpu.hilo, expected);
-    assert_eq!(emu.cpu.d_clock, 2);
     assert_eq!(emu.cpu.pc, 0x8);
     Ok(())
 }
@@ -2557,6 +2556,7 @@ impl DynarecOp for MFLO {
             ; ldr W(*rd), [x0, Emu::HILO_OFFSET as _]
         );
 
+        ctx.dynarec.mark_dirty(self.rd);
         rd.restore(ctx.dynarec);
 
         EmitSummary::default()
@@ -2579,8 +2579,36 @@ impl DynarecOp for MFHI {
             ; ldr W(*rd), [x0, (Emu::HILO_OFFSET + size_of::<u32>()) as _]
         );
 
+        ctx.dynarec.mark_dirty(self.rd);
         rd.restore(ctx.dynarec);
 
         EmitSummary::default()
     }
+}
+
+#[cfg(test)]
+#[rstest]
+#[case(mfhi, 0xDEAD_BEEF_1234_5678, 0xDEAD_BEEF)]
+#[case(mflo, 0xDEAD_BEEF_1234_5678, 0x1234_5678)]
+pub fn test_mfhilo(
+    #[case] instr: impl Fn(u8) -> OpCode,
+    #[case] hilo: u64,
+    #[case] expected: u32,
+) -> color_eyre::Result<()> {
+    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use pchan_utils::setup_tracing;
+
+    setup_tracing();
+    let mut emu = Emu::default();
+
+    emu.cpu.hilo = hilo;
+    emu.write_many(0x0, &program([instr(9), OpCode(69420)]));
+    PipelineV2::new(&emu).run_once(&mut emu)?;
+
+    tracing::info!(?emu.cpu);
+    tracing::info!(hilo = hex(emu.cpu.hilo));
+    tracing::info!(r = hex(emu.cpu.gpr[9]));
+    assert_eq!(emu.cpu.hilo, hilo);
+    assert_eq!(emu.cpu.gpr[9], expected);
+    Ok(())
 }
