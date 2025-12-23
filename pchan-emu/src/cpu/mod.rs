@@ -92,22 +92,7 @@ impl Display for Cpu {
     }
 }
 
-bitfield! {
-    #[derive(Clone, Copy)]
-    pub struct CauseRegister(u32);
-
-    excode, set_excode: 6, 2;
-    interrupt_pending, set_interrupt_pending: 15, 8;
-    cop_number, set_cop_number: 29, 28;
-    branch_delay, set_branch_delay: 31;
-}
-
-#[derive(Debug, Clone, Copy)]
-#[repr(u8)]
-pub enum Exception {
-    Interrupt = 0x0,
-    Break = 0x9,
-}
+pub mod exceptions;
 
 impl Cpu {
     pub const PC_OFFSET: usize = offset_of!(Self, pc);
@@ -139,43 +124,15 @@ impl Cpu {
         offset_of!(Cpu, cop2) + offset_of!(Cop2, reg) + size_of::<u32>() * reg as usize
     }
 
-    #[instrument(ret)]
-    pub fn handle_exception(&mut self, exception: Exception) {
-        let cause = self.cop0.reg[13];
-        let mut cause = CauseRegister(cause);
-        cause.set_excode(exception as u32);
-        self.cop0.reg[13] = cause.0;
-
-        self.cop0.reg[14] = self.pc;
-
-        self.pc = match self.cop0.bev() {
-            false => 0x8000_0080,
-            true => 0xbfc0_0180,
-        }
-    }
-
     pub fn clear_registers(&mut self) {
         self.gpr = [0u32; 32];
     }
     pub fn jump_to_bios(&mut self) {
         self.pc = 0xBFC0_0000;
     }
+
     pub fn isc(&self) -> bool {
         self.cop0.isc()
-    }
-
-    #[unsafe(no_mangle)]
-    pub fn handle_rfe(&mut self) {
-        tracing::info!("running rfe");
-        let sr = self.cop0.reg[12];
-        self.cop0.reg[12] = (sr & !0x3F) | ((sr >> 2) & 0x3F);
-        // panic!("rfe breakpoint");
-    }
-
-    #[unsafe(no_mangle)]
-    pub fn handle_break(&mut self) {
-        tracing::info!("running break");
-        self.handle_exception(Exception::Break);
     }
 }
 

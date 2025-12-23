@@ -53,6 +53,7 @@ pub mod j;
 pub mod jal;
 pub mod jalr;
 pub mod jr;
+pub mod syscall;
 
 // loads
 pub mod lb;
@@ -687,15 +688,15 @@ bitfield! {
     #[derive_const(Default)]
     pub struct OpCode(u32);
 
-    pub u8, funct, _: 5, 0;
-    pub u8, shamt, _: 10, 6;
-    pub u8, rd, _: 15, 11;
-    pub u8, rt, _: 20, 16;
-    pub u8, rs, _: 25, 21;
-    pub u8, opcode, _: 31, 26;
-    pub i16, imm16, _: 15, 0;
-    pub u32, imm26, _: 25, 0;
-    pub u8, cop, _: 27, 26;
+    pub u8, funct, set_funct: 5, 0;
+    pub u8, shamt, set_shamt: 10, 6;
+    pub u8, rd, set_rd: 15, 11;
+    pub u8, rt, set_rt: 20, 16;
+    pub u8, rs, set_rs: 25, 21;
+    pub u8, opcode, set_opcode: 31, 26;
+    pub i16, imm16, set_imm16: 15, 0;
+    pub u32, imm26, set_imm26: 25, 0;
+    pub u8, cop, set_cop: 27, 26;
 }
 
 impl OpCode {

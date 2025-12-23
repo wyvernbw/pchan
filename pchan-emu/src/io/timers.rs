@@ -2,7 +2,7 @@ use std::ops::RangeInclusive;
 
 use crate::{
     Bus, Emu,
-    cpu::Exception,
+    cpu::exceptions::{Exception, Exceptions},
     io::{IO, UnhandledIO},
     memory::{GUEST_MEM_MAP, MEM_MAP},
 };
@@ -72,7 +72,7 @@ pub struct AdvanceTimerSummary {
     timer_0_new: u16,
 }
 
-pub trait Timers: Bus + IO {
+pub trait Timers: Bus + IO + Exceptions {
     fn read_timers<T: Copy>(&self, address: u32) -> Result<T, UnhandledIO> {
         let address = address & 0x1fffffff;
         match address {
@@ -234,7 +234,7 @@ pub trait Timers: Bus + IO {
         self.set_timer_counter_mode(0, new_timer_0_mode);
 
         if new_timer_0_mode.irq() {
-            self.cpu_mut().handle_exception(Exception::Interrupt);
+            self.handle_exception(Exception::Interrupt);
         }
     }
 }

@@ -59,6 +59,7 @@ use crate::cpu::ops::srl::*;
 use crate::cpu::ops::srlv::*;
 use crate::cpu::ops::subu::*;
 use crate::cpu::ops::sw::*;
+use crate::cpu::ops::syscall::*;
 use crate::cpu::ops::xor::*;
 use crate::cpu::ops::xori::*;
 
@@ -140,6 +141,7 @@ pub enum DecodedOpNew {
     SRAV(SRAV),
     JR(JR),
     JALR(JALR),
+    Syscall(Syscall),
     MFHI(MFHI),
     MFLO(MFLO),
     DIV(DIV),
@@ -231,7 +233,7 @@ impl DecodedOpNew {
                 (0x0, _, _, 0x9) => Self::JALR(JALR::new(rd, rs)),
                 (0x0, _, _, 0xA) => Self::illegal(),
                 (0x0, _, _, 0xB) => Self::illegal(),
-                (0x0, _, _, 0xC) => todo!("syscall"),
+                (0x0, _, _, 0xC) => Self::Syscall(Syscall),
                 (0x0, _, _, 0xD) => todo!("brk"),
                 (0x0, _, _, 0xE) => Self::illegal(),
                 (0x0, _, _, 0xF) => Self::illegal(),
@@ -2611,4 +2613,20 @@ pub fn test_mfhilo(
     assert_eq!(emu.cpu.hilo, hilo);
     assert_eq!(emu.cpu.gpr[9], expected);
     Ok(())
+}
+
+impl DynarecOp for Syscall {
+    #[allow(clippy::useless_conversion)]
+    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+        #[cfg(target_arch = "aarch64")]
+        dynasm!(
+            ctx.dynarec.asm
+            ;; let saved = ctx.dynarec.emit_save_volatile_registers()
+            ; ldr x3, ->handle_syscall
+            ; blr x3
+            ;; ctx.dynarec.emit_restore_saved_registers(saved.into_iter())
+        );
+
+        EmitSummary::builder().pc_updated(true).build()
+    }
 }

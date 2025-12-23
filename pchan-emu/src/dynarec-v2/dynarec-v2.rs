@@ -21,6 +21,7 @@ use tracing::Level;
 use tracing::enabled;
 
 use crate::Emu;
+use crate::cpu::exceptions::Exceptions;
 use crate::cpu::ops::OpCode;
 use crate::cpu::reg_str;
 use crate::dynarec_v2::emitters::DecodedOpNew;
@@ -171,6 +172,8 @@ impl Dynarec {
                 ; .u64 Emu::readu16v2 as *const () as _
                 ; -> read32v2:
                 ; .u64 Emu::read32v2 as *const () as _
+                ; -> handle_syscall:
+                ; .u64 Emu::handle_syscall as *const () as _
                 ; after_table:
 
                 ; stp x19, x20, [sp, -16]!

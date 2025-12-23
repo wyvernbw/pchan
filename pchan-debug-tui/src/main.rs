@@ -6,9 +6,9 @@
 #![feature(associated_type_defaults)]
 #![feature(iter_intersperse)]
 
-use std::path::PathBuf;
+use std::{backtrace::Backtrace, io::stdout, panic::catch_unwind, path::PathBuf};
 
-use color_eyre::Result;
+use color_eyre::{Result, eyre::eyre};
 use serde::{Deserialize, Serialize};
 use tracing_subscriber::EnvFilter;
 
@@ -36,6 +36,18 @@ fn main() -> Result<()> {
     tui_logger::init_logger(tui_logger::LevelFilter::Trace)?;
     let logs = confy::get_configuration_file_path("pchan-debugger", Some("logs.txt"))?;
     let logs = std::fs::File::create(logs)?;
+
+    // std::panic::set_hook(Box::new(|info| {
+    //     let (file, line, column) = info
+    //         .location()
+    //         .map(|loc| (loc.file(), loc.line(), loc.column()))
+    //         .unwrap_or_default();
+    //     tracing::error!(src.file = file,src.line = line,src.column = column,panic =  %info.payload_as_str().unwrap_or_default());
+    //     let bt = Backtrace::capture();
+    //     tracing::error!("backtrace: \n\n{}", bt);
+    //     ratatui::restore();
+    // }));
+
     tracing_subscriber::fmt()
         .with_writer(logs)
         .with_env_filter(EnvFilter::from_env("PCHAN_LOG"))
