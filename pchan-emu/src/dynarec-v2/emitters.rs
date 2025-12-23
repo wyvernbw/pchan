@@ -39,6 +39,8 @@ use crate::cpu::ops::lhu::*;
 use crate::cpu::ops::lui::*;
 use crate::cpu::ops::lw::*;
 use crate::cpu::ops::mfc::*;
+use crate::cpu::ops::mfhi::*;
+use crate::cpu::ops::mflo::*;
 use crate::cpu::ops::mtc::*;
 use crate::cpu::ops::nor::*;
 use crate::cpu::ops::or::*;
@@ -138,6 +140,8 @@ pub enum DecodedOpNew {
     SRAV(SRAV),
     JR(JR),
     JALR(JALR),
+    MFHI(MFHI),
+    MFLO(MFLO),
     DIV(DIV),
     DIVU(DIVU),
     ADDU(ADDU),
@@ -231,9 +235,9 @@ impl DecodedOpNew {
                 (0x0, _, _, 0xD) => todo!("brk"),
                 (0x0, _, _, 0xE) => Self::illegal(),
                 (0x0, _, _, 0xF) => Self::illegal(),
-                (0x0, _, _, 0x10) => todo!("mfhi"),
+                (0x0, _, _, 0x10) => Self::MFHI(MFHI::new(rd)),
                 (0x0, _, _, 0x11) => todo!("mthi"),
-                (0x0, _, _, 0x12) => todo!("mflo"),
+                (0x0, _, _, 0x12) => Self::MFLO(MFLO::new(rd)),
                 (0x0, _, _, 0x13) => todo!("mtlo"),
                 (0x0, _, _, 0x14..=0x17) => Self::illegal(),
                 (0x0, _, _, 0x18) => todo!("mult"),
@@ -2443,6 +2447,13 @@ impl DynarecOp for DIV {
         };
         EmitSummary::default()
     }
+    // average values
+    fn cycles(&self) -> u16 {
+        18
+    }
+    fn hazard(&self) -> u16 {
+        18
+    }
 }
 
 impl DynarecOp for DIVU {
@@ -2483,6 +2494,13 @@ impl DynarecOp for DIVU {
         };
         EmitSummary::default()
     }
+    // average values
+    fn cycles(&self) -> u16 {
+        18
+    }
+    fn hazard(&self) -> u16 {
+        18
+    }
 }
 
 #[cfg(test)]
@@ -2521,4 +2539,48 @@ pub fn test_divs(
     assert_eq!(emu.cpu.d_clock, 2);
     assert_eq!(emu.cpu.pc, 0x8);
     Ok(())
+}
+
+impl DynarecOp for MFLO {
+    #[allow(clippy::useless_conversion)]
+    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+        if self.rd == 0 {
+            return EmitSummary::default();
+        }
+
+        let rd = ctx.dynarec.alloc_reg(self.rd);
+
+        #[cfg(target_arch = "aarch64")]
+        dynasm!(
+            ctx.dynarec.asm
+            ; .arch aarch64
+            ; ldr W(*rd), [x0, Emu::HILO_OFFSET as _]
+        );
+
+        rd.restore(ctx.dynarec);
+
+        EmitSummary::default()
+    }
+}
+
+impl DynarecOp for MFHI {
+    #[allow(clippy::useless_conversion)]
+    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+        if self.rd == 0 {
+            return EmitSummary::default();
+        }
+
+        let rd = ctx.dynarec.alloc_reg(self.rd);
+
+        #[cfg(target_arch = "aarch64")]
+        dynasm!(
+            ctx.dynarec.asm
+            ; .arch aarch64
+            ; ldr W(*rd), [x0, (Emu::HILO_OFFSET + size_of::<u32>()) as _]
+        );
+
+        rd.restore(ctx.dynarec);
+
+        EmitSummary::default()
+    }
 }

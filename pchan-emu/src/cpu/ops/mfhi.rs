@@ -4,7 +4,7 @@ use crate::dynarec::prelude::*;
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct MFHI {
-    rd: u8,
+    pub rd: u8,
 }
 
 impl MFHI {
