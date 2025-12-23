@@ -26,6 +26,8 @@ use crate::cpu::ops::bgtz::*;
 use crate::cpu::ops::blez::*;
 use crate::cpu::ops::bltz::*;
 use crate::cpu::ops::bne::*;
+use crate::cpu::ops::div::*;
+use crate::cpu::ops::divu::*;
 use crate::cpu::ops::j::*;
 use crate::cpu::ops::jal::*;
 use crate::cpu::ops::jalr::*;
@@ -136,6 +138,8 @@ pub enum DecodedOpNew {
     SRAV(SRAV),
     JR(JR),
     JALR(JALR),
+    DIV(DIV),
+    DIVU(DIVU),
     ADDU(ADDU),
     SUBU(SUBU),
     AND(AND),
@@ -234,8 +238,8 @@ impl DecodedOpNew {
                 (0x0, _, _, 0x14..=0x17) => Self::illegal(),
                 (0x0, _, _, 0x18) => todo!("mult"),
                 (0x0, _, _, 0x19) => todo!("multu"),
-                (0x0, _, _, 0x1A) => todo!("div"),
-                (0x0, _, _, 0x1B) => todo!("divu"),
+                (0x0, _, _, 0x1A) => Self::DIV(DIV::new(rs, rt)),
+                (0x0, _, _, 0x1B) => Self::DIVU(DIVU::new(rs, rt)),
                 (0x0, _, _, 0x1C..=0x1F) => Self::illegal(),
                 (0x0, _, _, 0x20 | 0x21) => Self::ADDU(ADDU::new(rd, rs, rt)),
                 (0x0, _, _, 0x22 | 0x23) => Self::SUBU(SUBU::new(rd, rs, rt)),
@@ -2396,4 +2400,125 @@ impl DynarecOp for MFCn {
 
         EmitSummary::default()
     }
+}
+
+impl DynarecOp for DIV {
+    #[allow(clippy::useless_conversion)]
+    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+        match (self.rs, self.rt) {
+            (0, _) => {
+                let rt = ctx.dynarec.emit_load_reg(self.rt);
+                #[cfg(target_arch = "aarch64")]
+                dynasm!(
+                    ctx.dynarec.asm
+                    ; mov w1, 0
+                    ; stp w1, W(*rt), [x0, Emu::HILO_OFFSET as _]
+                );
+            }
+            (_, _) => {
+                let rs = ctx.dynarec.emit_load_reg(self.rs);
+                let rt = ctx.dynarec.emit_load_reg(self.rt);
+
+                #[cfg(target_arch = "aarch64")]
+                dynasm!(
+                    ctx.dynarec.asm
+                    ; sdiv w1, W(*rs), W(*rt)
+                    ; msub w2, w1, W(*rt), W(*rs)
+                    // rt = 0 => w1 = 0 => hi = w2 = rs
+                    // remainder checks out
+                    // rt = 0 => lo = rs > 0 ? -1 : 1
+                    //           w1 = 0 => ~w1 = -1;
+                    //           rs > 0 ? ~w1 : 1
+                    //           rs <= 0 ? 1 : ~w1
+                    //           (mov w3 1) rs <= 0 ? w3 : ~w1
+                    //           (mov w3 1) cmp rs, 0 then csinv w3, w3, w1, le
+                    ; mov w3, 1
+                    ; cmp WSP(*rs), 0
+                    ; csinv w3, w3, w1, le
+                    ; cmp WSP(*rt), 0
+                    ; csel w1, w3, w1, eq
+                    ; stp w1, w2, [x0, Emu::HILO_OFFSET as _]
+                );
+            }
+        };
+        EmitSummary::default()
+    }
+}
+
+impl DynarecOp for DIVU {
+    #[allow(clippy::useless_conversion)]
+    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+        match (self.rs, self.rt) {
+            (0, _) => {
+                let rt = ctx.dynarec.emit_load_reg(self.rt);
+                #[cfg(target_arch = "aarch64")]
+                dynasm!(
+                    ctx.dynarec.asm
+                    ; mov w1, 0
+                    ; stp w1, W(*rt), [x0, Emu::HILO_OFFSET as _]
+                );
+            }
+            (_, _) => {
+                let rs = ctx.dynarec.emit_load_reg(self.rs);
+                let rt = ctx.dynarec.emit_load_reg(self.rt);
+
+                #[cfg(target_arch = "aarch64")]
+                dynasm!(
+                    ctx.dynarec.asm
+                    ; udiv w1, W(*rs), W(*rt)
+                    ; msub w2, w1, W(*rt), W(*rs)
+                    // rt = 0 => w1 = 0 => hi = w2 = rs
+                    // remainder checks out
+                    //
+                    // udiv is much simpler than sdiv
+                    // rt = 0 => lo = -0x1 (0xffffffff)
+                    //
+                    // rt != 0 ? rs%rt : ~0 (w2)
+                    ; cmp WSP(*rt), 0
+                    ; csinv w1, w1, wzr, ne
+
+                    ; stp w1, w2, [x0, Emu::HILO_OFFSET as _]
+                );
+            }
+        };
+        EmitSummary::default()
+    }
+}
+
+#[cfg(test)]
+#[rstest]
+#[case::div(div, (8, 10), (9, 2), 0x00000000_00000005)]
+#[case::div(div, (0, 0), (8, 3), 0x00000003_00000000)]
+#[case::div(div, (8, 2), (9, 0), 0x00000002_ffffffff)]
+#[case::div(div, (8, -2i32 as u32), (9, 0), 0xfffffffe_00000001)]
+#[case::div(div, (8, -10i32 as u32), (9, 2), 0x00000000_fffffffb)]
+#[case::divu(divu, (8, 10), (9, 2), 0x00000000_00000005)]
+#[case::divu(divu, (8, 2), (9, 0), 0x00000002_ffffffff)]
+/// form: {inst} ${reg1}={value1}, ${reg2}={value2} ; assert hilo = {expected}
+pub fn test_divs(
+    #[case] instr: impl Fn(u8, u8) -> OpCode,
+    #[case] rs: (Guest, u32),
+    #[case] rt: (Guest, u32),
+    #[case] expected: u64,
+) -> color_eyre::Result<()> {
+    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use pchan_utils::setup_tracing;
+
+    setup_tracing();
+    let mut emu = Emu::default();
+
+    emu.cpu.hilo = 0xDEAD_BEEF_DEAD_BEEF;
+    emu.cpu.gpr[rs.0 as usize] = rs.1;
+    emu.cpu.gpr[rt.0 as usize] = rt.1;
+    assert_eq!(emu.cpu.gpr[0], 0);
+
+    emu.write_many(0x0, &program([instr(rs.0, rt.0), OpCode(69420)]));
+    PipelineV2::new(&emu).run_once(&mut emu)?;
+
+    tracing::info!(?emu.cpu);
+    tracing::info!(hilo = hex(emu.cpu.hilo));
+    assert_eq!(emu.cpu.hilo, expected);
+    assert_eq!(emu.cpu.d_clock, 2);
+    assert_eq!(emu.cpu.pc, 0x8);
+    Ok(())
 }

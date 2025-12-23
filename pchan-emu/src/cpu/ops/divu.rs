@@ -3,8 +3,8 @@ use crate::dynarec::prelude::*;
 #[derive(Debug, Clone, Copy, derive_more::Display, Hash, PartialEq, Eq)]
 #[display("divu ${},${}", reg_str(self.rs), reg_str(self.rt))]
 pub struct DIVU {
-    rs: u8,
-    rt: u8,
+    pub rs: u8,
+    pub rt: u8,
 }
 
 impl DIVU {

@@ -111,6 +111,7 @@ pub enum Exception {
 
 impl Cpu {
     pub const PC_OFFSET: usize = offset_of!(Self, pc);
+    pub const HILO_OFFSET: usize = offset_of!(Self, hilo);
     pub const D_CLOCK_OFFSET: usize = offset_of!(Self, d_clock);
 
     pub const fn reg_offset(reg: u8) -> usize {

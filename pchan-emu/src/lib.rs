@@ -103,6 +103,7 @@ pub struct Emu {
 impl Emu {
     const PC_OFFSET: usize = offset_of!(Emu, cpu) + Cpu::PC_OFFSET;
     const D_CLOCK_OFFSET: usize = offset_of!(Emu, cpu) + Cpu::D_CLOCK_OFFSET;
+    const HILO_OFFSET: usize = offset_of!(Emu, cpu) + Cpu::HILO_OFFSET;
 
     pub fn reg_offset(reg: u8) -> usize {
         offset_of!(Self, cpu) + Cpu::reg_offset(reg)
