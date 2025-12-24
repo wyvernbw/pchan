@@ -1,2 +1,2 @@
-struct_field_align_threshold = 10
-enum_discrim_align_threshold = 10
+struct_field_align_threshold = 24
+enum_discrim_align_threshold = 24

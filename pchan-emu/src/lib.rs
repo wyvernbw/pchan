@@ -38,6 +38,7 @@ use crate::{
     cpu::Cpu,
     dynarec::{FetchSummary, prelude::PureInstBuilder},
     dynarec_v2::DynarecBlock,
+    gpu::GpuState,
     io::tty::Tty,
     jit::{JitCache, LUTMap},
     memory::MemoryState,
@@ -59,6 +60,8 @@ pub mod cpu;
 pub mod dynarec;
 #[path = "./dynarec-v2/dynarec-v2.rs"]
 pub mod dynarec_v2;
+#[path = "./gpu/gpu.rs"]
+pub mod gpu;
 #[path = "./io/io.rs"]
 pub mod io;
 pub mod jit;
@@ -103,6 +106,7 @@ pub struct Emu {
     #[debug(skip)]
     pub inst_cache:    LUTMap<FetchSummary>,
     pub tty:           Tty,
+    pub gpu:           GpuState,
 }
 
 impl Emu {
@@ -226,6 +230,8 @@ pub trait Bus {
     fn cpu(&self) -> &Cpu;
     fn bootloader_mut(&mut self) -> &mut BootloaderState;
     fn bootloader(&mut self) -> &BootloaderState;
+    fn gpu(&self) -> &GpuState;
+    fn gpu_mut(&mut self) -> &mut GpuState;
 }
 
 impl Bus for Emu {
@@ -252,6 +258,14 @@ impl Bus for Emu {
     #[inline(always)]
     fn bootloader(&mut self) -> &BootloaderState {
         &self.boot
+    }
+    #[inline(always)]
+    fn gpu_mut(&mut self) -> &mut GpuState {
+        &mut self.gpu
+    }
+    #[inline(always)]
+    fn gpu(&self) -> &GpuState {
+        &self.gpu
     }
 }
 

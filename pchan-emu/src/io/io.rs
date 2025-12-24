@@ -2,6 +2,7 @@ use pchan_utils::hex;
 use tracing::instrument;
 
 use crate::bootloader::Bootloader;
+use crate::gpu::Gpu;
 use crate::io::timers::Timers;
 use crate::memory::{Extend, GUEST_MEM_MAP, MEM_MAP, ScratchpadMem};
 use crate::{Bus, Emu, io::cdrom::CDRom, memory::fastmem::Fastmem};
@@ -60,7 +61,7 @@ pub trait IO: Bus {
 pub type IOResult<T> = Result<T, UnhandledIO>;
 
 trait GenericIOFallback: Bus {
-    #[instrument(skip(self))]
+    #[instrument(skip(self), "r")]
     fn read<T: Copy>(&self, address: u32) -> IOResult<T> {
         let address = address & 0x1fffffff;
         match address {
@@ -73,6 +74,7 @@ trait GenericIOFallback: Bus {
             _ => Err(UnhandledIO(address)),
         }
     }
+    #[instrument(skip(self, value), "w")]
     fn write<T: Copy>(&mut self, address: u32, value: T) -> Result<(), UnhandledIO> {
         let address = address & 0x1fffffff;
         match address {
@@ -141,6 +143,7 @@ impl IO for Emu {
         Fastmem::read::<T>(self, address)
             .or_else(|_| ScratchpadMem::read(self, address))
             .or_else(|_| Timers::read_timers(self, address))
+            .or_else(|_| Gpu::read(self, address))
             .or_else(|_| CDRom::read::<T>(self, address))
             .or_else(|_| GenericIOFallback::read::<T>(self, address))
             .or_else(|_| CacheControl::read::<T>(self, address))
@@ -150,8 +153,19 @@ impl IO for Emu {
         Fastmem::write::<T>(self, address, value)
             .or_else(|_| ScratchpadMem::write(self, address, value))
             .or_else(|_| Timers::write_timers(self, address, value))
+            .or_else(|_| Gpu::write(self, address, value))
             .or_else(|_| CDRom::write::<T>(self, address, value))
             .or_else(|_| GenericIOFallback::write::<T>(self, address, value))
             .or_else(|_| CacheControl::write::<T>(self, address, value))
     }
+}
+
+pub fn cast_io<T: Copy>(value: impl Into<u32>) -> T {
+    let value = value.into();
+    assert!(
+        size_of::<T>() <= 4,
+        "invalid cast of IO channel value to T. T has size {} >= 4",
+        size_of::<T>()
+    );
+    unsafe { std::mem::transmute_copy::<u32, T>(&value) }
 }
