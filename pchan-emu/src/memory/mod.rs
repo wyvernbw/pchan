@@ -1,3 +1,10 @@
+use tracing::instrument;
+
+use crate::{
+    Bus, Emu,
+    io::{IOResult, UnhandledIO},
+};
+
 pub mod fastmem;
 
 pub const fn kb(value: usize) -> usize {
@@ -36,12 +43,12 @@ pub struct MemMap {
 
 pub static MEM_MAP: MemMap = MemMap {
     ram: 0,
-    scratch: kb(2048),
-    io: kb(2048) + kb(64),
-    exp_2: kb(2048) + kb(64) + kb(64),
-    exp_3: kb(2048) + kb(64) + kb(64) + kb(64),
-    bios: kb(2048) + kb(64) + kb(64) + kb(64) + kb(2048),
-    cache_control: kb(2048) + kb(64) + kb(64) + kb(64) + kb(2048) + kb(512),
+    scratch: kb(2048 + 8192),
+    io: kb(2048 + 8192) + kb(1),
+    exp_2: kb(2048 + 8192) + kb(1) + kb(8),
+    exp_3: kb(2048 + 8192) + kb(1) + kb(8) + kb(8),
+    bios: kb(2048 + 8192) + kb(1) + kb(8) + kb(8) + kb(2048),
+    cache_control: kb(2048 + 8192) + kb(1) + kb(8) + kb(8) + kb(2048) + kb(512),
 };
 
 pub static GUEST_MEM_MAP: MemMap = MemMap {
@@ -54,7 +61,7 @@ pub static GUEST_MEM_MAP: MemMap = MemMap {
     cache_control: 0xfffe0000,
 };
 
-static MEM_SIZE: usize = kb(2048) + kb(64) + kb(64) + kb(64) + kb(2048) + kb(512) + kb(64);
+static MEM_SIZE: usize = kb(2048 + 8192) + kb(1) + kb(8) + kb(8) + kb(2048) + kb(512) + 512;
 // const MEM_SIZE: usize = 600 * 1024 * 1024;
 static MEM_KB: usize = from_kb(MEM_SIZE) + 1;
 
@@ -90,6 +97,37 @@ impl MemoryState {
         }
     }
 }
+
+pub trait ScratchpadMem: Bus {
+    #[cfg_attr(debug_assertions, instrument(skip(self)))]
+    fn read<T: Copy>(&self, address: u32) -> IOResult<T> {
+        match address {
+            // scratchpad is not mapped in kseg1
+            0xbf80_0000..0xbf801000 => Err(UnhandledIO(address)),
+            0x1f800000..0x1f80_1000 | 0x9f800000..0x9f801000 => {
+                Ok(self
+                    .mem()
+                    .read_region(MEM_MAP.scratch, GUEST_MEM_MAP.scratch, address))
+            }
+            _ => Err(UnhandledIO(address)),
+        }
+    }
+    #[cfg_attr(debug_assertions, instrument(skip(self, value)))]
+    fn write<T: Copy>(&mut self, address: u32, value: T) -> IOResult<()> {
+        match address {
+            // scratchpad is not mapped in kseg1
+            0xbf80_0000..0xbf801000 => Err(UnhandledIO(address)),
+            0x1f800000..0x1f80_1000 | 0x9f800000..0x9f801000 => {
+                self.mem_mut()
+                    .write_region(MEM_MAP.scratch, GUEST_MEM_MAP.scratch, address, value);
+                Ok(())
+            }
+            _ => Err(UnhandledIO(address)),
+        }
+    }
+}
+
+impl ScratchpadMem for Emu {}
 
 pub struct Sign;
 pub struct Zero;

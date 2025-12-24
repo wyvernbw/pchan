@@ -12,7 +12,7 @@ const PAGE_SIZE: usize = kb(64);
 type PageTable = Box<[Option<u32>; PAGE_COUNT]>;
 
 pub struct Lut {
-    pub read: PageTable,
+    pub read:  PageTable,
     pub write: PageTable,
 }
 
@@ -66,7 +66,7 @@ fn generate_page_tables() -> Lut {
     }
 
     Lut {
-        read: table_read,
+        read:  table_read,
         write: table_write,
     }
 }

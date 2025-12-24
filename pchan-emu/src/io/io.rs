@@ -3,7 +3,7 @@ use tracing::instrument;
 
 use crate::bootloader::Bootloader;
 use crate::io::timers::Timers;
-use crate::memory::{Extend, GUEST_MEM_MAP, MEM_MAP};
+use crate::memory::{Extend, GUEST_MEM_MAP, MEM_MAP, ScratchpadMem};
 use crate::{Bus, Emu, io::cdrom::CDRom, memory::fastmem::Fastmem};
 
 pub mod cdrom;
@@ -139,6 +139,7 @@ impl IO for Emu {
 
     fn try_read<T: Copy>(&self, address: u32) -> IOResult<T> {
         Fastmem::read::<T>(self, address)
+            .or_else(|_| ScratchpadMem::read(self, address))
             .or_else(|_| Timers::read_timers(self, address))
             .or_else(|_| CDRom::read::<T>(self, address))
             .or_else(|_| GenericIOFallback::read::<T>(self, address))
@@ -147,6 +148,7 @@ impl IO for Emu {
 
     fn try_write<T: Copy>(&mut self, address: u32, value: T) -> IOResult<()> {
         Fastmem::write::<T>(self, address, value)
+            .or_else(|_| ScratchpadMem::write(self, address, value))
             .or_else(|_| Timers::write_timers(self, address, value))
             .or_else(|_| CDRom::write::<T>(self, address, value))
             .or_else(|_| GenericIOFallback::write::<T>(self, address, value))
