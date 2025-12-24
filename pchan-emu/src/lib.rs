@@ -8,6 +8,11 @@
 #![feature(arbitrary_self_types_pointers)]
 #![feature(slice_swap_unchecked)]
 #![feature(random)]
+#![feature(read_array)]
+#![feature(ascii_char)]
+#![feature(bstr)]
+#![feature(iter_array_chunks)]
+#![feature(pointer_is_aligned_to)]
 #![feature(stmt_expr_attributes)]
 #![feature(const_clone)]
 #![feature(const_default)]
@@ -88,16 +93,16 @@ pub const fn max_simd_elements<T>() -> usize {
 #[derive(Default, derive_more::Debug, Clone)]
 #[repr(C)]
 pub struct Emu {
-    pub cpu: Cpu,
+    pub cpu:           Cpu,
     #[debug(skip)]
     pub dynarec_cache: HashMap<u32, DynarecBlock>,
-    pub mem: MemoryState,
-    pub boot: BootloaderState,
+    pub mem:           MemoryState,
+    pub boot:          BootloaderState,
     #[debug(skip)]
-    pub jit_cache: JitCache,
+    pub jit_cache:     JitCache,
     #[debug(skip)]
-    pub inst_cache: LUTMap<FetchSummary>,
-    pub tty: Tty,
+    pub inst_cache:    LUTMap<FetchSummary>,
+    pub tty:           Tty,
 }
 
 impl Emu {
@@ -209,7 +214,7 @@ impl<'a> FnBuilderExt<'a> for FunctionBuilder<'a> {
         let current_block = self.current_block().unwrap();
         PureInstBuilder {
             builder: self,
-            block: current_block,
+            block:   current_block,
         }
     }
 }

@@ -19,14 +19,14 @@ pub struct Cpu {
             .map(|(i, x)| format!("${}={}", REG_STR[i], hex(*x)))
             .collect::<Vec<String>>()
     )]
-    pub gpr: [u32; 32],
+    pub gpr:     [u32; 32],
     #[debug("{}", hex(self.pc))]
-    pub pc: u32, // store pc and d_clock together so one write can target both
+    pub pc:      u32, // store pc and d_clock together so one write can target both
     pub d_clock: u32,
-    pub hilo: u64,
-    pub cop0: Cop0,
-    pub cop1: Cop1,
-    pub cop2: Cop2,
+    pub hilo:    u64,
+    pub cop0:    Cop0,
+    pub cop1:    Cop1,
+    pub cop2:    Cop2,
 }
 
 macro_rules! coprocessor_definition {
@@ -152,8 +152,10 @@ impl Default for Cop2 {
 
 pub type Reg = u8;
 
-pub(crate) const RA: Reg = 31;
+pub(crate) const GP: Reg = 28;
 pub(crate) const SP: Reg = 29;
+pub(crate) const FP: Reg = 30;
+pub(crate) const RA: Reg = 31;
 
 pub static REG_STR: &[&str] = &array![
      0 => "zero",

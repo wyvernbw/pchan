@@ -1,6 +1,7 @@
 use pchan_utils::hex;
 use tracing::instrument;
 
+use crate::bootloader::Bootloader;
 use crate::io::timers::Timers;
 use crate::memory::{Extend, GUEST_MEM_MAP, MEM_MAP};
 use crate::{Bus, Emu, io::cdrom::CDRom, memory::fastmem::Fastmem};
@@ -12,10 +13,15 @@ pub mod tty;
 impl Emu {
     pub fn run_io(&mut self) {
         self.run_timer_pipeline();
-        self.io_kernel_functions();
+        self.run_io_kernel_functions();
+        #[cfg(feature = "amidog-tests")]
+        {
+            use crate::bootloader::AMIDOG_TESTS;
+            self.run_sideloading(AMIDOG_TESTS).unwrap();
+        }
     }
 
-    pub fn io_kernel_functions(&mut self) {
+    pub fn run_io_kernel_functions(&mut self) {
         let pc = self.cpu.pc & 0x1fff_ffff;
         match (pc, self.cpu.gpr[9]) {
             (0xa0, 0x3c) | (0xb0, 0x3d) => {

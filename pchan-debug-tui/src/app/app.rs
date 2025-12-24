@@ -139,11 +139,11 @@ pub fn run(config: AppConfig, mut terminal: DefaultTerminal) -> Result<()> {
                     current_tab: CpuInspectorTab::Cpu,
                     cpu_tab_state: CpuTabState {
                         table_state: TableState::default(),
-                        show_zero: true,
+                        show_zero:   true,
                     },
                     cop0_tab_state: Cop0TabState {
                         table_state: TableState::default(),
-                        show_zero: true,
+                        show_zero:   true,
                     },
                 },
                 ops_list_state: OpsListState::default(),
@@ -163,7 +163,7 @@ pub fn run(config: AppConfig, mut terminal: DefaultTerminal) -> Result<()> {
                     table_state: TableState::new(),
                     address_bar_state: MemoryInspectorAddressBarState {
                         input: Input::new(String::new()),
-                        mode: MemoryInspectorAddressBarMode::Normal,
+                        mode:  MemoryInspectorAddressBarMode::Normal,
                     },
                 },
                 tty_state: TtyState {
@@ -231,7 +231,7 @@ pub fn run(config: AppConfig, mut terminal: DefaultTerminal) -> Result<()> {
                     app_state.error = Some(err);
                 }
             })?;
-            smol::Timer::after(Duration::from_secs_f64(1.0 / 90.0)).await;
+            smol::Timer::after(Duration::from_secs_f64(1.0 / 60.0)).await;
         }
     });
     smol::block_on(future)
@@ -319,11 +319,13 @@ async fn emu_task_v2(
         }
         if let PipelineV2::Called { times, .. } = &pipeline {
             let cycles_elapsed = emu.get().cpu.d_clock as f64 * *times as f64;
-            let frequency = cycles_elapsed / elapsed.as_secs_f64();
-            elapsed = Duration::new(0, 0);
-            emu_info_tx
-                .send_async(EmuInfo::FrequencyUpdate(frequency))
-                .await?;
+            if !elapsed.is_zero() {
+                let frequency = cycles_elapsed / elapsed.as_secs_f64();
+                elapsed = Duration::new(0, 0);
+                emu_info_tx
+                    .send_async(EmuInfo::FrequencyUpdate(frequency))
+                    .await?;
+            }
         }
         emu_info_tx
             .send_async(EmuInfo::PipelineUpdateV2(pipeline.stage()))
@@ -495,13 +497,13 @@ pub struct MainPageState {
 pub struct OpsList(Arc<EmuState>, FocusProp<OpsList>);
 #[derive(Debug, Clone)]
 pub struct OpsListData {
-    ops: Vec<Line<'static>>,
+    ops:  Vec<Line<'static>>,
     hash: u64,
 }
 #[derive(Default)]
 pub struct OpsListState {
     list_state: ListState,
-    data: Option<OpsListData>,
+    data:       Option<OpsListData>,
 }
 
 impl OpsListData {
@@ -546,7 +548,7 @@ impl OpsListData {
         let mut hasher = DefaultHasher::new();
         decoded_ops.hash(&mut hasher);
         Self {
-            ops: decoded_ops,
+            ops:  decoded_ops,
             hash: hasher.finish(),
         }
     }
@@ -574,7 +576,7 @@ impl OpsListData {
         let mut hasher = DefaultHasher::new();
         decoded_ops.hash(&mut hasher);
         Self {
-            ops: decoded_ops,
+            ops:  decoded_ops,
             hash: hasher.finish(),
         }
     }
@@ -961,7 +963,7 @@ impl CpuInspectorTab {
 pub struct CpuTab<'a>(&'a Cached<Cpu>);
 pub struct CpuTabState {
     table_state: TableState,
-    show_zero: bool,
+    show_zero:   bool,
 }
 
 impl<'a> Component for CpuTab<'a> {
@@ -1043,7 +1045,7 @@ impl<'a> Component for CpuTab<'a> {
 pub struct Cop0Tab<'a>(&'a Cached<Cpu>);
 pub struct Cop0TabState {
     table_state: TableState,
-    show_zero: bool,
+    show_zero:   bool,
 }
 
 impl<'a> Component for Cop0Tab<'a> {
@@ -1555,7 +1557,7 @@ pub struct MemoryInspectorAddressBar {
 }
 pub struct MemoryInspectorAddressBarState {
     input: Input,
-    mode: MemoryInspectorAddressBarMode,
+    mode:  MemoryInspectorAddressBarMode,
 }
 
 pub enum MemoryInspectorAddressBarMode {

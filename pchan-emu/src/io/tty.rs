@@ -3,8 +3,8 @@ use std::sync::Arc;
 #[derive(derive_more::Debug, Clone)]
 pub struct Tty {
     #[debug("buf: {}/1024", self.end)]
-    buf: Box<[u8]>,
-    end: usize,
+    buf:  Box<[u8]>,
+    end:  usize,
     mode: TtyMode,
 }
 
@@ -19,8 +19,8 @@ pub enum TtyMode {
 impl Default for Tty {
     fn default() -> Self {
         Self {
-            buf: vec![0u8; 1024].into_boxed_slice(),
-            end: 0,
+            buf:  vec![0u8; 1024].into_boxed_slice(),
+            end:  0,
             mode: TtyMode::Stdout,
         }
     }
@@ -46,7 +46,7 @@ impl Tty {
                 print!("{}", string);
             }
             TtyMode::Tracing => {
-                tracing::info!("{}", string);
+                tracing::info!("{}", string.trim());
             }
             TtyMode::Channeled(tx) => {
                 tx.send(string.to_owned().into())?;
@@ -61,5 +61,9 @@ impl Tty {
         let (tx, rx) = flume::bounded(1024);
         self.mode = TtyMode::Channeled(tx);
         rx
+    }
+
+    pub fn set_tracing(&mut self) {
+        self.mode = TtyMode::Tracing;
     }
 }

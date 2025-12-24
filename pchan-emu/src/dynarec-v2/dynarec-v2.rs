@@ -31,6 +31,7 @@ use crate::dynarec_v2::emitters::EmitSummary;
 use crate::dynarec_v2::regalloc::*;
 use crate::io::IO;
 use crate::max_simd_elements;
+use crate::memory::kb;
 
 pub mod emitters;
 pub mod regalloc;
@@ -50,11 +51,11 @@ type DynEmitter = SmallBox<dyn Fn(EmitCtx) -> EmitSummary, [u8; 64]>;
 
 #[derive(derive_more::Debug)]
 pub struct Dynarec {
-    reg_alloc: RegAlloc,
+    reg_alloc:   RegAlloc,
     #[debug("{}", self.delay_queue.len())]
     delay_queue: VecDeque<DynEmitter>,
     #[debug(skip)]
-    asm: Assembler<Reloc>,
+    asm:         Assembler<Reloc>,
 }
 
 unsafe impl Send for Dynarec {}
@@ -81,9 +82,8 @@ pub struct DynarecFunction {
 #[derive(Debug, Clone)]
 pub struct DynarecBlock {
     function: DynarecFunction,
-    hash: u64,
+    hash:     u64,
     op_count: usize,
-    is_loop: bool,
 }
 
 type DynarecBlockArgs<'a> = (&'a mut Emu, bool);
@@ -545,9 +545,9 @@ impl Dynarec {
 
 #[derive(Debug, Clone)]
 pub struct LoadedReg {
-    result: AllocResult,
-    reg: Reg,
-    reg_idx: u8,
+    result:   AllocResult,
+    reg:      Reg,
+    reg_idx:  u8,
     restored: Cell<bool>,
 }
 
@@ -670,17 +670,17 @@ pub enum PipelineV2 {
     Uninit,
     Init {
         dynarec: Box<Dynarec>,
-        pc: u32,
+        pc:      u32,
     },
     Compiled {
-        pc: u32,
-        func: DynarecBlock,
+        pc:      u32,
+        func:    DynarecBlock,
         dynarec: Option<Box<Dynarec>>,
     },
     Called {
-        pc: u32,
-        times: usize,
-        func: DynarecBlock,
+        pc:      u32,
+        times:   usize,
+        func:    DynarecBlock,
         dynarec: Option<Box<Dynarec>>,
     },
     Cached {
@@ -692,7 +692,7 @@ impl PipelineV2 {
     pub fn new(emu: &Emu) -> Self {
         Self::Init {
             dynarec: Box::new(Dynarec::default()),
-            pc: emu.cpu.pc,
+            pc:      emu.cpu.pc,
         }
     }
     pub fn stage(&self) -> PipelineV2Stage {
@@ -733,15 +733,10 @@ impl PipelineV2 {
                     }
                 }
             },
-            PipelineV2::Compiled {
-                pc,
-                mut func,
-                dynarec,
-            } => {
+            PipelineV2::Compiled { pc, func, dynarec } => {
                 func(emu, false);
                 let mut count = 1;
                 while emu.cpu.pc == pc {
-                    func.is_loop = true;
                     func(emu, false);
                     count += 1;
                 }
@@ -759,7 +754,7 @@ impl PipelineV2 {
                 Ok(PipelineV2::Cached { dynarec })
             }
             PipelineV2::Cached { dynarec } => Ok(PipelineV2::Init {
-                pc: emu.cpu.pc,
+                pc:      emu.cpu.pc,
                 dynarec: dynarec.unwrap_or_else(|| Box::new(Dynarec::default())),
             }),
             PipelineV2::Uninit => Ok(PipelineV2::Uninit),
@@ -788,12 +783,12 @@ fn fetch_and_compile_single_threaded(
     type FetchItem = (OpCode, DecodedOpNew);
     #[derive(Debug)]
     struct FetchState {
-        op_count: usize,
-        cycles: u32,
-        pc: u32,
-        window: [Option<FetchItem>; 2],
+        op_count:     usize,
+        cycles:       u32,
+        pc:           u32,
+        window:       [Option<FetchItem>; 2],
         hit_boundary: bool,
-        pc_updated: bool,
+        pc_updated:   bool,
     }
 
     impl FetchState {
@@ -826,12 +821,12 @@ fn fetch_and_compile_single_threaded(
 
     let initial_pc = emu.cpu.pc;
     let mut state = FetchState {
-        op_count: 0,
-        cycles: 0,
-        pc: initial_pc,
-        window: [None; 2],
+        op_count:     0,
+        cycles:       0,
+        pc:           initial_pc,
+        window:       [None; 2],
         hit_boundary: false,
-        pc_updated: false,
+        pc_updated:   false,
     };
 
     let mut iter = emu
@@ -868,7 +863,7 @@ fn fetch_and_compile_single_threaded(
 
         state.apply(op.emit(EmitCtx {
             dynarec: &mut dynarec,
-            pc: state.pc,
+            pc:      state.pc,
         }));
 
         #[cfg(feature = "fetch-channel")]
@@ -880,7 +875,7 @@ fn fetch_and_compile_single_threaded(
             let summary = emitter(EmitCtx {
                 dynarec: &mut dynarec,
                 // -4 because delayed effects think they are the same instruction
-                pc: state.pc - 0x4,
+                pc:      state.pc - 0x4,
             });
             state.apply(summary);
         }
@@ -893,7 +888,7 @@ fn fetch_and_compile_single_threaded(
     if let Some(emitter) = dynarec.delay_queue.pop_front() {
         state.apply(emitter(EmitCtx {
             dynarec: &mut dynarec,
-            pc: state.pc,
+            pc:      state.pc,
         }));
     }
 
@@ -909,9 +904,50 @@ fn fetch_and_compile_single_threaded(
     Ok(DynarecBlock {
         function: func,
         op_count: state.op_count,
-        is_loop: false,
         hash,
     })
+}
+
+/// # DynarecCache
+///
+/// maps the entire psx ram and bios losslessly into a a flat, ~320kb buffer
+#[derive(derive_more::Debug, Clone)]
+pub struct DynarecCache {
+    buf: Box<[Option<DynarecBlock>]>,
+}
+
+impl Default for DynarecCache {
+    fn default() -> Self {
+        Self {
+            buf: vec![None; (kb(2048) + kb(512)) >> 2].into_boxed_slice(),
+        }
+    }
+}
+
+impl DynarecCache {
+    fn map_addr(address: u32) -> Option<usize> {
+        match address & 0x1fff_ffff {
+            // align by 4
+            addr @ 0..0x200000 => Some((addr as usize) >> 2),
+            addr @ 0x1fc00000.. => Some((addr as usize - 0x1fc00000 + kb(2048)) >> 2),
+            _ => None,
+        }
+    }
+    pub fn remove(&mut self, at: u32) -> Option<DynarecBlock> {
+        match Self::map_addr(at).and_then(|at| self.buf.get_mut(at)) {
+            Some(block) => block.take(),
+            None => None,
+        }
+    }
+    pub fn insert(&mut self, at: u32, value: DynarecBlock) -> bool {
+        match Self::map_addr(at) {
+            Some(at) => {
+                self.buf[at] = Some(value);
+                true
+            }
+            None => false,
+        }
+    }
 }
 
 #[cfg(test)]
