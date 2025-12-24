@@ -6,10 +6,10 @@ WIP high performance PlayStation 1 emulator
 ## Status
 
 - [x] memory and base of memory mapped IO
-- [-] dynarec (95% completed, very few rare instructions left)
+- [x] dynarec (95% completed, very few rare instructions left)
   - [x] aarch64
-  - [ ] x86_64
-  - [ ] risc-v
+  - [ ] x86_64 (later)
+  - [ ] risc-v (later)
 - [ ] gpu
 - [ ] wgpu renderer
 - [ ] cdrom
@@ -46,3 +46,11 @@ P-chan quite cycle-inaccurate. So far however, (barring the seemingly endless
 pile of bugs) the dynarec is both fast enough in the uncached scenario where
 an interpreter would be needed, and its accurate enough. The reason behind this
 decision is that, I really cannot be assed to code an interpreter.
+
+
+
+
+
+
+
+
