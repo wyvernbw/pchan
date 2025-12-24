@@ -42,6 +42,8 @@ use crate::cpu::ops::mfc::*;
 use crate::cpu::ops::mfhi::*;
 use crate::cpu::ops::mflo::*;
 use crate::cpu::ops::mtc::*;
+use crate::cpu::ops::mult::*;
+use crate::cpu::ops::multu::*;
 use crate::cpu::ops::nor::*;
 use crate::cpu::ops::or::*;
 use crate::cpu::ops::ori::*;
@@ -144,6 +146,8 @@ pub enum DecodedOpNew {
     Syscall(Syscall),
     MFHI(MFHI),
     MFLO(MFLO),
+    MULT(MULT),
+    MULTU(MULTU),
     DIV(DIV),
     DIVU(DIVU),
     ADDU(ADDU),
@@ -242,8 +246,8 @@ impl DecodedOpNew {
                 (0x0, _, _, 0x12) => Self::MFLO(MFLO::new(rd)),
                 (0x0, _, _, 0x13) => todo!("mtlo"),
                 (0x0, _, _, 0x14..=0x17) => Self::illegal(),
-                (0x0, _, _, 0x18) => todo!("mult"),
-                (0x0, _, _, 0x19) => todo!("multu"),
+                (0x0, _, _, 0x18) => Self::MULT(MULT::new(rs, rt)),
+                (0x0, _, _, 0x19) => Self::MULTU(MULTU::new(rs, rt)),
                 (0x0, _, _, 0x1A) => Self::DIV(DIV::new(rs, rt)),
                 (0x0, _, _, 0x1B) => Self::DIVU(DIVU::new(rs, rt)),
                 (0x0, _, _, 0x1C..=0x1F) => Self::illegal(),
@@ -2455,8 +2459,7 @@ impl DynarecOp for DIV {
                 #[cfg(target_arch = "aarch64")]
                 dynasm!(
                     ctx.dynarec.asm
-                    ; mov w1, 0
-                    ; stp w1, W(*rt), [x0, Emu::HILO_OFFSET as _]
+                    ; stp wzr, W(*rt), [x0, Emu::HILO_OFFSET as _]
                 );
             }
             (_, _) => {
@@ -2505,8 +2508,7 @@ impl DynarecOp for DIVU {
                 #[cfg(target_arch = "aarch64")]
                 dynasm!(
                     ctx.dynarec.asm
-                    ; mov w1, 0
-                    ; stp w1, W(*rt), [x0, Emu::HILO_OFFSET as _]
+                    ; stp wzr, W(*rt), [x0, Emu::HILO_OFFSET as _]
                 );
             }
             (_, _) => {
@@ -2543,6 +2545,72 @@ impl DynarecOp for DIVU {
     }
 }
 
+impl DynarecOp for MULTU {
+    fn cycles(&self) -> u16 {
+        9
+    }
+    fn hazard(&self) -> u16 {
+        9
+    }
+    #[allow(clippy::useless_conversion)]
+    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+        match (self.rs, self.rt) {
+            (0, _) | (_, 0) => {
+                #[cfg(target_arch = "aarch64")]
+                dynasm!(
+                    ctx.dynarec.asm
+                    ; str xzr, [x0, Emu::HILO_OFFSET as _]
+                );
+            }
+            (_, _) => {
+                let rs = ctx.dynarec.emit_load_reg(self.rs);
+                let rt = ctx.dynarec.emit_load_reg(self.rt);
+
+                #[cfg(target_arch = "aarch64")]
+                dynasm!(
+                    ctx.dynarec.asm
+                    ; umull x1, W(*rs), W(*rt)
+                    ; str x1, [x0, Emu::HILO_OFFSET as _]
+                );
+            }
+        };
+        EmitSummary::default()
+    }
+}
+
+impl DynarecOp for MULT {
+    fn cycles(&self) -> u16 {
+        9
+    }
+    fn hazard(&self) -> u16 {
+        9
+    }
+    #[allow(clippy::useless_conversion)]
+    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+        match (self.rs, self.rt) {
+            (0, _) | (_, 0) => {
+                #[cfg(target_arch = "aarch64")]
+                dynasm!(
+                    ctx.dynarec.asm
+                    ; str xzr, [x0, Emu::HILO_OFFSET as _]
+                );
+            }
+            (_, _) => {
+                let rs = ctx.dynarec.emit_load_reg(self.rs);
+                let rt = ctx.dynarec.emit_load_reg(self.rt);
+
+                #[cfg(target_arch = "aarch64")]
+                dynasm!(
+                    ctx.dynarec.asm
+                    ; smull x1, W(*rs), W(*rt)
+                    ; str x1, [x0, Emu::HILO_OFFSET as _]
+                );
+            }
+        };
+        EmitSummary::default()
+    }
+}
+
 #[cfg(test)]
 #[rstest]
 #[case::div(div, (8, 10), (9, 2), 0x00000000_00000005)]
@@ -2552,8 +2620,11 @@ impl DynarecOp for DIVU {
 #[case::div(div, (8, -10i32 as u32), (9, 2), 0x00000000_fffffffb)]
 #[case::divu(divu, (8, 10), (9, 2), 0x00000000_00000005)]
 #[case::divu(divu, (8, 2), (9, 0), 0x00000002_ffffffff)]
+#[case::mult(mult, (8, 2), (9, 15), 30)]
+#[case::mult(mult, (8, 2), (9, -15i32 as u32), -30i32 as u64)]
+#[case::multu(multu, (8, 2), (9, 15), 30)]
 /// form: {inst} ${reg1}={value1}, ${reg2}={value2} ; assert hilo = {expected}
-pub fn test_divs(
+pub fn test_mul_div(
     #[case] instr: impl Fn(u8, u8) -> OpCode,
     #[case] rs: (Guest, u32),
     #[case] rt: (Guest, u32),

@@ -3,8 +3,8 @@ use std::fmt::Display;
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct MULTU {
-    rs: u8,
-    rt: u8,
+    pub rs: u8,
+    pub rt: u8,
 }
 
 impl MULTU {
