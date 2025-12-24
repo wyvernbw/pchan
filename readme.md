@@ -20,11 +20,11 @@ cargo run -p pchan-debug-tui --release
 ## Status
 
 - [x] memory and base of memory mapped IO
-- [-] dynarec (dynasm-rs based, 95% completed, very few rare instructions left)
+- [x] dynarec (dynasm-rs based, 95% completed, very few rare instructions left)
   - [x] removed cranelift (way too slow)
   - [x] aarch64
-  - [ ] x86_64
-  - [ ] risc-v
+  - [ ] x86_64 (later)
+  - [ ] risc-v (later)
 - [ ] gpu
 - [ ] wgpu renderer
 - [ ] cdrom
