@@ -1,12 +1,27 @@
-# P-chan
-*Pーちゃん* 🐷🎀
+# P-chan 🐷🎀
+*Pーちゃん* 
 
 WIP high performance PlayStation 1 emulator
+
+## Build
+
+to build the entire workspace:
+
+```
+cargo build -w
+```
+
+to run the debugger (i highly recommend release mode)
+
+```
+cargo run -p pchan-debug-tui --release
+```
 
 ## Status
 
 - [x] memory and base of memory mapped IO
-- [-] dynarec (95% completed, very few rare instructions left)
+- [-] dynarec (dynasm-rs based, 95% completed, very few rare instructions left)
+  - [x] removed cranelift (way too slow)
   - [x] aarch64
   - [ ] x86_64
   - [ ] risc-v
@@ -14,6 +29,8 @@ WIP high performance PlayStation 1 emulator
 - [ ] wgpu renderer
 - [ ] cdrom
 - [ ] spu
+
+NOTE: `pchan-cranelift-fronted` is deprecated.
 
 ## Milestones
 
@@ -25,9 +42,9 @@ WIP high performance PlayStation 1 emulator
 
 ## Performance
 
-So far performance is "promising". P-chan can emulate the PSX cpu at more
-than 10 times its speed (350mhz vs orginal 33mhz) on my macbook air. Note that
-the longer the emulator runs for, the faster it gets as more code is cached and
+So far performance is "promising". P-chan can emulate the PSX cpu at more than
+10 times its speed (350mhz vs orginal 33mhz) on my macbook air. Note that the
+longer the emulator runs for, the faster it gets as more code is cached and
 on average the speed increases (up to a point obviously). Since the emulator
 crashes almost instantly (due to `todo!`s) there isn't much time for it to
 "accelerate". I expect it to reach up to 1Ghz once it is complete. Even then, im
@@ -35,6 +52,11 @@ not sure if these numbers are at all impressive, its quite possible its slower
 than other dynarec emulators (exact numbers are not available because nobody
 measures speed in frequency, since its kind of a pointless metric, in case you
 couldn't tell from this entire paragraph).
+
+Switching from cranelift to dynasm-rs made compilation faster by about 2 orders
+of magnitude (a lot of the overhead was cranelift but a big part was also
+cranelift-isms in my code, including full cfg builidng as opposed to compiling
+simple blocks).
 
 The implementation is missing a very
 large chunk of things that will inevitably have an effect on performance when
