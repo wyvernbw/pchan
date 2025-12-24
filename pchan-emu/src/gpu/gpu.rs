@@ -30,7 +30,7 @@ pub trait Gpu: Bus {
     fn read<T: Copy>(&self, address: u32) -> IOResult<T> {
         let address = address & 0x1fffffff;
         match address {
-            0x1f80_1814 => cast_io(self.gpu().gpustat),
+            0x1f80_1814 => Ok(cast_io(self.gpu().gpustat)),
             _ => Err(UnhandledIO(address)),
         }
     }
