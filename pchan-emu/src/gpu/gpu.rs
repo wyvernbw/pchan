@@ -6,13 +6,18 @@ use tracing::instrument;
 
 use crate::Bus;
 use crate::Emu;
+use crate::io::CastIOFrom;
+use crate::io::CastIOInto;
 use crate::io::IOResult;
 use crate::io::UnhandledIO;
-use crate::io::cast_io;
+use crate::memory::buffer;
+use crate::memory::mb;
 
 #[derive(derive_more::Debug, Clone)]
 pub struct GpuState {
-    gpustat: GpuStatReg,
+    vram:     Box<[u8]>,
+    gpustat:  GpuStatReg,
+    tex_attr: Option<TexpageCmd>,
 }
 
 impl GpuState {}
@@ -21,7 +26,11 @@ impl Default for GpuState {
     fn default() -> Self {
         let mut gpustat = GpuStatReg::default();
         gpustat.mock_ready();
-        Self { gpustat }
+        Self {
+            gpustat,
+            vram: buffer(mb(1)),
+            tex_attr: None,
+        }
     }
 }
 
@@ -30,7 +39,7 @@ pub trait Gpu: Bus {
     fn read<T: Copy>(&self, address: u32) -> IOResult<T> {
         let address = address & 0x1fffffff;
         match address {
-            0x1f80_1814 => Ok(cast_io(self.gpu().gpustat)),
+            0x1f80_1814 => Ok(self.gpu().gpustat.io_from_u32()),
             _ => Err(UnhandledIO(address)),
         }
     }
@@ -38,11 +47,43 @@ pub trait Gpu: Bus {
     fn write<T: Copy>(&mut self, address: u32, value: T) -> Result<(), UnhandledIO> {
         let address = address & 0x1fffffff;
         match address {
-            0x1f80_1810 => todo!("gp0 command"),
-            0x1f80_1814 => todo!("gp1 command"),
+            0x1f80_1810 => {
+                self.gp0_command(value.io_into_u32());
+                Ok(())
+            }
+            0x1f80_1814 => todo!("gp1 command: {}", hex(value)),
             _ => Err(UnhandledIO(address)),
         }
     }
+
+    fn gp0_command<T: Copy>(&mut self, value: T) {
+        let value = GpuCmd::new_with_raw_value(value.io_into_u32());
+        match value.cmd() {
+            0xe1 => {
+                let texpage = TexpageCmd::new_with_raw_value(value.raw_value());
+
+                self.gpu_mut().tex_attr = Some(texpage);
+                let gpustat = &mut self.gpu_mut().gpustat;
+
+                gpustat.set_texpage_x_base(texpage.texpage_x_base());
+                gpustat.set_texpage_y_base(texpage.texpage_y_base());
+                gpustat.set_semi_transparency(texpage.semi_transparency());
+                gpustat.set_texpage_colors(texpage.texpage_colors());
+                gpustat.set_dither(texpage.dither());
+                gpustat.set_draw_to_display(texpage.draw_to_display());
+                gpustat.set_texture_disable(texpage.texture_disable());
+            }
+            value => todo!("gp0 command: {}", hex(value)),
+        }
+    }
+}
+
+#[bitfield(u32)]
+pub struct GpuCmd {
+    #[bits(0..=23, r)]
+    fields: u24,
+    #[bits(24..=31, r)]
+    cmd:    u8,
 }
 
 impl Gpu for Emu {}
@@ -50,7 +91,6 @@ impl Gpu for Emu {}
 ///
 /// # 1F801814h - GPUSTAT - GPU Status Register (R)
 ///
-/// ```plaintext
 /// 0-3   Texture page X Base   (N*64)                              ;GP0(E1h).0-3
 /// 4     Texture page Y Base   (N*256) (ie. 0 or 256)              ;GP0(E1h).4
 /// 5-6   Semi Transparency     (0=B/2+F/2, 1=B+F, 2=B-F, 3=B+F/4)  ;GP0(E1h).5-6
@@ -80,7 +120,6 @@ impl Gpu for Emu {}
 /// 28    Ready to receive DMA Block  (0=No, 1=Ready)  ;GP0(...) ;via GP0
 /// 29-30 DMA Direction (0=Off, 1=?, 2=CPUtoGP0, 3=GPUREADtoCPU)    ;GP1(04h).0-1
 /// 31    Drawing even/odd lines in interlace mode (0=Even or Vblank, 1=Odd)
-/// ```
 ///
 /// Credits to PSX-SPX by Martin Korth [Gpu Status Register](https://problemkaputt.de/psx-spx.htm#gpustatusregister)
 ///
@@ -182,4 +221,49 @@ enum DmaDirection {
 enum DrawEvenOdd {
     EvenOrVBlank = 0x0,
     Odd          = 0x1,
+}
+
+/// #  GP0(E1h) - Draw Mode setting (aka "Texpage")
+///
+/// Likely sets the relevant bits in the GpuStat register.
+///
+/// PSX-SPX summary:
+///
+/// 0-3   Texture page X Base   (N*64) (ie. in 64-halfword steps)    ;GPUSTAT.0-3
+/// 4     Texture page Y Base   (N*256) (ie. 0 or 256)               ;GPUSTAT.4
+/// 5-6   Semi Transparency     (0=B/2+F/2, 1=B+F, 2=B-F, 3=B+F/4)   ;GPUSTAT.5-6
+/// 7-8   Texture page colors   (0=4bit, 1=8bit, 2=15bit, 3=Reserved);GPUSTAT.7-8
+/// 9     Dither 24bit to 15bit (0=Off/strip LSBs, 1=Dither Enabled) ;GPUSTAT.9
+/// 10    Drawing to display area (0=Prohibited, 1=Allowed)          ;GPUSTAT.10
+/// 11    Texture Disable (0=Normal, 1=Disable if GP1(09h).Bit0=1)   ;GPUSTAT.15
+///         (Above might be chipselect for (absent) second VRAM chip?)
+/// 12    Textured Rectangle X-Flip   (BIOS does set this bit on power-up...?)
+/// 13    Textured Rectangle Y-Flip   (BIOS does set it equal to GPUSTAT.13...?)
+/// 14-23 Not used (should be 0)
+/// 24-31 Command  (E1h)
+///
+/// [Link to PSX-SPX](https://problemkaputt.de/psx-spx.htm#gpuioportsdmachannelscommandsvram:~:text=GP0%28E1h%29%20%2D%20Draw%20Mode%20setting%20%28aka%20%22Texpage%22%29)
+///
+#[bitfield(u32)]
+#[derive(derive_more::Debug, Default, derive_more::Into)]
+#[debug("{}", hex(self.raw_value))]
+pub struct TexpageCmd {
+    #[bits(0..=3, rw)]
+    texpage_x_base:    u4,
+    #[bit(4, rw)]
+    texpage_y_base:    bool,
+    #[bits(5..=6, rw)]
+    semi_transparency: u2,
+    #[bits(7..=8, rw)]
+    texpage_colors:    u2,
+    #[bit(9, rw)]
+    dither:            bool,
+    #[bit(10, rw)]
+    draw_to_display:   bool,
+    #[bit(11, rw)]
+    texture_disable:   bool,
+    #[bit(12, rw)]
+    tex_rect_x_flip:   bool,
+    #[bit(13, rw)]
+    tex_rect_y_flip:   bool,
 }

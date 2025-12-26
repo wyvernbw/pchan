@@ -79,7 +79,7 @@ use dynasmrt::DynasmLabelApi;
 #[derive(Debug, Builder)]
 pub struct EmitCtx<'a> {
     pub dynarec: &'a mut Dynarec,
-    pub pc: u32,
+    pub pc:      u32,
 }
 
 const MAX_SCRATCH_REG: u8 = 3;
@@ -1119,7 +1119,6 @@ impl DynarecOp for SLLV {
     #[allow(clippy::useless_conversion)]
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
         emit_shift_by_reg(ctx, self.rd, self.rs, self.rt, move |ctx, regs| {
-            tracing::info!("emitting sllv via alu...");
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
@@ -1133,7 +1132,6 @@ impl DynarecOp for SRLV {
     #[allow(clippy::useless_conversion)]
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
         emit_shift_by_reg(ctx, self.rd, self.rs, self.rt, move |ctx, regs| {
-            tracing::info!("emitting sllv via alu...");
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
@@ -1147,7 +1145,6 @@ impl DynarecOp for SRAV {
     #[allow(clippy::useless_conversion)]
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
         emit_shift_by_reg(ctx, self.rd, self.rs, self.rt, move |ctx, regs| {
-            tracing::info!("emitting sllv via alu...");
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
@@ -1230,8 +1227,8 @@ fn test_alu_reg(
 }
 
 pub struct ShiftImm<'a> {
-    rd: Rd<'a>,
-    rt: Rt<'a>,
+    rd:  Rd<'a>,
+    rt:  Rt<'a>,
     imm: i8,
 }
 
@@ -1335,8 +1332,8 @@ impl DynarecOp for SRA {
 }
 
 pub struct AluImm<'a> {
-    rt: Rt<'a>,
-    rs: Rs<'a>,
+    rt:  Rt<'a>,
+    rs:  Rs<'a>,
     imm: i16,
 }
 

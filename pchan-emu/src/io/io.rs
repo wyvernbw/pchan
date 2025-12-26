@@ -160,12 +160,29 @@ impl IO for Emu {
     }
 }
 
-pub fn cast_io<T: Copy>(value: impl Into<u32>) -> T {
-    let value = value.into();
-    assert!(
-        size_of::<T>() <= 4,
-        "invalid cast of IO channel value to T. T has size {} >= 4",
-        size_of::<T>()
-    );
-    unsafe { std::mem::transmute_copy::<u32, T>(&value) }
+pub trait CastIOInto: Copy {
+    fn io_into_u32(&self) -> u32 {
+        assert!(
+            size_of::<Self>() <= 4,
+            "invalid cast of IO channel value to T. T has size {} >= 4",
+            size_of::<Self>()
+        );
+        unsafe { std::mem::transmute_copy::<Self, u32>(self) }
+    }
 }
+
+impl<T: Copy> CastIOInto for T {}
+
+pub trait CastIOFrom: Copy + Into<u32> {
+    fn io_from_u32<T>(self) -> T {
+        let value = self.into();
+        assert!(
+            size_of::<Self>() <= 4,
+            "invalid cast of IO channel value to T. T has size {} >= 4",
+            size_of::<Self>()
+        );
+        unsafe { std::mem::transmute_copy::<u32, T>(&value) }
+    }
+}
+
+impl<T: Copy + Into<u32>> CastIOFrom for T {}
