@@ -1,6 +1,11 @@
+use std::mem::transmute;
+use std::simd::u16x2;
+
 use arbitrary_int::prelude::*;
 use bitbybit::bitenum;
 use bitbybit::bitfield;
+use derive_more as d;
+use heapless::Deque;
 use pchan_utils::hex;
 use tracing::instrument;
 
@@ -10,14 +15,18 @@ use crate::io::CastIOFrom;
 use crate::io::CastIOInto;
 use crate::io::IOResult;
 use crate::io::UnhandledIO;
-use crate::memory::buffer;
+use crate::memory::kb;
 use crate::memory::mb;
 
 #[derive(derive_more::Debug, Clone)]
 pub struct GpuState {
-    vram:     Box<[u8]>,
-    gpustat:  GpuStatReg,
-    tex_attr: Option<TexpageCmd>,
+    #[debug(skip)]
+    vram:      Box<[u16]>,
+    gpustat:   GpuStatReg,
+    gp0:       Gp0,
+    tex_attr:  Option<TexpageCmd>,
+    #[debug(skip)]
+    cmd_queue: Deque<u32, 16>,
 }
 
 impl GpuState {}
@@ -28,8 +37,10 @@ impl Default for GpuState {
         gpustat.mock_ready();
         Self {
             gpustat,
-            vram: buffer(mb(1)),
+            vram: vec![0; mb(1)].into_boxed_slice(),
             tex_attr: None,
+            cmd_queue: Deque::new(),
+            gp0: Gp0::WaitingForCmd,
         }
     }
 }
@@ -51,31 +62,170 @@ pub trait Gpu: Bus {
                 self.gp0_command(value.io_into_u32());
                 Ok(())
             }
-            0x1f80_1814 => todo!("gp1 command: {}", hex(value)),
+            0x1f80_1814 => {
+                self.gp1_command(value.io_into_u32());
+                Ok(())
+            }
             _ => Err(UnhandledIO(address)),
         }
     }
 
+    fn vram_write(&mut self, coord: VramCoord, value: u16) {
+        let addr = 2 * (coord.xpos as usize + coord.ypos as usize * kb(1));
+        self.gpu_mut().vram[addr] = value;
+    }
+
     fn gp0_command<T: Copy>(&mut self, value: T) {
+        let value = value.io_into_u32();
+        let cmd = GpuCmd::new_with_raw_value(value);
+        let gp0 = match &self.gpu().gp0 {
+            Gp0::WaitingForCmd => match cmd.cmd() {
+                0xa0 => Gp0::CpRectCpuToVram(Gp0CpRectCpuToVram::RecvDest),
+                0xe1 => {
+                    let texpage = TexpageCmd::new_with_raw_value(cmd.raw_value());
+
+                    self.gpu_mut().tex_attr = Some(texpage);
+                    let gpustat = &mut self.gpu_mut().gpustat;
+
+                    gpustat.set_texpage_x_base(texpage.texpage_x_base());
+                    gpustat.set_texpage_y_base(texpage.texpage_y_base());
+                    gpustat.set_semi_transparency(texpage.semi_transparency());
+                    gpustat.set_texpage_colors(texpage.texpage_colors());
+                    gpustat.set_dither(texpage.dither());
+                    gpustat.set_draw_to_display(texpage.draw_to_display());
+                    gpustat.set_texture_disable(texpage.texture_disable());
+
+                    Gp0::WaitingForCmd
+                }
+                value => todo!("gp0 command: {}", hex(value)),
+            },
+
+            Gp0::CpRectCpuToVram(Gp0CpRectCpuToVram::RecvDest) => {
+                let dest: VramCoord = unsafe { transmute(value) };
+                Gp0::CpRectCpuToVram(Gp0CpRectCpuToVram::RecvSize { dest })
+            }
+            Gp0::CpRectCpuToVram(Gp0CpRectCpuToVram::RecvSize { dest }) => {
+                let size: VramCoord = unsafe { transmute(value) };
+                Gp0::CpRectCpuToVram(Gp0CpRectCpuToVram::RecvData(VramCursor::new(
+                    *dest,
+                    *dest + size,
+                )))
+            }
+            Gp0::CpRectCpuToVram(Gp0CpRectCpuToVram::RecvData(cursor)) => {
+                let mut cursor = *cursor;
+                for (at, halfword) in cursor.iter().take(2).zip(halfwords(value)) {
+                    self.vram_write(at, halfword);
+                }
+                match cursor.done() {
+                    true => Gp0::WaitingForCmd,
+                    false => Gp0::CpRectCpuToVram(Gp0CpRectCpuToVram::RecvData(cursor)),
+                }
+            }
+        };
+
+        self.gpu_mut().gp0 = gp0;
+    }
+
+    fn gp1_command<T: Copy>(&mut self, value: T) {
         let value = GpuCmd::new_with_raw_value(value.io_into_u32());
         match value.cmd() {
-            0xe1 => {
-                let texpage = TexpageCmd::new_with_raw_value(value.raw_value());
-
-                self.gpu_mut().tex_attr = Some(texpage);
-                let gpustat = &mut self.gpu_mut().gpustat;
-
-                gpustat.set_texpage_x_base(texpage.texpage_x_base());
-                gpustat.set_texpage_y_base(texpage.texpage_y_base());
-                gpustat.set_semi_transparency(texpage.semi_transparency());
-                gpustat.set_texpage_colors(texpage.texpage_colors());
-                gpustat.set_dither(texpage.dither());
-                gpustat.set_draw_to_display(texpage.draw_to_display());
-                gpustat.set_texture_disable(texpage.texture_disable());
+            0x00 => {
+                self.gpu_mut().cmd_queue.clear();
+                self.gpu_mut().gpustat = GpuStatReg::new_with_raw_value(0x14802000);
             }
-            value => todo!("gp0 command: {}", hex(value)),
+            0x01 => {
+                self.gpu_mut().cmd_queue.clear();
+            }
+            value => todo!("gp1 command: {}", hex(value)),
         }
     }
+}
+
+pub fn halfwords(word: u32) -> [u16; 2] {
+    [word as u16, (word >> 16) as u16]
+}
+
+#[derive(Debug, Clone)]
+pub enum Gp0 {
+    WaitingForCmd,
+    CpRectCpuToVram(Gp0CpRectCpuToVram),
+}
+
+#[derive(Debug, Clone, Copy, d::Add, d::AddAssign, PartialEq, PartialOrd, Ord, Eq)]
+#[repr(C)]
+pub struct VramCoord {
+    xpos: u16,
+    ypos: u16,
+}
+
+impl VramCoord {
+    pub fn new(xpos: u16, ypos: u16) -> Self {
+        Self { xpos, ypos }
+    }
+}
+
+#[derive(Debug, Clone, Copy, d::Add, d::AddAssign, PartialEq, PartialOrd, Ord, Eq)]
+pub struct VramCursor {
+    end:           VramCoord,
+    end_exclusive: VramCoord,
+    curr:          VramCoord,
+}
+
+impl VramCursor {
+    fn next_coord(mut curr: VramCoord, end: VramCoord) -> VramCoord {
+        curr.xpos += 1;
+        if curr.xpos > end.xpos {
+            curr.xpos = 0;
+            curr.ypos += 1;
+        }
+        curr
+    }
+    fn new(start: VramCoord, end: VramCoord) -> Self {
+        Self {
+            end,
+            end_exclusive: Self::next_coord(end, end),
+            curr: start,
+        }
+    }
+    fn next(&mut self) -> Option<VramCoord> {
+        if self.done() {
+            return None;
+        }
+        let curr = self.curr;
+        self.curr = Self::next_coord(self.curr, self.end);
+        Some(curr)
+    }
+
+    fn done(&self) -> bool {
+        self.curr == self.end_exclusive
+    }
+
+    fn iter(&mut self) -> impl Iterator<Item = VramCoord> {
+        std::iter::from_fn(|| self.next())
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn test_vram_cursor() {
+    let mut cursor = VramCursor::new(VramCoord::new(0, 0), VramCoord::new(2, 2));
+    assert_eq!(cursor.next(), Some(VramCoord::new(0, 0)));
+    assert_eq!(cursor.next(), Some(VramCoord::new(1, 0)));
+    assert_eq!(cursor.next(), Some(VramCoord::new(2, 0)));
+    assert_eq!(cursor.next(), Some(VramCoord::new(0, 1)));
+    assert_eq!(cursor.next(), Some(VramCoord::new(1, 1)));
+    assert_eq!(cursor.next(), Some(VramCoord::new(2, 1)));
+    assert_eq!(cursor.next(), Some(VramCoord::new(0, 2)));
+    assert_eq!(cursor.next(), Some(VramCoord::new(1, 2)));
+    assert_eq!(cursor.next(), Some(VramCoord::new(2, 2)));
+    assert_eq!(cursor.next(), None);
+}
+
+#[derive(Debug, Clone)]
+pub enum Gp0CpRectCpuToVram {
+    RecvDest,
+    RecvSize { dest: VramCoord },
+    RecvData(VramCursor),
 }
 
 #[bitfield(u32)]
