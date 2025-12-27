@@ -24,7 +24,7 @@ use crate::Emu;
 use crate::cpu::exceptions::Exceptions;
 use crate::cpu::ops::OpCode;
 use crate::cpu::reg_str;
-use crate::dynarec_v2::emitters::DecodedOpNew;
+use crate::dynarec_v2::emitters::DecodedOp;
 use crate::dynarec_v2::emitters::DynarecOp;
 use crate::dynarec_v2::emitters::EmitCtx;
 use crate::dynarec_v2::emitters::EmitSummary;
@@ -37,7 +37,7 @@ pub mod emitters;
 pub mod regalloc;
 
 #[cfg(feature = "fetch-channel")]
-pub type FetchedOp = (u32, DecodedOpNew);
+pub type FetchedOp = (u32, DecodedOp);
 #[cfg(feature = "fetch-channel")]
 pub static FETCH_CHANNEL: LazyLock<(Sender<FetchedOp>, Receiver<FetchedOp>)> =
     LazyLock::new(|| flume::bounded(1024));
@@ -627,10 +627,10 @@ impl LoadedReg {
 // }
 
 impl Emu {
-    fn linear_fetch(&self) -> impl Iterator<Item = (OpCode, DecodedOpNew)> {
+    fn linear_fetch(&self) -> impl Iterator<Item = (OpCode, DecodedOp)> {
         let mut iter = self
             .linear_fetch_no_decode()
-            .map(|op| (op, DecodedOpNew::new(op)));
+            .map(|op| (op, DecodedOp::new(op)));
         let mut taking: Option<i32> = None;
         std::iter::from_fn(move || {
             taking = taking.map(|x| x - 1);
@@ -653,7 +653,7 @@ impl Emu {
             .step_by(max_simd_elements::<u32>() * size_of::<u32>())
             .flat_map(|address| self.read::<Simd<u32, 4>>(address).to_array())
             // .map(|address| self.read(address))
-            .map(OpCode)
+            .map(OpCode::new_with_raw_value)
     }
 }
 
@@ -766,7 +766,7 @@ fn fast_hash(emu: &Emu, op_count: usize) -> u64 {
     let mut hasher = rapidhash::fast::RapidHasher::default();
     emu.linear_fetch_no_decode()
         .take(op_count)
-        .map(|op| op.0)
+        .map(|op| op.raw_value())
         .for_each(|op| hasher.write_u32(op));
 
     hasher.finish()
@@ -780,7 +780,7 @@ fn fetch_and_compile_single_threaded(
 
     let mut hasher = rapidhash::fast::RapidHasher::default();
 
-    type FetchItem = (OpCode, DecodedOpNew);
+    type FetchItem = (OpCode, DecodedOp);
     #[derive(Debug)]
     struct FetchState {
         op_count:     usize,
@@ -831,7 +831,7 @@ fn fetch_and_compile_single_threaded(
 
     let mut iter = emu
         .linear_fetch_no_decode()
-        .map(|op| (op, DecodedOpNew::new(op)));
+        .map(|op| (op, DecodedOp::new(op)));
 
     state.push_item(iter.next());
     state.push_item(iter.next());
@@ -848,7 +848,7 @@ fn fetch_and_compile_single_threaded(
         if let Some((_, next)) = state.back() {
             state.cycles -= next.cycles().min(op.hazard()) as u32;
         }
-        hasher.write_u32(opcode.0);
+        hasher.write_u32(opcode.raw_value());
 
         if op.is_hard_boundary() {
             state.clear_items();

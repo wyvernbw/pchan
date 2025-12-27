@@ -34,37 +34,21 @@
 use std::{collections::HashMap, mem::offset_of};
 
 use crate::{
-    bootloader::BootloaderState,
-    cpu::Cpu,
-    dynarec::{FetchSummary, prelude::PureInstBuilder},
-    dynarec_v2::DynarecBlock,
-    gpu::GpuState,
-    io::tty::Tty,
-    jit::{JitCache, LUTMap},
+    bootloader::BootloaderState, cpu::Cpu, dynarec_v2::DynarecBlock, gpu::GpuState, io::tty::Tty,
     memory::MemoryState,
 };
-
-pub mod cranelift_bs {
-    pub use cranelift::codegen::ir::*;
-    #[allow(ambiguous_glob_reexports)]
-    pub use cranelift::jit::*;
-    pub use cranelift::module::*;
-    pub use cranelift::prelude::isa::*;
-    pub use cranelift::prelude::*;
-}
 
 pub mod bindings;
 pub mod bootloader;
 pub mod cpu;
-#[path = "./dynarec/dynarec.rs"]
-pub mod dynarec;
+// #[path = "./dynarec/dynarec.rs"]
+// pub mod dynarec;
 #[path = "./dynarec-v2/dynarec-v2.rs"]
 pub mod dynarec_v2;
 #[path = "./gpu/gpu.rs"]
 pub mod gpu;
 #[path = "./io/io.rs"]
 pub mod io;
-pub mod jit;
 pub mod memory;
 
 pub const fn max_simd_width_bytes() -> usize {
@@ -101,10 +85,6 @@ pub struct Emu {
     pub dynarec_cache: HashMap<u32, DynarecBlock>,
     pub mem:           MemoryState,
     pub boot:          BootloaderState,
-    #[debug(skip)]
-    pub jit_cache:     JitCache,
-    #[debug(skip)]
-    pub inst_cache:    LUTMap<FetchSummary>,
     pub tty:           Tty,
     pub gpu:           GpuState,
 }
@@ -132,96 +112,7 @@ impl Emu {
     }
 }
 
-use cranelift::{
-    codegen::ir::{Inst, Opcode},
-    prelude::*,
-};
 use pchan_utils::hex;
-
-pub trait IntoInst {
-    fn into_inst(self) -> Inst;
-}
-
-impl IntoInst for Inst {
-    fn into_inst(self) -> Inst {
-        self
-    }
-}
-
-impl<T> IntoInst for (Inst, T) {
-    fn into_inst(self) -> Inst {
-        self.0
-    }
-}
-
-pub trait FnBuilderExt<'a> {
-    fn type_of(&self, value: Value) -> Type;
-    fn single_result(&self, inst: Inst) -> Value;
-
-    #[allow(non_snake_case)]
-    fn Nop(&mut self) -> Inst;
-    #[allow(non_snake_case)]
-    fn PtrCast(&mut self, value: Value, ptr_type: Type) -> (Value, Inst);
-    #[allow(non_snake_case)]
-    fn IConst(&mut self, imm: impl Into<i64>) -> (Value, Inst);
-    fn inst<R: IntoInst>(&mut self, f: impl Fn(&mut Self) -> R) -> (Value, Inst);
-    fn pure<'short>(&'short mut self) -> PureInstBuilder<'short, 'a>;
-}
-
-impl<'a> FnBuilderExt<'a> for FunctionBuilder<'a> {
-    fn type_of(&self, value: Value) -> Type {
-        self.func.dfg.value_type(value)
-    }
-    fn single_result(&self, inst: Inst) -> Value {
-        self.inst_results(inst)[0]
-    }
-    fn inst<R: IntoInst>(&mut self, f: impl Fn(&mut Self) -> R) -> (Value, Inst) {
-        let inst = f(self).into_inst();
-        let value = self.single_result(inst);
-        (value, inst)
-    }
-    fn Nop(&mut self) -> Inst {
-        let (inst, _) = self.pure().NullAry(Opcode::Nop, types::INVALID);
-        inst
-    }
-
-    fn PtrCast(&mut self, value: Value, ptr_type: Type) -> (Value, Inst) {
-        let value_type = self.type_of(value);
-        if value_type == ptr_type {
-            (value, self.Nop())
-        } else {
-            let extend_or_reduce = match (ptr_type, value_type) {
-                (types::I64, types::I32 | types::I16 | types::I8)
-                | (types::I32, types::I16 | types::I8) => {
-                    self.pure().Unary(Opcode::Uextend, ptr_type, value).0
-                }
-                (types::I32, types::I64) => self.pure().Unary(Opcode::Ireduce, ptr_type, value).0,
-                _ => panic!(
-                    "invalid cast from {} to pointer type {}",
-                    value_type, ptr_type
-                ),
-            };
-            let value = self.single_result(extend_or_reduce);
-            (value, extend_or_reduce)
-        }
-    }
-    fn IConst(&mut self, imm: impl Into<i64>) -> (Value, Inst) {
-        let imm = imm.into();
-        self.inst(|f| {
-            f.pure()
-                .UnaryImm(Opcode::Iconst, types::I32, Imm64::new(imm))
-                .0
-        })
-    }
-
-    fn pure<'short>(&'short mut self) -> PureInstBuilder<'short, 'a> {
-        let current_block = self.current_block().unwrap();
-        PureInstBuilder {
-            builder: self,
-            block:   current_block,
-        }
-    }
-}
 
 pub trait Bus {
     fn mem_mut(&mut self) -> &mut MemoryState;
@@ -272,16 +163,11 @@ impl Bus for Emu {
 #[cfg(test)]
 pub mod test_utils {
 
-    use crate::{Emu, jit::JIT};
+    use crate::Emu;
     use rstest::fixture;
 
     #[fixture]
     pub fn emulator() -> Emu {
         Emu::default()
-    }
-
-    #[fixture]
-    pub fn jit() -> JIT {
-        JIT::default()
     }
 }

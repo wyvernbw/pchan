@@ -56,7 +56,7 @@ fn generate_page_tables() -> Lut {
     const BIOS_PAGE_COUNT: usize = kb(512) / PAGE_SIZE;
 
     for i in 0..BIOS_PAGE_COUNT {
-        let offset = ((i * PAGE_SIZE) & 0x1FFFFF) as u32;
+        let offset = (i * PAGE_SIZE) as u32;
 
         table_read[i + 0x1FC0] = Some(MEM_MAP.bios as u32 + offset);
         table_read[i + 0x9FC0] = Some(MEM_MAP.bios as u32 + offset);

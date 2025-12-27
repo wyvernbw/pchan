@@ -1,8 +1,6 @@
 use crate::Emu;
 use crate::cpu;
-use crate::cpu::Cpu;
-use crate::cpu::ops::NOP;
-use crate::cpu::ops::nop;
+use crate::cpu::*;
 use crate::dynarec_v2::Guest;
 use crate::io::IO;
 use std::num::NonZeroU8;
@@ -16,55 +14,7 @@ use pchan_utils::hex;
 #[cfg(test)]
 use rstest::rstest;
 
-use crate::cpu::ops::addiu::*;
-use crate::cpu::ops::addu::*;
-use crate::cpu::ops::and::*;
-use crate::cpu::ops::andi::*;
-use crate::cpu::ops::beq::*;
-use crate::cpu::ops::bgez::*;
-use crate::cpu::ops::bgtz::*;
-use crate::cpu::ops::blez::*;
-use crate::cpu::ops::bltz::*;
-use crate::cpu::ops::bne::*;
-use crate::cpu::ops::div::*;
-use crate::cpu::ops::divu::*;
-use crate::cpu::ops::j::*;
-use crate::cpu::ops::jal::*;
-use crate::cpu::ops::jalr::*;
-use crate::cpu::ops::jr::*;
-use crate::cpu::ops::lb::*;
-use crate::cpu::ops::lbu::*;
-use crate::cpu::ops::lh::*;
-use crate::cpu::ops::lhu::*;
-use crate::cpu::ops::lui::*;
-use crate::cpu::ops::lw::*;
-use crate::cpu::ops::mfc::*;
-use crate::cpu::ops::mfhi::*;
-use crate::cpu::ops::mflo::*;
-use crate::cpu::ops::mtc::*;
-use crate::cpu::ops::mult::*;
-use crate::cpu::ops::multu::*;
-use crate::cpu::ops::nor::*;
-use crate::cpu::ops::or::*;
-use crate::cpu::ops::ori::*;
-use crate::cpu::ops::sb::*;
-use crate::cpu::ops::sh::*;
-use crate::cpu::ops::sll::*;
-use crate::cpu::ops::sllv::*;
-use crate::cpu::ops::slt::*;
-use crate::cpu::ops::slti::*;
-use crate::cpu::ops::sltiu::*;
-use crate::cpu::ops::sltu::*;
-use crate::cpu::ops::sra::*;
-use crate::cpu::ops::srav::*;
-use crate::cpu::ops::srl::*;
-use crate::cpu::ops::srlv::*;
-use crate::cpu::ops::subu::*;
-use crate::cpu::ops::sw::*;
-use crate::cpu::ops::syscall::*;
-use crate::cpu::ops::xor::*;
-use crate::cpu::ops::xori::*;
-
+use crate::cpu::ops::*;
 use crate::cpu::ops::{HaltBlock, OpCode};
 use crate::dynarec_v2::Dynarec;
 use crate::dynarec_v2::LoadedReg;
@@ -104,7 +54,7 @@ pub struct EmitSummary {
     pub pc_updated: bool,
 }
 
-#[enum_dispatch(DecodedOpNew)]
+#[enum_dispatch(DecodedOp)]
 pub trait DynarecOp {
     fn cycles(&self) -> u16 {
         1
@@ -132,64 +82,64 @@ pub trait DynarecOp {
 
 #[enum_dispatch]
 #[derive(Debug, Clone, Copy, Hash, derive_more::Display)]
-pub enum DecodedOpNew {
-    NOP(NOP),
-    ILLEGAL(ILLEGAL),
-    SLL(SLL),
-    SRL(SRL),
-    SRA(SRA),
-    SLLV(SLLV),
-    SRLV(SRLV),
-    SRAV(SRAV),
-    JR(JR),
-    JALR(JALR),
+pub enum DecodedOp {
+    Nop(Nop),
+    Illegal(Illegal),
+    Sll(Sll),
+    Srl(Srl),
+    Sra(Sra),
+    Sllv(Sllv),
+    Srlv(Srlv),
+    Srav(Srav),
+    Jr(Jr),
+    Jalr(Jalr),
     Syscall(Syscall),
-    MFHI(MFHI),
-    MFLO(MFLO),
-    MULT(MULT),
-    MULTU(MULTU),
-    DIV(DIV),
-    DIVU(DIVU),
-    ADDU(ADDU),
-    SUBU(SUBU),
-    AND(AND),
-    OR(OR),
-    XOR(XOR),
-    BLTZ(BLTZ),
-    BGEZ(BGEZ),
+    Mfhi(Mfhi),
+    Mflo(Mflo),
+    Mult(Mult),
+    Multu(Multu),
+    Div(Div),
+    Divu(Divu),
+    Addu(Addu),
+    Subu(Subu),
+    And(And),
+    Or(Or),
+    Xor(Xor),
+    Bltz(Bltz),
+    Bgez(Bgez),
     J(J),
-    JAL(JAL),
-    BLEZ(BLEZ),
-    BGTZ(BGTZ),
-    NOR(NOR),
-    SLT(SLT),
-    SLTU(SLTU),
-    BEQ(BEQ),
-    BNE(BNE),
+    Jal(Jal),
+    Blez(Blez),
+    Bgtz(Bgtz),
+    Nor(Nor),
+    Slt(Slt),
+    Sltu(Sltu),
+    Beq(Beq),
+    Bne(Bne),
     HaltBlock(HaltBlock),
-    SB(SB),
-    SH(SH),
-    SW(SW),
-    ADDIU(ADDIU),
-    SLTI(SLTI),
-    SLTIU(SLTIU),
-    ANDI(ANDI),
-    ORI(ORI),
-    XORI(XORI),
-    LUI(LUI),
-    MFCn(MFCn),
-    MTCn(MTCn),
-    LB(LB),
-    LBU(LBU),
-    LH(LH),
-    LHU(LHU),
-    LW(LW),
+    Sb(Sb),
+    Sh(Sh),
+    Sw(Sw),
+    Addiu(Addiu),
+    Slti(Slti),
+    Sltiu(Sltiu),
+    Andi(Andi),
+    Ori(Ori),
+    Xori(Xori),
+    Lui(Lui),
+    Mfcn(Mfcn),
+    Mtcn(Mtcn),
+    Lb(Lb),
+    Lbu(Lbu),
+    Lh(Lh),
+    Lhu(Lhu),
+    Lw(Lw),
 }
 
 #[derive(Debug, Clone, Copy, derive_more::Display, Hash, PartialEq, Eq)]
-pub struct ILLEGAL;
+pub struct Illegal;
 
-impl DynarecOp for ILLEGAL {
+impl DynarecOp for Illegal {
     fn emit<'a>(&self, _: EmitCtx<'a>) -> EmitSummary {
         EmitSummary::default()
     }
@@ -199,109 +149,113 @@ impl DynarecOp for ILLEGAL {
     }
 }
 
-impl DecodedOpNew {
+impl DecodedOp {
     pub fn new(fields: OpCode) -> Self {
         let [op] = Self::decode([fields]);
         op
     }
     pub const fn is_illegal(&self) -> bool {
-        matches!(self, Self::ILLEGAL(_))
+        matches!(self, Self::Illegal(_))
     }
     pub const fn illegal() -> Self {
-        Self::ILLEGAL(ILLEGAL)
+        Self::Illegal(Illegal)
     }
     pub fn decode<const N: usize>(fields: [impl Into<OpCode>; N]) -> [Self; N] {
         fields.map(|fields| {
             let fields = fields.into();
             if fields == OpCode::NOP_FIELDS {
-                return Self::NOP(NOP);
+                return Self::Nop(Nop);
             }
-            if fields == OpCode::HALT_FIELDS {
+            if fields == OpCode::HALT {
                 return Self::HaltBlock(HaltBlock);
             }
-            let opcode = fields.opcode();
-            let rs = fields.rs();
-            let rt = fields.rt();
-            let rd = fields.rd();
-            let funct = fields.funct();
+            let opcode = fields.opcode().value();
+            let rs = fields.rs().value();
+            let rt = fields.rt().value();
+            let rd = fields.rd().value();
+            let funct = fields.funct().value();
             match (opcode, rs, rt, funct) {
-                (0x0, _, _, 0x0) => Self::SLL(SLL::new(rd, rt, fields.shamt() as i8)),
+                (0x0, _, _, 0x0) => Self::Sll(Sll::new(rd, rt, fields.shamt().value() as _)),
                 (0x0, _, _, 0x1) => Self::illegal(),
-                (0x0, _, _, 0x2) => Self::SRL(SRL::new(rd, rt, fields.shamt() as i8)),
-                (0x0, _, _, 0x3) => Self::SRA(SRA::new(rd, rt, fields.shamt() as i8)),
-                (0x0, _, _, 0x4) => Self::SLLV(SLLV::new(rd, rt, rs)),
+                (0x0, _, _, 0x2) => Self::Srl(Srl::new(rd, rt, fields.shamt().value() as _)),
+                (0x0, _, _, 0x3) => Self::Sra(Sra::new(rd, rt, fields.shamt().value() as _)),
+                (0x0, _, _, 0x4) => Self::Sllv(Sllv::new(rd, rt, rs)),
                 (0x0, _, _, 0x5) => Self::illegal(),
-                (0x0, _, _, 0x6) => Self::SRLV(SRLV::new(rd, rt, rs)),
-                (0x0, _, _, 0x7) => Self::SRAV(SRAV::new(rd, rt, rs)),
-                (0x0, _, _, 0x8) => Self::JR(JR::new(rs)),
-                (0x0, _, _, 0x9) => Self::JALR(JALR::new(rd, rs)),
+                (0x0, _, _, 0x6) => Self::Srlv(Srlv::new(rd, rt, rs)),
+                (0x0, _, _, 0x7) => Self::Srav(Srav::new(rd, rt, rs)),
+                (0x0, _, _, 0x8) => Self::Jr(Jr::new(rs)),
+                (0x0, _, _, 0x9) => Self::Jalr(Jalr::new(rd, rs)),
                 (0x0, _, _, 0xA) => Self::illegal(),
                 (0x0, _, _, 0xB) => Self::illegal(),
                 (0x0, _, _, 0xC) => Self::Syscall(Syscall),
                 (0x0, _, _, 0xD) => todo!("brk"),
                 (0x0, _, _, 0xE) => Self::illegal(),
                 (0x0, _, _, 0xF) => Self::illegal(),
-                (0x0, _, _, 0x10) => Self::MFHI(MFHI::new(rd)),
+                (0x0, _, _, 0x10) => Self::Mfhi(Mfhi::new(rd)),
                 (0x0, _, _, 0x11) => todo!("mthi"),
-                (0x0, _, _, 0x12) => Self::MFLO(MFLO::new(rd)),
+                (0x0, _, _, 0x12) => Self::Mflo(Mflo::new(rd)),
                 (0x0, _, _, 0x13) => todo!("mtlo"),
                 (0x0, _, _, 0x14..=0x17) => Self::illegal(),
-                (0x0, _, _, 0x18) => Self::MULT(MULT::new(rs, rt)),
-                (0x0, _, _, 0x19) => Self::MULTU(MULTU::new(rs, rt)),
-                (0x0, _, _, 0x1A) => Self::DIV(DIV::new(rs, rt)),
-                (0x0, _, _, 0x1B) => Self::DIVU(DIVU::new(rs, rt)),
+                (0x0, _, _, 0x18) => Self::Mult(Mult::new(rs, rt)),
+                (0x0, _, _, 0x19) => Self::Multu(Multu::new(rs, rt)),
+                (0x0, _, _, 0x1A) => Self::Div(Div::new(rs, rt)),
+                (0x0, _, _, 0x1B) => Self::Divu(Divu::new(rs, rt)),
                 (0x0, _, _, 0x1C..=0x1F) => Self::illegal(),
-                (0x0, _, _, 0x20 | 0x21) => Self::ADDU(ADDU::new(rd, rs, rt)),
-                (0x0, _, _, 0x22 | 0x23) => Self::SUBU(SUBU::new(rd, rs, rt)),
-                (0x0, _, _, 0x24) => Self::AND(AND::new(rd, rs, rt)),
-                (0x0, _, _, 0x25) => Self::OR(OR::new(rd, rs, rt)),
-                (0x0, _, _, 0x26) => Self::XOR(XOR::new(rd, rs, rt)),
-                (0x0, _, _, 0x27) => Self::NOR(NOR::new(rd, rs, rt)),
+                (0x0, _, _, 0x20 | 0x21) => Self::Addu(Addu::new(rd, rs, rt)),
+                (0x0, _, _, 0x22 | 0x23) => Self::Subu(Subu::new(rd, rs, rt)),
+                (0x0, _, _, 0x24) => Self::And(And::new(rd, rs, rt)),
+                (0x0, _, _, 0x25) => Self::Or(Or::new(rd, rs, rt)),
+                (0x0, _, _, 0x26) => Self::Xor(Xor::new(rd, rs, rt)),
+                (0x0, _, _, 0x27) => Self::Nor(Nor::new(rd, rs, rt)),
                 (0x0, _, _, 0x28..=0x29) => Self::illegal(),
-                (0x0, _, _, 0x2A) => Self::SLT(SLT::new(rd, rs, rt)),
-                (0x0, _, _, 0x2B) => Self::SLTU(SLTU::new(rd, rs, rt)),
+                (0x0, _, _, 0x2A) => Self::Slt(Slt::new(rd, rs, rt)),
+                (0x0, _, _, 0x2B) => Self::Sltu(Sltu::new(rd, rs, rt)),
                 (0x0, _, _, 0x2C..) => Self::illegal(),
-                (0x1, _, 0x0, _) => Self::BLTZ(BLTZ::new(rs, fields.imm16())),
-                (0x1, _, 0x1, _) => Self::BGEZ(BGEZ::new(rs, fields.imm16())),
+                (0x1, _, 0x0, _) => Self::Bltz(Bltz::new(rs, fields.imm16() as _)),
+                (0x1, _, 0x1, _) => Self::Bgez(Bgez::new(rs, fields.imm16() as _)),
                 (0x1, _, 0x10, _) => todo!("bltzal"),
                 (0x1, _, 0x11, _) => todo!("bgezal"),
                 // * TODO: bltz and bgez dupes * //
-                (0x2, _, _, _) => Self::J(J::new(fields.imm26())),
-                (0x3, _, _, _) => Self::JAL(JAL::new(fields.imm26())),
-                (0x4, _, _, _) => Self::BEQ(BEQ::new(rs, rt, fields.imm16())),
-                (0x5, _, _, _) => Self::BNE(BNE::new(rs, rt, fields.imm16())),
-                (0x6, _, _, _) => Self::BLEZ(BLEZ::new(rs, fields.imm16())),
-                (0x7, _, _, _) => Self::BGTZ(BGTZ::new(rs, fields.imm16())),
-                (0x8 | 0x9, _, _, _) => Self::ADDIU(ADDIU::new(rs, rt, fields.imm16())),
-                (0xA, _, _, _) => Self::SLTI(SLTI::new(rt, rs, fields.imm16())),
-                (0xB, _, _, _) => Self::SLTIU(SLTIU::new(rt, rs, fields.imm16() as u16)),
-                (0xC, _, _, _) => Self::ANDI(ANDI::new(rs, rt, fields.imm16())),
-                (0xD, _, _, _) => Self::ORI(ORI::new(rs, rt, fields.imm16())),
-                (0xE, _, _, _) => Self::XORI(XORI::new(rs, rt, fields.imm16())),
-                (0xF, _, _, _) => Self::LUI(LUI::new(rt, fields.imm16())),
+                (0x2, _, _, _) => Self::J(J::new(fields.imm26().value() as _)),
+                (0x3, _, _, _) => Self::Jal(Jal::new(fields.imm26().value() as _)),
+                (0x4, _, _, _) => Self::Beq(Beq::new(rs, rt, fields.imm16() as _)),
+                (0x5, _, _, _) => Self::Bne(Bne::new(rs, rt, fields.imm16() as _)),
+                (0x6, _, _, _) => Self::Blez(Blez::new(rs, fields.imm16() as _)),
+                (0x7, _, _, _) => Self::Bgtz(Bgtz::new(rs, fields.imm16() as _)),
+                (0x8 | 0x9, _, _, _) => Self::Addiu(Addiu::new(rt, rs, fields.imm16() as _)),
+                (0xA, _, _, _) => Self::Slti(Slti::new(rt, rs, fields.imm16() as _)),
+                (0xB, _, _, _) => Self::Sltiu(Sltiu::new(rt, rs, fields.imm16() as _)),
+                (0xC, _, _, _) => Self::Andi(Andi::new(rt, rs, fields.imm16() as _)),
+                (0xD, _, _, _) => Self::Ori(Ori::new(rt, rs, fields.imm16() as _)),
+                (0xE, _, _, _) => Self::Xori(Xori::new(rt, rs, fields.imm16() as _)),
+                (0xF, _, _, _) => Self::Lui(Lui::new(rt, fields.imm16() as _)),
                 (0x10, 0x10, _, 0x10) => todo!("rfe"),
-                (0x10..=0x13, 0x0, _, 0x0) => Self::MFCn(MFCn::new(fields.cop(), rt, rd)),
+                (0x10..=0x13, 0x0, _, 0x0) => {
+                    Self::Mfcn(Mfcn::new(fields.cop().value() as _, rt, rd))
+                }
                 (0x10..=0x13, 0x2, _, 0x0) => todo!("cfcn"),
-                (0x10..=0x13, 0x4, _, 0x0) => Self::MTCn(MTCn::new(fields.cop(), rt, rd)),
+                (0x10..=0x13, 0x4, _, 0x0) => {
+                    Self::Mtcn(Mtcn::new(fields.cop().value() as _, rt, rd))
+                }
                 (0x10..=0x13, 0x8, 0, _) => todo!("bcnf"),
                 (0x10..=0x13, 0x8, 1, _) => todo!("bcnt"),
                 (0x10..=0x13, 0x6, _, 0x0) => todo!("ctcn"),
                 (0x10..=0x13, 0x10..=0x1F, _, _) => {
-                    todo!("cop{} imm25 {}", fields.cop(), hex(fields.imm26()))
+                    todo!("cop{} imm25 {}", fields.cop(), hex(fields.imm26().value()))
                 }
                 (0x14..=0x1F, _, _, _) => Self::illegal(),
-                (0x20, _, _, _) => Self::LB(LB::new(rt, rs, fields.imm16())),
-                (0x21, _, _, _) => Self::LH(LH::new(rt, rs, fields.imm16())),
+                (0x20, _, _, _) => Self::Lb(Lb::new(rt, rs, fields.imm16() as _)),
+                (0x21, _, _, _) => Self::Lh(Lh::new(rt, rs, fields.imm16() as _)),
                 (0x22, _, _, _) => todo!("lwl"),
-                (0x23, _, _, _) => Self::LW(LW::new(rt, rs, fields.imm16())),
-                (0x24, _, _, _) => Self::LBU(LBU::new(rt, rs, fields.imm16())),
-                (0x25, _, _, _) => Self::LHU(LHU::new(rt, rs, fields.imm16())),
+                (0x23, _, _, _) => Self::Lw(Lw::new(rt, rs, fields.imm16() as _)),
+                (0x24, _, _, _) => Self::Lbu(Lbu::new(rt, rs, fields.imm16() as _)),
+                (0x25, _, _, _) => Self::Lhu(Lhu::new(rt, rs, fields.imm16() as _)),
                 (0x26, _, _, _) => todo!("lwr"),
                 (0x27, _, _, _) => Self::illegal(),
-                (0x28, _, _, _) => Self::SB(SB::new(rt, rs, fields.imm16())),
-                (0x29, _, _, _) => Self::SH(SH::new(rt, rs, fields.imm16())),
+                (0x28, _, _, _) => Self::Sb(Sb::new(rt, rs, fields.imm16() as _)),
+                (0x29, _, _, _) => Self::Sh(Sh::new(rt, rs, fields.imm16() as _)),
                 (0x2A, _, _, _) => todo!("swl"),
-                (0x2B, _, _, _) => Self::SW(SW::new(rt, rs, fields.imm16())),
+                (0x2B, _, _, _) => Self::Sw(Sw::new(rt, rs, fields.imm16() as _)),
                 (0x2C..=0x2D, _, _, _) => Self::illegal(),
                 (0x2E, _, _, _) => todo!("swr"),
                 (0x2F, _, _, _) => Self::illegal(),
@@ -397,7 +351,7 @@ impl Dynarec {
     }
 }
 
-impl DynarecOp for ADDIU {
+impl DynarecOp for Addiu {
     #[allow(clippy::useless_conversion)]
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
         // $rt = $zero case
@@ -409,7 +363,7 @@ impl DynarecOp for ADDIU {
         if self.rs == 0 {
             let rt = ctx.dynarec.alloc_reg(self.rt);
 
-            ctx.dynarec.emit_imm16_sext(rt.reg(), self.imm);
+            ctx.dynarec.emit_imm16_sext(rt.reg(), self.imm16);
 
             ctx.dynarec.mark_dirty(self.rt);
             rt.restore(ctx.dynarec);
@@ -423,7 +377,7 @@ impl DynarecOp for ADDIU {
             .emit_add_imm16()
             .dest(rt.reg())
             .base(rs.reg())
-            .offset(self.imm)
+            .offset(self.imm16)
             .call();
 
         ctx.dynarec.mark_dirty(self.rt);
@@ -445,7 +399,10 @@ fn test_addiu(#[case] a: u32, #[case] b: u32, #[case] expected: u32) -> color_ey
     setup_tracing();
     let mut emu = Emu::default();
     emu.cpu.gpr[10] = a;
-    emu.write_many(0x0, &program([addiu(12, 10, b as i16), OpCode(69420)]));
+    emu.write_many(
+        0x0,
+        &program([addiu(12, 10, b as i16), OpCode::new_with_raw_value(69420)]),
+    );
     PipelineV2::new(&emu).run_once(&mut emu)?;
     tracing::info!(?emu.cpu);
     assert_eq!(emu.cpu.gpr[12], expected);
@@ -479,7 +436,10 @@ fn test_subu(#[case] a: u32, #[case] b: u32, #[case] expected: u32) -> color_eyr
     let mut emu = Emu::default();
     emu.cpu.gpr[10] = a;
     emu.cpu.gpr[11] = b;
-    emu.write_many(0x0, &program([subu(12, 10, 11), OpCode(69420)]));
+    emu.write_many(
+        0x0,
+        &program([subu(12, 10, 11), OpCode::new_with_raw_value(69420)]),
+    );
     PipelineV2::new(&emu).run_once(&mut emu)?;
     tracing::info!(?emu.cpu);
     assert_eq!(emu.cpu.gpr[12], expected);
@@ -541,10 +501,10 @@ fn emit_store(
     EmitSummary::default()
 }
 
-impl DynarecOp for SB {
+impl DynarecOp for Sb {
     #[cfg(target_arch = "aarch64")]
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
-        emit_store(ctx, self.rt, self.rs, self.imm, move |ctx| {
+        emit_store(ctx, self.rt, self.rs, self.imm16, move |ctx| {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
@@ -559,10 +519,10 @@ impl DynarecOp for SB {
     }
 }
 
-impl DynarecOp for SH {
+impl DynarecOp for Sh {
     #[cfg(target_arch = "aarch64")]
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
-        emit_store(ctx, self.rt, self.rs, self.imm, move |ctx| {
+        emit_store(ctx, self.rt, self.rs, self.imm16, move |ctx| {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
@@ -576,10 +536,10 @@ impl DynarecOp for SH {
     }
 }
 
-impl DynarecOp for SW {
+impl DynarecOp for Sw {
     #[cfg(target_arch = "aarch64")]
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
-        emit_store(ctx, self.rt, self.rs, self.imm, move |ctx| {
+        emit_store(ctx, self.rt, self.rs, self.imm16, move |ctx| {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
@@ -610,7 +570,7 @@ where
     let mut emu = Emu::default();
     emu.cpu.gpr[10] = ext::zero(value);
     emu.cpu.gpr[11] = 0xf;
-    emu.write_many(0x0, &program([instr, OpCode(69420)]));
+    emu.write_many(0x0, &program([instr, OpCode::HALT]));
 
     PipelineV2::new(&emu).run_once(&mut emu)?;
 
@@ -625,9 +585,13 @@ where
     Ok(())
 }
 
+/// this is a write to BIOS rom which is obviously invalid
+/// in the future proper emulation should trigger the exception handler
+/// for now we just panic.
 #[cfg(test)]
 #[rstest]
-fn test_weird_store() -> color_eyre::Result<()> {
+#[should_panic]
+fn test_weird_store() {
     use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
     use pchan_utils::setup_tracing;
 
@@ -642,19 +606,17 @@ fn test_weird_store() -> color_eyre::Result<()> {
             addiu(cpu::SP, cpu::SP, -0x0018),
             sw(cpu::RA, cpu::SP, 0x0014),
             nop(),
-            OpCode(69420),
+            OpCode::HALT,
         ]),
     );
 
-    PipelineV2::new(&emu).run_once(&mut emu)?;
+    PipelineV2::new(&emu).run_once(&mut emu).unwrap();
 
     tracing::info!("finished running");
     tracing::info!(?emu.cpu);
 
     let result = emu.read::<u32>(0x801ffee4);
     assert_eq!(result, 0xbfc06ed4);
-
-    Ok(())
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -697,9 +659,9 @@ fn emit_load(
     EmitSummary::default()
 }
 
-impl DynarecOp for LB {
+impl DynarecOp for Lb {
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
-        emit_load(ctx, self.rt, self.rs, self.imm, move |ctx| {
+        emit_load(ctx, self.rt, self.rs, self.imm16, move |ctx| {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
@@ -716,9 +678,9 @@ impl DynarecOp for LB {
     }
 }
 
-impl DynarecOp for LBU {
+impl DynarecOp for Lbu {
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
-        emit_load(ctx, self.rt, self.rs, self.imm, move |ctx| {
+        emit_load(ctx, self.rt, self.rs, self.imm16, move |ctx| {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
@@ -735,9 +697,9 @@ impl DynarecOp for LBU {
     }
 }
 
-impl DynarecOp for LH {
+impl DynarecOp for Lh {
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
-        emit_load(ctx, self.rt, self.rs, self.imm, move |ctx| {
+        emit_load(ctx, self.rt, self.rs, self.imm16, move |ctx| {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
@@ -754,9 +716,9 @@ impl DynarecOp for LH {
     }
 }
 
-impl DynarecOp for LHU {
+impl DynarecOp for Lhu {
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
-        emit_load(ctx, self.rt, self.rs, self.imm, move |ctx| {
+        emit_load(ctx, self.rt, self.rs, self.imm16, move |ctx| {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
@@ -773,9 +735,9 @@ impl DynarecOp for LHU {
     }
 }
 
-impl DynarecOp for LW {
+impl DynarecOp for Lw {
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
-        emit_load(ctx, self.rt, self.rs, self.imm, move |ctx| {
+        emit_load(ctx, self.rt, self.rs, self.imm16, move |ctx| {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
@@ -816,7 +778,7 @@ fn test_loads(
     let mut emu = Emu::default();
     emu.cpu.gpr[11] = 0x100;
     emu.write(0x100 + 2, value);
-    emu.write_many(0x0, &program([instr(10, 11, 2), OpCode(69420)]));
+    emu.write_many(0x0, &program([instr(10, 11, 2), OpCode::HALT]));
 
     PipelineV2::new(&emu).run_once(&mut emu)?;
 
@@ -852,7 +814,7 @@ fn test_load_delay(#[case] instr: impl Fn(u8, u8, i16) -> OpCode) -> color_eyre:
             instr(10, 11, 2),
             addiu(12, 10, 420),
             addiu(13, 10, 420),
-            OpCode(69420),
+            OpCode::HALT,
         ]),
     );
 
@@ -931,7 +893,7 @@ const fn either_zero(rs: u8, rt: u8) -> EitherZero {
     }
 }
 
-impl DynarecOp for SUBU {
+impl DynarecOp for Subu {
     #[allow(clippy::useless_conversion)]
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
         if self.rd == 0 {
@@ -966,7 +928,7 @@ impl DynarecOp for SUBU {
     }
 }
 
-impl DynarecOp for ADDU {
+impl DynarecOp for Addu {
     #[allow(clippy::useless_conversion)]
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
         if self.rd == 0 {
@@ -990,7 +952,7 @@ impl DynarecOp for ADDU {
     }
 }
 
-impl DynarecOp for AND {
+impl DynarecOp for And {
     #[allow(clippy::useless_conversion)]
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
         if self.rd == 0 {
@@ -1011,7 +973,7 @@ impl DynarecOp for AND {
     }
 }
 
-impl DynarecOp for OR {
+impl DynarecOp for Or {
     #[allow(clippy::useless_conversion)]
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
         if self.rd == 0 {
@@ -1034,7 +996,7 @@ impl DynarecOp for OR {
     }
 }
 
-impl DynarecOp for XOR {
+impl DynarecOp for Xor {
     #[allow(clippy::useless_conversion)]
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
         if self.rd == 0 {
@@ -1057,7 +1019,7 @@ impl DynarecOp for XOR {
     }
 }
 
-impl DynarecOp for NOR {
+impl DynarecOp for Nor {
     #[allow(clippy::useless_conversion)]
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
         if self.rd == 0 {
@@ -1115,7 +1077,7 @@ fn emit_shift_by_reg<'a>(
     emit_alu_reg(ctx, rd, rs, rt, alu_op)
 }
 
-impl DynarecOp for SLLV {
+impl DynarecOp for Sllv {
     #[allow(clippy::useless_conversion)]
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
         emit_shift_by_reg(ctx, self.rd, self.rs, self.rt, move |ctx, regs| {
@@ -1128,7 +1090,7 @@ impl DynarecOp for SLLV {
     }
 }
 
-impl DynarecOp for SRLV {
+impl DynarecOp for Srlv {
     #[allow(clippy::useless_conversion)]
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
         emit_shift_by_reg(ctx, self.rd, self.rs, self.rt, move |ctx, regs| {
@@ -1141,7 +1103,7 @@ impl DynarecOp for SRLV {
     }
 }
 
-impl DynarecOp for SRAV {
+impl DynarecOp for Srav {
     #[allow(clippy::useless_conversion)]
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
         emit_shift_by_reg(ctx, self.rd, self.rs, self.rt, move |ctx, regs| {
@@ -1217,7 +1179,7 @@ fn test_alu_reg(
     }
     emu.cpu.gpr[a.0 as usize] = a.1;
     emu.cpu.gpr[b.0 as usize] = b.1;
-    emu.write_many(0x0, &program([instr(expected.0, a.0, b.0), OpCode(69420)]));
+    emu.write_many(0x0, &program([instr(expected.0, a.0, b.0), OpCode::HALT]));
     PipelineV2::new(&emu).run_once(&mut emu)?;
     tracing::info!(?emu.cpu);
     assert_eq!(emu.cpu.gpr[expected.0 as usize], expected.1);
@@ -1229,14 +1191,14 @@ fn test_alu_reg(
 pub struct ShiftImm<'a> {
     rd:  Rd<'a>,
     rt:  Rt<'a>,
-    imm: i8,
+    imm: u8,
 }
 
 fn emit_shift_imm(
     ctx: &mut EmitCtx,
     rd: Guest,
     rt: Guest,
-    imm: i8,
+    imm: u8,
     emitter: impl Fn(&mut Dynarec, ShiftImm),
 ) -> EmitSummary {
     if rd == 0 {
@@ -1267,14 +1229,14 @@ fn emit_shift_imm(
     EmitSummary::default()
 }
 
-impl DynarecOp for SLL {
+impl DynarecOp for Sll {
     #[allow(clippy::useless_conversion)]
     fn emit<'a>(&self, mut ctx: EmitCtx<'a>) -> EmitSummary {
         emit_shift_imm(
             &mut ctx,
             self.rd,
             self.rt,
-            self.imm,
+            self.shamt,
             move |dynarec, ShiftImm { rd, rt, imm }| {
                 #[cfg(target_arch = "aarch64")]
                 dynasm!(
@@ -1289,20 +1251,20 @@ impl DynarecOp for SLL {
     }
 }
 
-impl DynarecOp for SRL {
+impl DynarecOp for Srl {
     #[allow(clippy::useless_conversion)]
     fn emit<'a>(&self, mut ctx: EmitCtx<'a>) -> EmitSummary {
         emit_shift_imm(
             &mut ctx,
             self.rd,
             self.rt,
-            self.imm,
+            self.shamt,
             move |dynarec, ShiftImm { rd, rt, imm }| {
                 #[cfg(target_arch = "aarch64")]
                 dynasm!(
                     dynarec.asm
                     ; .arch aarch64
-                    ; lsr W(**rd), W(**rt), imm as _
+                    ; lsr W(**rd), W(**rt), ext::zero(imm)
                 );
                 dynarec.mark_dirty(self.rd);
             },
@@ -1310,14 +1272,14 @@ impl DynarecOp for SRL {
     }
 }
 
-impl DynarecOp for SRA {
+impl DynarecOp for Sra {
     #[allow(clippy::useless_conversion)]
     fn emit<'a>(&self, mut ctx: EmitCtx<'a>) -> EmitSummary {
         emit_shift_imm(
             &mut ctx,
             self.rd,
             self.rt,
-            self.imm,
+            self.shamt,
             move |dynarec, ShiftImm { rd, rt, imm }| {
                 #[cfg(target_arch = "aarch64")]
                 dynasm!(
@@ -1362,17 +1324,17 @@ fn emit_alu_imm(
     EmitSummary::default()
 }
 
-impl DynarecOp for ANDI {
+impl DynarecOp for Andi {
     #[allow(clippy::useless_conversion)]
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
-        match (self.rt, self.rs, self.imm) {
+        match (self.rt, self.rs, self.imm16) {
             (0, _, _) => EmitSummary::default(),
             (_, 0, _) | (_, _, 0) => ctx.dynarec.emit_zero(self.rt),
             _ => emit_alu_imm(
                 ctx,
                 self.rt,
                 self.rs,
-                self.imm as _,
+                self.imm16 as _,
                 move |ctx, AluImm { rt, rs, imm }| {
                     #[cfg(target_arch = "aarch64")]
                     dynasm!(
@@ -1387,30 +1349,30 @@ impl DynarecOp for ANDI {
     }
 }
 
-impl DynarecOp for ORI {
+impl DynarecOp for Ori {
     #[allow(clippy::useless_conversion)]
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
         match self {
             Self {
                 rt: 0,
                 rs: _,
-                imm: _,
+                imm16: _,
             } => EmitSummary::default(),
             Self {
                 rt: _,
                 rs: 0,
-                imm: _,
-            } => ctx.dynarec.emit_immediate_uext(self.rt, self.imm),
+                imm16: _,
+            } => ctx.dynarec.emit_immediate_uext(self.rt, self.imm16),
             Self {
                 rt: _,
                 rs: _,
-                imm: 0,
+                imm16: 0,
             } => ctx.dynarec.emit_load_and_move_into(self.rt, self.rs),
             _ => emit_alu_imm(
                 ctx,
                 self.rt,
                 self.rs,
-                self.imm as _,
+                self.imm16 as _,
                 move |ctx, AluImm { rt, rs, imm }| {
                     #[cfg(target_arch = "aarch64")]
                     dynasm!(
@@ -1425,30 +1387,30 @@ impl DynarecOp for ORI {
     }
 }
 
-impl DynarecOp for XORI {
+impl DynarecOp for Xori {
     #[allow(clippy::useless_conversion)]
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
         match self {
             Self {
                 rt: 0,
                 rs: _,
-                imm: _,
+                imm16: _,
             } => EmitSummary::default(),
             Self {
                 rt: _,
                 rs: 0,
-                imm: _,
-            } => ctx.dynarec.emit_immediate_uext(self.rt, self.imm),
+                imm16: _,
+            } => ctx.dynarec.emit_immediate_uext(self.rt, self.imm16),
             Self {
                 rt: _,
                 rs: _,
-                imm: 0,
+                imm16: 0,
             } => ctx.dynarec.emit_load_and_move_into(self.rt, self.rs),
             _ => emit_alu_imm(
                 ctx,
                 self.rt,
                 self.rs,
-                self.imm as _,
+                self.imm16 as _,
                 move |ctx, AluImm { rt, rs, imm }| {
                     #[cfg(target_arch = "aarch64")]
                     dynasm!(
@@ -1513,7 +1475,7 @@ fn test_alu_imm<I: Into<i16>>(
         emu.cpu.gpr[expected.0 as usize] = 1231123;
     }
     emu.cpu.gpr[a.0 as usize] = a.1;
-    emu.write_many(0x0, &program([instr(expected.0, a.0, b), OpCode(69420)]));
+    emu.write_many(0x0, &program([instr(expected.0, a.0, b), OpCode::HALT]));
     PipelineV2::new(&emu).run_once(&mut emu)?;
     tracing::info!(?emu.cpu);
     assert_eq!(emu.cpu.gpr[expected.0 as usize], expected.1);
@@ -1523,7 +1485,7 @@ fn test_alu_imm<I: Into<i16>>(
     Ok(())
 }
 
-impl DynarecOp for LUI {
+impl DynarecOp for Lui {
     #[allow(clippy::useless_conversion)]
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
         if self.rt == 0 {
@@ -1535,7 +1497,7 @@ impl DynarecOp for LUI {
         dynasm!(
             ctx.dynarec.asm
             ; .arch aarch64
-            ; movz W(*rt), ext::zero(self.imm) as _, LSL #16
+            ; movz W(*rt), ext::zero(self.imm16) as _, LSL #16
         );
 
         ctx.dynarec.mark_dirty(self.rt);
@@ -1564,7 +1526,7 @@ fn test_lui(
     if rt != 0 {
         emu.cpu.gpr[rt as usize] = initial;
     }
-    emu.write_many(0x0, &program([lui(rt, imm), OpCode(69420)]));
+    emu.write_many(0x0, &program([lui(rt, imm), OpCode::HALT]));
     PipelineV2::new(&emu).run_once(&mut emu)?;
     tracing::info!(?emu.cpu);
     assert_eq!(emu.cpu.gpr[rt as usize], expected);
@@ -1576,7 +1538,7 @@ fn test_lui(
 
 impl DynarecOp for J {
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
-        let new_pc = (self.imm << 2) + (ctx.pc & 0xf0000000);
+        let new_pc = (self.imm26 << 2).wrapping_add_unsigned(ctx.pc & 0xf0000000) as _;
         ctx.dynarec.set_delay_slot(move |ctx| {
             ctx.dynarec.emit_write_pc(Reg::W(3), new_pc);
             EmitSummary::builder().pc_updated(true).build()
@@ -1610,10 +1572,10 @@ fn test_j(#[case] initial_pc: u32, #[case] jump_imm: u32) -> color_eyre::Result<
     emu.write_many(
         initial_pc,
         &program([
-            j(jump_imm),
+            j(jump_imm as _),
             addiu(9, 0, 69),
             addiu(9, 0, 420),
-            OpCode(69420),
+            OpCode::HALT,
         ]),
     );
     let new_pc = (jump_imm << 2) + (emu.cpu.pc & 0xf0000000);
@@ -1626,7 +1588,7 @@ fn test_j(#[case] initial_pc: u32, #[case] jump_imm: u32) -> color_eyre::Result<
     Ok(())
 }
 
-impl DynarecOp for JAL {
+impl DynarecOp for Jal {
     fn cycles(&self) -> u16 {
         3
     }
@@ -1637,7 +1599,7 @@ impl DynarecOp for JAL {
         Boundary::Soft
     }
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
-        let new_pc = (self.imm << 2) + (ctx.pc & 0xf0000000);
+        let new_pc = (self.imm26 << 2).wrapping_add_unsigned(ctx.pc & 0xf0000000) as _;
         let return_address = ctx.pc + 0x8;
         ctx.dynarec.set_delay_slot(move |ctx| {
             ctx.dynarec.emit_write_pc(Reg::W(3), new_pc);
@@ -1662,10 +1624,10 @@ fn test_jal(#[case] initial_pc: u32, #[case] jump_imm: u32) -> color_eyre::Resul
     emu.write_many(
         initial_pc,
         &program([
-            jal(jump_imm),
+            jal(jump_imm as _),
             addiu(9, 0, 69),
             addiu(9, 0, 420),
-            OpCode(69420),
+            OpCode::HALT,
         ]),
     );
     let new_pc = (jump_imm << 2) + (emu.cpu.pc & 0xf0000000);
@@ -1679,7 +1641,7 @@ fn test_jal(#[case] initial_pc: u32, #[case] jump_imm: u32) -> color_eyre::Resul
     Ok(())
 }
 
-impl DynarecOp for JR {
+impl DynarecOp for Jr {
     fn cycles(&self) -> u16 {
         3
     }
@@ -1729,7 +1691,7 @@ fn test_jr(#[case] initial_pc: u32, #[case] rs: (Guest, u32)) -> color_eyre::Res
     emu.cpu.gpr[rs.0 as usize] = rs.1;
     emu.write_many(
         initial_pc,
-        &program([jr(rs.0), addiu(9, 0, 69), addiu(9, 0, 420), OpCode(69420)]),
+        &program([jr(rs.0), addiu(9, 0, 69), addiu(9, 0, 420), OpCode::HALT]),
     );
     PipelineV2::new(&emu).run_once(&mut emu)?;
     tracing::info!(?emu.cpu);
@@ -1740,7 +1702,7 @@ fn test_jr(#[case] initial_pc: u32, #[case] rs: (Guest, u32)) -> color_eyre::Res
     Ok(())
 }
 
-impl DynarecOp for JALR {
+impl DynarecOp for Jalr {
     fn cycles(&self) -> u16 {
         3
     }
@@ -1804,7 +1766,7 @@ fn test_jalr(
             jalr(rd, rs.0),
             addiu(9, 0, 69),
             addiu(9, 0, 420),
-            OpCode(69420),
+            OpCode::HALT,
         ]),
     );
     PipelineV2::new(&emu).run_once(&mut emu)?;
@@ -1873,7 +1835,7 @@ fn emit_branch(
     EmitSummary::default()
 }
 
-impl DynarecOp for BEQ {
+impl DynarecOp for Beq {
     fn cycles(&self) -> u16 {
         3
     }
@@ -1886,7 +1848,7 @@ impl DynarecOp for BEQ {
     #[allow(clippy::useless_conversion)]
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
         #[cfg(target_arch = "aarch64")]
-        emit_branch(ctx, self.rs, self.rt, self.imm, move |ctx| {
+        emit_branch(ctx, self.rs, self.rt, self.imm16, move |ctx| {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
@@ -1896,7 +1858,7 @@ impl DynarecOp for BEQ {
     }
 }
 
-impl DynarecOp for BNE {
+impl DynarecOp for Bne {
     fn cycles(&self) -> u16 {
         3
     }
@@ -1908,7 +1870,7 @@ impl DynarecOp for BNE {
     }
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
         #[cfg(target_arch = "aarch64")]
-        emit_branch(ctx, self.rs, self.rt, self.imm, move |ctx| {
+        emit_branch(ctx, self.rs, self.rt, self.imm16, move |ctx| {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
@@ -1952,7 +1914,7 @@ fn test_branch(
     emu.cpu.gpr[rt.0 as usize] = rt.1;
 
     emu.write_many(initial_pc, &program([instr(rs.0, rt.0, offset)]));
-    emu.write_many(initial_pc + ext::zero(offset), &program([OpCode(69420)]));
+    emu.write_many(initial_pc + ext::zero(offset), &program([OpCode::HALT]));
 
     PipelineV2::new(&emu).run_once(&mut emu)?;
     tracing::info!(?emu.cpu);
@@ -2011,7 +1973,7 @@ fn emit_branch_zero(
     EmitSummary::default()
 }
 
-impl DynarecOp for BLTZ {
+impl DynarecOp for Bltz {
     fn cycles(&self) -> u16 {
         3
     }
@@ -2023,7 +1985,7 @@ impl DynarecOp for BLTZ {
     }
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
         #[cfg(target_arch = "aarch64")]
-        emit_branch_zero(ctx, self.rs, self.imm, move |ctx| {
+        emit_branch_zero(ctx, self.rs, self.imm16, move |ctx| {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
@@ -2033,7 +1995,7 @@ impl DynarecOp for BLTZ {
     }
 }
 
-impl DynarecOp for BGEZ {
+impl DynarecOp for Bgez {
     fn cycles(&self) -> u16 {
         3
     }
@@ -2045,7 +2007,7 @@ impl DynarecOp for BGEZ {
     }
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
         #[cfg(target_arch = "aarch64")]
-        emit_branch_zero(ctx, self.rs, self.imm, move |ctx| {
+        emit_branch_zero(ctx, self.rs, self.imm16, move |ctx| {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
@@ -2055,7 +2017,7 @@ impl DynarecOp for BGEZ {
     }
 }
 
-impl DynarecOp for BLEZ {
+impl DynarecOp for Blez {
     fn cycles(&self) -> u16 {
         3
     }
@@ -2067,7 +2029,7 @@ impl DynarecOp for BLEZ {
     }
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
         #[cfg(target_arch = "aarch64")]
-        emit_branch_zero(ctx, self.rs, self.imm, move |ctx| {
+        emit_branch_zero(ctx, self.rs, self.imm16, move |ctx| {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
@@ -2077,7 +2039,7 @@ impl DynarecOp for BLEZ {
     }
 }
 
-impl DynarecOp for BGTZ {
+impl DynarecOp for Bgtz {
     fn cycles(&self) -> u16 {
         3
     }
@@ -2089,7 +2051,7 @@ impl DynarecOp for BGTZ {
     }
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
         #[cfg(target_arch = "aarch64")]
-        emit_branch_zero(ctx, self.rs, self.imm, move |ctx| {
+        emit_branch_zero(ctx, self.rs, self.imm16, move |ctx| {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
@@ -2145,7 +2107,7 @@ fn test_branch_zero(
     emu.cpu.gpr[rs.0 as usize] = rs.1;
 
     emu.write_many(initial_pc, &program([instr(rs.0, offset)]));
-    emu.write_many(initial_pc + ext::zero(offset), &program([OpCode(69420)]));
+    emu.write_many(initial_pc + ext::zero(offset), &program([OpCode::HALT]));
 
     PipelineV2::new(&emu).run_once(&mut emu)?;
     tracing::info!(?emu.cpu);
@@ -2154,7 +2116,7 @@ fn test_branch_zero(
     Ok(())
 }
 
-impl DynarecOp for MTCn {
+impl DynarecOp for Mtcn {
     fn cycles(&self) -> u16 {
         match self.cop {
             0 => 1,
@@ -2186,21 +2148,14 @@ impl DynarecOp for MTCn {
 #[case(2, 5, 10)]
 #[case(2, 31, 10)] // really pushing it
 fn test_mtcn(#[case] cop: u8, #[case] rd: u8, #[case] rt: u8) -> color_eyre::Result<()> {
-    use crate::{
-        Emu,
-        cpu::{ops::Op, program},
-        dynarec_v2::PipelineV2,
-    };
+    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
     use pchan_utils::setup_tracing;
 
     setup_tracing();
     let mut emu = Emu::default();
     emu.cpu.gpr[rt as usize] = 69;
 
-    emu.write_many(
-        0x0,
-        &program([MTCn::new(cop, rt, rd).into_opcode(), OpCode(69420)]),
-    );
+    emu.write_many(0x0, &program([mtcn(cop, rt, rd), OpCode::HALT]));
 
     PipelineV2::new(&emu).run_once(&mut emu)?;
     tracing::info!(?emu.cpu);
@@ -2216,11 +2171,7 @@ fn test_mtcn(#[case] cop: u8, #[case] rd: u8, #[case] rt: u8) -> color_eyre::Res
 #[cfg(test)]
 #[rstest]
 fn test_mtcn_enable_isc() -> color_eyre::Result<()> {
-    use crate::{
-        Emu,
-        cpu::{ops::Op, program},
-        dynarec_v2::PipelineV2,
-    };
+    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
     use pchan_utils::setup_tracing;
 
     setup_tracing();
@@ -2228,11 +2179,7 @@ fn test_mtcn_enable_isc() -> color_eyre::Result<()> {
 
     emu.write_many(
         0x0,
-        &program([
-            lui(9, 0x0001),
-            MTCn::new(0, 9, 12).into_opcode(),
-            OpCode(69420),
-        ]),
+        &program([lui(9, 0x0001), mtcn(0, 9, 12), OpCode::HALT]),
     );
 
     PipelineV2::new(&emu).run_once(&mut emu)?;
@@ -2244,7 +2191,7 @@ fn test_mtcn_enable_isc() -> color_eyre::Result<()> {
     Ok(())
 }
 
-impl DynarecOp for NOP {
+impl DynarecOp for Nop {
     fn cycles(&self) -> u16 {
         1
     }
@@ -2256,11 +2203,7 @@ impl DynarecOp for NOP {
 #[cfg(test)]
 #[rstest]
 fn test_store_loop() -> color_eyre::Result<()> {
-    use crate::{
-        Emu,
-        cpu::{ops::Op, program},
-        dynarec_v2::PipelineV2,
-    };
+    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
     use pchan_utils::setup_tracing;
 
     setup_tracing();
@@ -2275,7 +2218,7 @@ fn test_store_loop() -> color_eyre::Result<()> {
             sw(9, 10, 0),
             bne(10, 11, -2),
             addiu(10, 10, 0x4),
-            OpCode(69420),
+            OpCode::HALT,
         ]),
     );
 
@@ -2293,7 +2236,7 @@ fn test_store_loop() -> color_eyre::Result<()> {
     Ok(())
 }
 
-impl DynarecOp for SLTU {
+impl DynarecOp for Sltu {
     #[allow(clippy::useless_conversion)]
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
         let rs = ctx.dynarec.emit_load_reg(self.rs);
@@ -2318,19 +2261,19 @@ impl DynarecOp for SLTU {
     }
 }
 
-impl DynarecOp for SLTIU {
+impl DynarecOp for Sltiu {
     #[allow(clippy::useless_conversion)]
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
         let rt = ctx.dynarec.emit_load_reg(self.rt);
         let rs = ctx.dynarec.emit_load_reg(self.rs);
 
-        match self.imm {
+        match self.imm16 {
             0..4096 => {
                 #[cfg(target_arch = "aarch64")]
                 dynasm!(
                     ctx.dynarec.asm
                     ; .arch aarch64
-                    ; cmp WSP(*rs), ext::zero(self.imm)
+                    ; cmp WSP(*rs), ext::zero(self.imm16)
                     ; cset W(*rt), lo
                 )
             }
@@ -2339,7 +2282,7 @@ impl DynarecOp for SLTIU {
                 dynasm!(
                     ctx.dynarec.asm
                     ; .arch aarch64
-                    ; mov w1, ext::zero(self.imm)
+                    ; mov w1, ext::zero(self.imm16)
                     ; cmp WSP(*rs), w1
                     ; cset W(*rt), lo
                 )
@@ -2355,7 +2298,7 @@ impl DynarecOp for SLTIU {
     }
 }
 
-impl DynarecOp for SLT {
+impl DynarecOp for Slt {
     #[allow(clippy::useless_conversion)]
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
         let rs = ctx.dynarec.emit_load_reg(self.rs);
@@ -2380,19 +2323,19 @@ impl DynarecOp for SLT {
     }
 }
 
-impl DynarecOp for SLTI {
+impl DynarecOp for Slti {
     #[allow(clippy::useless_conversion)]
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
         let rt = ctx.dynarec.emit_load_reg(self.rt);
         let rs = ctx.dynarec.emit_load_reg(self.rs);
 
-        match self.imm {
+        match self.imm16 {
             ..0 => {
                 #[cfg(target_arch = "aarch64")]
                 dynasm!(
                     ctx.dynarec.asm
                     ; .arch aarch64
-                    ; mov w1, ext::zero(self.imm)
+                    ; mov w1, ext::zero(self.imm16)
                     ; sxth w1, w1
                     ; cmp WSP(*rs), w1
                     ; cset W(*rt), lt
@@ -2403,7 +2346,7 @@ impl DynarecOp for SLTI {
                 dynasm!(
                     ctx.dynarec.asm
                     ; .arch aarch64
-                    ; cmp WSP(*rs), ext::zero(self.imm)
+                    ; cmp WSP(*rs), ext::zero(self.imm16)
                     ; cset W(*rt), lt
                 );
             }
@@ -2412,7 +2355,7 @@ impl DynarecOp for SLTI {
                 dynasm!(
                     ctx.dynarec.asm
                     ; .arch aarch64
-                    ; mov w1, ext::zero(self.imm)
+                    ; mov w1, ext::zero(self.imm16)
                     ; cmp WSP(*rs), w1
                     ; cset W(*rt), lt
                 );
@@ -2427,7 +2370,7 @@ impl DynarecOp for SLTI {
     }
 }
 
-impl DynarecOp for MFCn {
+impl DynarecOp for Mfcn {
     #[allow(clippy::useless_conversion)]
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
         let rt = ctx.dynarec.alloc_reg(self.rt);
@@ -2447,7 +2390,7 @@ impl DynarecOp for MFCn {
     }
 }
 
-impl DynarecOp for DIV {
+impl DynarecOp for Div {
     #[allow(clippy::useless_conversion)]
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
         match (self.rs, self.rt) {
@@ -2496,7 +2439,7 @@ impl DynarecOp for DIV {
     }
 }
 
-impl DynarecOp for DIVU {
+impl DynarecOp for Divu {
     #[allow(clippy::useless_conversion)]
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
         match (self.rs, self.rt) {
@@ -2542,7 +2485,7 @@ impl DynarecOp for DIVU {
     }
 }
 
-impl DynarecOp for MULTU {
+impl DynarecOp for Multu {
     fn cycles(&self) -> u16 {
         9
     }
@@ -2575,7 +2518,7 @@ impl DynarecOp for MULTU {
     }
 }
 
-impl DynarecOp for MULT {
+impl DynarecOp for Mult {
     fn cycles(&self) -> u16 {
         9
     }
@@ -2638,7 +2581,7 @@ pub fn test_mul_div(
     emu.cpu.gpr[rt.0 as usize] = rt.1;
     assert_eq!(emu.cpu.gpr[0], 0);
 
-    emu.write_many(0x0, &program([instr(rs.0, rt.0), OpCode(69420)]));
+    emu.write_many(0x0, &program([instr(rs.0, rt.0), OpCode::HALT]));
     PipelineV2::new(&emu).run_once(&mut emu)?;
 
     tracing::info!(?emu.cpu);
@@ -2648,7 +2591,7 @@ pub fn test_mul_div(
     Ok(())
 }
 
-impl DynarecOp for MFLO {
+impl DynarecOp for Mflo {
     #[allow(clippy::useless_conversion)]
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
         if self.rd == 0 {
@@ -2671,7 +2614,7 @@ impl DynarecOp for MFLO {
     }
 }
 
-impl DynarecOp for MFHI {
+impl DynarecOp for Mfhi {
     #[allow(clippy::useless_conversion)]
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
         if self.rd == 0 {
@@ -2710,7 +2653,7 @@ pub fn test_mfhilo(
     let mut emu = Emu::default();
 
     emu.cpu.hilo = hilo;
-    emu.write_many(0x0, &program([instr(9), OpCode(69420)]));
+    emu.write_many(0x0, &program([instr(9), OpCode::HALT]));
     PipelineV2::new(&emu).run_once(&mut emu)?;
 
     tracing::info!(?emu.cpu);

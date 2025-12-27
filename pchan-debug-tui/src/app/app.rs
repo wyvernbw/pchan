@@ -10,10 +10,7 @@ use circular_buffer::CircularBuffer;
 use color_eyre::eyre::{Result, eyre};
 use flume::{Receiver, Sender};
 use pchan_emu::bootloader::Bootloader;
-use pchan_emu::cpu::ops::{BoundaryType, Op};
 use pchan_emu::cpu::{Cpu, reg_str};
-use pchan_emu::dynarec::FetchSummary;
-use pchan_emu::dynarec::pipeline::EmuDynarecPipelineReport;
 use pchan_emu::dynarec_v2::emitters::DynarecOp;
 use pchan_emu::dynarec_v2::{FetchedOp, PipelineV2, PipelineV2Stage};
 use pchan_emu::io::IO;
@@ -124,13 +121,11 @@ pub fn run(config: AppConfig, mut terminal: DefaultTerminal) -> Result<()> {
             config_tx,
             error: None,
             emu: None,
-            pipeline_report: EmuDynarecPipelineReport::not_started(),
             frequency: None,
 
             modeline_state: ModelineState { mode: Mode::Normal },
             first_time_setup_state: FirstTimeSetupState::default(),
             main_page_state: MainPageState {
-                fetch_summary: None,
                 fetch_summary_v2: None,
                 emu_state: EmuState::Uninitialized.into(),
                 cpu_inspector_state: CpuInspectorState {
@@ -150,18 +145,18 @@ pub fn run(config: AppConfig, mut terminal: DefaultTerminal) -> Result<()> {
                 emu: None,
                 emu_cmd_tx,
                 action_state: ActionState {
-                    chord: ActionChord::None,
+                    chord:                ActionChord::None,
                     add_breakpoint_popup: None,
                 },
                 memory_inspector_state: MemoryInspectorState {
-                    emu: emu.clone(),
-                    dims: None,
-                    loaded_address: 0xbfc0_0000,
-                    selected_address: 0xbfc0_0000,
-                    loaded: Vec::new(),
+                    emu:                 emu.clone(),
+                    dims:                None,
+                    loaded_address:      0xbfc0_0000,
+                    selected_address:    0xbfc0_0000,
+                    loaded:              Vec::new(),
                     loaded_address_tags: Vec::new(),
-                    table_state: TableState::new(),
-                    address_bar_state: MemoryInspectorAddressBarState {
+                    table_state:         TableState::new(),
+                    address_bar_state:   MemoryInspectorAddressBarState {
                         input: Input::new(String::new()),
                         mode:  MemoryInspectorAddressBarMode::Normal,
                     },
@@ -191,18 +186,11 @@ pub fn run(config: AppConfig, mut terminal: DefaultTerminal) -> Result<()> {
                             EmuInfo::PipelineUpdateV2(stage) => {
                                 app_state.pipeline_report_v2 = stage;
                             }
-                            EmuInfo::PipelineUpdate(report) => {
-                                app_state.pipeline_report = report;
-                                app_state.main_page_state.memory_inspector_state.fetch();
-                            }
                             EmuInfo::Ref(emu) => {
                                 app_state.emu = Some(emu.clone());
                                 app_state.main_page_state.emu = Some(emu.clone());
                                 app_state.main_page_state.cpu_inspector_state.emu =
                                     Some(emu.clone());
-                            }
-                            EmuInfo::Fetch(fetch_summary) => {
-                                app_state.main_page_state.fetch_summary = Some(fetch_summary);
                             }
                             EmuInfo::FetchV2(fetch_summary) => {
                                 app_state.main_page_state.fetch_summary_v2 = Some(fetch_summary);
@@ -253,11 +241,9 @@ pub enum EmuState {
 }
 
 pub enum EmuInfo {
-    PipelineUpdate(EmuDynarecPipelineReport),
     PipelineUpdateV2(PipelineV2Stage),
     FrequencyUpdate(f64),
     StateUpdate(EmuState),
-    Fetch(FetchSummary),
     FetchV2(Vec<FetchedOp>),
     Ref(Arc<RwLock<Emu>>),
 }
@@ -289,7 +275,7 @@ async fn emu_task_v2(
                 return Ok(());
             }
         }
-        emu.jump_to_bios();
+        emu.cpu.jump_to_bios();
     }
     emu_info_tx.send(EmuInfo::StateUpdate(EmuState::Running))?;
     emu_info_tx.send(EmuInfo::Ref(emu.clone()))?;
@@ -373,21 +359,20 @@ pub enum Screen {
 pub struct App(FocusProp<App>);
 
 pub struct AppState {
-    app_config: AppConfig,
-    screen: Screen,
-    config_tx: Sender<AppConfig>,
-    exit: bool,
+    app_config:         AppConfig,
+    screen:             Screen,
+    config_tx:          Sender<AppConfig>,
+    exit:               bool,
     #[allow(dead_code)]
-    error: Option<color_eyre::Report>,
-    emu: Option<Arc<RwLock<Emu>>>,
-    pipeline_report: EmuDynarecPipelineReport,
+    error:              Option<color_eyre::Report>,
+    emu:                Option<Arc<RwLock<Emu>>>,
     pipeline_report_v2: PipelineV2Stage,
-    frequency: Option<f64>,
+    frequency:          Option<f64>,
 
-    modeline_state: ModelineState,
+    modeline_state:         ModelineState,
     first_time_setup_state: FirstTimeSetupState,
-    main_page_state: MainPageState,
-    focus: FocusProvider,
+    main_page_state:        MainPageState,
+    focus:                  FocusProvider,
 }
 
 impl Component for App {
@@ -482,16 +467,15 @@ pub enum MainPageFocus {
 
 pub struct MainPage(FocusProp<MainPage>, PipelineV2Stage, Option<f64>);
 pub struct MainPageState {
-    emu_state: Arc<EmuState>,
-    emu: Option<Arc<RwLock<Emu>>>,
-    emu_cmd_tx: Sender<EmuCmd>,
-    fetch_summary: Option<FetchSummary>,
-    fetch_summary_v2: Option<Vec<FetchedOp>>,
-    ops_list_state: OpsListState,
-    cpu_inspector_state: CpuInspectorState,
-    action_state: ActionState,
+    emu_state:              Arc<EmuState>,
+    emu:                    Option<Arc<RwLock<Emu>>>,
+    emu_cmd_tx:             Sender<EmuCmd>,
+    fetch_summary_v2:       Option<Vec<FetchedOp>>,
+    ops_list_state:         OpsListState,
+    cpu_inspector_state:    CpuInspectorState,
+    action_state:           ActionState,
     memory_inspector_state: MemoryInspectorState,
-    tty_state: TtyState,
+    tty_state:              TtyState,
 }
 
 pub struct OpsList(Arc<EmuState>, FocusProp<OpsList>);
@@ -508,50 +492,6 @@ pub struct OpsListState {
 
 impl OpsListData {
     #[must_use]
-    pub fn from_fetch(summary: &FetchSummary) -> Self {
-        let mut decoded_ops = summary
-            .cfg
-            .node_weights()
-            .flat_map(|node| {
-                summary
-                    .ops_for(node)
-                    .iter()
-                    .enumerate()
-                    .map(|(offset, op)| (node.address + offset as u32 * 4, op))
-            })
-            .collect::<Vec<_>>();
-        decoded_ops.sort_by(|a, b| a.0.cmp(&b.0));
-        decoded_ops.dedup_by(|a, b| a.0 == b.0);
-        let decoded_ops = decoded_ops
-            .iter()
-            .map(|(address, op)| {
-                (
-                    address,
-                    Span::raw(format!("{}   {}", hex(*address), op)).style(
-                        match (address.shr(2) % 2u32 == 0u32, op.is_block_boundary()) {
-                            (
-                                _,
-                                Some(BoundaryType::Block { .. } | BoundaryType::BlockSplit { .. }),
-                            ) => Style::new().red(),
-                            (true, _) => Style::new().fg(Color::Rgb(250 - 15, 250 - 15, 250 - 15)),
-                            (false, _) => Style::new(),
-                        },
-                    ),
-                )
-            })
-            .insert_between(
-                |a, b| a.0.abs_diff(*b.0).ge(&8),
-                || (&0u32, Span::from("...").style(Style::new().dim())),
-            )
-            .map(|(_, line)| line.into())
-            .collect::<Vec<Line>>();
-        let mut hasher = DefaultHasher::new();
-        decoded_ops.hash(&mut hasher);
-        Self {
-            ops:  decoded_ops,
-            hash: hasher.finish(),
-        }
-    }
     pub fn from_fetch_v2(decoded_ops: &[FetchedOp]) -> Self {
         let decoded_ops = decoded_ops
             .iter()
@@ -831,10 +771,10 @@ impl Component for Tty {
 
 pub struct CpuInspector(FocusProp<Self>);
 pub struct CpuInspectorState {
-    emu: Option<Arc<RwLock<Emu>>>,
-    cpu_state: Cached<Cpu>,
-    current_tab: CpuInspectorTab,
-    cpu_tab_state: CpuTabState,
+    emu:            Option<Arc<RwLock<Emu>>>,
+    cpu_state:      Cached<Cpu>,
+    current_tab:    CpuInspectorTab,
+    cpu_tab_state:  CpuTabState,
     cop0_tab_state: Cop0TabState,
 }
 
@@ -1140,7 +1080,7 @@ pub struct ActionFocus;
 impl Focus for ActionFocus {}
 
 pub struct ActionState {
-    chord: ActionChord,
+    chord:                ActionChord,
     add_breakpoint_popup: Option<Input>,
 }
 
@@ -1278,14 +1218,14 @@ impl Focus for ActionsAddBreakpoint {}
 
 pub struct MemoryInspector(FocusProp<Self>);
 pub struct MemoryInspectorState {
-    emu: Arc<RwLock<Emu>>,
-    loaded_address: u32,
-    selected_address: u32,
-    dims: Option<(u16, u16)>,
-    loaded: Vec<const_hex::Buffer<1>>,
+    emu:                 Arc<RwLock<Emu>>,
+    loaded_address:      u32,
+    selected_address:    u32,
+    dims:                Option<(u16, u16)>,
+    loaded:              Vec<const_hex::Buffer<1>>,
     loaded_address_tags: Vec<const_hex::Buffer<4, true>>,
-    table_state: TableState,
-    address_bar_state: MemoryInspectorAddressBarState,
+    table_state:         TableState,
+    address_bar_state:   MemoryInspectorAddressBarState,
 }
 
 impl Focus for MemoryInspector {
@@ -1474,7 +1414,7 @@ impl Component for MemoryInspector {
         area: Rect,
     ) -> Result<Self::ComponentSummary> {
         let new_selected = MemoryInspectorAddressBar {
-            focus: self.0.prop(),
+            focus:            self.0.prop(),
             selected_address: state.selected_address,
         }
         .handle_input(event.clone(), &mut state.address_bar_state, area);
@@ -1542,7 +1482,7 @@ impl Component for MemoryInspector {
 
         self.render_hex_table(table, buf, state)?;
         MemoryInspectorAddressBar {
-            focus: self.0.prop(),
+            focus:            self.0.prop(),
             selected_address: state.selected_address,
         }
         .render(address_area, buf, &mut state.address_bar_state)?;
@@ -1552,7 +1492,7 @@ impl Component for MemoryInspector {
 }
 
 pub struct MemoryInspectorAddressBar {
-    focus: FocusProp<Self>,
+    focus:            FocusProp<Self>,
     selected_address: u32,
 }
 pub struct MemoryInspectorAddressBarState {

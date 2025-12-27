@@ -1,14 +1,7 @@
 use std::cell::RefCell;
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use pchan_emu::{
-    Emu,
-    cpu::ops::{OpCode, sw::*},
-    dynarec::prelude::addiu,
-    dynarec_v2::PipelineV2,
-    io::IO,
-    memory::kb,
-};
+use pchan_emu::{Emu, cpu::ops::*, dynarec_v2::PipelineV2, io::IO, memory::kb};
 use pchan_utils::setup_tracing;
 
 fn dynarec_v2_test_50_adds_complete(c: &mut Criterion) {
@@ -112,7 +105,7 @@ fn dynarec_v2_adds_setup(instruction_count: usize) -> &'static RefCell<Emu> {
         last_addr = addr;
     }
     emu.borrow_mut().cpu.pc = 0x0;
-    emu.borrow_mut().write(last_addr + 4, OpCode::HALT_FIELDS);
+    emu.borrow_mut().write(last_addr + 4, OpCode::HALT);
     emu
 }
 
@@ -124,7 +117,7 @@ fn dynarec_v2_stores_setup(instruction_count: usize) -> &'static RefCell<Emu> {
         emu.borrow_mut().write(addr, sw(8, 9, 0));
         last_addr = addr;
     }
-    emu.borrow_mut().write(last_addr + 4, OpCode::HALT_FIELDS);
+    emu.borrow_mut().write(last_addr + 4, OpCode::HALT);
     emu.borrow_mut().cpu.pc = 0x0;
     emu.borrow_mut().cpu.gpr[8] = 69;
     emu.borrow_mut().cpu.gpr[9] = kb(64) as u32;

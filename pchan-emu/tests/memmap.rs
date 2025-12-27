@@ -1,9 +1,9 @@
 #![feature(portable_simd)]
 #![allow(unused_variables)]
 
-use pchan_emu::dynarec::prelude::*;
+use pchan_emu::cpu::ops::OpCode;
+use pchan_emu::cpu::ops::*;
 use pchan_emu::dynarec_v2::PipelineV2;
-use pchan_emu::jit::JIT;
 use pchan_emu::memory::fastmem::LUT;
 use pchan_emu::memory::{MEM_MAP, ext};
 use pchan_emu::{Emu, memory};
@@ -36,7 +36,7 @@ use rstest::rstest;
 #[case::kseg0_exp3(0x9FA0_0000)]
 #[case::kseg1_exp3(0xBFA0_0000)]
 fn write_to_address(setup_tracing: (), #[case] base: u32) -> color_eyre::Result<()> {
-    use pchan_emu::io::IO;
+    use pchan_emu::{cpu::program, io::IO};
 
     let mut emu = Emu::default();
     let count = memory::kb(8) / 4;
@@ -51,7 +51,7 @@ fn write_to_address(setup_tracing: (), #[case] base: u32) -> color_eyre::Result<
         addiu(8, 8, 4),
         bne(8, 10, -4),
         nop(),
-        OpCode(69420),
+        OpCode::HALT,
     ]);
     emu.write_many::<u32>(0x0000_0000, &main);
 

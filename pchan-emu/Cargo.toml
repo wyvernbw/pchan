@@ -8,47 +8,35 @@ fetch-channel = []
 amidog-tests = []
 
 [dependencies]
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+pchan-macros = { workspace = true }
+pchan-utils = { workspace = true }
+slab.workspace = true
+
 arbitrary-int = "2.0.0"
 bitbybit = "1.4.0"
-bitfield = "0.19.2"
-bitfield-struct = "0.12.1"
 bitvec = "1.0.1"
 bon = "3.8.1"
-bstr = "1.12.1"
 byteorder = "1.5.0"
 circular-buffer = "1.2.0"
 color-eyre = "*"
 const-hex.workspace = true
-const_for = "0.1.5"
-
-cranelift = { version = "0.124", features = ["core", "jit", "module", "native"] }
-cranelift-codegen = { version = "0.124", features = ["arm64", "x86", "unwind"] }
-# cranelift-frontend.workspace = true
-
-crossbeam = "0.8.4"
 derive_more = { version = "2.0.1", features = ["add", "debug", "deref", "display", "full"] }
 dynasm = "4.0.1"
 dynasmrt = "4.0.1"
 enum_dispatch = "0.3.13"
 flume = "0.12.0"
-inquire = "0.9.1"
-itertools = "0.14.0"
-panic-message = "0.3.0"
-pchan-macros = { workspace = true }
-pchan-utils = { workspace = true }
-petgraph = "0.8.2"
+heapless = "0.9.2"
 rapidhash = { version = "4.1.1", features = ["nightly"] }
 rayon = "1.11.0"
-ringbuf = "0.4.8"
-slab.workspace = true
 smallbox = { version = "0.8.8", features = ["nightly"] }
 smallvec = "1.15.1"
 smol = "2.0.2"
 strum = { version = "0.27.2", features = ["derive"] }
-tailcall = "1.0.1"
 thiserror = "2.0.16"
-tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
+bstr = "1.12.1"
+bitfield = "0.19.4"
 
 [dev-dependencies]
 pretty_assertions = {version = "1.4.1", features = ["unstable"]}
@@ -56,10 +44,6 @@ rstest = "*"
 color-eyre = "*" 
 criterion = { version = "0.5", features = ["html_reports"] }
 
-
-[[bench]]
-name = "bench_bios_func_1"
-harness = false
 
 [[bench]]
 name = "bench_dynarec_v2"

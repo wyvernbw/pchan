@@ -197,5 +197,5 @@ pub const fn reg_str(reg: Reg) -> &'static str {
 }
 
 pub fn program<const N: usize>(prog: [OpCode; N]) -> [u32; N] {
-    prog.map(|op| op.0)
+    prog.map(|op| op.raw_value())
 }

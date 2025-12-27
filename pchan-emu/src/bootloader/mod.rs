@@ -103,13 +103,11 @@ pub trait Bootloader: Bus + IO {
         exe.code
             .iter()
             .copied()
-            .take(exe.header.filesize as usize)
-            .array_chunks::<4>()
-            .map(u32::from_le_bytes)
+            .take(exe.header.filesize as usize * kb(2))
             .enumerate()
-            .for_each(|(idx, op)| {
-                let address = idx * 0x4 + exe.header.dest_addr as usize;
-                self.write::<u32>(address as u32, op);
+            .for_each(|(idx, byte)| {
+                let address = idx + exe.header.dest_addr as usize;
+                self.write::<u8>(address as u32, byte);
             });
 
         tracing::info!("set state");
@@ -234,9 +232,9 @@ pub struct Exe<'a, B> {
 
 impl<'a> Exe<'a, Cow<'a, [u8]>> {
     fn parse(from: &'a [u8]) -> Result<Self, ExeHeaderParseErr> {
-        let header_bytes = &from[0..800];
+        let header_bytes = &from[0..kb(2)];
         let header = ExeHeader::parse(header_bytes)?;
-        let code = &from[800..];
+        let code = &from[kb(2)..];
         if cfg!(target_endian = "big") {
             todo!("handle big endian executable parsing");
         }

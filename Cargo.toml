@@ -6,10 +6,10 @@ edition = "2024"
 [dependencies]
 pchan-macros = { workspace = true }
 pchan-utils = { workspace = true }
-pchan-emu = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 const-hex = { workspace = true, features = ["alloc"] }
+bstr = "1.12.1"
 
 [workspace]
 resolver = "3"
@@ -17,12 +17,8 @@ members = [
   "pchan-emu",
   "pchan-macros",
   "pchan-utils",
-  "pchan-cranelift-frontend",
   "pchan-debug-tui", "pchan-gpu",
 ]
-
-[patch.crates-io]
-cranelift-frontend = { path = "./pchan-cranelift-frontend" }
 
 [workspace.dependencies]
 const-hex = { version = "1.16.0", features = ["nightly", "portable-simd"] }
@@ -39,7 +35,7 @@ debug = true
 
 [profile.release]
 panic = "unwind"
-lto = "fat"
+lto = "thin"
 
 [profile.dev]
 panic = "unwind"
