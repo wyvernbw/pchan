@@ -43,12 +43,13 @@ pub struct MemMap {
 
 pub static MEM_MAP: MemMap = MemMap {
     ram:           0,
-    scratch:       kb(2048),
-    io:            kb(2048) + kb(1),
-    exp_2:         kb(2048) + kb(1) + kb(8),
-    exp_3:         kb(2048) + kb(1) + kb(8) + kb(8),
-    bios:          kb(2048) + kb(1) + kb(8) + kb(8) + kb(2048),
-    cache_control: kb(2048) + kb(1) + kb(8) + kb(8) + kb(2048) + kb(512),
+    // its best to allocate the extra ram expansion even if you dont use it
+    scratch:       kb(2048 + 8192),
+    io:            kb(2048 + 8192) + kb(1),
+    exp_2:         kb(2048 + 8192) + kb(1) + kb(8),
+    exp_3:         kb(2048 + 8192) + kb(1) + kb(8) + kb(8),
+    bios:          kb(2048 + 8192) + kb(1) + kb(8) + kb(8) + kb(2048),
+    cache_control: kb(2048 + 8192) + kb(1) + kb(8) + kb(8) + kb(2048) + kb(512),
 };
 
 pub static GUEST_MEM_MAP: MemMap = MemMap {
@@ -61,7 +62,7 @@ pub static GUEST_MEM_MAP: MemMap = MemMap {
     cache_control: 0xfffe0000,
 };
 
-static MEM_SIZE: usize = kb(2048) + kb(1) + kb(8) + kb(8) + kb(2048) + kb(512) + 512;
+static MEM_SIZE: usize = kb(2048 + 8192) + kb(1) + kb(8) + kb(8) + kb(2048) + kb(512) + 512;
 // const MEM_SIZE: usize = 600 * 1024 * 1024;
 static MEM_KB: usize = from_kb(MEM_SIZE) + 1;
 

@@ -40,11 +40,23 @@ fn generate_page_tables() -> Lut {
         table_write[i + 0xA000] = Some(offset);
     }
 
+    // map 8MB expansion region 1 to ram by default
+
+    for i in 0..(RAM_PAGE_COUNT * 4) {
+        let offset = (i * PAGE_SIZE) as u32;
+        table_read[i + 0x1F00] = Some(offset);
+        table_read[i + 0x9F00] = Some(offset);
+        table_read[i + 0xBF00] = Some(offset);
+
+        table_write[i + 0x1F00] = Some(offset);
+        table_write[i + 0x9F00] = Some(offset);
+        table_write[i + 0xBF00] = Some(offset);
+    }
+
     const BIOS_PAGE_COUNT: usize = kb(512) / PAGE_SIZE;
 
     for i in 0..BIOS_PAGE_COUNT {
-        // let offset = (i * PAGE_SIZE) as u32;
-        let offset = ((i * PAGE_SIZE) & 0x1FFFFF) as u32;
+        let offset = (i * PAGE_SIZE) as u32;
 
         table_read[i + 0x1FC0] = Some(MEM_MAP.bios as u32 + offset);
         table_read[i + 0x9FC0] = Some(MEM_MAP.bios as u32 + offset);
