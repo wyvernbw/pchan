@@ -119,7 +119,7 @@ pub struct Andi {
 }
 
 #[derive(Encode, Debug, Clone, Copy, Hash, PartialEq, Eq, d::Display)]
-#[encode(opcode = 0x04)]
+#[encode(opcode = 0x04, order = "rs_rt")]
 #[display("beq ${}, ${}, {}", reg_str(self.rs), reg_str(self.rt), hex(self.imm16 * 4 + 4))]
 pub struct Beq {
     pub rs:    u8,
@@ -160,7 +160,7 @@ pub struct Bltz {
 }
 
 #[derive(Encode, Debug, Clone, Copy, Hash, PartialEq, Eq, d::Display)]
-#[encode(opcode = 0x05)]
+#[encode(opcode = 0x05, order = "rs_rt")]
 #[display("bne ${}, ${}, {}", reg_str(self.rs), reg_str(self.rt), hex(self.imm16 * 4 + 4))]
 pub struct Bne {
     pub rs:    u8,
@@ -473,7 +473,7 @@ pub struct Sra {
 }
 
 #[derive(Encode, Debug, Clone, Copy, Hash, PartialEq, Eq, d::Display)]
-#[encode(opcode = 0x00, funct = 0x07)]
+#[encode(opcode = 0x00, funct = 0x07, order = "rt_rs")]
 #[display("srav ${}, ${}, ${}", reg_str(self.rd), reg_str(self.rt), reg_str(self.rs))]
 pub struct Srav {
     pub rd: u8,

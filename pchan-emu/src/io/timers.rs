@@ -49,16 +49,16 @@ bitfield! {
 #[repr(u8)]
 pub enum TimerResetMode {
     OnOverflow = 0x0,
-    OnTarget = 0x1,
+    OnTarget   = 0x1,
 }
 
 pub enum TimerRepeatMode {
     Oneshot = 0x0,
-    Repeat = 0x1,
+    Repeat  = 0x1,
 }
 
 pub enum TimerToggleMode {
-    Pulse = 0x0,
+    Pulse  = 0x0,
     Toggle = 0x1,
 }
 
@@ -109,7 +109,7 @@ pub trait Timers: Bus + IO + Exceptions {
 
         let timer_address = 0x1f801104 + timer as u32 * 0x10;
 
-        self.read::<TimerCounterMode>(timer_address)
+        self.read_pure::<TimerCounterMode>(timer_address)
     }
 
     fn timer_counter_target(&self, timer: u8) -> TimerCounterTarget {
@@ -117,7 +117,7 @@ pub trait Timers: Bus + IO + Exceptions {
 
         let timer_address = 0x1f801108 + timer as u32 * 0x10;
 
-        self.read::<TimerCounterTarget>(timer_address)
+        self.read_pure::<TimerCounterTarget>(timer_address)
     }
 
     fn timer_counter_value(&self, timer: u8) -> TimerCounterValue {
@@ -125,7 +125,7 @@ pub trait Timers: Bus + IO + Exceptions {
 
         let timer_address = 0x1f801100 + timer as u32 * 0x10;
 
-        self.read::<TimerCounterValue>(timer_address)
+        self.read_pure::<TimerCounterValue>(timer_address)
     }
 
     fn set_timer_counter_value(&mut self, timer: u8, value: TimerCounterValue) {
@@ -142,7 +142,7 @@ pub trait Timers: Bus + IO + Exceptions {
 
     fn advance_timers(&self) -> AdvanceTimerSummary {
         let timer_0_address = 0x1f801100;
-        let timer_0 = self.read::<TimerCounterValue>(timer_0_address);
+        let timer_0 = self.read_pure::<TimerCounterValue>(timer_0_address);
         let timer_0_value = timer_0.value();
         // timer 0 is synced to system clock
         let (new_timer_0_value, _overflowed) =

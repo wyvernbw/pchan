@@ -1259,7 +1259,7 @@ impl MemoryInspectorState {
         self.loaded.clear();
         (self.loaded_address..)
             .take((rows * MemoryInspector::COLUMNS) as usize)
-            .map(|address| emu.try_read::<u8>(address))
+            .map(|address| emu.try_read_pure::<u8>(address))
             .map(|byte| byte.unwrap_or(0x0))
             .map(|byte| const_hex::const_encode::<_, false>(&[byte]))
             .collect_into(&mut self.loaded);

@@ -104,8 +104,8 @@ pub trait ScratchpadMem: Bus {
     fn read<T: Copy>(&self, address: u32) -> IOResult<T> {
         match address {
             // scratchpad is not mapped in kseg1
-            0xbf80_0000..0xbf801000 => Err(UnhandledIO(address)),
-            0x1f800000..0x1f80_1000 | 0x9f800000..0x9f801000 => {
+            0xbf800000..0xbf800400 => Err(UnhandledIO(address)),
+            0x1f800000..0x1f800400 | 0x9f800000..0x9f800400 => {
                 Ok(self
                     .mem()
                     .read_region(MEM_MAP.scratch, GUEST_MEM_MAP.scratch, address))
@@ -117,8 +117,8 @@ pub trait ScratchpadMem: Bus {
     fn write<T: Copy>(&mut self, address: u32, value: T) -> IOResult<()> {
         match address {
             // scratchpad is not mapped in kseg1
-            0xbf80_0000..0xbf801000 => Err(UnhandledIO(address)),
-            0x1f800000..0x1f80_1000 | 0x9f800000..0x9f801000 => {
+            0xbf800000..0xbf801000 => Err(UnhandledIO(address)),
+            0x1f800000..0x1f801000 | 0x9f800000..0x9f801000 => {
                 self.mem_mut()
                     .write_region(MEM_MAP.scratch, GUEST_MEM_MAP.scratch, address, value);
                 Ok(())

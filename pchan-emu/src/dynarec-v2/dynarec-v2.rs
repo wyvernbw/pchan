@@ -651,7 +651,7 @@ impl Emu {
         (self.cpu.pc..)
             // .step_by(0x4)
             .step_by(max_simd_elements::<u32>() * size_of::<u32>())
-            .flat_map(|address| self.read::<Simd<u32, 4>>(address).to_array())
+            .flat_map(|address| self.read_pure::<Simd<u32, 4>>(address).to_array())
             // .map(|address| self.read(address))
             .map(OpCode::new_with_raw_value)
     }
@@ -831,7 +831,8 @@ fn fetch_and_compile_single_threaded(
 
     let mut iter = emu
         .linear_fetch_no_decode()
-        .map(|op| (op, DecodedOp::new(op)));
+        .map(|op| (op, DecodedOp::new(op)))
+        .take(50);
 
     state.push_item(iter.next());
     state.push_item(iter.next());

@@ -34,17 +34,19 @@ impl Emu {
 }
 
 pub trait IO: Bus {
-    fn try_read<T: Copy>(&self, address: u32) -> IOResult<T>;
+    fn try_read<T: Copy>(&mut self, address: u32) -> IOResult<T>;
     fn try_write<T: Copy>(&mut self, address: u32, value: T) -> IOResult<()>;
-    fn read<T: Copy>(&self, address: u32) -> T;
+    fn read<T: Copy>(&mut self, address: u32) -> T;
     fn write<T: Copy>(&mut self, address: u32, value: T);
+    fn try_read_pure<T: Copy>(&self, address: u32) -> IOResult<T>;
+    fn read_pure<T: Copy>(&self, address: u32) -> T;
     fn write_many<T: Copy>(&mut self, mut address: u32, values: &[T]) {
         for value in values.iter().copied() {
             self.write(address, value);
             address += 0x4;
         }
     }
-    fn read_ext<T: Copy + Extend<E>, E>(&self, address: u32) -> T::Out {
+    fn read_ext<T: Copy + Extend<E>, E>(&mut self, address: u32) -> T::Out {
         let value = self.read::<T>(address);
         Extend::<E>::ext(value)
     }
@@ -126,8 +128,15 @@ impl CacheControl for Emu {}
 pub struct UnhandledIO(pub u32);
 
 impl IO for Emu {
-    fn read<T: Copy>(&self, address: u32) -> T {
+    fn read<T: Copy>(&mut self, address: u32) -> T {
         match self.try_read(address) {
+            Ok(value) => value,
+            Err(err) => self.panic(&format!("{}", err)),
+        }
+    }
+
+    fn read_pure<T: Copy>(&self, address: u32) -> T {
+        match self.try_read_pure(address) {
             Ok(value) => value,
             Err(err) => self.panic(&format!("{}", err)),
         }
@@ -139,11 +148,20 @@ impl IO for Emu {
         }
     }
 
-    fn try_read<T: Copy>(&self, address: u32) -> IOResult<T> {
+    fn try_read<T: Copy>(&mut self, address: u32) -> IOResult<T> {
         Fastmem::read::<T>(self, address)
             .or_else(|_| ScratchpadMem::read(self, address))
             .or_else(|_| Timers::read_timers(self, address))
             .or_else(|_| Gpu::read(self, address))
+            .or_else(|_| CDRom::read::<T>(self, address))
+            .or_else(|_| GenericIOFallback::read::<T>(self, address))
+            .or_else(|_| CacheControl::read::<T>(self, address))
+    }
+
+    fn try_read_pure<T: Copy>(&self, address: u32) -> IOResult<T> {
+        Fastmem::read::<T>(self, address)
+            .or_else(|_| ScratchpadMem::read(self, address))
+            .or_else(|_| Timers::read_timers(self, address))
             .or_else(|_| CDRom::read::<T>(self, address))
             .or_else(|_| GenericIOFallback::read::<T>(self, address))
             .or_else(|_| CacheControl::read::<T>(self, address))
@@ -173,16 +191,26 @@ pub trait CastIOInto: Copy {
 
 impl<T: Copy> CastIOInto for T {}
 
-pub trait CastIOFrom: Copy + Into<u32> {
+pub trait CastIOFrom: Copy {
     fn io_from_u32<T>(self) -> T {
-        let value = self.into();
         assert!(
-            size_of::<Self>() <= 4,
+            size_of::<T>() <= 4,
             "invalid cast of IO channel value to T. T has size {} >= 4",
-            size_of::<Self>()
+            size_of::<T>()
         );
-        unsafe { std::mem::transmute_copy::<u32, T>(&value) }
+        unsafe { std::mem::transmute_copy::<Self, T>(&self) }
     }
 }
 
-impl<T: Copy + Into<u32>> CastIOFrom for T {}
+impl<T: Copy> CastIOFrom for T {}
+
+#[cfg(test)]
+#[test]
+fn test_io_from_u32() {
+    assert_eq!(0xdeadbeefu32.io_from_u32::<u32>(), 0xdeadbeef);
+    assert_eq!(0xdeadbeefu32.io_from_u32::<u16>(), 0xbeef);
+    assert_eq!(0xdeadbeefu32.io_from_u32::<u8>(), 0xef);
+    assert_eq!(0xdeadbeefu32.io_from_u32::<i32>(), 0xdeadbeefu32 as i32);
+    assert_eq!(0xdeadbeefu32.io_from_u32::<i16>(), 0xbeefu32 as i16);
+    assert_eq!(0xdeadbeefu32.io_from_u32::<i8>(), 0xefu32 as i8);
+}

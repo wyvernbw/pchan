@@ -26,7 +26,7 @@ fn generate_page_tables() -> Lut {
 
     // for each region, it will map `kuseg`, `kseg0` and `kseg1` respectively
 
-    for i in 0..(RAM_PAGE_COUNT * 4) {
+    for i in 0..(RAM_PAGE_COUNT) {
         let offset = ((i * PAGE_SIZE) & 0x1FFFFF) as u32;
 
         #[allow(clippy::identity_op)]
