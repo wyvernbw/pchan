@@ -57,7 +57,7 @@ pub struct OpCode {
     #[bits(26..=31, rw)]
     pub opcode: u6,
     #[bits(0..=15, rw)]
-    pub imm16:  u16,
+    pub imm16:  i16,
     #[bits(0..=25, rw)]
     pub imm26:  u26,
     #[bits(26..=27, rw)]
@@ -198,7 +198,7 @@ pub struct Divu {
 #[encode(opcode = 0x02)]
 #[display("j {}", hex(self.imm26 * 4))]
 pub struct J {
-    pub imm26: i32,
+    pub imm26: u32,
 }
 
 #[derive(Encode, Debug, Clone, Copy, Hash, PartialEq, Eq, d::Display)]
@@ -206,7 +206,7 @@ pub struct J {
 #[display("jal {}", hex(self.imm26 * 4))]
 #[allow(clippy::upper_case_acronyms)]
 pub struct Jal {
-    pub imm26: i32,
+    pub imm26: u32,
 }
 
 #[derive(Encode, Debug, Clone, Copy, Hash, PartialEq, Eq, d::Display)]

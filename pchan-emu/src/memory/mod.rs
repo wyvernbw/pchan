@@ -32,36 +32,36 @@ pub struct MemoryState {
 }
 
 pub struct MemMap {
-    pub ram: usize,
-    pub scratch: usize,
-    pub io: usize,
-    pub exp_2: usize,
-    pub exp_3: usize,
-    pub bios: usize,
+    pub ram:           usize,
+    pub scratch:       usize,
+    pub io:            usize,
+    pub exp_2:         usize,
+    pub exp_3:         usize,
+    pub bios:          usize,
     pub cache_control: usize,
 }
 
 pub static MEM_MAP: MemMap = MemMap {
-    ram: 0,
-    scratch: kb(2048 + 8192),
-    io: kb(2048 + 8192) + kb(1),
-    exp_2: kb(2048 + 8192) + kb(1) + kb(8),
-    exp_3: kb(2048 + 8192) + kb(1) + kb(8) + kb(8),
-    bios: kb(2048 + 8192) + kb(1) + kb(8) + kb(8) + kb(2048),
-    cache_control: kb(2048 + 8192) + kb(1) + kb(8) + kb(8) + kb(2048) + kb(512),
+    ram:           0,
+    scratch:       kb(2048),
+    io:            kb(2048) + kb(1),
+    exp_2:         kb(2048) + kb(1) + kb(8),
+    exp_3:         kb(2048) + kb(1) + kb(8) + kb(8),
+    bios:          kb(2048) + kb(1) + kb(8) + kb(8) + kb(2048),
+    cache_control: kb(2048) + kb(1) + kb(8) + kb(8) + kb(2048) + kb(512),
 };
 
 pub static GUEST_MEM_MAP: MemMap = MemMap {
-    ram: 0,
-    scratch: 0x1F80_0000,
-    io: 0x1f801000,
-    exp_2: 0x1f802000,
-    exp_3: 0x1fa00000,
-    bios: 0x1fc00000,
+    ram:           0,
+    scratch:       0x1f800000,
+    io:            0x1f801000,
+    exp_2:         0x1f802000,
+    exp_3:         0x1fa00000,
+    bios:          0x1fc00000,
     cache_control: 0xfffe0000,
 };
 
-static MEM_SIZE: usize = kb(2048 + 8192) + kb(1) + kb(8) + kb(8) + kb(2048) + kb(512) + 512;
+static MEM_SIZE: usize = kb(2048) + kb(1) + kb(8) + kb(8) + kb(2048) + kb(512) + 512;
 // const MEM_SIZE: usize = 600 * 1024 * 1024;
 static MEM_KB: usize = from_kb(MEM_SIZE) + 1;
 

@@ -1,5 +1,4 @@
 use std::mem::transmute;
-use std::simd::u16x2;
 
 use arbitrary_int::prelude::*;
 use bitbybit::bitenum;

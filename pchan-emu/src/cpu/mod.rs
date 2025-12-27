@@ -1,8 +1,8 @@
 use std::{fmt::Display, mem::offset_of};
 
 use bitfield::bitfield;
+use derive_more as d;
 use pchan_utils::{array, hex};
-use tracing::instrument;
 
 use crate::cpu::ops::OpCode;
 
@@ -11,15 +11,7 @@ pub mod ops;
 #[derive(Default, derive_more::Debug, Clone, Hash)]
 #[repr(C)]
 pub struct Cpu {
-    #[debug("{:#?}",
-        gpr
-            .iter()
-            .enumerate()
-            .filter(|(_, x)| x != &&0)
-            .map(|(i, x)| format!("${}={}", REG_STR[i], hex(*x)))
-            .collect::<Vec<String>>()
-    )]
-    pub gpr:     [u32; 32],
+    pub gpr:     Regs<32>,
     #[debug("{}", hex(self.pc))]
     pub pc:      u32, // store pc and d_clock together so one write can target both
     pub d_clock: u32,
@@ -29,13 +21,40 @@ pub struct Cpu {
     pub cop2:    Cop2,
 }
 
+use std::fmt;
+
+#[derive(d::Deref, d::DerefMut, d::AsMut, d::AsRef, Hash, Clone)]
+pub struct Regs<const N: usize>([u32; N]);
+
+impl<const N: usize> Default for Regs<N> {
+    fn default() -> Self {
+        let arr = [0; N];
+        Self(arr)
+    }
+}
+
+impl<const N: usize> fmt::Debug for Regs<N> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut list = f.debug_list();
+        for (i, val) in self
+            .0
+            .iter()
+            .copied()
+            .enumerate()
+            .filter(|(_, val)| val != &0)
+        {
+            list.entry(&format_args!("${}={}", REG_STR[i], hex(val)));
+        }
+        list.finish()
+    }
+}
+
 macro_rules! coprocessor_definition {
     ($n:ident) => {
         #[derive(derive_more::Debug, Clone, Hash)]
         #[repr(C)]
         pub struct $n {
-            #[debug("{:#?}", reg.iter() .enumerate() .filter(|(_, x)| x != &&0) .map(|(i, x)|format!("${}={}", REG_STR[i], hex(*x))) .collect::<Vec<String>>())]
-            pub reg: [u32; 32],
+            pub reg: Regs<32>,
         }
     };
 }
@@ -54,7 +73,7 @@ bitfield! {
 
 impl Default for Cop0 {
     fn default() -> Self {
-        let mut reg = [0u32; 32];
+        let mut reg = Regs([0u32; 32]);
 
         let mut r12 = Cop0StatusReg(0);
         r12.set_bev(true);
@@ -125,7 +144,7 @@ impl Cpu {
     }
 
     pub fn clear_registers(&mut self) {
-        self.gpr = [0u32; 32];
+        self.gpr = Regs([0u32; 32]);
     }
     pub fn jump_to_bios(&mut self) {
         self.pc = 0xBFC0_0000;
@@ -139,14 +158,14 @@ impl Cpu {
 #[allow(clippy::derivable_impls)]
 impl Default for Cop1 {
     fn default() -> Self {
-        Self { reg: [0; 32] }
+        Self { reg: Regs([0; 32]) }
     }
 }
 
 #[allow(clippy::derivable_impls)]
 impl Default for Cop2 {
     fn default() -> Self {
-        Self { reg: [0; 32] }
+        Self { reg: Regs([0; 32]) }
     }
 }
 

@@ -100,12 +100,7 @@ impl Emu {
 
     pub fn panic(&self, panic_msg: &str) -> ! {
         panic!(
-            r#"
-            emulator panicked at pc={} with:
-            {panic_msg}
-
-            state = {:?}
-            "#,
+            "emulator panicked at pc={} with:\n{panic_msg}\n\nstate = {:#?}",
             hex(self.cpu.pc),
             self
         )

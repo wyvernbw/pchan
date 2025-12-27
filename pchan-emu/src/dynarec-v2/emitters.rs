@@ -175,10 +175,10 @@ impl DecodedOp {
             let rd = fields.rd().value();
             let funct = fields.funct().value();
             match (opcode, rs, rt, funct) {
-                (0x0, _, _, 0x0) => Self::Sll(Sll::new(rd, rt, fields.shamt().value() as _)),
+                (0x0, _, _, 0x0) => Self::Sll(Sll::new(rd, rt, fields.shamt().value())),
                 (0x0, _, _, 0x1) => Self::illegal(),
-                (0x0, _, _, 0x2) => Self::Srl(Srl::new(rd, rt, fields.shamt().value() as _)),
-                (0x0, _, _, 0x3) => Self::Sra(Sra::new(rd, rt, fields.shamt().value() as _)),
+                (0x0, _, _, 0x2) => Self::Srl(Srl::new(rd, rt, fields.shamt().value())),
+                (0x0, _, _, 0x3) => Self::Sra(Sra::new(rd, rt, fields.shamt().value())),
                 (0x0, _, _, 0x4) => Self::Sllv(Sllv::new(rd, rt, rs)),
                 (0x0, _, _, 0x5) => Self::illegal(),
                 (0x0, _, _, 0x6) => Self::Srlv(Srlv::new(rd, rt, rs)),
@@ -211,24 +211,24 @@ impl DecodedOp {
                 (0x0, _, _, 0x2A) => Self::Slt(Slt::new(rd, rs, rt)),
                 (0x0, _, _, 0x2B) => Self::Sltu(Sltu::new(rd, rs, rt)),
                 (0x0, _, _, 0x2C..) => Self::illegal(),
-                (0x1, _, 0x0, _) => Self::Bltz(Bltz::new(rs, fields.imm16() as _)),
-                (0x1, _, 0x1, _) => Self::Bgez(Bgez::new(rs, fields.imm16() as _)),
+                (0x1, _, 0x0, _) => Self::Bltz(Bltz::new(rs, fields.imm16())),
+                (0x1, _, 0x1, _) => Self::Bgez(Bgez::new(rs, fields.imm16())),
                 (0x1, _, 0x10, _) => todo!("bltzal"),
                 (0x1, _, 0x11, _) => todo!("bgezal"),
                 // * TODO: bltz and bgez dupes * //
-                (0x2, _, _, _) => Self::J(J::new(fields.imm26().value() as _)),
-                (0x3, _, _, _) => Self::Jal(Jal::new(fields.imm26().value() as _)),
-                (0x4, _, _, _) => Self::Beq(Beq::new(rs, rt, fields.imm16() as _)),
-                (0x5, _, _, _) => Self::Bne(Bne::new(rs, rt, fields.imm16() as _)),
-                (0x6, _, _, _) => Self::Blez(Blez::new(rs, fields.imm16() as _)),
-                (0x7, _, _, _) => Self::Bgtz(Bgtz::new(rs, fields.imm16() as _)),
-                (0x8 | 0x9, _, _, _) => Self::Addiu(Addiu::new(rt, rs, fields.imm16() as _)),
-                (0xA, _, _, _) => Self::Slti(Slti::new(rt, rs, fields.imm16() as _)),
-                (0xB, _, _, _) => Self::Sltiu(Sltiu::new(rt, rs, fields.imm16() as _)),
-                (0xC, _, _, _) => Self::Andi(Andi::new(rt, rs, fields.imm16() as _)),
-                (0xD, _, _, _) => Self::Ori(Ori::new(rt, rs, fields.imm16() as _)),
-                (0xE, _, _, _) => Self::Xori(Xori::new(rt, rs, fields.imm16() as _)),
-                (0xF, _, _, _) => Self::Lui(Lui::new(rt, fields.imm16() as _)),
+                (0x2, _, _, _) => Self::J(J::new(fields.imm26().value())),
+                (0x3, _, _, _) => Self::Jal(Jal::new(fields.imm26().value())),
+                (0x4, _, _, _) => Self::Beq(Beq::new(rs, rt, fields.imm16())),
+                (0x5, _, _, _) => Self::Bne(Bne::new(rs, rt, fields.imm16())),
+                (0x6, _, _, _) => Self::Blez(Blez::new(rs, fields.imm16())),
+                (0x7, _, _, _) => Self::Bgtz(Bgtz::new(rs, fields.imm16())),
+                (0x8 | 0x9, _, _, _) => Self::Addiu(Addiu::new(rt, rs, fields.imm16())),
+                (0xA, _, _, _) => Self::Slti(Slti::new(rt, rs, fields.imm16())),
+                (0xB, _, _, _) => Self::Sltiu(Sltiu::new(rt, rs, fields.imm16() as u16)),
+                (0xC, _, _, _) => Self::Andi(Andi::new(rt, rs, fields.imm16())),
+                (0xD, _, _, _) => Self::Ori(Ori::new(rt, rs, fields.imm16())),
+                (0xE, _, _, _) => Self::Xori(Xori::new(rt, rs, fields.imm16())),
+                (0xF, _, _, _) => Self::Lui(Lui::new(rt, fields.imm16())),
                 (0x10, 0x10, _, 0x10) => todo!("rfe"),
                 (0x10..=0x13, 0x0, _, 0x0) => {
                     Self::Mfcn(Mfcn::new(fields.cop().value() as _, rt, rd))
@@ -244,18 +244,18 @@ impl DecodedOp {
                     todo!("cop{} imm25 {}", fields.cop(), hex(fields.imm26().value()))
                 }
                 (0x14..=0x1F, _, _, _) => Self::illegal(),
-                (0x20, _, _, _) => Self::Lb(Lb::new(rt, rs, fields.imm16() as _)),
-                (0x21, _, _, _) => Self::Lh(Lh::new(rt, rs, fields.imm16() as _)),
+                (0x20, _, _, _) => Self::Lb(Lb::new(rt, rs, fields.imm16())),
+                (0x21, _, _, _) => Self::Lh(Lh::new(rt, rs, fields.imm16())),
                 (0x22, _, _, _) => todo!("lwl"),
-                (0x23, _, _, _) => Self::Lw(Lw::new(rt, rs, fields.imm16() as _)),
-                (0x24, _, _, _) => Self::Lbu(Lbu::new(rt, rs, fields.imm16() as _)),
-                (0x25, _, _, _) => Self::Lhu(Lhu::new(rt, rs, fields.imm16() as _)),
+                (0x23, _, _, _) => Self::Lw(Lw::new(rt, rs, fields.imm16())),
+                (0x24, _, _, _) => Self::Lbu(Lbu::new(rt, rs, fields.imm16())),
+                (0x25, _, _, _) => Self::Lhu(Lhu::new(rt, rs, fields.imm16())),
                 (0x26, _, _, _) => todo!("lwr"),
                 (0x27, _, _, _) => Self::illegal(),
-                (0x28, _, _, _) => Self::Sb(Sb::new(rt, rs, fields.imm16() as _)),
-                (0x29, _, _, _) => Self::Sh(Sh::new(rt, rs, fields.imm16() as _)),
+                (0x28, _, _, _) => Self::Sb(Sb::new(rt, rs, fields.imm16())),
+                (0x29, _, _, _) => Self::Sh(Sh::new(rt, rs, fields.imm16())),
                 (0x2A, _, _, _) => todo!("swl"),
-                (0x2B, _, _, _) => Self::Sw(Sw::new(rt, rs, fields.imm16() as _)),
+                (0x2B, _, _, _) => Self::Sw(Sw::new(rt, rs, fields.imm16())),
                 (0x2C..=0x2D, _, _, _) => Self::illegal(),
                 (0x2E, _, _, _) => todo!("swr"),
                 (0x2F, _, _, _) => Self::illegal(),
@@ -484,7 +484,6 @@ fn emit_store(
         dynasm!(
             ctx.dynarec.asm
             ; .arch aarch64
-            // FIXME: store allocated temp registers as well
             // need to track caller saved registers in regalloc
             // we have to store x0 since the function call will clobber it
             // call to function
@@ -569,7 +568,7 @@ where
     setup_tracing();
     let mut emu = Emu::default();
     emu.cpu.gpr[10] = ext::zero(value);
-    emu.cpu.gpr[11] = 0xf;
+    emu.cpu.gpr[11] = 0x801ffed0;
     emu.write_many(0x0, &program([instr, OpCode::HALT]));
 
     PipelineV2::new(&emu).run_once(&mut emu)?;
@@ -579,7 +578,10 @@ where
 
     assert_eq!(emu.cpu.d_clock, 3);
     assert_eq!(emu.cpu.pc, 0x8);
-    assert_eq!(emu.read_ext::<T, ext::Zero>(0xf + 2), ext::zero(value));
+    assert_eq!(
+        emu.read_ext::<T, ext::Zero>(0x801ffed0 + 2),
+        ext::zero(value)
+    );
 
     tracing::info!("returning from test...");
     Ok(())
@@ -776,8 +778,8 @@ fn test_loads(
 
     setup_tracing();
     let mut emu = Emu::default();
-    emu.cpu.gpr[11] = 0x100;
-    emu.write(0x100 + 2, value);
+    emu.cpu.gpr[11] = 0x801ffed0;
+    emu.write(0x801ffed0 + 2, value);
     emu.write_many(0x0, &program([instr(10, 11, 2), OpCode::HALT]));
 
     PipelineV2::new(&emu).run_once(&mut emu)?;
@@ -1538,7 +1540,7 @@ fn test_lui(
 
 impl DynarecOp for J {
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
-        let new_pc = (self.imm26 << 2).wrapping_add_unsigned(ctx.pc & 0xf0000000) as _;
+        let new_pc = (self.imm26 << 2) + (ctx.pc & 0xf0000000);
         ctx.dynarec.set_delay_slot(move |ctx| {
             ctx.dynarec.emit_write_pc(Reg::W(3), new_pc);
             EmitSummary::builder().pc_updated(true).build()
@@ -1599,7 +1601,7 @@ impl DynarecOp for Jal {
         Boundary::Soft
     }
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
-        let new_pc = (self.imm26 << 2).wrapping_add_unsigned(ctx.pc & 0xf0000000) as _;
+        let new_pc = (self.imm26 << 2) + (ctx.pc & 0xf0000000);
         let return_address = ctx.pc + 0x8;
         ctx.dynarec.set_delay_slot(move |ctx| {
             ctx.dynarec.emit_write_pc(Reg::W(3), new_pc);
@@ -2678,4 +2680,20 @@ impl DynarecOp for Syscall {
 
         EmitSummary::builder().pc_updated(true).build()
     }
+}
+
+#[cfg(test)]
+#[rstest]
+pub fn test_load_0xbfc01a78() -> color_eyre::Result<()> {
+    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use pchan_utils::setup_tracing;
+
+    setup_tracing();
+    let mut emu = Emu::default();
+
+    emu.write_many(0x0, &program([OpCode::HALT]));
+    PipelineV2::new(&emu).run_once(&mut emu)?;
+
+    tracing::info!(?emu.cpu);
+    Ok(())
 }

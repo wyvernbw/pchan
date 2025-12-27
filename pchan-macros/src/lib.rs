@@ -140,17 +140,29 @@ pub fn encoding(item: TokenStream) -> TokenStream {
         },
     };
 
-    let param_iter = [cop, rd]
-        .into_iter()
-        .chain(match order {
-            EncodeParamOrder::RtRs => [rt, rs].into_iter(),
-            EncodeParamOrder::RsRt => [rs, rt].into_iter(),
-        })
-        .chain([imm16, imm26, shamt])
-        .flatten();
+    let param_iter = match cop {
+        None => [cop, rd]
+            .into_iter()
+            .chain(match order {
+                EncodeParamOrder::RtRs => [rt, rs].into_iter(),
+                EncodeParamOrder::RsRt => [rs, rt].into_iter(),
+            })
+            .chain([imm16, imm26, shamt])
+            .flatten()
+            .collect::<Vec<_>>(),
+        Some(_) => [cop]
+            .into_iter()
+            .chain(match order {
+                EncodeParamOrder::RtRs => [rt, rs].into_iter(),
+                EncodeParamOrder::RsRt => [rs, rt].into_iter(),
+            })
+            .chain([rd, imm16, imm26, shamt])
+            .flatten()
+            .collect::<Vec<_>>(),
+    };
 
     let args = param_iter
-        .clone()
+        .iter()
         .map(|field| {
             let ident = &field.ident;
             let ty = &field.ty;
@@ -159,7 +171,7 @@ pub fn encoding(item: TokenStream) -> TokenStream {
         .collect::<Vec<_>>();
 
     let values = param_iter
-        .clone()
+        .iter()
         .map(|field| {
             let ident = &field.ident;
             quote! { #ident }
