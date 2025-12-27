@@ -20,13 +20,26 @@ use crate::memory::mb;
 #[derive(derive_more::Debug, Clone)]
 pub struct GpuState {
     #[debug(skip)]
-    vram:      Box<[u16]>,
-    gpustat:   GpuStatReg,
-    gp0:       Gp0,
-    gp0read:   [u16; 2],
-    tex_attr:  Option<TexpageCmd>,
+    vram:          Box<[u16]>,
     #[debug(skip)]
-    cmd_queue: Deque<u32, 16>,
+    cmd_queue:     Deque<u32, 16>,
+    gpustat:       GpuStatReg,
+    gp0:           Gp0,
+    gp0read:       [u16; 2],
+    gp0read_queue: Deque<u32, 32>,
+    /// GP0(0xe1) - Draw Mode setting (aka "Texpage")
+    tex_attr:      TexpageCmd,
+    /// GP0(0xe2) - Texture Window setting
+    tex_window:    TexWindowCmd,
+    model:         GpuModel,
+}
+
+#[derive(derive_more::Debug, Clone, Default)]
+pub enum GpuModel {
+    #[default]
+    Gpu160Pin,
+    Gpu180Pin,
+    Gpu208Pin,
 }
 
 impl GpuState {}
@@ -38,10 +51,13 @@ impl Default for GpuState {
         Self {
             gpustat,
             vram: vec![0; mb(1)].into_boxed_slice(),
-            gp0read: Default::default(),
-            tex_attr: None,
-            cmd_queue: Deque::new(),
             gp0: Gp0::WaitingForCmd,
+            gp0read: Default::default(),
+            gp0read_queue: Deque::new(),
+            cmd_queue: Deque::new(),
+            model: GpuModel::default(),
+            tex_attr: Default::default(),
+            tex_window: Default::default(),
         }
     }
 }
@@ -102,7 +118,7 @@ pub trait Gpu: Bus {
             0xe1 => {
                 let texpage = TexpageCmd::new_with_raw_value(cmd.raw_value());
 
-                self.gpu_mut().tex_attr = Some(texpage);
+                self.gpu_mut().tex_attr = texpage;
                 let gpustat = &mut self.gpu_mut().gpustat;
 
                 gpustat.set_texpage_x_base(texpage.texpage_x_base());
@@ -180,12 +196,38 @@ pub trait Gpu: Bus {
                 self.gpu_mut().cmd_queue.clear();
                 self.gpu_mut().gpustat.mock_ready();
             }
+            // get gpu info
+            0x10 => {
+                let Some(cmd) = self.gpu().get_gpu_info_cmd(value) else {
+                    return;
+                };
+                match cmd {
+                    GpuInfoCmd::Unused00 | GpuInfoCmd::Unused01 => {}
+                    GpuInfoCmd::TexWindow => {
+                        self.gpu_mut().gp0read = unsafe {
+                            transmute::<u32, [u16; 2]>(self.gpu().tex_window.raw_value())
+                        };
+                    }
+                }
+            }
             value => todo!("gp1 command: {}", hex(value)),
         }
     }
 }
 
 impl GpuState {
+    fn get_gpu_info_cmd(&self, cmd: GpuCmd) -> Option<GpuInfoCmd> {
+        let value = cmd.raw_value();
+        let value = match self.model {
+            GpuModel::Gpu160Pin => return None,
+            GpuModel::Gpu180Pin => value & 0x7,
+            GpuModel::Gpu208Pin => value & 0xf,
+        };
+        Some(
+            GpuInfoCmd::from_repr(value as _)
+                .unwrap_or_else(|| todo!("gpu get info {}", hex(value))),
+        )
+    }
     fn vram_write(&mut self, coord: VramCoord, value: u16) {
         let addr = coord.x as usize + coord.y as usize * kb(1);
         self.vram[addr] = value;
@@ -474,4 +516,67 @@ pub struct TexpageCmd {
     tex_rect_x_flip:   bool,
     #[bit(13, rw)]
     tex_rect_y_flip:   bool,
+}
+
+/// # GP1(10h) - Get GPU Info
+/// GP1(11h..1Fh) - Mirrors of GP1(10h), Get GPU Info
+///
+/// After sending the command, the result can be immediately read from GPUREAD register (there's no NOP or other delay required) (namely GPUSTAT.Bit27 is used only for VRAM-Reads, but NOT for GPU-Info-Reads, so do not try to wait for that flag).
+///
+///   0-23  Select Information which is to be retrieved (via following GPUREAD)
+///
+/// On Old 180pin GPUs, following values can be selected:
+///
+///   00h-01h = Returns Nothing (old value in GPUREAD remains unchanged)
+///   02h     = Read Texture Window setting  ;GP0(E2h) ;20bit/MSBs=Nothing
+///   03h     = Read Draw area top left      ;GP0(E3h) ;19bit/MSBs=Nothing
+///   04h     = Read Draw area bottom right  ;GP0(E4h) ;19bit/MSBs=Nothing
+///   05h     = Read Draw offset             ;GP0(E5h) ;22bit
+///   06h-07h = Returns Nothing (old value in GPUREAD remains unchanged)
+///   08h-FFFFFFh = Mirrors of 00h..07h
+///
+/// On New 208pin GPUs, following values can be selected:
+///
+///   00h-01h = Returns Nothing (old value in GPUREAD remains unchanged)
+///   02h     = Read Texture Window setting  ;GP0(E2h) ;20bit/MSBs=Nothing
+///   03h     = Read Draw area top left      ;GP0(E3h) ;20bit/MSBs=Nothing
+///   04h     = Read Draw area bottom right  ;GP0(E4h) ;20bit/MSBs=Nothing
+///   05h     = Read Draw offset             ;GP0(E5h) ;22bit
+///   06h     = Returns Nothing (old value in GPUREAD remains unchanged)
+///   07h     = Read GPU Type (usually 2)    ;see "GPU Versions" chapter
+///   08h     = Unknown (Returns 00000000h) (lightgun on some GPUs?)
+///   09h-0Fh = Returns Nothing (old value in GPUREAD remains unchanged)
+///   10h-FFFFFFh = Mirrors of 00h..0Fh
+#[derive(Debug, strum::FromRepr)]
+#[repr(u8)]
+pub enum GpuInfoCmd {
+    Unused00  = 0x00,
+    Unused01  = 0x01,
+    TexWindow = 0x02,
+    // TODO
+}
+
+/// # GP0(E2h) - Texture Window setting
+///
+///   0-4    Texture window Mask X   (in 8 pixel steps)
+///   5-9    Texture window Mask Y   (in 8 pixel steps)
+///   10-14  Texture window Offset X (in 8 pixel steps)
+///   15-19  Texture window Offset Y (in 8 pixel steps)
+///   20-23  Not used (zero)
+///   24-31  Command  (E2h)
+#[bitfield(u32)]
+#[derive(Debug, Default)]
+pub struct TexWindowCmd {
+    #[bits(0..=4)]
+    mask_x:   u5,
+    #[bits(5..=9)]
+    mask_y:   u5,
+    #[bits(10..=14)]
+    offset_x: u5,
+    #[bits(15..=19)]
+    offset_y: u5,
+    #[bits(20..=23)]
+    _pad:     u4,
+    #[bits(24..=31)]
+    _cmd:     u8,
 }
