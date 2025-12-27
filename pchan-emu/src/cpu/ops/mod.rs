@@ -327,14 +327,14 @@ pub struct Mtcn {
 #[encode(opcode = 0x00, funct = 0x11)]
 #[display("mthi ${}", reg_str(self.rs))]
 pub struct Mthi {
-    rs: u8,
+    pub rs: u8,
 }
 
 #[derive(Encode, Debug, Clone, Copy, Hash, PartialEq, Eq, d::Display)]
 #[encode(opcode = 0x00, funct = 0x13)]
 #[display("mtlo ${}", reg_str(self.rs))]
 pub struct Mtlo {
-    rs: u8,
+    pub rs: u8,
 }
 
 #[derive(Encode, Debug, Clone, Copy, Hash, PartialEq, Eq, d::Display)]

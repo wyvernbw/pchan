@@ -95,7 +95,9 @@ pub enum DecodedOp {
     Jalr(Jalr),
     Syscall(Syscall),
     Mfhi(Mfhi),
+    Mthi(Mthi),
     Mflo(Mflo),
+    Mtlo(Mtlo),
     Mult(Mult),
     Multu(Multu),
     Div(Div),
@@ -192,9 +194,9 @@ impl DecodedOp {
                 (0x0, _, _, 0xE) => Self::illegal(),
                 (0x0, _, _, 0xF) => Self::illegal(),
                 (0x0, _, _, 0x10) => Self::Mfhi(Mfhi::new(rd)),
-                (0x0, _, _, 0x11) => todo!("mthi"),
+                (0x0, _, _, 0x11) => Self::Mthi(Mthi::new(rs)),
                 (0x0, _, _, 0x12) => Self::Mflo(Mflo::new(rd)),
-                (0x0, _, _, 0x13) => todo!("mtlo"),
+                (0x0, _, _, 0x13) => Self::Mtlo(Mtlo::new(rs)),
                 (0x0, _, _, 0x14..=0x17) => Self::illegal(),
                 (0x0, _, _, 0x18) => Self::Mult(Mult::new(rs, rt)),
                 (0x0, _, _, 0x19) => Self::Multu(Multu::new(rs, rt)),
@@ -2695,5 +2697,62 @@ pub fn test_load_0xbfc01a78() -> color_eyre::Result<()> {
     PipelineV2::new(&emu).run_once(&mut emu)?;
 
     tracing::info!(?emu.cpu);
+    Ok(())
+}
+
+impl DynarecOp for Mtlo {
+    #[allow(clippy::useless_conversion)]
+    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+        let rs = ctx.dynarec.emit_load_reg(self.rs);
+        #[cfg(target_arch = "aarch64")]
+        dynasm!(
+            ctx.dynarec.asm
+            ; .arch aarch64
+            ; str W(*rs), [x0, Emu::HILO_OFFSET as _]
+        );
+        rs.restore(ctx.dynarec);
+        EmitSummary::default()
+    }
+}
+
+impl DynarecOp for Mthi {
+    #[allow(clippy::useless_conversion)]
+    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+        let rs = ctx.dynarec.emit_load_reg(self.rs);
+        #[cfg(target_arch = "aarch64")]
+        dynasm!(
+            ctx.dynarec.asm
+            ; .arch aarch64
+            ; str W(*rs), [x0, (Emu::HILO_OFFSET + size_of::<u32>()) as _]
+        );
+        rs.restore(ctx.dynarec);
+        EmitSummary::default()
+    }
+}
+
+#[cfg(test)]
+#[rstest]
+#[case(mthi, (9, 0xdeadbeef), 0xdeadbeef_00000000)]
+#[case(mtlo, (9, 0xdeadbeef), 0x00000000_deadbeef)]
+pub fn test_mthilo(
+    #[case] instr: impl Fn(u8) -> OpCode,
+    #[case] (rs, rs_value): (u8, u32),
+    #[case] expected: u64,
+) -> color_eyre::Result<()> {
+    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use pchan_utils::setup_tracing;
+
+    setup_tracing();
+    let mut emu = Emu::default();
+
+    if rs_value != 0 {
+        emu.cpu.gpr[rs as usize] = rs_value;
+    }
+    emu.write_many(0x0, &program([instr(rs), OpCode::HALT]));
+    PipelineV2::new(&emu).run_once(&mut emu)?;
+
+    tracing::info!(?emu.cpu);
+    tracing::info!(hilo = hex(emu.cpu.hilo));
+    assert_eq!(emu.cpu.hilo, expected);
     Ok(())
 }
