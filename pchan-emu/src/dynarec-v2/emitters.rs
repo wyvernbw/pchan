@@ -1,7 +1,9 @@
 use crate::Emu;
 use crate::cpu;
 use crate::cpu::*;
+use crate::dynarec_v2::DynEmitter;
 use crate::dynarec_v2::Guest;
+use crate::dynarec_v2::regalloc::AllocResult;
 use crate::io::IO;
 use std::num::NonZeroU8;
 
@@ -13,6 +15,7 @@ use enum_dispatch::enum_dispatch;
 use pchan_utils::hex;
 #[cfg(test)]
 use rstest::rstest;
+use smallbox::SmallBox;
 
 use crate::cpu::ops::*;
 use crate::cpu::ops::{HaltBlock, OpCode};
@@ -26,6 +29,8 @@ use dynasm::dynasm;
 use dynasmrt::DynasmApi;
 use dynasmrt::DynasmLabelApi;
 
+use super::ScheduledEmitter;
+
 #[derive(Debug, Builder)]
 pub struct EmitCtx<'a> {
     pub dynarec: &'a mut Dynarec,
@@ -34,10 +39,29 @@ pub struct EmitCtx<'a> {
 
 const MAX_SCRATCH_REG: u8 = 3;
 
+#[bon]
 impl<'a> EmitCtx<'a> {
     fn parity(&self) -> impl Fn(u8) -> u8 + 'static {
         let m = (self.pc >> 2) % 2;
         move |reg| reg + m as u8 * MAX_SCRATCH_REG
+    }
+    #[builder]
+    fn schedule_in(
+        &mut self,
+        #[builder(start_fn)] ops: u32,
+        emitter: impl Fn(EmitCtx) -> EmitSummary + 'static,
+    ) {
+        let emitter = SmallBox::new(emitter) as DynEmitter;
+        let at = self.pc + ops * 4;
+        self.dynarec
+            .scheduler
+            .queue
+            .push(ScheduledEmitter {
+                emitter,
+                schedule: at,
+                pc: self.pc,
+            })
+            .expect("binary heap is at capacity. increase allocation size or decrease block size");
     }
 }
 
@@ -463,7 +487,7 @@ fn emit_call(ctx: &mut EmitCtx, emitter: impl Fn(&mut Dynarec)) {
 
 #[allow(clippy::useless_conversion)]
 fn emit_store(
-    ctx: EmitCtx,
+    mut ctx: EmitCtx,
     rt: u8,
     rs: u8,
     imm: i16,
@@ -482,22 +506,24 @@ fn emit_store(
         ; fmov S(s(10)), w2
     );
 
-    ctx.dynarec.set_delay_slot(move |mut ctx| {
-        dynasm!(
-            ctx.dynarec.asm
-            ; .arch aarch64
-            // need to track caller saved registers in regalloc
-            // we have to store x0 since the function call will clobber it
-            // call to function
-            ;; let saved = ctx.dynarec.emit_save_volatile_registers()
-            ; fmov w1, S(s(9))
-            ; fmov w2, S(s(10))
-            ;; func_call(&mut ctx)
-            ;; ctx.dynarec.emit_restore_saved_registers(saved.into_iter())
+    ctx.schedule_in(1)
+        .emitter(move |mut ctx| {
+            dynasm!(
+                ctx.dynarec.asm
+                ; .arch aarch64
+                // need to track caller saved registers in regalloc
+                // we have to store x0 since the function call will clobber it
+                // call to function
+                ;; let saved = ctx.dynarec.emit_save_volatile_registers()
+                ; fmov w1, S(s(9))
+                ; fmov w2, S(s(10))
+                ;; func_call(&mut ctx)
+                ;; ctx.dynarec.emit_restore_saved_registers(saved.into_iter())
 
-        );
-        EmitSummary::default()
-    });
+            );
+            EmitSummary::default()
+        })
+        .call();
 
     EmitSummary::default()
 }
@@ -626,7 +652,7 @@ fn test_weird_store() {
 #[cfg(target_arch = "aarch64")]
 #[allow(clippy::useless_conversion)]
 fn emit_load(
-    ctx: EmitCtx,
+    mut ctx: EmitCtx,
     rt: u8,
     rs: u8,
     imm: i16,
@@ -641,24 +667,26 @@ fn emit_load(
         ; fmov S(s(8)), w1
     );
 
-    ctx.dynarec.set_delay_slot(move |mut ctx| {
-        let rta = ctx.dynarec.alloc_reg(rt);
-        dynasm!(
-            ctx.dynarec.asm
-            ; .arch aarch64
-            // ; ldr w1, [sp], #16
-            ;; let saved = ctx.dynarec.emit_save_volatile_registers()
-            ; fmov w1, S(s(8))
-            ;; func_call(&mut ctx)
-            ; fmov S(s(8)), w0 // place return value in s8+
-            ;; ctx.dynarec.emit_restore_saved_registers(saved.into_iter())
-            ; fmov W(*rta), S(s(8))
-        );
-        ctx.dynarec.mark_dirty(rt);
+    ctx.schedule_in(1)
+        .emitter(move |mut ctx| {
+            let rta = ctx.dynarec.alloc_reg(rt);
+            dynasm!(
+                ctx.dynarec.asm
+                ; .arch aarch64
+                // ; ldr w1, [sp], #16
+                ;; let saved = ctx.dynarec.emit_save_volatile_registers()
+                ; fmov w1, S(s(8))
+                ;; func_call(&mut ctx)
+                ; fmov S(s(8)), w0 // place return value in s8+
+                ;; ctx.dynarec.emit_restore_saved_registers(saved.into_iter())
+                ; fmov W(*rta), S(s(8))
+            );
+            ctx.dynarec.mark_dirty(rt);
 
-        rta.restore(ctx.dynarec);
-        EmitSummary::default()
-    });
+            rta.restore(ctx.dynarec);
+            EmitSummary::default()
+        })
+        .call();
 
     EmitSummary::default()
 }
@@ -839,18 +867,18 @@ fn test_load_delay(#[case] instr: impl Fn(u8, u8, i16) -> OpCode) -> color_eyre:
 
 #[derive(Debug, Clone, derive_more::Deref)]
 #[deref(forward)]
-pub struct Rd<'a>(&'a LoadedReg);
+pub struct Rd<'a, T>(&'a LoadedReg<T>);
 #[derive(Debug, Clone, derive_more::Deref)]
 #[deref(forward)]
-pub struct Rs<'a>(&'a LoadedReg);
+pub struct Rs<'a, T>(&'a LoadedReg<T>);
 #[derive(Debug, Clone, derive_more::Deref)]
 #[deref(forward)]
-pub struct Rt<'a>(&'a LoadedReg);
+pub struct Rt<'a, T>(&'a LoadedReg<T>);
 
 pub struct AluRegs<'a> {
-    rd: Rd<'a>,
-    rs: Rs<'a>,
-    rt: Rt<'a>,
+    rd: Rd<'a, AllocResult>,
+    rs: Rs<'a, AllocResult>,
+    rt: Rt<'a, AllocResult>,
 }
 
 fn emit_alu_reg(
@@ -1193,8 +1221,8 @@ fn test_alu_reg(
 }
 
 pub struct ShiftImm<'a> {
-    rd:  Rd<'a>,
-    rt:  Rt<'a>,
+    rd:  Rd<'a, AllocResult>,
+    rt:  Rt<'a, AllocResult>,
     imm: u8,
 }
 
@@ -1298,8 +1326,8 @@ impl DynarecOp for Sra {
 }
 
 pub struct AluImm<'a> {
-    rt:  Rt<'a>,
-    rs:  Rs<'a>,
+    rt:  Rt<'a, AllocResult>,
+    rs:  Rs<'a, AllocResult>,
     imm: i16,
 }
 
@@ -1541,12 +1569,14 @@ fn test_lui(
 }
 
 impl DynarecOp for J {
-    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+    fn emit<'a>(&self, mut ctx: EmitCtx<'a>) -> EmitSummary {
         let new_pc = (self.imm26 << 2) + (ctx.pc & 0xf0000000);
-        ctx.dynarec.set_delay_slot(move |ctx| {
-            ctx.dynarec.emit_write_pc(Reg::W(3), new_pc);
-            EmitSummary::builder().pc_updated(true).build()
-        });
+        ctx.schedule_in(1)
+            .emitter(move |ctx| {
+                ctx.dynarec.emit_write_pc(Reg::W(3), new_pc);
+                EmitSummary::builder().pc_updated(true).build()
+            })
+            .call();
         EmitSummary::default()
     }
 
@@ -1602,15 +1632,17 @@ impl DynarecOp for Jal {
     fn boundary(&self) -> Boundary {
         Boundary::Soft
     }
-    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+    fn emit<'a>(&self, mut ctx: EmitCtx<'a>) -> EmitSummary {
         let new_pc = (self.imm26 << 2) + (ctx.pc & 0xf0000000);
         let return_address = ctx.pc + 0x8;
-        ctx.dynarec.set_delay_slot(move |ctx| {
-            ctx.dynarec.emit_write_pc(Reg::W(3), new_pc);
-            ctx.dynarec.emit_immediate_large(cpu::RA, return_address);
+        ctx.schedule_in(1)
+            .emitter(move |ctx| {
+                ctx.dynarec.emit_write_pc(Reg::W(3), new_pc);
+                ctx.dynarec.emit_immediate_large(cpu::RA, return_address);
 
-            EmitSummary::builder().pc_updated(true).build()
-        });
+                EmitSummary::builder().pc_updated(true).build()
+            })
+            .call();
         EmitSummary::default()
     }
 }
@@ -1656,7 +1688,7 @@ impl DynarecOp for Jr {
         Boundary::Soft
     }
     #[allow(clippy::useless_conversion)]
-    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+    fn emit<'a>(&self, mut ctx: EmitCtx<'a>) -> EmitSummary {
         let dest = ctx.dynarec.emit_load_reg(self.rs);
         let s = ctx.parity();
 
@@ -1668,16 +1700,18 @@ impl DynarecOp for Jr {
             ; fmov S(s(8)), W(*dest)
         );
 
-        ctx.dynarec.set_delay_slot(move |ctx| {
-            #[cfg(target_arch = "aarch64")]
-            dynasm!(
-                ctx.dynarec.asm
-                ; .arch aarch64
-                ; str S(s(8)), [x0, Emu::PC_OFFSET as _]
-            );
+        ctx.schedule_in(1)
+            .emitter(move |ctx| {
+                #[cfg(target_arch = "aarch64")]
+                dynasm!(
+                    ctx.dynarec.asm
+                    ; .arch aarch64
+                    ; str S(s(8)), [x0, Emu::PC_OFFSET as _]
+                );
 
-            EmitSummary::builder().pc_updated(true).build()
-        });
+                EmitSummary::builder().pc_updated(true).build()
+            })
+            .call();
         EmitSummary::default()
     }
 }
@@ -1717,7 +1751,7 @@ impl DynarecOp for Jalr {
         Boundary::Soft
     }
     #[allow(clippy::useless_conversion)]
-    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+    fn emit<'a>(&self, mut ctx: EmitCtx<'a>) -> EmitSummary {
         let s = ctx.parity();
         let dest = ctx.dynarec.emit_load_reg(self.rs);
 
@@ -1731,20 +1765,22 @@ impl DynarecOp for Jalr {
 
         let rd = self.rd;
         // we know the delay slots runs at old pc + 4
-        ctx.dynarec.set_delay_slot(move |ctx| {
-            #[cfg(target_arch = "aarch64")]
-            dynasm!(
-                ctx.dynarec.asm
-                ; .arch aarch64
-                // ; ldr w3, [sp], #16
-                ; str S(s(8)), [x0, Emu::PC_OFFSET as _]
-            );
+        ctx.schedule_in(1)
+            .emitter(move |ctx| {
+                #[cfg(target_arch = "aarch64")]
+                dynasm!(
+                    ctx.dynarec.asm
+                    ; .arch aarch64
+                    // ; ldr w3, [sp], #16
+                    ; str S(s(8)), [x0, Emu::PC_OFFSET as _]
+                );
 
-            let ret_address = ctx.pc + 0x8;
-            ctx.dynarec.emit_immediate_large(rd, ret_address);
+                let ret_address = ctx.pc + 0x8;
+                ctx.dynarec.emit_immediate_large(rd, ret_address);
 
-            EmitSummary::builder().pc_updated(true).build()
-        });
+                EmitSummary::builder().pc_updated(true).build()
+            })
+            .call();
         EmitSummary::default()
     }
 }
@@ -1793,7 +1829,7 @@ fn test_jalr(
 #[allow(clippy::useless_conversion)]
 #[cfg(target_arch = "aarch64")]
 fn emit_branch(
-    ctx: EmitCtx,
+    mut ctx: EmitCtx,
     rs: u8,
     rt: u8,
     imm: i16,
@@ -1813,25 +1849,27 @@ fn emit_branch(
     );
 
     let branch_dest = (ctx.pc + 0x4).wrapping_add_signed(ext::sign(imm) << 2);
-    ctx.dynarec.set_delay_slot(move |mut ctx| {
-        dynasm!(
-            ctx.dynarec.asm
-            ; .arch aarch64
-            // ; ldp w2, w3, [sp], #16
-            ; fmov w2, S(s(9))
-            ; fmov w3, S(s(10))
-            ; cmp w2, w3
+    ctx.schedule_in(1)
+        .emitter(move |mut ctx| {
+            dynasm!(
+                ctx.dynarec.asm
+                ; .arch aarch64
+                // ; ldp w2, w3, [sp], #16
+                ; fmov w2, S(s(9))
+                ; fmov w3, S(s(10))
+                ; cmp w2, w3
 
-            ; movz w2, (ctx.pc + 0x8) >> 16, lsl #16
-            ; movk w2, (ctx.pc + 0x8) & 0x0000_ffff
-            ; movz w3, branch_dest >> 16, lsl #16
-            ; movk w3, branch_dest & 0x0000_ffff
-            ;; selector(&mut ctx)
-            ; str w2, [x0, Emu::PC_OFFSET as _]
-        );
+                ; movz w2, (ctx.pc + 0x8) >> 16, lsl #16
+                ; movk w2, (ctx.pc + 0x8) & 0x0000_ffff
+                ; movz w3, branch_dest >> 16, lsl #16
+                ; movk w3, branch_dest & 0x0000_ffff
+                ;; selector(&mut ctx)
+                ; str w2, [x0, Emu::PC_OFFSET as _]
+            );
 
-        EmitSummary::builder().pc_updated(true).build()
-    });
+            EmitSummary::builder().pc_updated(true).build()
+        })
+        .call();
 
     rt.restore(ctx.dynarec);
     rs.restore(ctx.dynarec);
@@ -1936,7 +1974,7 @@ fn test_branch(
 #[allow(clippy::useless_conversion)]
 #[cfg(target_arch = "aarch64")]
 fn emit_branch_zero(
-    ctx: EmitCtx,
+    mut ctx: EmitCtx,
     rs: u8,
     imm: i16,
     selector: impl Fn(&mut EmitCtx) + 'static,
@@ -1953,24 +1991,26 @@ fn emit_branch_zero(
     );
 
     let branch_dest = (ctx.pc + 0x4).wrapping_add_signed(ext::sign(imm) << 2);
-    ctx.dynarec.set_delay_slot(move |mut ctx| {
-        dynasm!(
-            ctx.dynarec.asm
-            ; .arch aarch64
-            // ; ldr w2, [sp], #16
-            ; fmov w2, S(s(8))
-            ; cmp w2, #0
+    ctx.schedule_in(1)
+        .emitter(move |mut ctx| {
+            dynasm!(
+                ctx.dynarec.asm
+                ; .arch aarch64
+                // ; ldr w2, [sp], #16
+                ; fmov w2, S(s(8))
+                ; cmp w2, #0
 
-            ; movz w2, (ctx.pc + 0x8) >> 16, lsl #16
-            ; movk w2, (ctx.pc + 0x8) & 0x0000_ffff
-            ; movz w3, branch_dest >> 16, lsl #16
-            ; movk w3, branch_dest & 0x0000_ffff
-            ;; selector(&mut ctx)
-            ; str w2, [x0, Emu::PC_OFFSET as _]
-        );
+                ; movz w2, (ctx.pc + 0x8) >> 16, lsl #16
+                ; movk w2, (ctx.pc + 0x8) & 0x0000_ffff
+                ; movz w3, branch_dest >> 16, lsl #16
+                ; movk w3, branch_dest & 0x0000_ffff
+                ;; selector(&mut ctx)
+                ; str w2, [x0, Emu::PC_OFFSET as _]
+            );
 
-        EmitSummary::builder().pc_updated(true).build()
-    });
+            EmitSummary::builder().pc_updated(true).build()
+        })
+        .call();
 
     rs.restore(ctx.dynarec);
 
@@ -2199,7 +2239,7 @@ impl DynarecOp for Nop {
     fn cycles(&self) -> u16 {
         1
     }
-    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+    fn emit<'a>(&self, _: EmitCtx<'a>) -> EmitSummary {
         EmitSummary::default()
     }
 }
@@ -2700,33 +2740,46 @@ pub fn test_load_0xbfc01a78() -> color_eyre::Result<()> {
     Ok(())
 }
 
+enum Hilo {
+    Hi,
+    Lo,
+}
+
+#[allow(clippy::useless_conversion)]
+fn emit_mthilo<'a>(rs: u8, mut ctx: EmitCtx<'a>, hilo: Hilo) -> EmitSummary {
+    let offset = match hilo {
+        Hilo::Hi => Emu::HILO_OFFSET + size_of::<u32>(),
+        Hilo::Lo => Emu::HILO_OFFSET,
+    };
+    let rs = ctx.dynarec.emit_load_reg_stackless(rs);
+    ctx.dynarec.lock_register(&rs);
+
+    ctx.schedule_in(2)
+        .emitter(move |ctx| {
+            #[cfg(target_arch = "aarch64")]
+            dynasm!(
+                ctx.dynarec.asm
+                ; .arch aarch64
+                ; str W(*rs), [x0, offset as _]
+            );
+            ctx.dynarec.unlock_register(&rs);
+            EmitSummary::default()
+        })
+        .call();
+    EmitSummary::default()
+}
+
 impl DynarecOp for Mtlo {
     #[allow(clippy::useless_conversion)]
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
-        let rs = ctx.dynarec.emit_load_reg(self.rs);
-        #[cfg(target_arch = "aarch64")]
-        dynasm!(
-            ctx.dynarec.asm
-            ; .arch aarch64
-            ; str W(*rs), [x0, Emu::HILO_OFFSET as _]
-        );
-        rs.restore(ctx.dynarec);
-        EmitSummary::default()
+        emit_mthilo(self.rs, ctx, Hilo::Lo)
     }
 }
 
 impl DynarecOp for Mthi {
     #[allow(clippy::useless_conversion)]
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
-        let rs = ctx.dynarec.emit_load_reg(self.rs);
-        #[cfg(target_arch = "aarch64")]
-        dynasm!(
-            ctx.dynarec.asm
-            ; .arch aarch64
-            ; str W(*rs), [x0, (Emu::HILO_OFFSET + size_of::<u32>()) as _]
-        );
-        rs.restore(ctx.dynarec);
-        EmitSummary::default()
+        emit_mthilo(self.rs, ctx, Hilo::Hi)
     }
 }
 
@@ -2745,14 +2798,68 @@ pub fn test_mthilo(
     setup_tracing();
     let mut emu = Emu::default();
 
-    if rs_value != 0 {
+    if rs != 0 {
         emu.cpu.gpr[rs as usize] = rs_value;
     }
-    emu.write_many(0x0, &program([instr(rs), OpCode::HALT]));
+    emu.write_many(0x0, &program([instr(rs), nop(), nop(), OpCode::HALT]));
     PipelineV2::new(&emu).run_once(&mut emu)?;
 
     tracing::info!(?emu.cpu);
     tracing::info!(hilo = hex(emu.cpu.hilo));
     assert_eq!(emu.cpu.hilo, expected);
+    Ok(())
+}
+
+#[cfg(test)]
+#[rstest]
+pub fn test_mthi_mfhi() -> color_eyre::Result<()> {
+    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use pchan_utils::setup_tracing;
+
+    setup_tracing();
+    let mut emu = Emu::default();
+
+    emu.write_many(
+        0x0,
+        &program([
+            addiu(9, 0, 69),
+            mthi(9),
+            nop(),
+            mfhi(10),
+            nop(),
+            OpCode::HALT,
+        ]),
+    );
+    PipelineV2::new(&emu).run_once(&mut emu)?;
+
+    tracing::info!(?emu.cpu);
+    tracing::info!(hilo = hex(emu.cpu.hilo));
+    assert_ne!(emu.cpu.hilo, 0);
+    assert_ne!(emu.cpu.gpr[10], 69);
+    assert_eq!(emu.cpu.gpr[10], 0);
+
+    // correct version:
+
+    let mut emu = Emu::default();
+
+    emu.write_many(
+        0x0,
+        &program([
+            addiu(9, 0, 69),
+            mthi(9),
+            nop(),
+            nop(),
+            mfhi(10),
+            nop(),
+            OpCode::HALT,
+        ]),
+    );
+    PipelineV2::new(&emu).run_once(&mut emu)?;
+
+    tracing::info!(?emu.cpu);
+    tracing::info!(hilo = hex(emu.cpu.hilo));
+    assert_ne!(emu.cpu.hilo, 0);
+    assert_eq!(emu.cpu.gpr[10], 69);
+
     Ok(())
 }

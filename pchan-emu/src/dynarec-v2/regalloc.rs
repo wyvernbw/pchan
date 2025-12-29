@@ -19,35 +19,35 @@ type RegAllocBitMap = bv::BitArray<[u16; 1]>;
 
 #[derive(de::Debug, Clone)]
 pub struct RegAlloc {
-    pub loaded: bv::BitArray<[u32; 1]>,
-    pub dirty: bv::BitArray<[u32; 1]>,
-    pub allocated: RegAllocBitMap,
+    pub loaded:          bv::BitArray<[u32; 1]>,
+    pub dirty:           bv::BitArray<[u32; 1]>,
+    pub allocated:       RegAllocBitMap,
     #[debug(skip)]
-    pub allocatable: RegAllocBitMap,
+    pub allocatable:     RegAllocBitMap,
     #[debug(skip)]
-    pub volatile: RegAllocBitMap,
+    pub volatile:        RegAllocBitMap,
     /// this is in guest register space
     #[debug(skip)]
-    pub priority: RegAllocBitMap,
+    pub priority:        RegAllocBitMap,
     /// mapping from guest to host register.
-    pub mapping: [Option<Reg>; 32],
+    pub mapping:         [Option<Reg>; 32],
     /// mapping from host to guest register. its consider valid for it to map to unallocated registers.
     #[debug(skip)]
     pub reverse_mapping: [u8; 32],
     /// never traverse this - its slow as shit
     #[debug("history: {} registers", history.len())]
-    pub history: VecDeque<u8>,
+    pub history:         VecDeque<u8>,
 }
 
 impl Default for RegAlloc {
     fn default() -> Self {
         Self {
-            loaded: Default::default(),
-            dirty: Default::default(),
+            loaded:    Default::default(),
+            dirty:     Default::default(),
             allocated: Default::default(),
 
             #[cfg(target_arch = "aarch64")]
-            allocatable: bv::bitarr![
+            allocatable:                                 bv::bitarr![
                 // we can safely use 22 registers on arm64
                 // so about 70% capacity
                 //
@@ -64,7 +64,7 @@ impl Default for RegAlloc {
             ],
 
             #[cfg(target_arch = "aarch64")]
-            volatile: bv::bitarr!(
+            volatile:                                 bv::bitarr!(
                 u32, Lsb0;
                 0, 0, 0, 0, // x0-x3
                 1, 1, 1, 1, // x4-x7
@@ -107,6 +107,11 @@ pub enum RegAllocError {
     EvictToStack(Evicted<Guest>, Allocated),
     AlreadyAllocatedTo(Allocated),
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegAllocErrorStackless {
+    EvictToMemory(Evicted<Guest>, Allocated),
+    AlreadyAllocatedTo(Allocated),
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq, de::Deref, de::From)]
 pub struct Evicted<T: RegisterType>(T);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, de::Deref, de::From)]
@@ -132,6 +137,7 @@ impl RegisterType for Guest {}
 impl RegisterType for Host {}
 
 pub type AllocResult = Result<Allocated, RegAllocError>;
+pub type AllocResultStackless = Result<Allocated, RegAllocErrorStackless>;
 
 impl RegAlloc {
     pub fn first_free(&self) -> Option<Reg> {
@@ -198,6 +204,46 @@ impl RegAlloc {
             self.history.pop_front();
         }
         self.history.push_back(guest_reg);
+    }
+
+    pub fn regalloc_stackless(
+        &mut self,
+        guest_reg: Guest,
+    ) -> Result<Allocated, RegAllocErrorStackless> {
+        debug_assert!(guest_reg <= 31);
+
+        if let Some(host) = self.allocated_guest_to_host(guest_reg) {
+            return Err(RegAllocErrorStackless::AlreadyAllocatedTo(host.into()));
+        }
+
+        let first_free = self.first_free();
+
+        if let Some(free) = first_free {
+            return Ok(self.alloc(guest_reg, free));
+        }
+
+        let first_low_prio = self.first_allocated_low_priority();
+
+        match first_low_prio {
+            Some(first_low_prio) => {
+                let first_low_prio_host = self
+                    .allocated_guest_to_host(first_low_prio)
+                    .unwrap_or_else(|| unreachable!());
+
+                let evicted_guest = self.evict_at(first_low_prio_host);
+                let host_reg = self.alloc(guest_reg, first_low_prio_host);
+
+                Err(RegAllocErrorStackless::EvictToMemory(
+                    evicted_guest,
+                    host_reg,
+                ))
+            }
+            None => {
+                let (evicted_guest, evicted_host) = self.evict_any();
+                let host = self.alloc(guest_reg, *evicted_host);
+                Err(RegAllocErrorStackless::EvictToMemory(evicted_guest, host))
+            }
+        }
     }
 
     pub fn regalloc(&mut self, guest_reg: Guest) -> Result<Allocated, RegAllocError> {
@@ -269,7 +315,7 @@ impl RegAlloc {
         }
     }
 
-    fn evict_at(&mut self, host: Reg) -> Evicted<Guest> {
+    pub fn evict_at(&mut self, host: Reg) -> Evicted<Guest> {
         let host = host.to_idx();
         self.allocated.set(host as usize, false);
         let guest = self.reverse_mapping[host as usize];

@@ -623,7 +623,7 @@ impl Component for MainPage {
             Constraint::Min(32),
         ])
         .areas(area);
-        let [ops, tty] = Layout::vertical([Constraint::Min(1), Constraint::Max(12)]).areas(left);
+        let [ops, tty] = Layout::vertical([Constraint::Min(1), Constraint::Max(20)]).areas(left);
         let ops_focus = self.0.prop::<OpsList>();
         let ops_block = Block::bordered()
             .border_type(BorderType::Rounded)
@@ -760,10 +760,13 @@ impl Component for Tty {
             tracing::info!("{}", line.trim());
             state.output.push_back(line);
         }
-        Widget::render(
+        let mut list_state = ListState::default();
+        list_state.select_last();
+        StatefulWidget::render(
             List::new(state.output.iter().map(|line| Line::from(&**line))),
             area,
             buf,
+            &mut list_state,
         );
         Ok(())
     }

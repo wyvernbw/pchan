@@ -1,4 +1,6 @@
+use bon::Builder;
 use color_eyre::eyre::bail;
+use derive_more as d;
 use dynasm::dynasm;
 use dynasmrt::Assembler;
 use dynasmrt::DynasmApi;
@@ -6,11 +8,12 @@ use dynasmrt::DynasmLabelApi;
 use dynasmrt::ExecutableBuffer;
 use flume::Receiver;
 use flume::Sender;
+use heapless::Deque;
+use heapless::binary_heap::Min;
 use pchan_utils::hex;
 use smallbox::SmallBox;
 use smallvec::SmallVec;
 use std::cell::Cell;
-use std::collections::VecDeque;
 use std::hash::Hasher;
 use std::ops::Deref;
 use std::simd::Simd;
@@ -47,15 +50,16 @@ type Reloc = dynasmrt::aarch64::Aarch64Relocation;
 #[cfg(target_arch = "x86_64")]
 type Reloc = dynasmrt::x64::X64Relocation;
 
-type DynEmitter = SmallBox<dyn Fn(EmitCtx) -> EmitSummary, [u8; 64]>;
+type DynEmitter = SmallBox<dyn Fn(EmitCtx) -> EmitSummary, [usize; 1]>;
 
-#[derive(derive_more::Debug)]
+#[derive(derive_more::Debug, Builder)]
 pub struct Dynarec {
-    reg_alloc:   RegAlloc,
-    #[debug("{}", self.delay_queue.len())]
-    delay_queue: VecDeque<DynEmitter>,
+    #[builder(default)]
+    reg_alloc: RegAlloc,
+    #[builder(default)]
+    scheduler: Scheduler,
     #[debug(skip)]
-    asm:         Assembler<Reloc>,
+    asm:       Assembler<Reloc>,
 }
 
 unsafe impl Send for Dynarec {}
@@ -66,7 +70,7 @@ impl Default for Dynarec {
         let asm = Assembler::new_with_capacity(size_of::<u64>() * 128)
             .expect("failed to create assembler");
         Self {
-            delay_queue: VecDeque::with_capacity(2),
+            scheduler: Scheduler::default(),
             reg_alloc: Default::default(),
             asm,
         }
@@ -125,7 +129,7 @@ impl Fn<DynarecBlockArgs<'_>> for DynarecBlock {
 }
 
 impl Dynarec {
-    fn finalize(mut self) -> color_eyre::Result<DynarecFunction> {
+    fn finalize(mut self) -> color_eyre::Result<(DynarecFunction, Scheduler)> {
         let exec = match self.asm.finalize() {
             Ok(exec) => exec,
             Err(asm) => {
@@ -142,10 +146,13 @@ impl Dynarec {
         }
 
         let func = unsafe { std::mem::transmute::<*const u8, fn(_)>(exec.as_ptr()) };
-        Ok(DynarecFunction {
-            func,
-            exec: Arc::new(exec),
-        })
+        Ok((
+            DynarecFunction {
+                func,
+                exec: Arc::new(exec),
+            },
+            self.scheduler,
+        ))
     }
     fn emit_block_prelude(&mut self) {
         #[cfg(target_arch = "aarch64")]
@@ -292,7 +299,25 @@ impl Dynarec {
             )
         }
     }
-    fn alloc_reg(&mut self, guest_reg: u8) -> LoadedReg {
+    fn alloc_reg_stackless(&mut self, guest_reg: u8) -> LoadedReg<AllocResultStackless> {
+        let result = self.reg_alloc.regalloc_stackless(guest_reg);
+        match result {
+            // no op case
+            Err(RegAllocErrorStackless::AlreadyAllocatedTo(_)) => {}
+            // new allocation
+            Ok(_) => {
+                self.reg_alloc.dirty.set(guest_reg as usize, false);
+            }
+            // spill register
+            Err(RegAllocErrorStackless::EvictToMemory(evicted_guest, host_reg)) => {
+                self.emit_writeback(*evicted_guest, *host_reg);
+                self.reg_alloc.dirty.set(*evicted_guest as usize, false);
+                self.reg_alloc.dirty.set(guest_reg as usize, false);
+            }
+        };
+        LoadedReg::from(result)
+    }
+    fn alloc_reg(&mut self, guest_reg: u8) -> LoadedReg<AllocResult> {
         let result = self.reg_alloc.regalloc(guest_reg);
         match result {
             // no op case
@@ -349,35 +374,47 @@ impl Dynarec {
             );
         }
     }
-    fn emit_load_reg(&mut self, guest_reg: u8) -> LoadedReg {
-        let offset = Emu::reg_offset(guest_reg) as u32;
-
+    fn emit_load_reg(&mut self, guest_reg: u8) -> LoadedReg<AllocResult> {
         let host_reg = self.alloc_reg(guest_reg);
         match host_reg.result {
             Err(RegAllocError::AlreadyAllocatedTo(_)) => {}
-            _ => {
-                if guest_reg == 0 {
-                    #[cfg(target_arch = "aarch64")]
-                    #[allow(clippy::useless_conversion)]
-                    {
-                        dynasm!(
-                            self.asm
-                            ; .arch aarch64
-                            ; mov W(*host_reg), 0
-                        );
-                    }
-                } else {
-                    #[cfg(target_arch = "aarch64")]
-                    #[allow(clippy::useless_conversion)]
-                    {
-                        dynasm!(
-                            self.asm
-                            ; .arch aarch64
-                            ; ldr W(*host_reg), [x0, offset]
-                        );
-                    }
+            _ => self.impl_emit_reg_load(guest_reg, &host_reg),
+        }
+        host_reg
+    }
+
+    fn impl_emit_reg_load<T>(&mut self, guest_reg: u8, host_reg: &LoadedReg<T>) {
+        let offset = Emu::reg_offset(guest_reg) as u32;
+        match guest_reg == 0 {
+            true => {
+                #[cfg(target_arch = "aarch64")]
+                #[allow(clippy::useless_conversion)]
+                {
+                    dynasm!(
+                        self.asm
+                        ; .arch aarch64
+                        ; mov W(**host_reg), 0
+                    );
                 }
             }
+            false => {
+                #[cfg(target_arch = "aarch64")]
+                #[allow(clippy::useless_conversion)]
+                {
+                    dynasm!(
+                        self.asm
+                        ; .arch aarch64
+                        ; ldr W(**host_reg), [x0, offset]
+                    );
+                }
+            }
+        }
+    }
+    pub fn emit_load_reg_stackless(&mut self, guest_reg: u8) -> LoadedReg<AllocResultStackless> {
+        let host_reg = self.alloc_reg_stackless(guest_reg);
+        match host_reg.result {
+            Err(RegAllocErrorStackless::AlreadyAllocatedTo(_)) => {}
+            _ => self.impl_emit_reg_load(guest_reg, &host_reg),
         }
         host_reg
     }
@@ -442,10 +479,6 @@ impl Dynarec {
 
     fn mark_clean(&mut self, guest_reg: u8) {
         self.reg_alloc.dirty.set(guest_reg as usize, false);
-    }
-
-    fn set_delay_slot(&mut self, emitter: impl Fn(EmitCtx) -> EmitSummary + 'static) {
-        self.delay_queue.push_back(SmallBox::new(emitter) as _);
     }
 
     #[allow(clippy::useless_conversion)]
@@ -543,15 +576,17 @@ impl Dynarec {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct LoadedReg {
-    result:   AllocResult,
+#[derive(Debug, Clone, d::Deref, d::DerefMut)]
+pub struct LoadedReg<T> {
+    result:   T,
     reg:      Reg,
+    #[deref]
+    #[deref_mut]
     reg_idx:  u8,
     restored: Cell<bool>,
 }
 
-impl From<AllocResult> for LoadedReg {
+impl From<AllocResult> for LoadedReg<AllocResult> {
     fn from(result: AllocResult) -> Self {
         let reg = match &result {
             Ok(reg) => **reg,
@@ -569,30 +604,27 @@ impl From<AllocResult> for LoadedReg {
         }
     }
 }
-
-impl Deref for LoadedReg {
-    type Target = u8;
-
-    fn deref(&self) -> &Self::Target {
-        self.as_ref()
+impl From<AllocResultStackless> for LoadedReg<AllocResultStackless> {
+    fn from(result: AllocResultStackless) -> Self {
+        let reg = match &result {
+            Ok(reg) => **reg,
+            Err(
+                RegAllocErrorStackless::EvictToMemory(_, reg)
+                | RegAllocErrorStackless::AlreadyAllocatedTo(reg),
+            ) => **reg,
+        };
+        Self {
+            reg,
+            reg_idx: reg.to_idx(),
+            result,
+            restored: Cell::new(false),
+        }
     }
 }
 
-impl AsRef<u8> for LoadedReg {
-    fn as_ref(&self) -> &u8 {
-        &self.reg_idx
-    }
-}
-
-impl AsRef<Reg> for LoadedReg {
-    fn as_ref(&self) -> &Reg {
-        &self.reg
-    }
-}
-
-impl LoadedReg {
+impl LoadedReg<AllocResult> {
     fn reg(&self) -> Reg {
-        *self.as_ref()
+        self.reg
     }
     fn restore(&self, dynarec: &mut Dynarec) {
         debug_assert!(!self.restored.get(), "loaded reg already restored.");
@@ -612,6 +644,61 @@ impl LoadedReg {
                 ; ldr W(reg), [sp], #16
             )
         }
+    }
+}
+
+#[derive(d::Debug)]
+pub struct ScheduledEmitter {
+    #[debug(skip)]
+    emitter:  DynEmitter,
+    #[debug("{}", hex(self.schedule))]
+    schedule: u32,
+    pc:       u32,
+}
+
+impl PartialEq for ScheduledEmitter {
+    fn eq(&self, other: &Self) -> bool {
+        self.schedule == other.schedule
+    }
+}
+impl Eq for ScheduledEmitter {}
+
+impl PartialOrd for ScheduledEmitter {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for ScheduledEmitter {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.schedule.cmp(&other.schedule)
+    }
+}
+
+#[derive(d::Debug, Default)]
+pub struct Scheduler {
+    queue: heapless::BinaryHeap<ScheduledEmitter, Min, 4>,
+}
+
+unsafe impl Send for Scheduler {}
+unsafe impl Sync for Scheduler {}
+
+impl Dynarec {
+    pub fn lock_register(&mut self, reg: &LoadedReg<AllocResultStackless>) {
+        debug_assert!(self.reg_alloc.allocatable[**reg as usize]);
+        self.reg_alloc.evict_at(reg.reg);
+        self.reg_alloc.allocatable.set(**reg as _, false);
+    }
+    pub fn unlock_register(&mut self, reg: &LoadedReg<AllocResultStackless>) {
+        debug_assert!(!self.reg_alloc.allocatable[**reg as usize]);
+        self.reg_alloc.allocatable.set(**reg as _, true);
+    }
+    pub fn pop_scheduled_at(&mut self, pc: u32) -> Option<ScheduledEmitter> {
+        if let Some(emitter) = self.scheduler.queue.peek() {
+            if emitter.schedule <= pc {
+                return self.scheduler.queue.pop();
+            }
+        }
+        None
     }
 }
 
@@ -673,18 +760,21 @@ pub enum PipelineV2 {
         pc:      u32,
     },
     Compiled {
-        pc:      u32,
-        func:    DynarecBlock,
-        dynarec: Option<Box<Dynarec>>,
+        pc:        u32,
+        func:      DynarecBlock,
+        dynarec:   Option<Box<Dynarec>>,
+        scheduler: Option<Scheduler>,
     },
     Called {
-        pc:      u32,
-        times:   usize,
-        func:    DynarecBlock,
-        dynarec: Option<Box<Dynarec>>,
+        pc:        u32,
+        times:     usize,
+        func:      DynarecBlock,
+        dynarec:   Option<Box<Dynarec>>,
+        scheduler: Option<Scheduler>,
     },
     Cached {
-        dynarec: Option<Box<Dynarec>>,
+        dynarec:   Option<Box<Dynarec>>,
+        scheduler: Option<Scheduler>,
     },
 }
 
@@ -708,11 +798,12 @@ impl PipelineV2 {
         match self {
             PipelineV2::Init { pc, dynarec } => match emu.dynarec_cache.remove(&pc) {
                 None => {
-                    let func = fetch_and_compile_single_threaded(emu, dynarec)?;
+                    let (func, scheduler) = fetch_and_compile_single_threaded(emu, dynarec)?;
                     Ok(PipelineV2::Compiled {
                         pc,
                         func,
                         dynarec: None,
+                        scheduler: Some(scheduler),
                     })
                 }
                 Some(block) => {
@@ -722,18 +813,25 @@ impl PipelineV2 {
                             pc,
                             func: block,
                             dynarec: Some(dynarec),
+                            scheduler: None,
                         })
                     } else {
-                        let func = fetch_and_compile_single_threaded(emu, dynarec)?;
+                        let (func, scheduler) = fetch_and_compile_single_threaded(emu, dynarec)?;
                         Ok(PipelineV2::Compiled {
                             pc,
                             func,
                             dynarec: None,
+                            scheduler: Some(scheduler),
                         })
                     }
                 }
             },
-            PipelineV2::Compiled { pc, func, dynarec } => {
+            PipelineV2::Compiled {
+                pc,
+                func,
+                dynarec,
+                scheduler,
+            } => {
                 func(emu, false);
                 let mut count = 1;
                 while emu.cpu.pc == pc {
@@ -745,17 +843,33 @@ impl PipelineV2 {
                     pc,
                     func,
                     dynarec,
+                    scheduler,
                 })
             }
             PipelineV2::Called {
-                pc, func, dynarec, ..
+                pc,
+                func,
+                dynarec,
+                scheduler,
+                ..
             } => {
                 emu.dynarec_cache.insert(pc, func);
-                Ok(PipelineV2::Cached { dynarec })
+                Ok(PipelineV2::Cached { dynarec, scheduler })
             }
-            PipelineV2::Cached { dynarec } => Ok(PipelineV2::Init {
+            PipelineV2::Cached { dynarec, scheduler } => Ok(PipelineV2::Init {
                 pc:      emu.cpu.pc,
-                dynarec: dynarec.unwrap_or_else(|| Box::new(Dynarec::default())),
+                dynarec: dynarec.unwrap_or_else(|| {
+                    Box::new(
+                        Dynarec::builder()
+                            .maybe_scheduler(scheduler)
+                            .reg_alloc(RegAlloc::default())
+                            .asm(
+                                Assembler::new_with_capacity(8 * 50)
+                                    .expect("fatal: failed to allocate assembler"),
+                            )
+                            .build(),
+                    )
+                }),
             }),
             PipelineV2::Uninit => Ok(PipelineV2::Uninit),
         }
@@ -775,7 +889,7 @@ fn fast_hash(emu: &Emu, op_count: usize) -> u64 {
 fn fetch_and_compile_single_threaded(
     emu: &Emu,
     mut dynarec: Box<Dynarec>,
-) -> color_eyre::Result<DynarecBlock> {
+) -> color_eyre::Result<(DynarecBlock, Scheduler)> {
     dynarec.emit_block_prelude();
 
     let mut hasher = rapidhash::fast::RapidHasher::default();
@@ -860,7 +974,7 @@ fn fetch_and_compile_single_threaded(
             state.push_item(iter.next());
         }
 
-        let delay_slot = dynarec.delay_queue.pop_front();
+        let delayed = dynarec.pop_scheduled_at(state.pc);
 
         state.apply(op.emit(EmitCtx {
             dynarec: &mut dynarec,
@@ -871,26 +985,35 @@ fn fetch_and_compile_single_threaded(
         {
             let _ = FETCH_CHANNEL.0.send((state.pc, op));
         }
-
-        if let Some(emitter) = delay_slot {
-            let summary = emitter(EmitCtx {
+        if let Some(emitter) = delayed {
+            tracing::info!(queue_count = dynarec.scheduler.queue.len());
+            state.apply(emitter.emitter.call((EmitCtx {
                 dynarec: &mut dynarec,
-                // -4 because delayed effects think they are the same instruction
-                pc:      state.pc - 0x4,
-            });
-            state.apply(summary);
+                pc:      emitter.pc,
+            },)));
         }
+
+        tracing::info!(queue_count = dynarec.scheduler.queue.len());
 
         tracing::trace!(pc = hex(state.pc), %op);
     }
 
     state.pc = initial_pc + (state.op_count as u32) * 0x4;
 
-    if let Some(emitter) = dynarec.delay_queue.pop_front() {
-        state.apply(emitter(EmitCtx {
+    // if let Some(emitter) = dynarec.delay_queue.pop_front() {
+    //     state.apply(emitter(EmitCtx {
+    //         dynarec: &mut dynarec,
+    //         pc:      state.pc,
+    //     }));
+    // }
+
+    // FIXME: rescheduling needs top happen
+    // scheduler must pass remaining events to the next block somehow
+    while let Some(emitter) = dynarec.scheduler.queue.pop() {
+        state.apply(emitter.emitter.call((EmitCtx {
             dynarec: &mut dynarec,
-            pc:      state.pc,
-        }));
+            pc:      emitter.pc,
+        },)));
     }
 
     if enabled!(Level::TRACE) {
@@ -899,14 +1022,17 @@ fn fetch_and_compile_single_threaded(
 
     dynarec.emit_block_epilogue(state.cycles, (!state.pc_updated).then_some(state.pc));
 
-    let func = dynarec.finalize()?;
+    let (func, scheduler) = dynarec.finalize()?;
     let hash = hasher.finish();
 
-    Ok(DynarecBlock {
-        function: func,
-        op_count: state.op_count,
-        hash,
-    })
+    Ok((
+        DynarecBlock {
+            function: func,
+            op_count: state.op_count,
+            hash,
+        },
+        scheduler,
+    ))
 }
 
 /// # DynarecCache
@@ -973,7 +1099,7 @@ mod tests {
             dynasm!(dynarec.asm; .arch aarch64; ret);
         }
 
-        let func = dynarec.finalize()?;
+        let (func, _) = dynarec.finalize()?;
         tracing::info!("Calling JIT function...");
         func.func.call((&mut emu,));
         tracing::info!("JIT call succeeded!");
