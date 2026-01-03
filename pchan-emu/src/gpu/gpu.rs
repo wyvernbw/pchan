@@ -196,6 +196,16 @@ pub trait Gpu: Bus {
                 self.gpu_mut().cmd_queue.clear();
                 self.gpu_mut().gpustat.mock_ready();
             }
+            0x08 => {
+                let cmd = DisplayModeCmd::new_with_raw_value(value.raw_value);
+                let gpustat = &mut self.gpu_mut().gpustat;
+                gpustat.set_h_resolution_1(cmd.hres_1());
+                gpustat.set_v_resolution(cmd.vres());
+                gpustat.set_video_mode(cmd.video_mode());
+                gpustat.set_display_color_depth(cmd.display_color_depth());
+                gpustat.set_v_interlace(cmd.v_interlace());
+                gpustat.set_h_resolution_2(cmd.hres_2());
+            }
             // get gpu info
             0x10 => {
                 let Some(cmd) = self.gpu().get_gpu_info_cmd(value) else {
@@ -399,15 +409,15 @@ pub struct GpuStatReg {
     #[bit(15, rw)]
     texture_disable:      bool,
     #[bit(16, rw)]
-    h_resolution_2:       bool,
+    h_resolution_2:       HRes2,
     #[bits(17..=18, rw)]
-    h_resolution_1:       u2,
+    h_resolution_1:       HRes1,
     #[bit(19, rw)]
-    v_resolution:         bool,
+    v_resolution:         VRes,
     #[bit(20, rw)]
     video_mode:           VideoMode,
     #[bit(21, rw)]
-    display_color_depth:  bool,
+    display_color_depth:  DisplayColorDepth,
     #[bit(22, rw)]
     v_interlace:          bool,
     #[bit(23, rw)]
@@ -579,4 +589,58 @@ pub struct TexWindowCmd {
     _pad:     u4,
     #[bits(24..=31)]
     _cmd:     u8,
+}
+
+/// # GP1(08h) - Display mode
+/// 0-1   Horizontal Resolution 1     (0=256, 1=320, 2=512, 3=640) ;GPUSTAT.17-18
+/// 2     Vertical Resolution         (0=240, 1=480, when Bit5=1)  ;GPUSTAT.19
+/// 3     Video Mode                  (0=NTSC/60Hz, 1=PAL/50Hz)    ;GPUSTAT.20
+/// 4     Display Area Color Depth    (0=15bit, 1=24bit)           ;GPUSTAT.21
+/// 5     Vertical Interlace          (0=Off, 1=On)                ;GPUSTAT.22
+/// 6     Horizontal Resolution 2     (0=256/320/512/640, 1=368)   ;GPUSTAT.16
+/// 7     Flip screen horizontally    (0=Off, 1=On, v1 only)       ;GPUSTAT.14
+/// 8-23  Not used (zero)
+///
+#[bitfield(u32)]
+pub struct DisplayModeCmd {
+    #[bits(0..=1, rw)]
+    hres_1:              HRes1,
+    #[bit(2, rw)]
+    vres:                VRes,
+    #[bit(3, rw)]
+    video_mode:          VideoMode,
+    #[bit(4, rw)]
+    display_color_depth: DisplayColorDepth,
+    #[bit(5, rw)]
+    v_interlace:         bool,
+    #[bit(6, rw)]
+    hres_2:              HRes2,
+    #[bit(7, rw)]
+    screen_hflip:        bool,
+}
+
+#[bitenum(u2, exhaustive = true)]
+pub enum HRes1 {
+    Res256,
+    Res320,
+    Res512,
+    Res640,
+}
+
+#[bitenum(u1, exhaustive = true)]
+pub enum HRes2 {
+    Standard,
+    Res368,
+}
+
+#[bitenum(u1, exhaustive = true)]
+pub enum VRes {
+    Res240,
+    Res480,
+}
+
+#[bitenum(u1, exhaustive = true)]
+pub enum DisplayColorDepth {
+    Depth15Bit,
+    Depth24Bit,
 }
