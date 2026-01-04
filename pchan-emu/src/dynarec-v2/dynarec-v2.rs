@@ -204,6 +204,7 @@ impl Dynarec {
         #[allow(clippy::useless_conversion)]
         {
             let Reg::W(host_reg) = host_reg;
+            assert!(host_reg != 0, "cannot writeback to zero register");
 
             dynasm!(
                 asm
@@ -219,6 +220,7 @@ impl Dynarec {
             hr1.consecutive(hr2),
             "pairs store must be of consecutive registers"
         );
+        assert!(gr1 != 0 && gr2 != 0, "cannot writeback to zero register");
 
         let offset = Emu::reg_offset(gr1) as u32;
 
@@ -319,6 +321,9 @@ impl Dynarec {
     }
     fn alloc_reg(&mut self, guest_reg: u8) -> LoadedReg<AllocResult> {
         let result = self.reg_alloc.regalloc(guest_reg);
+        if cfg!(target_arch = "aarch64") && guest_reg == 0 {
+            return LoadedReg::from(Err(RegAllocError::AlreadyAllocatedTo(Allocated(Reg::W(0)))));
+        }
         match result {
             // no op case
             Err(RegAllocError::AlreadyAllocatedTo(_)) => {}

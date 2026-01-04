@@ -115,7 +115,7 @@ pub enum RegAllocErrorStackless {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, de::Deref, de::From)]
 pub struct Evicted<T: RegisterType>(T);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, de::Deref, de::From)]
-pub struct Allocated(Reg);
+pub struct Allocated(pub Reg);
 
 impl From<Allocated> for u8 {
     fn from(value: Allocated) -> Self {

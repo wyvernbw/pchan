@@ -679,9 +679,15 @@ fn emit_load(
                 ;; func_call(&mut ctx)
                 ; fmov S(s(8)), w0 // place return value in s8+
                 ;; ctx.dynarec.emit_restore_saved_registers(saved.into_iter())
-                ; fmov W(*rta), S(s(8))
             );
-            ctx.dynarec.mark_dirty(rt);
+
+            if rt != 0 {
+                dynasm!(
+                    ctx.dynarec.asm
+                    ; fmov W(*rta), S(s(8))
+                );
+                ctx.dynarec.mark_dirty(rt);
+            }
 
             rta.restore(ctx.dynarec);
             EmitSummary::default()
@@ -1776,7 +1782,9 @@ impl DynarecOp for Jalr {
                 );
 
                 let ret_address = ctx.pc + 0x8;
-                ctx.dynarec.emit_immediate_large(rd, ret_address);
+                if rd != 0 {
+                    ctx.dynarec.emit_immediate_large(rd, ret_address);
+                }
 
                 EmitSummary::builder().pc_updated(true).build()
             })
@@ -2283,6 +2291,10 @@ fn test_store_loop() -> color_eyre::Result<()> {
 impl DynarecOp for Sltu {
     #[allow(clippy::useless_conversion)]
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+        if self.rd == 0 {
+            return EmitSummary::default();
+        }
+
         let rs = ctx.dynarec.emit_load_reg(self.rs);
         let rt = ctx.dynarec.emit_load_reg(self.rt);
         let rd = ctx.dynarec.alloc_reg(self.rd);
@@ -2308,6 +2320,10 @@ impl DynarecOp for Sltu {
 impl DynarecOp for Sltiu {
     #[allow(clippy::useless_conversion)]
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+        if self.rt == 0 {
+            return EmitSummary::default();
+        }
+
         let rt = ctx.dynarec.emit_load_reg(self.rt);
         let rs = ctx.dynarec.emit_load_reg(self.rs);
 
@@ -2345,6 +2361,10 @@ impl DynarecOp for Sltiu {
 impl DynarecOp for Slt {
     #[allow(clippy::useless_conversion)]
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+        if self.rd == 0 {
+            return EmitSummary::default();
+        }
+
         let rs = ctx.dynarec.emit_load_reg(self.rs);
         let rt = ctx.dynarec.emit_load_reg(self.rt);
         let rd = ctx.dynarec.alloc_reg(self.rd);
@@ -2370,6 +2390,10 @@ impl DynarecOp for Slt {
 impl DynarecOp for Slti {
     #[allow(clippy::useless_conversion)]
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+        if self.rt == 0 {
+            return EmitSummary::default();
+        }
+
         let rt = ctx.dynarec.emit_load_reg(self.rt);
         let rs = ctx.dynarec.emit_load_reg(self.rs);
 
@@ -2417,6 +2441,9 @@ impl DynarecOp for Slti {
 impl DynarecOp for Mfcn {
     #[allow(clippy::useless_conversion)]
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+        if self.rt == 0 {
+            return EmitSummary::default();
+        }
         let rt = ctx.dynarec.alloc_reg(self.rt);
 
         #[cfg(target_arch = "aarch64")]
@@ -2629,7 +2656,7 @@ pub fn test_mul_div(
     PipelineV2::new(&emu).run_once(&mut emu)?;
 
     tracing::info!(?emu.cpu);
-    tracing::info!(hilo = hex(emu.cpu.hilo));
+    tracing::info!(hilo = %hex(emu.cpu.hilo));
     assert_eq!(emu.cpu.hilo, expected);
     assert_eq!(emu.cpu.pc, 0x8);
     Ok(())
@@ -2701,8 +2728,8 @@ pub fn test_mfhilo(
     PipelineV2::new(&emu).run_once(&mut emu)?;
 
     tracing::info!(?emu.cpu);
-    tracing::info!(hilo = hex(emu.cpu.hilo));
-    tracing::info!(r = hex(emu.cpu.gpr[9]));
+    tracing::info!(hilo = %hex(emu.cpu.hilo));
+    tracing::info!(r = %hex(emu.cpu.gpr[9]));
     assert_eq!(emu.cpu.hilo, hilo);
     assert_eq!(emu.cpu.gpr[9], expected);
     Ok(())
@@ -2805,7 +2832,7 @@ pub fn test_mthilo(
     PipelineV2::new(&emu).run_once(&mut emu)?;
 
     tracing::info!(?emu.cpu);
-    tracing::info!(hilo = hex(emu.cpu.hilo));
+    tracing::info!(hilo = %hex(emu.cpu.hilo));
     assert_eq!(emu.cpu.hilo, expected);
     Ok(())
 }
@@ -2833,7 +2860,7 @@ pub fn test_mthi_mfhi() -> color_eyre::Result<()> {
     PipelineV2::new(&emu).run_once(&mut emu)?;
 
     tracing::info!(?emu.cpu);
-    tracing::info!(hilo = hex(emu.cpu.hilo));
+    tracing::info!(hilo = %hex(emu.cpu.hilo));
     assert_ne!(emu.cpu.hilo, 0);
     assert_ne!(emu.cpu.gpr[10], 69);
     assert_eq!(emu.cpu.gpr[10], 0);
@@ -2857,7 +2884,7 @@ pub fn test_mthi_mfhi() -> color_eyre::Result<()> {
     PipelineV2::new(&emu).run_once(&mut emu)?;
 
     tracing::info!(?emu.cpu);
-    tracing::info!(hilo = hex(emu.cpu.hilo));
+    tracing::info!(hilo = %hex(emu.cpu.hilo));
     assert_ne!(emu.cpu.hilo, 0);
     assert_eq!(emu.cpu.gpr[10], 69);
 
