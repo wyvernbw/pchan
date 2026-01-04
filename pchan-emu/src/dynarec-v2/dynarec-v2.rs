@@ -321,9 +321,6 @@ impl Dynarec {
     }
     fn alloc_reg(&mut self, guest_reg: u8) -> LoadedReg<AllocResult> {
         let result = self.reg_alloc.regalloc(guest_reg);
-        if cfg!(target_arch = "aarch64") && guest_reg == 0 {
-            return LoadedReg::from(Err(RegAllocError::AlreadyAllocatedTo(Allocated(Reg::W(0)))));
-        }
         match result {
             // no op case
             Err(RegAllocError::AlreadyAllocatedTo(_)) => {}
