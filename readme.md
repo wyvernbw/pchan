@@ -40,6 +40,18 @@ NOTE: `pchan-cranelift-fronted` is deprecated.
 - [ ] shell
 - [ ] in-game
 
+### Dynarec
+
+After I make the emulator work in 80% of cases with `dynarec-v2`, i want
+to implement a `dynarec-v3` that will use the old one as its base and is
+as accurate as BeetlePSX's lightrec (when it's not falling back to the
+interpreter) or at least as accurate as DuckStation. i dont want to compromise
+on performance.
+
+### Time frame
+
+about 10 years 
+
 ## Performance
 
 So far performance is "promising". P-chan can emulate the PSX cpu at more than
