@@ -943,7 +943,7 @@ impl<'a> Component for CpuTab<'a> {
                 .map(|(reg, value)| {
                     Row::new([
                         Cow::Owned(format!("${}", reg_str(reg as u8))),
-                        Cow::Borrowed(hex(*value)),
+                        Cow::Owned(hex(*value).as_str().to_owned()),
                     ])
                     .style(if *value == 0 {
                         Style::new().dim()
@@ -1028,7 +1028,7 @@ impl<'a> Component for Cop0Tab<'a> {
                 .map(|(reg, value)| {
                     Row::new([
                         Cow::Owned(format!("$cop0reg{}", reg)),
-                        Cow::Borrowed(hex(*value)),
+                        Cow::Owned(hex(*value).to_string()),
                     ])
                     .style(if *value == 0 {
                         Style::new().dim()

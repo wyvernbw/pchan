@@ -5,8 +5,9 @@ edition = "2024"
 
 [dependencies]
 rstest = "*"
+slab = { workspace = true }
 tracing-subscriber = { workspace = true }
-derive_more = { version = "2.0.1", features = ["add", "debug", "display"] }
+derive_more = { version = "2.0.1", features = ["full"] }
 color-eyre = { workspace = true }
 tracing = { workspace = true }
 tracing-panic = "0.1.2"

@@ -2392,6 +2392,7 @@ dependencies = [
  "heapless",
  "pretty_assertions",
  "rstest",
+ "slab",
  "smol",
  "tracing",
  "tracing-indicatif",

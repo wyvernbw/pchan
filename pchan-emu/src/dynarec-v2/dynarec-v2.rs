@@ -995,7 +995,7 @@ fn fetch_and_compile_single_threaded(
 
         tracing::info!(queue_count = dynarec.scheduler.queue.len());
 
-        tracing::trace!(pc = hex(state.pc), %op);
+        tracing::trace!(pc = %hex(state.pc), %op);
     }
 
     state.pc = initial_pc + (state.op_count as u32) * 0x4;

@@ -1,9 +1,10 @@
+#![feature(generic_const_exprs)]
+#![allow(incomplete_features)]
 #![feature(impl_trait_in_assoc_type)]
 #![feature(ptr_as_ref_unchecked)]
 
 use std::{
     backtrace::Backtrace,
-    cell::Cell,
     sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard},
 };
 
@@ -95,56 +96,24 @@ macro_rules! array {
     );
 }
 
-use std::{mem::size_of, slice, str};
+use std::mem::size_of;
 
-// FIXME: nuke this
-thread_local! {
-    static BUFFERS: Buffers = const { Buffers::new() };
-}
+#[derive(derive_more::Deref, derive_more::Display)]
+#[display("{}", self.0.as_str())]
+pub struct Hex<const N: usize>(const_hex::Buffer<N, true>);
 
-struct Buffers {
-    slots: [[u8; 130]; 64], // 64 concurrent hex strings per thread
-    index: Cell<usize>,
-}
-
-impl Buffers {
-    const fn new() -> Self {
-        Self {
-            slots: [[0; 130]; 64],
-            index: Cell::new(0),
-        }
-    }
-
-    fn next_ptr(&self) -> *mut u8 {
-        let i = self.index.get();
-        self.index.set((i + 1) % self.slots.len());
-        self.slots[i].as_ptr() as *mut u8
-    }
-}
-
-pub fn hex<T>(mut x: T) -> &'static str {
+pub fn hex<T>(mut x: T) -> Hex<{ size_of::<T>() }> {
     let ptr = &mut x as *mut T as *mut u8;
-    let len = size_of::<T>();
-    let bytes = unsafe { slice::from_raw_parts_mut::<u8>(ptr, len) };
+
+    // SAFETY: should always be valid since size_of::<T> is enforced
+    // at compile time
+    let bytes = unsafe { &mut *ptr.cast::<[u8; size_of::<T>()]>() };
 
     if cfg!(target_endian = "little") {
         bytes.reverse();
     }
 
-    let bytes = bytes as &_;
-
-    BUFFERS.with(|b| {
-        let buf = b.next_ptr();
-        let buf: &mut [u8; 130] = unsafe { &mut *(buf as *mut [u8; 130]) };
-        let start = 2;
-        let buf_pad = &mut buf[start..(start + len * 2)];
-
-        let _ = const_hex::encode_to_slice(bytes, buf_pad);
-        let buf = &mut buf[0..(start + len * 2)];
-        buf[0] = b'0';
-        buf[1] = b'x';
-        unsafe { str::from_utf8_unchecked(buf) }
-    })
+    Hex(const_hex::const_encode::<_, true>(bytes))
 }
 
 #[cfg(test)]
@@ -153,7 +122,7 @@ fn test_hex_encode() {
     let number = 0xDEAD_BEEFu32;
     let fmt = format!("0x{number:x}");
     let hex = hex(number);
-    assert_eq!(hex, fmt);
+    assert_eq!(hex.to_string(), fmt);
 }
 
 pub trait IgnorePoison<'a> {
