@@ -183,6 +183,8 @@ impl Dynarec {
                 ; .u64 Emu::read32v2 as *const () as _
                 ; -> handle_syscall:
                 ; .u64 Emu::handle_syscall as *const () as _
+                ; -> handle_rfe:
+                ; .u64 Emu::handle_rfe as *const () as _
                 ; after_table:
 
                 ; stp x19, x20, [sp, -16]!

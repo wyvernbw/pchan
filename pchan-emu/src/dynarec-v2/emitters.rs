@@ -153,6 +153,7 @@ pub enum DecodedOp {
     Ori(Ori),
     Xori(Xori),
     Lui(Lui),
+    Rfe(Rfe),
     Mfcn(Mfcn),
     Mtcn(Mtcn),
     Lb(Lb),
@@ -255,7 +256,7 @@ impl DecodedOp {
                 (0xD, _, _, _) => Self::Ori(Ori::new(rt, rs, fields.imm16())),
                 (0xE, _, _, _) => Self::Xori(Xori::new(rt, rs, fields.imm16())),
                 (0xF, _, _, _) => Self::Lui(Lui::new(rt, fields.imm16())),
-                (0x10, 0x10, _, 0x10) => todo!("rfe"),
+                (0x10, 0x10, _, 0x10) => Self::Rfe(Rfe),
                 (0x10..=0x13, 0x0, _, 0x0) => {
                     Self::Mfcn(Mfcn::new(fields.cop().value() as _, rt, rd))
                 }
@@ -474,6 +475,7 @@ fn test_subu(#[case] a: u32, #[case] b: u32, #[case] expected: u32) -> color_eyr
     Ok(())
 }
 
+#[inline(always)]
 fn emit_call(ctx: &mut EmitCtx, emitter: impl Fn(&mut Dynarec)) {
     #[cfg(target_arch = "aarch64")]
     dynasm!(
@@ -2747,6 +2749,20 @@ impl DynarecOp for Syscall {
             ;; ctx.dynarec.emit_restore_saved_registers(saved.into_iter())
         );
 
+        EmitSummary::builder().pc_updated(true).build()
+    }
+}
+
+impl DynarecOp for Rfe {
+    #[allow(clippy::useless_conversion)]
+    fn emit<'a>(&self, mut ctx: EmitCtx<'a>) -> EmitSummary {
+        emit_call(&mut ctx, |dynarec| {
+            dynasm!(
+                dynarec.asm
+                ; ldr x3, ->handle_rfe
+                ; blr x3
+            )
+        });
         EmitSummary::builder().pc_updated(true).build()
     }
 }
