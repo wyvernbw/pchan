@@ -19,6 +19,7 @@ pub struct Cpu {
     pub cop0:    Cop0,
     pub cop1:    Cop1,
     pub cop2:    Cop2,
+    pub cycles:  u64,
 }
 
 use std::fmt;

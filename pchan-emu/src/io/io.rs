@@ -1,20 +1,27 @@
+use bitbybit::{bitenum, bitfield};
 use pchan_utils::hex;
 use tracing::instrument;
 
 use crate::bootloader::Bootloader;
+use crate::cpu::exceptions::Exceptions;
 use crate::gpu::Gpu;
 use crate::io::timers::Timers;
+use crate::io::vblank::VBlank;
 use crate::memory::{Extend, GUEST_MEM_MAP, MEM_MAP, ScratchpadMem};
 use crate::{Bus, Emu, io::cdrom::CDRom, memory::fastmem::Fastmem};
+use derive_more as d;
 
 pub mod cdrom;
 pub mod timers;
 pub mod tty;
+pub mod vblank;
 
 impl Emu {
     pub fn run_io(&mut self) {
+        self.cpu_mut().cycles = self.cpu().cycles.wrapping_add(self.cpu().d_clock as u64);
         self.run_timer_pipeline();
         self.run_io_kernel_functions();
+        self.run_vblank();
         #[cfg(feature = "amidog-tests")]
         {
             use crate::bootloader::AMIDOG_TESTS;
@@ -214,3 +221,36 @@ fn test_io_from_u32() {
     assert_eq!(0xdeadbeefu32.io_from_u32::<i16>(), 0xbeefu32 as i16);
     assert_eq!(0xdeadbeefu32.io_from_u32::<i8>(), 0xefu32 as i8);
 }
+
+#[bitfield(u32)]
+#[derive(d::Deref)]
+pub struct IrqField {
+    #[bit(0)]
+    irq0_vblank: bool,
+    #[bit(4)]
+    irq4_timer0: bool,
+    #[bit(5)]
+    irq5_timer1: bool,
+    #[bit(6)]
+    irq6_timer2: bool,
+}
+
+#[bitenum(u8)]
+pub enum Irq {
+    Irq0Vblank = 0x0,
+    Irq4Timer0 = 0x4,
+    Irq5Timer1 = 0x5,
+    Irq6Timer2 = 0x6,
+}
+
+pub trait Interrupts: Bus + IO + Exceptions {
+    fn trigger_irq(&mut self, irq: Irq) {
+        let stat = self.read::<IrqField>(0x1f801070);
+        let mask = self.read::<IrqField>(0x1f801074);
+        let stat = *stat & *mask & (1 << irq as u8);
+        self.write(0x1f801070, stat);
+        self.handle_exception(crate::cpu::exceptions::Exception::Interrupt);
+    }
+}
+
+impl Interrupts for Emu {}
