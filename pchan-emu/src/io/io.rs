@@ -18,10 +18,11 @@ pub mod vblank;
 
 impl Emu {
     pub fn run_io(&mut self) {
+        self.cpu_mut().vblank_timer = self.cpu().vblank_timer.wrapping_add(self.cpu().d_clock);
         self.cpu_mut().cycles = self.cpu().cycles.wrapping_add(self.cpu().d_clock as u64);
-        self.run_timer_pipeline();
-        self.run_io_kernel_functions();
-        self.run_vblank();
+        // self.run_timer_pipeline();
+        // self.run_io_kernel_functions();
+        // self.run_vblank();
         #[cfg(feature = "amidog-tests")]
         {
             use crate::bootloader::AMIDOG_TESTS;
@@ -70,7 +71,7 @@ pub trait IO: Bus {
 pub type IOResult<T> = Result<T, UnhandledIO>;
 
 trait GenericIOFallback: Bus {
-    #[instrument(skip(self), "r")]
+    #[cfg_attr(debug_assertions, instrument(skip(self), "r"))]
     fn read<T: Copy>(&self, address: u32) -> IOResult<T> {
         let address = address & 0x1fffffff;
         match address {
@@ -83,7 +84,7 @@ trait GenericIOFallback: Bus {
             _ => Err(UnhandledIO(address)),
         }
     }
-    #[instrument(skip(self, value), "w")]
+    #[cfg_attr(debug_assertions, instrument(skip(self, value), "w"))]
     fn write<T: Copy>(&mut self, address: u32, value: T) -> Result<(), UnhandledIO> {
         let address = address & 0x1fffffff;
         match address {
@@ -101,7 +102,7 @@ trait GenericIOFallback: Bus {
 impl GenericIOFallback for Emu {}
 
 trait CacheControl: Bus {
-    #[instrument(skip(self))]
+    #[cfg_attr(debug_assertions, instrument(skip(self)))]
     fn read<T: Copy>(&self, address: u32) -> IOResult<T> {
         match address {
             0xfffe0130 => Ok(self.mem().read_region(

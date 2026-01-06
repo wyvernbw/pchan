@@ -14,11 +14,13 @@ use pchan_utils::hex;
 use smallbox::SmallBox;
 use smallvec::SmallVec;
 use std::cell::Cell;
-use std::hash::Hasher;
 use std::ops::Deref;
+use std::ptr::NonNull;
 use std::simd::Simd;
 use std::sync::Arc;
 use std::sync::LazyLock;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use tracing::Instrument;
 use tracing::Level;
 use tracing::enabled;
@@ -39,6 +41,13 @@ use crate::memory::kb;
 pub mod emitters;
 pub mod regalloc;
 
+pub static INSTR_COMPILED: AtomicU64 = AtomicU64::new(0);
+pub static INSTR_EXECUTED: AtomicU64 = AtomicU64::new(0);
+pub static BLOCKS_COMPILED: AtomicU64 = AtomicU64::new(0);
+pub static BLOCKS_EXECUTED: AtomicU64 = AtomicU64::new(0);
+pub static CACHE_HITS: AtomicU64 = AtomicU64::new(0);
+pub static CACHE_MISSES: AtomicU64 = AtomicU64::new(0);
+
 #[cfg(feature = "fetch-channel")]
 pub type FetchedOp = (u32, DecodedOp);
 #[cfg(feature = "fetch-channel")]
@@ -57,7 +66,7 @@ pub struct Dynarec {
     #[builder(default)]
     reg_alloc: RegAlloc,
     #[builder(default)]
-    scheduler: Scheduler,
+    scheduler: Box<Scheduler>,
     #[debug(skip)]
     asm:       Assembler<Reloc>,
 }
@@ -70,7 +79,7 @@ impl Default for Dynarec {
         let asm = Assembler::new_with_capacity(size_of::<u64>() * 128)
             .expect("failed to create assembler");
         Self {
-            scheduler: Scheduler::default(),
+            scheduler: Box::new(Scheduler::default()),
             reg_alloc: Default::default(),
             asm,
         }
@@ -86,7 +95,6 @@ pub struct DynarecFunction {
 #[derive(Debug, Clone)]
 pub struct DynarecBlock {
     function: DynarecFunction,
-    hash:     u64,
     op_count: usize,
 }
 
@@ -94,6 +102,9 @@ type DynarecBlockArgs<'a> = (&'a mut Emu, bool);
 
 impl DynarecBlock {
     pub fn call_block(&self, (emu, instrument): DynarecBlockArgs) {
+        BLOCKS_EXECUTED.fetch_add(1, Ordering::Relaxed);
+        INSTR_EXECUTED.fetch_add(self.op_count as u64, Ordering::Relaxed);
+
         // reset delta clock before running
         emu.cpu.d_clock = 0;
 
@@ -131,7 +142,7 @@ impl Fn<DynarecBlockArgs<'_>> for DynarecBlock {
 }
 
 impl Dynarec {
-    fn finalize(mut self) -> color_eyre::Result<(DynarecFunction, Scheduler)> {
+    fn finalize(mut self) -> color_eyre::Result<(DynarecFunction, Box<Scheduler>)> {
         let exec = match self.asm.finalize() {
             Ok(exec) => exec,
             Err(asm) => {
@@ -140,11 +151,11 @@ impl Dynarec {
             }
         };
 
-        if enabled!(Level::DEBUG) {
+        if enabled!(Level::TRACE) {
             use std::fs::File;
             use std::io::Write;
             File::create("/tmp/jit_code.bin")?.write_all(exec.as_ref())?;
-            tracing::debug!("Wrote {} bytes to /tmp/jit_code.bin", exec.len());
+            tracing::trace!("Wrote {} bytes to /tmp/jit_code.bin", exec.len());
         }
 
         let func = unsafe { std::mem::transmute::<*const u8, fn(_)>(exec.as_ptr()) };
@@ -185,6 +196,8 @@ impl Dynarec {
                 ; .u64 Emu::handle_syscall as *const () as _
                 ; -> handle_rfe:
                 ; .u64 Emu::handle_rfe as *const () as _
+                ; -> jump:
+                ; .u64 DynarecCache::jump as *const () as _
                 ; after_table:
 
                 ; stp x19, x20, [sp, -16]!
@@ -245,7 +258,7 @@ impl Dynarec {
         Self::emit_writeback_free(&mut self.asm, guest_reg, host_reg);
     }
 
-    fn emit_block_epilogue(&mut self, d_clock: u32, new_pc: Option<u32>) {
+    fn emit_block_epilogue(&mut self, d_clock: u32, new_pc: Option<u32>, emit_ret: bool) {
         // emit write back to dirty registers
         self.reg_alloc
             .dirty
@@ -301,8 +314,18 @@ impl Dynarec {
                 ; ldp x23, x24, [sp], #16
                 ; ldp x21, x22, [sp], #16
                 ; ldp x19, x20, [sp], #16
-                ; ret
             )
+        }
+        if emit_ret {
+            #[cfg(target_arch = "aarch64")]
+            #[allow(clippy::useless_conversion)]
+            {
+                dynasm!(
+                    self.asm
+                    ; .arch aarch64
+                    ; ret
+                )
+            }
         }
     }
     fn alloc_reg_stackless(&mut self, guest_reg: u8) -> LoadedReg<AllocResultStackless> {
@@ -750,6 +773,41 @@ impl Emu {
     }
 }
 
+pub fn run_step(emu: &mut Emu, dynarec: Box<Dynarec>) -> Box<Dynarec> {
+    let pc = emu.cpu.pc;
+    let (block, scheduler, dynarec) = match emu.dynarec_cache.remove(pc) {
+        None => {
+            let (func, scheduler) = fetch_and_compile_single_threaded(emu, dynarec).unwrap();
+            INSTR_COMPILED.fetch_add(func.op_count as u64, Ordering::Relaxed);
+            BLOCKS_COMPILED.fetch_add(1, Ordering::Relaxed);
+            CACHE_MISSES.fetch_add(1, Ordering::Relaxed);
+            (func, Some(scheduler), None)
+        }
+        Some(func) => {
+            CACHE_HITS.fetch_add(1, Ordering::Relaxed);
+            (func, None, Some(dynarec))
+        }
+    };
+    block(emu, false);
+    while emu.cpu.pc == pc {
+        block(emu, false);
+    }
+    emu.dynarec_cache.insert(pc, block);
+
+    dynarec.unwrap_or_else(|| {
+        Box::new(
+            Dynarec::builder()
+                .maybe_scheduler(scheduler)
+                .reg_alloc(RegAlloc::default())
+                .asm(
+                    Assembler::new_with_capacity(8 * 50)
+                        .expect("fatal: failed to allocate assembler"),
+                )
+                .build(),
+        )
+    })
+}
+
 #[derive(strum::EnumCount, strum::EnumDiscriminants, strum::EnumIs)]
 #[strum_discriminants(derive(
     strum::Display,
@@ -769,20 +827,24 @@ pub enum PipelineV2 {
         pc:        u32,
         func:      DynarecBlock,
         dynarec:   Option<Box<Dynarec>>,
-        scheduler: Option<Scheduler>,
+        scheduler: Option<Box<Scheduler>>,
     },
     Called {
         pc:        u32,
         times:     usize,
         func:      DynarecBlock,
         dynarec:   Option<Box<Dynarec>>,
-        scheduler: Option<Scheduler>,
+        scheduler: Option<Box<Scheduler>>,
     },
     Cached {
         dynarec:   Option<Box<Dynarec>>,
-        scheduler: Option<Scheduler>,
+        scheduler: Option<Box<Scheduler>>,
     },
 }
+
+#[derive(thiserror::Error, Debug)]
+#[error("failed to compile block.")]
+pub struct PipelineCompileError;
 
 impl PipelineV2 {
     pub fn new(emu: &Emu) -> Self {
@@ -800,11 +862,15 @@ impl PipelineV2 {
         }
         Ok(self)
     }
-    pub fn step(self, emu: &mut Emu) -> color_eyre::Result<Self> {
+    pub fn step(self, emu: &mut Emu) -> Result<Self, PipelineCompileError> {
         match self {
-            PipelineV2::Init { pc, dynarec } => match emu.dynarec_cache.remove(&pc) {
+            PipelineV2::Init { pc, dynarec } => match emu.dynarec_cache.remove(pc) {
                 None => {
-                    let (func, scheduler) = fetch_and_compile_single_threaded(emu, dynarec)?;
+                    let (func, scheduler) = fetch_and_compile_single_threaded(emu, dynarec)
+                        .map_err(|_| PipelineCompileError)?;
+                    INSTR_COMPILED.fetch_add(func.op_count as u64, Ordering::Relaxed);
+                    BLOCKS_COMPILED.fetch_add(1, Ordering::Relaxed);
+                    CACHE_MISSES.fetch_add(1, Ordering::Relaxed);
                     Ok(PipelineV2::Compiled {
                         pc,
                         func,
@@ -813,23 +879,13 @@ impl PipelineV2 {
                     })
                 }
                 Some(block) => {
-                    let hash = fast_hash(emu, block.op_count);
-                    if hash == block.hash {
-                        Ok(PipelineV2::Compiled {
-                            pc,
-                            func: block,
-                            dynarec: Some(dynarec),
-                            scheduler: None,
-                        })
-                    } else {
-                        let (func, scheduler) = fetch_and_compile_single_threaded(emu, dynarec)?;
-                        Ok(PipelineV2::Compiled {
-                            pc,
-                            func,
-                            dynarec: None,
-                            scheduler: Some(scheduler),
-                        })
-                    }
+                    CACHE_HITS.fetch_add(1, Ordering::Relaxed);
+                    Ok(PipelineV2::Compiled {
+                        pc,
+                        func: block,
+                        dynarec: Some(dynarec),
+                        scheduler: None,
+                    })
                 }
             },
             PipelineV2::Compiled {
@@ -882,23 +938,11 @@ impl PipelineV2 {
     }
 }
 
-fn fast_hash(emu: &Emu, op_count: usize) -> u64 {
-    let mut hasher = rapidhash::fast::RapidHasher::default();
-    emu.linear_fetch_no_decode()
-        .take(op_count)
-        .map(|op| op.raw_value())
-        .for_each(|op| hasher.write_u32(op));
-
-    hasher.finish()
-}
-
 fn fetch_and_compile_single_threaded(
     emu: &Emu,
     mut dynarec: Box<Dynarec>,
-) -> color_eyre::Result<(DynarecBlock, Scheduler)> {
+) -> Result<(DynarecBlock, Box<Scheduler>), PipelineCompileError> {
     dynarec.emit_block_prelude();
-
-    let mut hasher = rapidhash::fast::RapidHasher::default();
 
     type FetchItem = (OpCode, DecodedOp);
     #[derive(Debug)]
@@ -951,8 +995,7 @@ fn fetch_and_compile_single_threaded(
 
     let mut iter = emu
         .linear_fetch_no_decode()
-        .map(|op| (op, DecodedOp::new(op)))
-        .take(50);
+        .map(|op| (op, DecodedOp::new(op)));
 
     state.push_item(iter.next());
     state.push_item(iter.next());
@@ -960,7 +1003,6 @@ fn fetch_and_compile_single_threaded(
         let Some((opcode, op)) = state.pop_item() else {
             break;
         };
-
         state.pc = initial_pc + state.op_count as u32 * 0x4;
 
         state.cycles += op.cycles() as u32;
@@ -969,7 +1011,6 @@ fn fetch_and_compile_single_threaded(
         if let Some((_, next)) = state.back() {
             state.cycles -= next.cycles().min(op.hazard()) as u32;
         }
-        hasher.write_u32(opcode.raw_value());
 
         if op.is_hard_boundary() {
             state.clear_items();
@@ -984,7 +1025,9 @@ fn fetch_and_compile_single_threaded(
 
         state.apply(op.emit(EmitCtx {
             dynarec: &mut dynarec,
+            cache:   &emu.dynarec_cache,
             pc:      state.pc,
+            d_clock: state.cycles,
         }));
 
         #[cfg(feature = "fetch-channel")]
@@ -992,14 +1035,16 @@ fn fetch_and_compile_single_threaded(
             let _ = FETCH_CHANNEL.0.send((state.pc, op));
         }
         if let Some(emitter) = delayed {
-            tracing::info!(queue_count = dynarec.scheduler.queue.len());
+            // tracing::info!(queue_count = dynarec.scheduler.queue.len());
             state.apply(emitter.emitter.call((EmitCtx {
                 dynarec: &mut dynarec,
+                cache:   &emu.dynarec_cache,
                 pc:      emitter.pc,
+                d_clock: state.cycles,
             },)));
         }
 
-        tracing::info!(queue_count = dynarec.scheduler.queue.len());
+        // tracing::info!(queue_count = dynarec.scheduler.queue.len());
 
         tracing::trace!(pc = %hex(state.pc), %op);
     }
@@ -1018,7 +1063,9 @@ fn fetch_and_compile_single_threaded(
     while let Some(emitter) = dynarec.scheduler.queue.pop() {
         state.apply(emitter.emitter.call((EmitCtx {
             dynarec: &mut dynarec,
+            cache:   &emu.dynarec_cache,
             pc:      emitter.pc,
+            d_clock: state.cycles,
         },)));
     }
 
@@ -1026,59 +1073,109 @@ fn fetch_and_compile_single_threaded(
         tracing::trace!(?state.op_count);
     }
 
-    dynarec.emit_block_epilogue(state.cycles, (!state.pc_updated).then_some(state.pc));
+    dynarec.emit_block_epilogue(state.cycles, (!state.pc_updated).then_some(state.pc), true);
 
-    let (func, scheduler) = dynarec.finalize()?;
-    let hash = hasher.finish();
+    let (func, scheduler) = dynarec.finalize().map_err(|_| PipelineCompileError)?;
 
     Ok((
         DynarecBlock {
             function: func,
             op_count: state.op_count,
-            hash,
         },
         scheduler,
     ))
 }
 
+const CACHE_LEN: usize = (kb(2048) + kb(512)) >> 2;
+const PAGE_COUNT: usize = CACHE_LEN >> 4;
+const PAGE_LEN: usize = CACHE_LEN / PAGE_COUNT;
+
 /// # DynarecCache
 ///
-/// maps the entire psx ram and bios losslessly into a a flat, ~320kb buffer
+/// maps the entire psx ram and bios losslessly into a a flat, paged, ~320kb buffer
 #[derive(derive_more::Debug, Clone)]
 pub struct DynarecCache {
-    buf: Box<[Option<DynarecBlock>]>,
+    buf: Box<[CachePage]>,
+}
+
+#[derive(derive_more::Debug, Clone, derive_more::Index, derive_more::IndexMut)]
+struct CachePage {
+    #[index]
+    #[index_mut]
+    page:    [Option<DynarecBlock>; PAGE_LEN],
+    cleared: bool,
+}
+
+impl Default for CachePage {
+    fn default() -> Self {
+        Self {
+            page:    Default::default(),
+            cleared: true,
+        }
+    }
 }
 
 impl Default for DynarecCache {
     fn default() -> Self {
         Self {
-            buf: vec![None; (kb(2048) + kb(512)) >> 2].into_boxed_slice(),
+            buf: vec![CachePage::default(); PAGE_COUNT].into_boxed_slice(),
         }
     }
 }
 
 impl DynarecCache {
-    fn map_addr(address: u32) -> Option<usize> {
+    fn map_addr_to_idx(address: u32) -> Option<usize> {
         match address & 0x1fff_ffff {
             // align by 4
+            // ram
             addr @ 0..0x200000 => Some((addr as usize) >> 2),
+            // bios
             addr @ 0x1fc00000.. => Some((addr as usize - 0x1fc00000 + kb(2048)) >> 2),
             _ => None,
         }
     }
+    fn map_addr(address: u32) -> Option<(usize, usize)> {
+        let idx = Self::map_addr_to_idx(address)?;
+        let page_idx = idx >> 4;
+        let page_start = (page_idx) << 4;
+        let element_idx = idx - page_start;
+        Some((page_idx, element_idx))
+    }
     pub fn remove(&mut self, at: u32) -> Option<DynarecBlock> {
-        match Self::map_addr(at).and_then(|at| self.buf.get_mut(at)) {
-            Some(block) => block.take(),
-            None => None,
-        }
+        Self::map_addr(at)
+            .map(|(page_idx, element_idx)| &mut self.buf[page_idx][element_idx])
+            .and_then(|block| block.take())
+    }
+    pub fn get(&self, at: u32) -> Option<&DynarecBlock> {
+        Self::map_addr(at)
+            .and_then(|(page_idx, element_idx)| self.buf[page_idx][element_idx].as_ref())
     }
     pub fn insert(&mut self, at: u32, value: DynarecBlock) -> bool {
-        match Self::map_addr(at) {
-            Some(at) => {
-                self.buf[at] = Some(value);
-                true
+        if let Some((page_idx, element_idx)) = Self::map_addr(at) {
+            self.buf[page_idx][element_idx] = Some(value);
+            self.buf[page_idx].cleared = false;
+            true
+        } else {
+            false
+        }
+    }
+    pub fn invalidate(&mut self, at: u32) {
+        if let Some((page_idx, _)) = Self::map_addr(at) {
+            if self.buf[page_idx].cleared {
+                return;
             }
-            None => false,
+            self.buf[page_idx] = CachePage::default();
+            self.buf[page_idx].cleared = true;
+        }
+    }
+    #[unsafe(no_mangle)]
+    pub extern "C" fn jump(emu: &mut Emu, at: u32) -> Option<NonNull<*const fn(*mut Emu)>> {
+        tracing::info!("jump called: pc={}", hex(at));
+        unsafe {
+            emu.dynarec_cache.get(at).map(|block| {
+                tracing::info!("  found block at {:p}", block.function.func);
+                NonNull::new_unchecked(block.function.func as _)
+            })
         }
     }
 }

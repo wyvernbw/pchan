@@ -297,7 +297,7 @@ pub fn opcode(_attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn instrument_write(_attr: TokenStream, item: TokenStream) -> TokenStream {
     format!(
-        r#"#[instrument(
+        r#"#[cfg_attr(debug_assertions, instrument(
             level = Level::TRACE,
             skip(self, address),
             fields(
@@ -305,7 +305,7 @@ pub fn instrument_write(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 value = %hex(value),
                 isc = unsafe {{ (*self).cpu.isc() }}
             )
-        )]
+        ))]
         {}
         "#,
         item

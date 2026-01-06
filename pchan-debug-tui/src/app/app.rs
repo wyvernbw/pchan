@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::hash::Hasher;
 use std::hash::{DefaultHasher, Hash};
 use std::ops::Shr;
@@ -198,17 +198,9 @@ pub fn run(config: AppConfig, mut terminal: DefaultTerminal) -> Result<()> {
                             EmuInfo::StateUpdate(emu_state) => {
                                 app_state.main_page_state.emu_state = emu_state.into();
                             }
-                            EmuInfo::FrequencyUpdate(new) => match app_state.frequency {
-                                Some(freq) => {
-                                    freq_updates_received += 1usize;
-                                    app_state.frequency =
-                                        Some(freq + new / freq_updates_received as f64);
-                                }
-                                None => {
-                                    app_state.frequency = Some(new);
-                                    freq_updates_received = 1;
-                                }
-                            },
+                            EmuInfo::FrequencyUpdate(new) => {
+                                app_state.frequency = Some(new);
+                            }
                         }
                     }
                     app_state.focus.process();
@@ -287,35 +279,59 @@ async fn emu_task_v2(
 
     let mut breakpoints = HashSet::<u32>::new();
     let mut running = false;
-    let mut elapsed = Duration::new(0, 0);
+    let mut samples = VecDeque::<(u64, Instant)>::with_capacity(60);
+    let mut last_recorded = Instant::now();
     let mut step_jit = async |mut pipeline: PipelineV2| -> color_eyre::Result<PipelineV2> {
         let new_emu = emu.clone();
-        let (pipeline, took) =
-            smol::unblock(move || -> color_eyre::Result<(PipelineV2, Duration)> {
-                let mut emu = new_emu.get_mut();
-                let now = Instant::now();
-                pipeline = pipeline.step(&mut emu)?;
-                Ok((pipeline, now.elapsed()))
-            })
+        let pipeline = smol::unblock(move || -> color_eyre::Result<PipelineV2> {
+            let mut emu = new_emu.get_mut();
+            pipeline = pipeline.step(&mut emu)?;
+            Ok(pipeline)
+        })
+        .await?;
+
+        if last_recorded.elapsed() >= Duration::from_secs_f64(1. / 60.) {
+            last_recorded = Instant::now();
+            if samples.len() >= 180 {
+                samples.pop_front();
+            }
+            samples.push_back((emu.get().cpu.cycles, last_recorded));
+            if let Some((first, last)) = samples.front().zip(samples.back()) {
+                let (cycles_elapsed, overflowed) = last.0.overflowing_sub(first.0);
+                if !overflowed {
+                    let elapsed = last.1.duration_since(first.1);
+                    // DO NOT DIVIDE BY ONE MILLION HERE
+                    let frequency = cycles_elapsed as f64 / elapsed.as_secs_f64();
+                    tracing::debug!(
+                        samples_len = samples.len(),
+                        elapsed = elapsed.as_secs_f64(),
+                        cycles_elapsed,
+                        first_cycles = first.0,
+                        last_cycles = last.0,
+                        frequency
+                    );
+                    emu_info_tx
+                        .send_async(EmuInfo::FrequencyUpdate(frequency))
+                        .await?;
+                } else {
+                    samples.clear();
+                }
+            }
+        }
+
+        // if let PipelineV2::Called { times, .. } = &pipeline {
+        //     let c = emu.get().cpu.d_clock as usize * *times;
+        // }
+
+        emu_info_tx
+            .send_async(EmuInfo::PipelineUpdateV2(pipeline.stage()))
             .await?;
-        elapsed += took;
+
         let fetch = dynarec_v2::FETCH_CHANNEL.1.try_iter().collect::<Vec<_>>();
         if !fetch.is_empty() {
             emu_info_tx.send_async(EmuInfo::FetchV2(fetch)).await?;
         }
-        if let PipelineV2::Called { times, .. } = &pipeline {
-            let cycles_elapsed = emu.get().cpu.d_clock as f64 * *times as f64;
-            if !elapsed.is_zero() {
-                let frequency = cycles_elapsed / elapsed.as_secs_f64();
-                elapsed = Duration::new(0, 0);
-                emu_info_tx
-                    .send_async(EmuInfo::FrequencyUpdate(frequency))
-                    .await?;
-            }
-        }
-        emu_info_tx
-            .send_async(EmuInfo::PipelineUpdateV2(pipeline.stage()))
-            .await?;
+
         Ok(pipeline)
     };
 

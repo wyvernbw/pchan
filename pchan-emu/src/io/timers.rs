@@ -76,12 +76,9 @@ pub trait Timers: Bus + IO + Exceptions {
     fn read_timers<T: Copy>(&self, address: u32) -> Result<T, UnhandledIO> {
         let address = address & 0x1fffffff;
         match address {
-            0x1f801100..=0x1f801108 | 0x1f801110..=0x1f801118 | 0x1f801120..=0x1f801128 => {
-                tracing::trace!("read to timer registers");
-                Ok(self
-                    .mem()
-                    .read_region(MEM_MAP.io, GUEST_MEM_MAP.io, address))
-            }
+            0x1f801100..=0x1f801108 | 0x1f801110..=0x1f801118 | 0x1f801120..=0x1f801128 => Ok(self
+                .mem()
+                .read_region(MEM_MAP.io, GUEST_MEM_MAP.io, address)),
             _ => Err(UnhandledIO(address)),
         }
     }
@@ -90,7 +87,6 @@ pub trait Timers: Bus + IO + Exceptions {
         let address = address & 0x1fffffff;
         match address {
             0x1f801100..=0x1f801108 | 0x1f801110..=0x1f801118 | 0x1f801120..=0x1f801128 => {
-                tracing::trace!("write to timer registers");
                 self.mem_mut()
                     .write_region(MEM_MAP.io, GUEST_MEM_MAP.io, address, value);
                 Ok(())
@@ -109,7 +105,7 @@ pub trait Timers: Bus + IO + Exceptions {
 
         let timer_address = 0x1f801104 + timer as u32 * 0x10;
 
-        self.read_pure::<TimerCounterMode>(timer_address)
+        self.read_timers::<TimerCounterMode>(timer_address).unwrap()
     }
 
     fn timer_counter_target(&self, timer: u8) -> TimerCounterTarget {
@@ -117,7 +113,8 @@ pub trait Timers: Bus + IO + Exceptions {
 
         let timer_address = 0x1f801108 + timer as u32 * 0x10;
 
-        self.read_pure::<TimerCounterTarget>(timer_address)
+        self.read_timers::<TimerCounterTarget>(timer_address)
+            .unwrap()
     }
 
     fn timer_counter_value(&self, timer: u8) -> TimerCounterValue {
@@ -125,24 +122,27 @@ pub trait Timers: Bus + IO + Exceptions {
 
         let timer_address = 0x1f801100 + timer as u32 * 0x10;
 
-        self.read_pure::<TimerCounterValue>(timer_address)
+        self.read_timers::<TimerCounterValue>(timer_address)
+            .unwrap()
     }
 
     fn set_timer_counter_value(&mut self, timer: u8, value: TimerCounterValue) {
         debug_assert!((0..=4).contains(&timer));
         let timer_address = 0x1f801100 + timer as u32 * 0x10;
-        self.write(timer_address, value);
+        self.write_timers(timer_address, value).unwrap();
     }
 
     fn set_timer_counter_mode(&mut self, timer: u8, value: TimerCounterMode) {
         debug_assert!((0..=4).contains(&timer));
         let timer_address = 0x1f801104 + timer as u32 * 0x10;
-        self.write(timer_address, value);
+        self.write_timers(timer_address, value).unwrap();
     }
 
     fn advance_timers(&self) -> AdvanceTimerSummary {
         let timer_0_address = 0x1f801100;
-        let timer_0 = self.read_pure::<TimerCounterValue>(timer_0_address);
+        let timer_0 = self
+            .read_timers::<TimerCounterValue>(timer_0_address)
+            .unwrap();
         let timer_0_value = timer_0.value();
         // timer 0 is synced to system clock
         let (new_timer_0_value, _overflowed) =

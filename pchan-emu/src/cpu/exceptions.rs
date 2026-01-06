@@ -42,8 +42,8 @@ bitfield! {
 #[repr(u8)]
 pub enum Exception {
     Interrupt = 0x0,
-    Syscall = 0x8,
-    Break = 0x9,
+    Syscall   = 0x8,
+    Break     = 0x9,
 }
 
 pub trait Exceptions: Bus {
@@ -54,7 +54,7 @@ pub trait Exceptions: Bus {
 }
 
 impl Exceptions for Emu {
-    #[instrument(ret, skip(self))]
+    #[cfg_attr(debug_assertions, instrument(ret, skip(self)))]
     fn handle_exception(&mut self, exception: Exception) {
         let cause = self.cpu().cop0.reg[13];
         let mut cause = CauseRegister(cause);
@@ -71,7 +71,7 @@ impl Exceptions for Emu {
 
     #[unsafe(no_mangle)]
     extern "C" fn handle_rfe(&mut self) {
-        tracing::info!("running rfe");
+        tracing::trace!("running rfe");
         let sr = self.cpu().cop0.reg[12];
         self.cpu_mut().cop0.reg[12] = (sr & !0x3F) | ((sr >> 2) & 0x3F);
         // panic!("rfe breakpoint");
@@ -79,7 +79,7 @@ impl Exceptions for Emu {
 
     #[unsafe(no_mangle)]
     extern "C" fn handle_break(&mut self) {
-        tracing::info!("running break");
+        tracing::trace!("break");
         self.handle_exception(Exception::Break);
     }
 

@@ -34,7 +34,11 @@
 use std::{collections::HashMap, mem::offset_of};
 
 use crate::{
-    bootloader::BootloaderState, cpu::Cpu, dynarec_v2::DynarecBlock, gpu::GpuState, io::tty::Tty,
+    bootloader::BootloaderState,
+    cpu::Cpu,
+    dynarec_v2::{DynarecBlock, DynarecCache},
+    gpu::GpuState,
+    io::tty::Tty,
     memory::MemoryState,
 };
 
@@ -82,7 +86,7 @@ pub const fn max_simd_elements<T>() -> usize {
 pub struct Emu {
     pub cpu:           Cpu,
     #[debug(skip)]
-    pub dynarec_cache: HashMap<u32, DynarecBlock>,
+    pub dynarec_cache: DynarecCache,
     pub mem:           MemoryState,
     pub boot:          BootloaderState,
     pub tty:           Tty,

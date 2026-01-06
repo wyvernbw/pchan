@@ -1,5 +1,3 @@
-use std::sync::LazyLock;
-
 use crate::{
     Bus, Emu,
     io::UnhandledIO,
@@ -9,24 +7,25 @@ use crate::{
 const PAGE_COUNT: usize = 0x10000;
 const PAGE_SIZE: usize = kb(64);
 
-type PageTable = Box<[Option<u32>; PAGE_COUNT]>;
+type PageTable = [Option<u32>; PAGE_COUNT];
 
 pub struct Lut {
     pub read:  PageTable,
     pub write: PageTable,
 }
 
-pub static LUT: LazyLock<Lut> = LazyLock::new(generate_page_tables);
+pub static LUT: Lut = generate_page_tables();
 
-fn generate_page_tables() -> Lut {
-    let mut table_read: PageTable = Box::new([None; PAGE_COUNT]);
-    let mut table_write: PageTable = Box::new([None; PAGE_COUNT]);
+const fn generate_page_tables() -> Lut {
+    let mut table_read: PageTable = [None; PAGE_COUNT];
+    let mut table_write: PageTable = [None; PAGE_COUNT];
 
     const RAM_PAGE_COUNT: usize = kb(2048) / PAGE_SIZE;
 
     // for each region, it will map `kuseg`, `kseg0` and `kseg1` respectively
 
-    for i in 0..(RAM_PAGE_COUNT) {
+    let mut i = 0;
+    while i < RAM_PAGE_COUNT {
         let offset = ((i * PAGE_SIZE) & 0x1FFFFF) as u32;
 
         #[allow(clippy::identity_op)]
@@ -38,11 +37,14 @@ fn generate_page_tables() -> Lut {
         table_write[i + 0x0000] = Some(offset);
         table_write[i + 0x8000] = Some(offset);
         table_write[i + 0xA000] = Some(offset);
+
+        i += 1;
     }
 
     // map 8MB expansion region 1 to ram by default
 
-    for i in 0..(RAM_PAGE_COUNT * 4) {
+    i = 0;
+    while i < RAM_PAGE_COUNT * 4 {
         let offset = (i * PAGE_SIZE) as u32;
         table_read[i + 0x1F00] = Some(offset);
         table_read[i + 0x9F00] = Some(offset);
@@ -51,11 +53,14 @@ fn generate_page_tables() -> Lut {
         table_write[i + 0x1F00] = Some(offset);
         table_write[i + 0x9F00] = Some(offset);
         table_write[i + 0xBF00] = Some(offset);
+
+        i += 1;
     }
 
     const BIOS_PAGE_COUNT: usize = kb(512) / PAGE_SIZE;
 
-    for i in 0..BIOS_PAGE_COUNT {
+    i = 0;
+    while i < BIOS_PAGE_COUNT {
         let offset = (i * PAGE_SIZE) as u32;
 
         table_read[i + 0x1FC0] = Some(MEM_MAP.bios as u32 + offset);
@@ -63,6 +68,8 @@ fn generate_page_tables() -> Lut {
         table_read[i + 0xBFC0] = Some(MEM_MAP.bios as u32 + offset);
 
         // thats it, bios is not writeable
+
+        i += 1;
     }
 
     Lut {
@@ -117,6 +124,7 @@ impl Fastmem for Emu {
         let mem = self.mem_mut().buf.as_mut_ptr();
 
         if let Some(region_ptr) = lut_ptr {
+            self.dynarec_cache.invalidate(address);
             unsafe {
                 let ptr = mem.add(region_ptr as usize).add(offset as usize);
                 std::ptr::write(ptr as *mut _, value);

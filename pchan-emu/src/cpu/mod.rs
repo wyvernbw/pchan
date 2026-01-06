@@ -11,15 +11,16 @@ pub mod ops;
 #[derive(Default, derive_more::Debug, Clone, Hash)]
 #[repr(C)]
 pub struct Cpu {
-    pub gpr:     Regs<32>,
+    pub gpr:          Regs<32>,
     #[debug("{}", hex(self.pc))]
-    pub pc:      u32, // store pc and d_clock together so one write can target both
-    pub d_clock: u32,
-    pub hilo:    u64,
-    pub cop0:    Cop0,
-    pub cop1:    Cop1,
-    pub cop2:    Cop2,
-    pub cycles:  u64,
+    pub pc:           u32, // store pc and d_clock together so one write can target both
+    pub d_clock:      u32,
+    pub hilo:         u64,
+    pub cop0:         Cop0,
+    pub cop1:         Cop1,
+    pub cop2:         Cop2,
+    pub vblank_timer: u32,
+    pub cycles:       u64,
 }
 
 use std::fmt;

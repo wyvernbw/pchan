@@ -63,7 +63,7 @@ impl Default for GpuState {
 }
 
 pub trait Gpu: Bus {
-    #[instrument(skip(self), "gpu:r")]
+    #[cfg_attr(debug_assertions, instrument(skip(self), "gpu:r"))]
     fn read<T: Copy>(&mut self, address: u32) -> IOResult<T> {
         let address = address & 0x1fffffff;
         match address {
@@ -86,14 +86,14 @@ pub trait Gpu: Bus {
                     }
                     _ => {}
                 }
-                tracing::info!(gp0 = ?self.gpu().gp0);
+                tracing::trace!(gp0 = ?self.gpu().gp0);
                 Ok(self.gpu().gp0read.io_from_u32())
             }
             0x1f80_1814 => Ok(self.gpu().gpustat.io_from_u32()),
             _ => Err(UnhandledIO(address)),
         }
     }
-    #[instrument(skip(self, value), "gpu:w")]
+    #[cfg_attr(debug_assertions, instrument(skip(self, value), "gpu:w"))]
     fn write<T: Copy>(&mut self, address: u32, value: T) -> Result<(), UnhandledIO> {
         let address = address & 0x1fffffff;
         match address {
@@ -135,7 +135,7 @@ pub trait Gpu: Bus {
         }
     }
 
-    #[instrument(skip_all)]
+    #[cfg_attr(debug_assertions, instrument(skip_all))]
     fn gp0_command<T: Copy>(&mut self, value: T) {
         let value = value.io_into_u32();
         let cmd = GpuCmd::new_with_raw_value(value);
@@ -179,7 +179,7 @@ pub trait Gpu: Bus {
             }
         };
 
-        tracing::info!(?gp0);
+        tracing::trace!(?gp0);
 
         self.gpu_mut().gp0 = gp0;
     }

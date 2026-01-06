@@ -1,32 +1,26 @@
 use crate::{Emu, io::IO};
 
-use pchan_utils::hex;
-use tracing::{Level, instrument};
-
 use crate::memory::ext;
 impl Emu {
+    /// # Safety
     #[unsafe(no_mangle)]
-    #[pchan_macros::instrument_write]
     pub unsafe extern "C" fn write8v2(self: *mut Emu, address: u32, value: i32) {
-        tracing::trace!("write");
         unsafe {
             IO::write::<i8>(&mut *self, address, value as _);
         }
     }
 
+    /// # Safety
     #[unsafe(no_mangle)]
-    #[pchan_macros::instrument_write]
     pub unsafe extern "C" fn write16v2(self: *mut Emu, address: u32, value: i32) {
-        tracing::trace!("write");
         unsafe {
             IO::write::<i16>(&mut *self, address, value as _);
         }
     }
 
+    /// # Safety
     #[unsafe(no_mangle)]
-    #[pchan_macros::instrument_write]
     pub unsafe extern "C" fn write32v2(self: *mut Emu, address: u32, value: i32) {
-        tracing::trace!("write");
         unsafe {
             IO::write::<i32>(&mut *self, address, value as _);
         }
