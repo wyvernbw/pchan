@@ -10,11 +10,19 @@ use pchan_emu::{
     dynarec_v2::{FETCH_CHANNEL, PipelineV2, emitters::DecodedOp},
 };
 use pchan_utils::hex;
-use std::{io::stdout, path::PathBuf};
+use std::{
+    io::stdout,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 
+use mana_tui_elemental::layout::IntoStateful;
 use mana_tui_elemental::ui::View;
 use mana_tui_potion::{Effect, Message, backends::DefaultEvent, focus::handlers::On};
-use ratatui::{crossterm::event::KeyModifiers, style::Style};
+use ratatui::{
+    crossterm::event::KeyModifiers,
+    style::{Color, Style},
+};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
@@ -36,13 +44,16 @@ async fn main() -> Result<()> {
 }
 
 struct Model {
-    emu_chan:      (Sender<EmuRequest>, Receiver<EmuResponse>),
-    compile_state: Option<CompileState>,
+    emu_chan:           (Sender<EmuRequest>, Receiver<EmuResponse>),
+    compile_state:      Option<Arc<[Text<'static>]>>,
+    // a little bit of `Arc<Mutex>` in my life
+    compile_list_state: Arc<Mutex<ListState>>,
 }
 
-struct CompileState {
-    pc:           u32,
-    instructions: Vec<DecodedOp>,
+#[derive(Debug, Clone)]
+enum NavMsg {
+    Up,
+    Down,
 }
 
 #[derive(Debug, Clone)]
@@ -50,6 +61,7 @@ enum Msg {
     Quit,
     EmuRes(EmuResponse),
     EmuReq(EmuRequest),
+    InstructionsNav(NavMsg),
 }
 
 impl Message for Msg {
@@ -80,8 +92,9 @@ async fn init() -> (Model, Effect<Msg>) {
     emu_task.run();
     (
         Model {
-            emu_chan:      (req_chan.0, res_chan.1.clone()),
-            compile_state: None,
+            emu_chan:           (req_chan.0, res_chan.1.clone()),
+            compile_state:      None,
+            compile_list_state: Arc::new(Mutex::new(ListState::default())),
         },
         Effect::new(move |tx| {
             let rx = res_chan.1.clone();
@@ -94,22 +107,48 @@ async fn init() -> (Model, Effect<Msg>) {
     )
 }
 
-async fn update(model: Model, msg: Msg) -> (Model, Effect<Msg>) {
+async fn update(mut model: Model, msg: Msg) -> (Model, Effect<Msg>) {
     match msg {
         Msg::Quit => (model, Effect::none()),
-        Msg::EmuRes(EmuResponse::Compiled(pc, instructions)) => (
-            Model {
-                compile_state: Some(CompileState { pc, instructions }),
-                ..model
-            },
-            Effect::none(),
-        ),
+        Msg::EmuRes(EmuResponse::Compiled(pc, instructions)) => {
+            let mut compile_list_state = ListState::default();
+            compile_list_state.select_first();
+            let compile_list_state = Arc::new(Mutex::new(compile_list_state));
+            let instructions = instructions
+                .iter()
+                .enumerate()
+                .map(|(idx, op)| format!("{} {op}", hex(idx as u32 * 4 + pc)).into())
+                .collect();
+            (
+                Model {
+                    compile_state: Some(instructions),
+                    compile_list_state,
+                    ..model
+                },
+                Effect::none(),
+            )
+        }
         Msg::EmuReq(emu_request) => {
             model
                 .emu_chan
                 .0
                 .send(emu_request)
                 .expect("failed to send message!");
+            (model, Effect::none())
+        }
+        Msg::InstructionsNav(NavMsg::Up) => {
+            model.compile_list_state.lock().unwrap().select_previous();
+            (model, Effect::none())
+        }
+        Msg::InstructionsNav(NavMsg::Down) => {
+            // if model.compile_list_state.selected()
+            //     != model
+            //         .compile_state
+            //         .as_ref()
+            //         .map(|list| list.len().saturating_sub(1))
+            {
+                model.compile_list_state.lock().unwrap().select_next();
+            }
             (model, Effect::none())
         }
     }
@@ -157,7 +196,7 @@ fn hseparator(style: Option<Style>) -> View {
 
 #[subview]
 fn instructions(model: &Model) -> View {
-    let Some(CompileState { pc, instructions }) = &model.compile_state else {
+    let Some(instructions) = &model.compile_state else {
         return ui! {
             <Block>
                 <Text>"Instructions"</Text>
@@ -167,16 +206,27 @@ fn instructions(model: &Model) -> View {
         };
     };
 
-    let instructions = instructions
-        .iter()
-        .enumerate()
-        .map(|(idx, op)| format!("{} {op}", hex(idx as u32 * 4 + pc)));
-
     ui! {
         <Block>
             <Text>"Instructions"</Text>
             <Hseparator .style={Style::new().dim()}/>
-            <List .items={instructions} Width::grow() Height::grow()></List>
+            <Block Width::grow() Height::fixed(1)>
+                {format!("{:?}", model.compile_list_state.lock().unwrap().selected())}
+            </Block>
+            <List
+                .items={instructions.iter().cloned()}
+                .highlight_style={Style::new().bg(Color::Green).fg(Color::Black)}
+                .stateful
+                {On::<Msg>::new(|_, event| {
+                    match event {
+                        key!(Char('j')) => Some((Msg::InstructionsNav(NavMsg::Down), Effect::none())),
+                        key!(Char('k')) => Some((Msg::InstructionsNav(NavMsg::Up), Effect::none())),
+                        _ => None
+                    }
+                })}
+                {model.compile_list_state.clone()}
+                Width::grow() Height::grow()
+            />
         </Block>
     }
 }

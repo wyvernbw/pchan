@@ -14,3 +14,4 @@ mana-tui-potion = { git = "https://github.com/wyvernbw/mana-tui.git", version = 
 ratatui = "0.30.0"
 tokio = { version = "1.49.0", features = ["macros", "rt"] }
 flume = { version = "0.12.0", default-features = false, features = ["async"] }
+im = "15.1.0"
