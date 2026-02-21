@@ -17,18 +17,18 @@ members = [
   "pchan-emu",
   "pchan-macros",
   "pchan-utils",
-  "pchan-debug-tui", "pchan-gpu",
+  "pchan-debug-tui", "pchan-gpu", "pchan-dbg",
 ]
 
 [workspace.dependencies]
-const-hex = { version = "1.16.0", features = ["nightly", "portable-simd"] }
+const-hex = { version = "1.17.0", features = ["nightly", "portable-simd"] }
 pchan-macros = { path = "./pchan-macros"}
 pchan-utils = { path = "./pchan-utils"}
 pchan-emu = { path = "./pchan-emu" }
-tracing = "0.1.41"
-tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 color-eyre = "0.6.5"
-slab = "0.4.11"
+slab = "0.4.12"
 
 [profile.bench]
 debug = true

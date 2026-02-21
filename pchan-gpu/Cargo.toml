@@ -9,16 +9,16 @@ wgpu = "28.0.0"
 flume = "0.12.0"
 color-eyre = "*"
 slab.workspace = true
-thiserror = "2.0.16"
+thiserror = "2.0.18"
 pchan-macros = { workspace = true }
 pchan-utils = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 winit = "0.30.12"
-bon = { version = "3.8.1", features = ["experimental-getter", "experimental-overwritable"] }
+bon = { version = "3.9.0", features = ["experimental-getter", "experimental-overwritable"] }
 
 [dev-dependencies]
 pretty_assertions = {version = "1.4.1", features = ["unstable"]}
 rstest = "*"
 color-eyre = "*" 
-criterion = { version = "0.5", features = ["html_reports"] }
+criterion = { version = "0.8", features = ["html_reports"] }
