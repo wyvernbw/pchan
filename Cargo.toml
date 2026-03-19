@@ -1,43 +1,69 @@
 [package]
+edition = "2024"
 name = "pchan"
 version = "0.1.0"
-edition = "2024"
 
 [dependencies]
-pchan-macros = { workspace = true }
-pchan-utils = { workspace = true }
-tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
-const-hex = { workspace = true, features = ["alloc"] }
 bstr = "1.12.1"
 
+[dependencies.const-hex]
+workspace = true
+features = ["alloc"]
+
+[dependencies.pchan-macros]
+workspace = true
+
+[dependencies.pchan-utils]
+workspace = true
+
+[dependencies.tracing]
+workspace = true
+
+[dependencies.tracing-subscriber]
+workspace = true
+
 [workspace]
-resolver = "3"
 members = [
-  "pchan-emu",
-  "pchan-macros",
-  "pchan-utils",
-  "pchan-debug-tui", "pchan-gpu", "pchan-dbg",
+    "pchan-emu",
+    "pchan-macros",
+    "pchan-utils",
+    "pchan-debug-tui",
+    "pchan-gpu",
+    "pchan-dbg",
 ]
+resolver = "3"
 
 [workspace.dependencies]
-const-hex = { version = "1.17.0", features = ["nightly", "portable-simd"] }
-pchan-macros = { path = "./pchan-macros"}
-pchan-utils = { path = "./pchan-utils"}
-pchan-emu = { path = "./pchan-emu" }
-tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 color-eyre = "0.6.5"
 slab = "0.4.12"
+tracing = "0.1.44"
+
+[workspace.dependencies.const-hex]
+version = "1.17.0"
+features = [
+    "nightly",
+    "portable-simd",
+]
+
+[workspace.dependencies.pchan-emu]
+path = "./pchan-emu"
+
+[workspace.dependencies.pchan-macros]
+path = "./pchan-macros"
+
+[workspace.dependencies.pchan-utils]
+path = "./pchan-utils"
+
+[workspace.dependencies.tracing-subscriber]
+version = "0.3.22"
+features = ["env-filter"]
 
 [profile.bench]
-debug = true
-
-[profile.release]
-panic = "unwind"
-lto = "thin"
+debug = 2
 
 [profile.dev]
 panic = "unwind"
 
-
+[profile.release]
+lto = "thin"
+panic = "unwind"

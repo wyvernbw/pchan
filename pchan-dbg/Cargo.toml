@@ -1,17 +1,19 @@
 [package]
 name = "pchan-dbg"
 version = "0.1.0"
+authors = ["wyvernbw <iamwyvern511@gmail.com>"]
 edition = "2024"
 
 [dependencies]
-pchan-emu = { workspace = true, features = ["fetch-channel"] }
-pchan-utils.workspace = true
-color-eyre.workspace = true
-mana-tui = { git = "https://github.com/wyvernbw/mana-tui.git", version = "0.0.1", features = ["macros", "nightly"] }
-mana-tui-elemental = { git = "https://github.com/wyvernbw/mana-tui.git", version = "0.0.1", features = ["nightly"] }
-mana-tui-macros = { git = "https://github.com/wyvernbw/mana-tui.git", version = "0.1.0" }
-mana-tui-potion = { git = "https://github.com/wyvernbw/mana-tui.git", version = "0.1.0" }
-ratatui = "0.30.0"
-tokio = { version = "1.49.0", features = ["macros", "rt"] }
+color-eyre = "*"
 flume = { version = "0.12.0", default-features = false, features = ["async"] }
-im = "15.1.0"
+manatui = { version = "*", git = "https://github.com/wyvernbw/manatui.git", features = ["macros", "nightly"] }
+pchan-emu = { version = "0.1.0", path = "../pchan-emu", features = ["fetch-channel"] }
+tokio = { version = "*", features = ["macros", "rt"] }
+
+# Read the optimization guideline for more details: https://ratatui.rs/recipes/apps/release-your-app/#optimizations
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true
