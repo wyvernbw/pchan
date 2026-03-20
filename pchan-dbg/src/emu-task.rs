@@ -3,6 +3,7 @@ use color_eyre::{Result, eyre::Context};
 use pchan_emu::{
     Bus, Emu,
     bootloader::Bootloader,
+    cpu::Cpu,
     dynarec_v2::{FETCH_CHANNEL, PipelineV2, PipelineV2Stage, emitters::DecodedOp},
 };
 use std::{path::PathBuf, sync::Arc};
@@ -18,6 +19,7 @@ pub(crate) enum EmuResponse {
     StageUpdate(PipelineV2Stage),
     StateUpdate(EmuTaskState),
     Compiled(u32, Arc<[DecodedOp]>),
+    CpuUpdate(Box<Cpu>),
 }
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum EmuTaskState {
@@ -127,7 +129,10 @@ impl EmuTask {
                 func,
                 dynarec,
                 scheduler,
-            } => {}
+            } => {
+                let cpu = Box::clone_from_ref(self.emu.cpu());
+                self.handle.res_chan.0.send(EmuResponse::CpuUpdate(cpu))?;
+            }
             PipelineV2::Cached { dynarec, scheduler } => {}
         };
         Ok(())

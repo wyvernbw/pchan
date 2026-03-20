@@ -1,3 +1,5 @@
+#![feature(clone_from_ref)]
+
 #[path = "./emu-task.rs"]
 pub(crate) mod emu_task;
 #[path = "./lipgloss-colors.rs"]
@@ -15,6 +17,7 @@ use manatui::tea::Effect;
 use manatui::tea::focus::{EventOutcome, FocusGroup};
 use manatui::utils::keyv2;
 use manatui_tea_ui::components::list::{List, ListViewCompact};
+use pchan_emu::cpu::{Cpu, reg_str};
 use pchan_emu::dynarec_v2::PipelineV2Stage;
 use pchan_utils::hex;
 use tokio::task::JoinHandle;
@@ -48,12 +51,15 @@ struct Model {
     emu_join_handle: JoinHandle<Result<()>>,
     emu_stage:       PipelineV2Stage,
     emu_task_state:  EmuTaskState,
+    emu_cpu:         Box<Cpu>,
 }
 
 struct DbgPage {
-    decoded_ops:      Option<Arc<[Line<'static>]>>,
-    focus:            FocusGroup,
-    decoded_ops_list: List,
+    decoded_ops:            Option<Arc<[Line<'static>]>>,
+    focus:                  FocusGroup,
+    decoded_ops_list:       List,
+    cpu_gpr_list:           List,
+    cpu_viewer_show_zeroes: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -80,14 +86,17 @@ impl Model {
         (
             Model {
                 dbg_page: DbgPage {
-                    decoded_ops:      None,
-                    decoded_ops_list: List::new(),
-                    focus:            FocusGroup::new(),
+                    decoded_ops:            None,
+                    decoded_ops_list:       List::new(),
+                    cpu_gpr_list:           List::new(),
+                    focus:                  FocusGroup::new(),
+                    cpu_viewer_show_zeroes: true,
                 },
                 emu_handle,
                 emu_join_handle,
                 emu_stage: PipelineV2Stage::Uninit,
                 emu_task_state: EmuTaskState::Paused,
+                emu_cpu: Box::default(),
             },
             Effect::new(async move |tx| {
                 while let Ok(res) = rx.recv_async().await {
@@ -145,9 +154,12 @@ impl Model {
                     );
                     self.dbg_page = DbgPage {
                         decoded_ops,
-                        decoded_ops_list: List::new(),
-                        focus: FocusGroup::new(),
+                        ..self.dbg_page
                     };
+                    self.no_effect()
+                }
+                EmuResponse::CpuUpdate(cpu) => {
+                    self.emu_cpu = cpu;
                     self.no_effect()
                 }
             },
@@ -180,6 +192,10 @@ impl Model {
                     .dbg_page
                     .focus
                     .pipe(self.dbg_page.decoded_ops_list.update(&event));
+                (self.dbg_page.cpu_gpr_list, self.dbg_page.focus) = self
+                    .dbg_page
+                    .focus
+                    .pipe(self.dbg_page.cpu_gpr_list.update(&event));
 
                 self.build_focus();
 
@@ -193,6 +209,7 @@ impl Model {
         self.dbg_page
             .focus
             .items(&self.dbg_page.decoded_ops_list)
+            .next(&self.dbg_page.cpu_gpr_list)
             .commit();
     }
 
@@ -203,9 +220,14 @@ impl Model {
 
 async fn view(model: &Model) -> View {
     ui! {
-        <Block .rounded .title="+ 🐷🎗️ P-ちゃん +" Width::grow() Height::grow()>
-            <Instructions .model={model}/>
-            <Summary .model={model}/>
+        <Block .rounded .title="+ 🐷🎗️ P-ちゃん +" Width::grow() Height::grow() Direction::Horizontal Gap(1)>
+            <Block Height::grow()>
+                <Instructions .model={model} Height::grow()/>
+                <Summary .model={model}/>
+            </Block>
+            <Block>
+                <CpuViewer .model={model} />
+            </Block>
         </Block>
     }
 }
@@ -216,9 +238,9 @@ fn summary(model: &Model) -> View {
     let stage_idx = (model.emu_stage as u8).saturating_sub(1);
     let max_stage_idx = PipelineV2Stage::COUNT as u8 - 2;
     let ratio = stage_idx as f64 / max_stage_idx as f64;
-    let emu_task_state = &model.emu_task_state;
+    let emu_task_state = format!("{:?}", model.emu_task_state);
     ui! {
-        <Block .rounded {Padding::new(2, 2, 1, 1)}>
+        <Block .rounded .title_bottom={Line::raw(emu_task_state)} {Padding::new(2, 2, 1, 1)}>
             <Block
                 Direction::Horizontal Gap(1) MainJustify::SpaceBetween Width::fixed(24)
             >
@@ -232,8 +254,6 @@ fn summary(model: &Model) -> View {
                     "{stage}"
                 </Text>
             </Block>
-
-            <Text>"{emu_task_state:?}"</Text>
         </Block>
     }
 }
@@ -273,5 +293,39 @@ fn hseparator(style: Option<Style>) -> View {
             .border_type={BorderType::Plain}
             Width::grow() Height::fixed(1)
         />
+    }
+}
+
+#[subview]
+fn cpu_viewer(model: &Model) -> View {
+    let show_zeroes = model.dbg_page.cpu_viewer_show_zeroes;
+    let gpr = model
+        .emu_cpu
+        .gpr
+        .iter()
+        .enumerate()
+        .filter(|(_, value)| show_zeroes || **value != 0)
+        .map(|(reg, value)| {
+            let style = match *value == 0 {
+                true => Style::new().dim(),
+                false => Style::default(),
+            };
+            let reg = format!("${}", reg_str(reg as u8));
+            let spacing = 8usize.saturating_sub(reg.len());
+            Line::from_iter([
+                Span::raw(reg),
+                Span::raw(" ".repeat(spacing)),
+                Span::raw(hex(*value).to_string()),
+            ])
+            .style(style)
+        });
+    ui! {
+        <Block>
+            <ListViewCompact
+                .items={gpr}
+                .state={&model.dbg_page.cpu_gpr_list}
+                .highlight_style={Style::new().black().on_green().not_dim()}
+            />
+        </Block>
     }
 }
