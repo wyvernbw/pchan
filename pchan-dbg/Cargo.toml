@@ -8,7 +8,9 @@ edition = "2024"
 color-eyre = "*"
 flume = { version = "0.12.0", default-features = false, features = ["async"] }
 manatui = { version = "*", git = "https://github.com/wyvernbw/manatui.git", features = ["macros", "nightly"] }
+manatui-tea-ui = { git = "https://github.com/wyvernbw/manatui.git", version = "0.1.0" }
 pchan-emu = { version = "0.1.0", path = "../pchan-emu", features = ["fetch-channel"] }
+pchan-utils = { version = "0.1.0", path = "../pchan-utils" }
 tokio = { version = "*", features = ["macros", "rt"] }
 
 # Read the optimization guideline for more details: https://ratatui.rs/recipes/apps/release-your-app/#optimizations

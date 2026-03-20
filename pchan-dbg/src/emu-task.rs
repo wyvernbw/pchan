@@ -1,7 +1,7 @@
 use crate::Chan;
 use color_eyre::{Result, eyre::Context};
 use pchan_emu::{
-    Emu,
+    Bus, Emu,
     bootloader::Bootloader,
     dynarec_v2::{FETCH_CHANNEL, PipelineV2, PipelineV2Stage, emitters::DecodedOp},
 };
@@ -69,6 +69,9 @@ impl EmuTask {
         tokio::task::spawn_blocking(move || -> Result<()> {
             self.emu.set_bios_path(&self.bios_path);
             self.emu.load_bios()?;
+            self.emu.cpu_mut().jump_to_bios();
+
+            self.pipe = PipelineV2::new(&self.emu);
 
             loop {
                 match self.state {

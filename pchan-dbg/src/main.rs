@@ -1,16 +1,29 @@
 #[path = "./emu-task.rs"]
 pub(crate) mod emu_task;
+#[path = "./lipgloss-colors.rs"]
+pub(crate) mod lipgloss_colors;
+
+use std::sync::Arc;
 
 use color_eyre::Result;
 use flume::{Receiver, Sender};
-use manatui::prelude::*;
+use manatui::prelude::{strum::EnumCount, *};
 use manatui::ratatui::crossterm::event::Event;
+use manatui::ratatui::text::{Line, Span};
 use manatui::tea;
 use manatui::tea::Effect;
+use manatui::tea::focus::{EventOutcome, FocusGroup};
 use manatui::utils::keyv2;
+use manatui_tea_ui::components::list::{List, ListViewCompact};
+use pchan_emu::dynarec_v2::PipelineV2Stage;
+use pchan_utils::hex;
 use tokio::task::JoinHandle;
 
-use crate::emu_task::{EmuRequest, EmuResponse, EmuTask, EmuTaskHandle};
+use crate::emu_task::EmuTaskState;
+use crate::{
+    emu_task::{EmuRequest, EmuResponse, EmuTask, EmuTaskHandle},
+    lipgloss_colors::LIPGLOSS,
+};
 
 pub(crate) type Chan<T> = (Sender<T>, Receiver<T>);
 
@@ -22,6 +35,7 @@ async fn main() -> Result<()> {
         .update(Model::update)
         .event_msg(Msg::Event)
         .quit_signal(|_, msg| matches!(msg, Msg::Quit))
+        .enable_mouse(true)
         .run()
         .await?;
 
@@ -32,9 +46,15 @@ struct Model {
     dbg_page:        DbgPage,
     emu_handle:      EmuTaskHandle,
     emu_join_handle: JoinHandle<Result<()>>,
+    emu_stage:       PipelineV2Stage,
+    emu_task_state:  EmuTaskState,
 }
 
-struct DbgPage {}
+struct DbgPage {
+    decoded_ops:      Option<Arc<[Line<'static>]>>,
+    focus:            FocusGroup,
+    decoded_ops_list: List,
+}
 
 #[derive(Debug, Clone)]
 enum Msg {
@@ -59,9 +79,15 @@ impl Model {
 
         (
             Model {
-                dbg_page: DbgPage {},
+                dbg_page: DbgPage {
+                    decoded_ops:      None,
+                    decoded_ops_list: List::new(),
+                    focus:            FocusGroup::new(),
+                },
                 emu_handle,
                 emu_join_handle,
+                emu_stage: PipelineV2Stage::Uninit,
+                emu_task_state: EmuTaskState::Paused,
             },
             Effect::new(async move |tx| {
                 while let Ok(res) = rx.recv_async().await {
@@ -71,22 +97,103 @@ impl Model {
         )
     }
 
-    async fn update(self, msg: Msg) -> (Self, Effect<Msg>) {
-        match msg {
-            Msg::Quit => unreachable!(),
-            Msg::Event(event) => self.handle_event(event).await,
-            Msg::EmuRes(res) => (self, Effect::none()),
+    fn set_emu_stage(self, stage: PipelineV2Stage) -> Self {
+        Self {
+            emu_stage: stage,
+            ..self
         }
     }
 
-    async fn handle_event(self, event: Event) -> (Self, Effect<Msg>) {
+    fn set_emu_task_state(self, state: EmuTaskState) -> Self {
+        Self {
+            emu_task_state: state,
+            ..self
+        }
+    }
+
+    fn no_effect(self) -> (Self, Effect<Msg>) {
+        (self, Effect::none())
+    }
+
+    async fn update(mut self, msg: Msg) -> (Self, Effect<Msg>) {
+        match msg {
+            Msg::Quit => unreachable!(),
+            Msg::Event(event) => self.handle_event(event).await,
+            Msg::EmuRes(res) => match res {
+                EmuResponse::StageUpdate(stage) => self.set_emu_stage(stage).no_effect(),
+                EmuResponse::StateUpdate(state) => self.set_emu_task_state(state).no_effect(),
+                EmuResponse::Compiled(pc, decoded_ops) => {
+                    let decoded_ops = Some(
+                        decoded_ops
+                            .iter()
+                            .enumerate()
+                            .map(|(idx, op)| {
+                                let line = Line::from_iter([
+                                    Span::raw(hex(idx as u32 * 4 + pc).to_string())
+                                        .style(Style::new().dim()),
+                                    Span::raw(" "),
+                                    Span::raw(op.to_string()),
+                                ]);
+                                let style = match idx.is_multiple_of(2) {
+                                    true => Style::new(),
+                                    false => Style::new().fg(Color::from_u32(0xeeeeee)),
+                                };
+
+                                line.style(style)
+                            })
+                            .collect(),
+                    );
+                    self.dbg_page = DbgPage {
+                        decoded_ops,
+                        decoded_ops_list: List::new(),
+                        focus: FocusGroup::new(),
+                    };
+                    self.no_effect()
+                }
+            },
+        }
+    }
+
+    async fn handle_event(mut self, event: Event) -> (Self, Effect<Msg>) {
         match event {
             keyv2!(ctrl + 'c') => {
                 self.send_request(EmuRequest::Quit).await;
                 (self, Effect::msg(Msg::Quit))
             }
+            keyv2!('n') => {
+                self.send_request(EmuRequest::Step).await;
+                self.no_effect()
+            }
+            event => {
+                match self.dbg_page.focus.update(&event) {
+                    EventOutcome::Consumed(focus) => {
+                        self.dbg_page.focus = focus;
+                        self.build_focus();
+                        return self.no_effect();
+                    }
+                    EventOutcome::Unhandled(focus) => {
+                        self.dbg_page.focus = focus;
+                    }
+                }
+
+                (self.dbg_page.decoded_ops_list, self.dbg_page.focus) = self
+                    .dbg_page
+                    .focus
+                    .pipe(self.dbg_page.decoded_ops_list.update(&event));
+
+                self.build_focus();
+
+                self.no_effect()
+            }
             _ => (self, Effect::none()),
         }
+    }
+
+    fn build_focus(&mut self) {
+        self.dbg_page
+            .focus
+            .items(&self.dbg_page.decoded_ops_list)
+            .commit();
     }
 
     async fn send_request(&self, req: EmuRequest) {
@@ -96,6 +203,75 @@ impl Model {
 
 async fn view(model: &Model) -> View {
     ui! {
-        "i am the magic rat 🐭🪄 (press ^C to exit.)"
+        <Block .rounded .title="+ 🐷🎗️ P-ちゃん +" Width::grow() Height::grow()>
+            <Instructions .model={model}/>
+            <Summary .model={model}/>
+        </Block>
+    }
+}
+
+#[subview]
+fn summary(model: &Model) -> View {
+    let stage = model.emu_stage;
+    let stage_idx = (model.emu_stage as u8).saturating_sub(1);
+    let max_stage_idx = PipelineV2Stage::COUNT as u8 - 2;
+    let ratio = stage_idx as f64 / max_stage_idx as f64;
+    let emu_task_state = &model.emu_task_state;
+    ui! {
+        <Block .rounded {Padding::new(2, 2, 1, 1)}>
+            <Block
+                Direction::Horizontal Gap(1) MainJustify::SpaceBetween Width::fixed(24)
+            >
+                <LineGauge
+                    .ratio={ratio}
+                    .filled_style={Style::new().fg(Color::Green)}
+                    .unfilled_style={Style::new().dim()}
+                    Height::fixed(1) Width::grow()
+                />
+                <Text>
+                    "{stage}"
+                </Text>
+            </Block>
+
+            <Text>"{emu_task_state:?}"</Text>
+        </Block>
+    }
+}
+
+#[subview]
+fn instructions(model: &Model) -> View {
+    let Some(instructions) = &model.dbg_page.decoded_ops else {
+        return ui! {
+            <Block>
+                <Text>"Instructions"</Text>
+                <Hseparator .style={Style::new().dim()}/>
+                "Nothing here yet"
+            </Block>
+        };
+    };
+
+    ui! {
+        <Block Height::grow()>
+            <Text>"Instructions"</Text>
+            <Hseparator .style={Style::new().dim()}/>
+            <ListViewCompact
+                .state={&model.dbg_page.decoded_ops_list}
+                .items={instructions.iter().cloned()}
+                .highlight_style={Style::new().bg(Color::Green).fg(Color::Black)}
+                Height::grow()
+            />
+        </Block>
+    }
+}
+
+#[subview]
+fn hseparator(style: Option<Style>) -> View {
+    ui! {
+        <Block
+            .style={style.unwrap_or_default()}
+            .borders={Borders::TOP}
+            .border_type={BorderType::Plain}
+            Width::grow() Height::fixed(1)
+        />
     }
 }
