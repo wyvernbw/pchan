@@ -5,16 +5,18 @@ pub(crate) mod emu_task;
 #[path = "./lipgloss-colors.rs"]
 pub(crate) mod lipgloss_colors;
 
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use color_eyre::Result;
 use flume::{Receiver, Sender};
 use manatui::prelude::{strum::EnumCount, *};
 use manatui::ratatui::crossterm::event::Event;
-use manatui::ratatui::text::{Line, Span};
+use manatui::ratatui::text::{Line, Span, ToSpan};
 use manatui::tea;
 use manatui::tea::Effect;
 use manatui::tea::focus::{EventOutcome, FocusGroup};
+use manatui::tea::observe::AreaRef;
 use manatui::utils::keyv2;
 use manatui_tea_ui::components::list::{List, ListViewCompact};
 use pchan_emu::cpu::{Cpu, reg_str};
@@ -54,12 +56,20 @@ struct Model {
     emu_cpu:         Box<Cpu>,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum DbgPageFocus {
+    Ops,
+    CpuViewer,
+}
+
 struct DbgPage {
     decoded_ops:            Option<Arc<[Line<'static>]>>,
-    focus:                  FocusGroup,
+    focus:                  FocusGroup<DbgPageFocus>,
     decoded_ops_list:       List,
     cpu_gpr_list:           List,
     cpu_viewer_show_zeroes: bool,
+    cpu_viewer_show_cops:   bool,
+    cpu_viewer_gpr_rect:    AreaRef,
 }
 
 #[derive(Debug, Clone)]
@@ -91,6 +101,8 @@ impl Model {
                     cpu_gpr_list:           List::new(),
                     focus:                  FocusGroup::new(),
                     cpu_viewer_show_zeroes: true,
+                    cpu_viewer_show_cops:   false,
+                    cpu_viewer_gpr_rect:    AreaRef::empty(),
                 },
                 emu_handle,
                 emu_join_handle,
@@ -199,6 +211,17 @@ impl Model {
 
                 self.build_focus();
 
+                match (self.dbg_page.focus.tag(), event) {
+                    (Some(DbgPageFocus::CpuViewer), keyv2!('s')) => {
+                        self.dbg_page.cpu_viewer_show_zeroes =
+                            !self.dbg_page.cpu_viewer_show_zeroes;
+                    }
+                    (Some(DbgPageFocus::CpuViewer), keyv2!('c')) => {
+                        self.dbg_page.cpu_viewer_show_cops = !self.dbg_page.cpu_viewer_show_cops;
+                    }
+                    _ => {}
+                }
+
                 self.no_effect()
             }
             _ => (self, Effect::none()),
@@ -208,8 +231,9 @@ impl Model {
     fn build_focus(&mut self) {
         self.dbg_page
             .focus
-            .items(&self.dbg_page.decoded_ops_list)
-            .next(&self.dbg_page.cpu_gpr_list)
+            .items()
+            .next((&self.dbg_page.decoded_ops_list, DbgPageFocus::Ops))
+            .next((&self.dbg_page.cpu_gpr_list, DbgPageFocus::CpuViewer))
             .commit();
     }
 
@@ -220,12 +244,12 @@ impl Model {
 
 async fn view(model: &Model) -> View {
     ui! {
-        <Block .rounded .title="+ 🐷🎗️ P-ちゃん +" Width::grow() Height::grow() Direction::Horizontal Gap(1)>
+        <Block .rounded .title="+ 🐷🎗️ P-ちゃん +" Width::grow() Height::grow() Direction::Horizontal>
             <Block Width::grow() Height::grow() MaxWidth::percentage(25)>
                 <Instructions .model={model} Height::grow()/>
-                <Summary .model={model}/>
+                <Summary .model={model} Width::grow()/>
             </Block>
-            <Block>
+            <Block Height::grow()>
                 <CpuViewer .model={model} />
             </Block>
         </Block>
@@ -260,49 +284,69 @@ fn summary(model: &Model) -> View {
 
 #[subview]
 fn instructions(model: &Model) -> View {
+    let focused = matches!(model.dbg_page.focus.tag(), Some(DbgPageFocus::Ops));
+    let border_style = border_style_focus(focused);
+
     let Some(instructions) = &model.dbg_page.decoded_ops else {
         return ui! {
-            <Block .style={Style::new().dim()}>
+            <Block Width::grow()>
                 <Text>"Opcodes"</Text>
-                " - 何も - Nothing here yet"
+                <Block .rounded .border_style={border_style} .style={Style::new().dim()} Height::grow() Width::grow()>
+                    <Block Center Width::grow() Height::grow()>
+                        " 何も "
+                    </Block>
+                </Block>
             </Block>
         };
     };
 
     ui! {
-        <Block .rounded .title="+ mips dump +" Height::grow()>
-            <ListViewCompact
-                .state={&model.dbg_page.decoded_ops_list}
-                .items={instructions.iter().cloned()}
-                .highlight_style={Style::new().bg(Color::Green).fg(Color::Black)}
-                Height::grow()
-            />
+        <Block Width::grow()>
+            <Text>"Opcodes"</Text>
+            <Block .rounded .border_style={border_style} .title="+ mips dump +" Height::grow() Width::grow()>
+                <ListViewCompact
+                    .state={&model.dbg_page.decoded_ops_list}
+                    .items={instructions.iter().cloned()}
+                    .highlight_style={Style::new().bg(Color::Green).fg(Color::Black)}
+                    Height::grow()
+                />
+            </Block>
         </Block>
     }
 }
 
 #[subview]
-fn hseparator(style: Option<Style>) -> View {
+fn hseparator(
+    style: Option<Style>,
+    #[builder(default = BorderType::Plain)] border_type: BorderType,
+) -> View {
     ui! {
         <Block
             .style={style.unwrap_or_default()}
             .borders={Borders::TOP}
-            .border_type={BorderType::Plain}
+            .border_type={border_type}
             Width::grow() Height::fixed(1)
         />
     }
 }
 
-#[subview]
-fn cpu_viewer(model: &Model) -> View {
-    let show_zeroes = model.dbg_page.cpu_viewer_show_zeroes;
-    let gpr = model
-        .emu_cpu
-        .gpr
-        .iter()
+fn border_style_focus(focused: bool) -> Style {
+    match focused {
+        true => Style::new().green(),
+        false => Style::new().dim(),
+    }
+}
+
+fn make_register_list<'a>(
+    i: impl Iterator<Item = &'a u32> + Clone,
+    reg_to_str: impl Fn(usize) -> Cow<'a, str>,
+    show_zeroes: bool,
+    column_width: usize,
+) -> impl Iterator<Item = Line<'static>> {
+    i.clone()
         .enumerate()
-        .filter(|(_, value)| show_zeroes || **value != 0)
-        .map(|(reg, value)| {
+        .filter(move |(_, value)| show_zeroes || **value != 0)
+        .map(move |(reg, value)| {
             let style = match *value == 0 {
                 true => Style::new().dim(),
                 false => Style::default(),
@@ -311,8 +355,8 @@ fn cpu_viewer(model: &Model) -> View {
                 true => style,
                 false => style.fg(Color::from_u32(0xeeeeee)),
             };
-            let reg = format!("${}", reg_str(reg as u8));
-            let spacing = 8usize.saturating_sub(reg.len());
+            let reg = format!("${}", reg_to_str(reg));
+            let spacing = column_width.saturating_sub(reg.len());
             Line::from_iter([
                 Span::raw(" ".repeat(spacing)),
                 Span::raw(reg),
@@ -320,20 +364,129 @@ fn cpu_viewer(model: &Model) -> View {
                 Span::raw(hex(*value).to_string()),
             ])
             .style(style)
-        });
+        })
+        .chain([if show_zeroes {
+            Line::default()
+        } else {
+            let hidden = i.filter(|value| **value == 0).count();
+            Line::raw(format!(" ({hidden} values hidden)")).style(Style::new().dim())
+        }])
+}
+
+trait BoolOnOff {
+    fn onoff(self) -> &'static str;
+}
+
+impl BoolOnOff for bool {
+    fn onoff(self) -> &'static str {
+        match self {
+            true => "on",
+            false => "off",
+        }
+    }
+}
+
+#[subview]
+fn cpu_viewer(model: &Model) -> View {
+    let focused = matches!(model.dbg_page.focus.tag(), Some(DbgPageFocus::CpuViewer));
+    let border_style = border_style_focus(focused);
+
+    let show_zeroes = model.dbg_page.cpu_viewer_show_zeroes;
+    let hi = (model.emu_cpu.hilo >> 32) as u32;
+    let lo = model.emu_cpu.hilo as u32;
+
+    let gpr = make_register_list(
+        model.emu_cpu.gpr.iter().chain([&hi, &lo]),
+        |reg| reg_str(reg as u8).into(),
+        show_zeroes,
+        7,
+    );
+
     let pc = hex(model.emu_cpu.pc);
+
+    let cop0items = make_register_list(
+        model.emu_cpu.cop0.reg.iter(),
+        |reg| format!("cop0reg{reg}").into(),
+        show_zeroes,
+        10,
+    );
+    let cop2items = make_register_list(
+        model.emu_cpu.cop2.reg.iter(),
+        |reg| format!("cop2reg{reg}").into(),
+        show_zeroes,
+        10,
+    );
+
+    let list = List::new();
+    let cop_tooltip = Line::from_iter([
+        Span::raw("c ").style(Style::new().dim()),
+        Span::raw("toggle cop view").style(Style::new().fg(Color::from_u32(0xeeeeee)).dim()),
+    ]);
+    let show_cops = focused && model.dbg_page.cpu_viewer_show_cops;
+    let gpr_tooltip = Line::from_iter([
+        Span::raw("s ").style(Style::new().dim()),
+        Span::raw("toggle zeroes").style(Style::new().fg(Color::from_u32(0xeeeeee)).dim()),
+    ]);
+    let bev = model.emu_cpu.cop0.bev().onoff();
+    let isc = model.emu_cpu.cop0.isc().onoff();
+    let gpr_rect = model.dbg_page.cpu_viewer_gpr_rect.get().unwrap_or_default();
     ui! {
-        <Block>
+        <Block Height::grow()>
             <Block Width::grow()>
                 "CPU View"
             </Block>
-            <Block .rounded .title="+ gpr +" Padding::new(1, 2, 1, 1)>
-                <Text>"     $pc {pc}"</Text>
-                <ListViewCompact
-                    .items={gpr}
-                    .state={&model.dbg_page.cpu_gpr_list}
-                    .highlight_style={Style::new().black().on_green().not_dim()}
-                />
+            <Block Direction::Horizontal Height::grow()>
+                <Block
+                    .border_style={border_style}
+                    .rounded .title="-+ gpr +"
+                    .title_bottom={gpr_tooltip}
+                    {model.dbg_page.cpu_viewer_gpr_rect.clone()}
+                    Padding::new(2, 2, 1, 1) Height::grow()
+                >
+                    <Text .style={Style::new().bold()}>"    $pc {pc}"</Text>
+                    <ListViewCompact
+                        .items={gpr}
+                        .state={&model.dbg_page.cpu_gpr_list}
+                        .highlight_style={Style::new().black().on_green().not_dim()}
+                        // Height::grow()
+                    />
+                    <Hseparator .border_type={BorderType::LightDoubleDashed} .style={Style::new().dim()} Height::grow()/>
+                    // <Block>
+                        <Text>"bev: {bev}"</Text>
+                        <Text>"isc: {isc}"</Text>
+                    // </Block>
+                    <Block>
+                        "{cop_tooltip}"
+                    </Block>
+                </Block>
+                <Block
+                    Position::Absolute(Value::Cells(gpr_rect.x + gpr_rect.width), Value::Cells(gpr_rect.y))
+                >
+                {if show_cops {
+                    ui! {
+                        <Block
+                            .rounded
+                            .title="-+ coprocessors +"
+                            .border_style={border_style}
+                            .borders={Borders::TOP | Borders::RIGHT | Borders::BOTTOM}
+                            Padding::new(1, 3, 1, 1)
+                            Direction::Horizontal
+                            Gap(2)
+                        >
+                            <ListViewCompact
+                                .items={cop0items}
+                                .state={&list}
+                            />
+                            <ListViewCompact
+                                .items={cop2items}
+                                .state={&list}
+                            />
+                        </Block>
+                    }
+                } else {
+                    ui! {""}
+                }}
+                </Block>
             </Block>
         </Block>
     }

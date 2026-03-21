@@ -210,7 +210,9 @@ pub static REG_STR: &[&str] = &array![
     28 => "gp",
     29 => "sp",
     30 => "fp(s8)",
-    31 => "ra"
+    31 => "ra",
+    32 => "hi",
+    33 => "lo",
 ];
 
 pub const fn reg_str(reg: Reg) -> &'static str {
