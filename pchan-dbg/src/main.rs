@@ -5,6 +5,7 @@
 pub(crate) mod emu_task;
 #[path = "./lipgloss-colors.rs"]
 pub(crate) mod lipgloss_colors;
+pub(crate) mod mem_widget;
 
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -16,7 +17,7 @@ use manatui::ratatui::crossterm::event::Event;
 use manatui::ratatui::text::{Line, Span, ToSpan};
 use manatui::tea;
 use manatui::tea::Effect;
-use manatui::tea::focus::{EventOutcome, FocusGroup};
+use manatui::tea::focus::{EventOutcome, Focus, FocusGroup};
 use manatui::tea::observe::AreaRef;
 use manatui::utils::keyv2;
 use manatui_tea_ui::components::list::{List, ListViewCompact};
@@ -28,6 +29,7 @@ use tokio::task::JoinHandle;
 
 use crate::emu_task::EmuTaskState;
 use crate::emu_task::{EmuRequest, EmuResponse, EmuTask, EmuTaskHandle};
+use crate::mem_widget::{MemView, MemViewState};
 
 pub(crate) type Chan<T> = (Sender<T>, Receiver<T>);
 
@@ -60,6 +62,7 @@ struct Model {
 enum DbgPageFocus {
     Ops,
     CpuViewer,
+    MemViewer,
 }
 
 struct DbgPage {
@@ -70,8 +73,7 @@ struct DbgPage {
     cpu_viewer_show_zeroes: bool,
     cpu_viewer_show_cops:   bool,
     cpu_viewer_gpr_rect:    AreaRef,
-    mem_view_page_address:  u32,
-    mem_view_address:       u32,
+    mem_view:               MemViewState,
 }
 
 #[derive(Debug, Clone)]
@@ -99,14 +101,13 @@ impl Model {
             Model {
                 dbg_page: DbgPage {
                     decoded_ops:            None,
-                    decoded_ops_list:       List::new(),
-                    cpu_gpr_list:           List::new(),
-                    focus:                  FocusGroup::new(),
+                    decoded_ops_list:       List::new().set_tab_navigation(false),
+                    cpu_gpr_list:           List::new().set_tab_navigation(false),
+                    focus:                  FocusGroup::new().set_wrap_around(true),
                     cpu_viewer_show_zeroes: true,
                     cpu_viewer_show_cops:   false,
                     cpu_viewer_gpr_rect:    AreaRef::empty(),
-                    mem_view_page_address:  0xbfc0_0000,
-                    mem_view_address:       0xbfc0_0000,
+                    mem_view:               MemViewState::new(),
                 },
                 emu_handle,
                 emu_join_handle,
@@ -212,6 +213,7 @@ impl Model {
                     .dbg_page
                     .focus
                     .pipe(self.dbg_page.cpu_gpr_list.update(&event));
+                self.dbg_page.mem_view = self.dbg_page.mem_view.update(&event);
 
                 self.build_focus();
 
@@ -238,6 +240,7 @@ impl Model {
             .items()
             .next((&self.dbg_page.decoded_ops_list, DbgPageFocus::Ops))
             .next((&self.dbg_page.cpu_gpr_list, DbgPageFocus::CpuViewer))
+            .next((&self.dbg_page.mem_view, DbgPageFocus::MemViewer))
             .commit();
     }
 
@@ -248,7 +251,7 @@ impl Model {
 
 async fn view(model: &Model) -> View {
     ui! {
-        <Block .rounded .title="+ 🐷🎗️ P-ちゃん +" Width::grow() Height::grow() Direction::Horizontal>
+        <Block .rounded .title="+ 🐷🎗️ P-ちゃん dbg +" Width::grow() Height::grow() Direction::Horizontal>
             <Block Width::grow() Height::grow() MaxWidth::percentage(25)>
                 <Instructions .model={model} Height::grow()/>
                 <Summary .model={model} Width::grow()/>
@@ -257,7 +260,7 @@ async fn view(model: &Model) -> View {
                 <CpuViewer .model={model} />
             </Block>
             <Block Height::grow() Width::grow() MaxWidth::percentage(50)>
-                <MemView .model={model}/>
+                <MemView .view={&model.emu_handle.dbg_view} .state={&model.dbg_page.mem_view}/>
             </Block>
             <CopView .model={model}/>
         </Block>
@@ -299,8 +302,8 @@ fn instructions(model: &Model) -> View {
         return ui! {
             <Block Width::grow()>
                 <Text>"Opcodes"</Text>
-                <Block .rounded .border_style={border_style} .style={Style::new().dim()} Height::grow() Width::grow()>
-                    <Block Center Width::grow() Height::grow()>
+                <Block .rounded .border_style={border_style} Height::grow() Width::grow()>
+                    <Block .style={Style::new().dim()} Center Width::grow() Height::grow()>
                         " 何も "
                     </Block>
                 </Block>
@@ -440,10 +443,11 @@ fn cpu_viewer(model: &Model) -> View {
                         .items={gpr}
                         .state={&model.dbg_page.cpu_gpr_list}
                         .highlight_style={Style::new().black().on_green().not_dim()}
-                        // Height::grow()
+                        Height::grow()
+                        // MaxHeight::percentage(75)
                     />
                     <Hseparator .border_type={BorderType::LightDoubleDashed} .style={Style::new().dim()} />
-                    <Block Height::grow()>
+                    <Block MaxHeight::percentage(25)>
                         <Text>"bev: {bev}"</Text>
                         <Text>"isc: {isc}"</Text>
                     </Block>
@@ -508,47 +512,6 @@ fn cop_view(model: &Model) -> View {
         } else {
             ui! {""}
         }}
-        </Block>
-    }
-}
-
-#[subview]
-fn mem_view(model: &Model) -> View {
-    let border_style = border_style_focus(false);
-    let mem_start = model.dbg_page.mem_view_page_address;
-    let mem_range = mem_start..(mem_start + 1024);
-    let mem_content = mem_range
-        .step_by(0x4)
-        .map(|addr| {
-            model
-                .emu_handle
-                .dbg_view
-                .emu()
-                .try_read_pure::<u32>(addr)
-                .unwrap_or(0x0)
-        })
-        .enumerate()
-        .array_chunks::<4>()
-        .map(|words| {
-            let idx = words[0].0;
-            let addr = idx as u32 * 4 * 4 * 4 + mem_start;
-            let base_style = match (idx >> 2).is_multiple_of(2) {
-                true => Style::new(),
-                false => Style::new().fg(Color::from_u32(0xeeeeee)),
-            };
-            let addr = format!("{}", hex(addr)).set_style(base_style.dim());
-            let words = words.map(|(_, word)| format!("{:08x}", word).set_style(base_style));
-            Row::new([[addr].as_slice(), words.as_slice()].concat())
-        });
-    let mem_title = format!("+ mem: {} +", hex(model.dbg_page.mem_view_address));
-    ui! {
-        <Block Width::grow() Height::grow() MaxWidth::fixed(2 + 8 + 4*8 + 8 + 1)>
-            "Memory"
-            <Block .rounded .border_style={border_style} .title={mem_title}
-                Width::grow() Height::grow() Padding::new(2, 2, 1, 1)
-            >
-                <Table .column_spacing={1} .rows={mem_content}  Height::grow() Width::grow()/>
-            </Block>
         </Block>
     }
 }
