@@ -221,7 +221,7 @@ impl Model {
 async fn view(model: &Model) -> View {
     ui! {
         <Block .rounded .title="+ 🐷🎗️ P-ちゃん +" Width::grow() Height::grow() Direction::Horizontal Gap(1)>
-            <Block Height::grow()>
+            <Block Width::grow() Height::grow() MaxWidth::percentage(25)>
                 <Instructions .model={model} Height::grow()/>
                 <Summary .model={model}/>
             </Block>
@@ -238,9 +238,9 @@ fn summary(model: &Model) -> View {
     let stage_idx = (model.emu_stage as u8).saturating_sub(1);
     let max_stage_idx = PipelineV2Stage::COUNT as u8 - 2;
     let ratio = stage_idx as f64 / max_stage_idx as f64;
-    let emu_task_state = format!("{:?}", model.emu_task_state);
+    let title = format!("{:?} n - step / r - run", model.emu_task_state);
     ui! {
-        <Block .rounded .title_bottom={Line::raw(emu_task_state)} {Padding::new(2, 2, 1, 1)}>
+        <Block .rounded .title_bottom={Line::raw(title)} {Padding::new(2, 2, 1, 1)}>
             <Block
                 Direction::Horizontal Gap(1) MainJustify::SpaceBetween Width::fixed(24)
             >
@@ -262,18 +262,15 @@ fn summary(model: &Model) -> View {
 fn instructions(model: &Model) -> View {
     let Some(instructions) = &model.dbg_page.decoded_ops else {
         return ui! {
-            <Block>
-                <Text>"Instructions"</Text>
-                <Hseparator .style={Style::new().dim()}/>
-                "Nothing here yet"
+            <Block .style={Style::new().dim()}>
+                <Text>"Opcodes"</Text>
+                " - 何も - Nothing here yet"
             </Block>
         };
     };
 
     ui! {
-        <Block Height::grow()>
-            <Text>"Instructions"</Text>
-            <Hseparator .style={Style::new().dim()}/>
+        <Block .rounded .title="+ mips dump +" Height::grow()>
             <ListViewCompact
                 .state={&model.dbg_page.decoded_ops_list}
                 .items={instructions.iter().cloned()}
@@ -310,22 +307,34 @@ fn cpu_viewer(model: &Model) -> View {
                 true => Style::new().dim(),
                 false => Style::default(),
             };
+            let style = match reg.is_multiple_of(2) {
+                true => style,
+                false => style.fg(Color::from_u32(0xeeeeee)),
+            };
             let reg = format!("${}", reg_str(reg as u8));
             let spacing = 8usize.saturating_sub(reg.len());
             Line::from_iter([
-                Span::raw(reg),
                 Span::raw(" ".repeat(spacing)),
+                Span::raw(reg),
+                Span::raw(" "),
                 Span::raw(hex(*value).to_string()),
             ])
             .style(style)
         });
+    let pc = hex(model.emu_cpu.pc);
     ui! {
         <Block>
-            <ListViewCompact
-                .items={gpr}
-                .state={&model.dbg_page.cpu_gpr_list}
-                .highlight_style={Style::new().black().on_green().not_dim()}
-            />
+            <Block Width::grow()>
+                "CPU View"
+            </Block>
+            <Block .rounded .title="+ gpr +" Padding::new(1, 2, 1, 1)>
+                <Text>"     $pc {pc}"</Text>
+                <ListViewCompact
+                    .items={gpr}
+                    .state={&model.dbg_page.cpu_gpr_list}
+                    .highlight_style={Style::new().black().on_green().not_dim()}
+                />
+            </Block>
         </Block>
     }
 }
