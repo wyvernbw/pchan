@@ -1,3 +1,4 @@
+#![feature(iter_array_chunks)]
 #![feature(clone_from_ref)]
 
 #[path = "./emu-task.rs"]
@@ -21,19 +22,18 @@ use manatui::utils::keyv2;
 use manatui_tea_ui::components::list::{List, ListViewCompact};
 use pchan_emu::cpu::{Cpu, reg_str};
 use pchan_emu::dynarec_v2::PipelineV2Stage;
-use pchan_utils::hex;
+use pchan_emu::io::IO;
+use pchan_utils::{hex, setup_tracing, setup_tracing_file_only};
 use tokio::task::JoinHandle;
 
 use crate::emu_task::EmuTaskState;
-use crate::{
-    emu_task::{EmuRequest, EmuResponse, EmuTask, EmuTaskHandle},
-    lipgloss_colors::LIPGLOSS,
-};
+use crate::emu_task::{EmuRequest, EmuResponse, EmuTask, EmuTaskHandle};
 
 pub(crate) type Chan<T> = (Sender<T>, Receiver<T>);
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
+    setup_tracing_file_only();
     tea::run()
         .init(Model::init)
         .view(view)
@@ -70,6 +70,8 @@ struct DbgPage {
     cpu_viewer_show_zeroes: bool,
     cpu_viewer_show_cops:   bool,
     cpu_viewer_gpr_rect:    AreaRef,
+    mem_view_page_address:  u32,
+    mem_view_address:       u32,
 }
 
 #[derive(Debug, Clone)]
@@ -103,6 +105,8 @@ impl Model {
                     cpu_viewer_show_zeroes: true,
                     cpu_viewer_show_cops:   false,
                     cpu_viewer_gpr_rect:    AreaRef::empty(),
+                    mem_view_page_address:  0xbfc0_0000,
+                    mem_view_address:       0xbfc0_0000,
                 },
                 emu_handle,
                 emu_join_handle,
@@ -252,6 +256,10 @@ async fn view(model: &Model) -> View {
             <Block Height::grow()>
                 <CpuViewer .model={model} />
             </Block>
+            <Block Height::grow() Width::grow() MaxWidth::percentage(50)>
+                <MemView .model={model}/>
+            </Block>
+            <CopView .model={model}/>
         </Block>
     }
 }
@@ -369,7 +377,7 @@ fn make_register_list<'a>(
             Line::default()
         } else {
             let hidden = i.filter(|value| **value == 0).count();
-            Line::raw(format!(" ({hidden} values hidden)")).style(Style::new().dim())
+            Line::raw(format!("({hidden} values hidden)")).style(Style::new().dim())
         }])
 }
 
@@ -404,32 +412,16 @@ fn cpu_viewer(model: &Model) -> View {
 
     let pc = hex(model.emu_cpu.pc);
 
-    let cop0items = make_register_list(
-        model.emu_cpu.cop0.reg.iter(),
-        |reg| format!("cop0reg{reg}").into(),
-        show_zeroes,
-        10,
-    );
-    let cop2items = make_register_list(
-        model.emu_cpu.cop2.reg.iter(),
-        |reg| format!("cop2reg{reg}").into(),
-        show_zeroes,
-        10,
-    );
-
-    let list = List::new();
     let cop_tooltip = Line::from_iter([
         Span::raw("c ").style(Style::new().dim()),
         Span::raw("toggle cop view").style(Style::new().fg(Color::from_u32(0xeeeeee)).dim()),
     ]);
-    let show_cops = focused && model.dbg_page.cpu_viewer_show_cops;
     let gpr_tooltip = Line::from_iter([
-        Span::raw("s ").style(Style::new().dim()),
-        Span::raw("toggle zeroes").style(Style::new().fg(Color::from_u32(0xeeeeee)).dim()),
+        Span::raw(" s ").style(Style::new().dim()),
+        Span::raw("toggle zeroes ").style(Style::new().fg(Color::from_u32(0xeeeeee)).dim()),
     ]);
     let bev = model.emu_cpu.cop0.bev().onoff();
     let isc = model.emu_cpu.cop0.isc().onoff();
-    let gpr_rect = model.dbg_page.cpu_viewer_gpr_rect.get().unwrap_or_default();
     ui! {
         <Block Height::grow()>
             <Block Width::grow()>
@@ -450,43 +442,112 @@ fn cpu_viewer(model: &Model) -> View {
                         .highlight_style={Style::new().black().on_green().not_dim()}
                         // Height::grow()
                     />
-                    <Hseparator .border_type={BorderType::LightDoubleDashed} .style={Style::new().dim()} Height::grow()/>
-                    // <Block>
+                    <Hseparator .border_type={BorderType::LightDoubleDashed} .style={Style::new().dim()} />
+                    <Block Height::grow()>
                         <Text>"bev: {bev}"</Text>
                         <Text>"isc: {isc}"</Text>
-                    // </Block>
+                    </Block>
                     <Block>
-                        "{cop_tooltip}"
+                        {cop_tooltip.into_view()}
                     </Block>
                 </Block>
+            </Block>
+        </Block>
+    }
+}
+
+#[subview]
+fn cop_view(model: &Model) -> View {
+    let focused = matches!(model.dbg_page.focus.tag(), Some(DbgPageFocus::CpuViewer));
+    let border_style = border_style_focus(focused);
+    let show_zeroes = model.dbg_page.cpu_viewer_show_zeroes;
+    let cop0items = make_register_list(
+        model.emu_cpu.cop0.reg.iter(),
+        |reg| format!("cop0reg{reg}").into(),
+        show_zeroes,
+        10,
+    );
+    let cop2items = make_register_list(
+        model.emu_cpu.cop2.reg.iter(),
+        |reg| format!("cop2reg{reg}").into(),
+        show_zeroes,
+        10,
+    );
+
+    let list = List::new();
+    let show_cops = focused && model.dbg_page.cpu_viewer_show_cops;
+
+    let gpr_rect = model.dbg_page.cpu_viewer_gpr_rect.get().unwrap_or_default();
+    ui! {
+        <Block
+            .style={Style::new().on_black()}
+            Position::Absolute(Value::Cells(gpr_rect.x + gpr_rect.width), Value::Cells(gpr_rect.y))
+        >
+        {if show_cops {
+            ui! {
                 <Block
-                    Position::Absolute(Value::Cells(gpr_rect.x + gpr_rect.width), Value::Cells(gpr_rect.y))
+                    .rounded
+                    .title="-+ coprocessors +"
+                    .border_style={border_style}
+                    .borders={Borders::TOP | Borders::RIGHT | Borders::BOTTOM}
+                    Clear
+                    Padding::new(1, 3, 1, 1)
+                    Direction::Horizontal
+                    Gap(2)
                 >
-                {if show_cops {
-                    ui! {
-                        <Block
-                            .rounded
-                            .title="-+ coprocessors +"
-                            .border_style={border_style}
-                            .borders={Borders::TOP | Borders::RIGHT | Borders::BOTTOM}
-                            Padding::new(1, 3, 1, 1)
-                            Direction::Horizontal
-                            Gap(2)
-                        >
-                            <ListViewCompact
-                                .items={cop0items}
-                                .state={&list}
-                            />
-                            <ListViewCompact
-                                .items={cop2items}
-                                .state={&list}
-                            />
-                        </Block>
-                    }
-                } else {
-                    ui! {""}
-                }}
+                    <ListViewCompact
+                        .items={cop0items}
+                        .state={&list}
+                    />
+                    <ListViewCompact
+                        .items={cop2items}
+                        .state={&list}
+                    />
                 </Block>
+            }
+        } else {
+            ui! {""}
+        }}
+        </Block>
+    }
+}
+
+#[subview]
+fn mem_view(model: &Model) -> View {
+    let border_style = border_style_focus(false);
+    let mem_start = model.dbg_page.mem_view_page_address;
+    let mem_range = mem_start..(mem_start + 1024);
+    let mem_content = mem_range
+        .step_by(0x4)
+        .map(|addr| {
+            model
+                .emu_handle
+                .dbg_view
+                .emu()
+                .try_read_pure::<u32>(addr)
+                .unwrap_or(0x0)
+        })
+        .enumerate()
+        .array_chunks::<4>()
+        .map(|words| {
+            let idx = words[0].0;
+            let addr = idx as u32 * 4 * 4 * 4 + mem_start;
+            let base_style = match (idx >> 2).is_multiple_of(2) {
+                true => Style::new(),
+                false => Style::new().fg(Color::from_u32(0xeeeeee)),
+            };
+            let addr = format!("{}", hex(addr)).set_style(base_style.dim());
+            let words = words.map(|(_, word)| format!("{:08x}", word).set_style(base_style));
+            Row::new([[addr].as_slice(), words.as_slice()].concat())
+        });
+    let mem_title = format!("+ mem: {} +", hex(model.dbg_page.mem_view_address));
+    ui! {
+        <Block Width::grow() Height::grow() MaxWidth::fixed(2 + 8 + 4*8 + 8 + 1)>
+            "Memory"
+            <Block .rounded .border_style={border_style} .title={mem_title}
+                Width::grow() Height::grow() Padding::new(2, 2, 1, 1)
+            >
+                <Table .column_spacing={1} .rows={mem_content}  Height::grow() Width::grow()/>
             </Block>
         </Block>
     }

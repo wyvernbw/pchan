@@ -53,7 +53,60 @@ pub fn setup_tracing() {
                 .with_writer(indicatif_layer.get_stdout_writer())
                 .with_line_number(false), // .with_span_events(FmtSpan::CLOSE),
         )
+        .with(
+            fmt::layer()
+                .with_ansi(false)
+                .with_file(false)
+                .without_time()
+                .with_writer(std::fs::File::create("pchan.log").unwrap())
+                .with_line_number(false), // .with_span_events(FmtSpan::CLOSE),
+        )
         .with(indicatif_layer)
+        .with(
+            fmt::layer()
+                .with_ansi(true)
+                .with_span_events(FmtSpan::CLOSE)
+                .with_filter(
+                    EnvFilter::from_default_env()
+                        // .add_directive("off".parse().unwrap())
+                        .add_directive("pchan_emu[fn]=trace".parse().unwrap()),
+                ),
+        )
+        .with(
+            EnvFilter::builder()
+                .with_env_var("PCHAN_LOG")
+                .with_default_directive("info".parse().unwrap())
+                .from_env_lossy()
+                .add_directive("cranelift_jit::backend=off".parse().unwrap()),
+        )
+        .try_init();
+
+    std::panic::set_hook(Box::new(|info| {
+        let (file, line, column) = info
+            .location()
+            .map(|loc| (loc.file(), loc.line(), loc.column()))
+            .unwrap_or_default();
+        tracing::error!(
+            src.file = file,
+            src.line = line,
+            src.column = column,
+            panic = %info.payload_as_str().unwrap_or_default()
+        );
+        let bt = Backtrace::capture();
+        tracing::error!("backtrace: \n\n{}", bt);
+    }));
+}
+
+pub fn setup_tracing_file_only() {
+    _ = tracing_subscriber::registry()
+        .with(
+            fmt::layer()
+                .with_ansi(false)
+                .with_file(false)
+                .without_time()
+                .with_writer(std::fs::File::create("pchan.log").unwrap())
+                .with_line_number(false), // .with_span_events(FmtSpan::CLOSE),
+        )
         .with(
             fmt::layer()
                 .with_ansi(true)

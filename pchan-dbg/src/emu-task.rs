@@ -31,13 +31,14 @@ pub(crate) struct EmuTask {
     handle:    EmuTaskHandle,
     state:     EmuTaskState,
     bios_path: PathBuf,
-    emu:       Emu,
+    emu:       &'static mut Emu,
     pipe:      PipelineV2,
 }
 #[derive(Debug, Clone)]
 pub(crate) struct EmuTaskHandle {
     pub(crate) req_chan: Chan<EmuRequest>,
     pub(crate) res_chan: Chan<EmuResponse>,
+    pub(crate) dbg_view: DebugView,
 }
 
 impl EmuTask {
@@ -49,11 +50,16 @@ impl EmuTask {
             .parse::<PathBuf>()
             .wrap_err("PCHAN_BIOS var contains invalid path.")?;
 
-        let handle = EmuTaskHandle { req_chan, res_chan };
+        let emu = Box::leak(Box::new(Emu::default()));
+        let handle = EmuTaskHandle {
+            req_chan,
+            res_chan,
+            dbg_view: DebugView::from_emu(emu),
+        };
         let task = EmuTask {
             handle: handle.clone(),
             state: EmuTaskState::Paused,
-            emu: Emu::default(),
+            emu,
             pipe: PipelineV2::Uninit,
             bios_path,
         };
@@ -73,7 +79,7 @@ impl EmuTask {
             self.emu.load_bios()?;
             self.emu.cpu_mut().jump_to_bios();
 
-            self.pipe = PipelineV2::new(&self.emu);
+            self.pipe = PipelineV2::new(self.emu);
 
             loop {
                 match self.state {
@@ -88,7 +94,7 @@ impl EmuTask {
                             self = self.handle_req(msg)?;
                         }
 
-                        self.pipe = self.pipe.step(&mut self.emu)?;
+                        self.pipe = self.pipe.step(self.emu)?;
                         let stage = self.pipe.stage();
                         self.handle
                             .res_chan
@@ -131,6 +137,7 @@ impl EmuTask {
                 scheduler,
             } => {
                 let cpu = Box::clone_from_ref(self.emu.cpu());
+                self.emu.mem_mut();
                 self.handle.res_chan.0.send(EmuResponse::CpuUpdate(cpu))?;
             }
             PipelineV2::Cached { dynarec, scheduler } => {}
@@ -152,5 +159,21 @@ impl EmuTask {
             }
         };
         Ok(self)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct DebugView(*mut Emu);
+
+unsafe impl Send for DebugView {}
+unsafe impl Sync for DebugView {}
+
+impl DebugView {
+    pub fn from_emu(emu: &mut Emu) -> Self {
+        Self(emu as *mut Emu)
+    }
+
+    pub fn emu(&self) -> &Emu {
+        unsafe { &*self.0 }
     }
 }
