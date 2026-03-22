@@ -6,6 +6,7 @@ pub(crate) mod emu_task;
 #[path = "./lipgloss-colors.rs"]
 pub(crate) mod lipgloss_colors;
 pub(crate) mod mem_widget;
+pub(crate) mod tty_widget;
 
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -30,6 +31,7 @@ use tokio::task::JoinHandle;
 use crate::emu_task::EmuTaskState;
 use crate::emu_task::{EmuRequest, EmuResponse, EmuTask, EmuTaskHandle};
 use crate::mem_widget::{MemView, MemViewState};
+use crate::tty_widget::{TtyView, TtyViewState};
 
 pub(crate) type Chan<T> = (Sender<T>, Receiver<T>);
 
@@ -56,6 +58,7 @@ struct Model {
     emu_stage:       PipelineV2Stage,
     emu_task_state:  EmuTaskState,
     emu_cpu:         Box<Cpu>,
+    tty:             Vec<Arc<str>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -63,6 +66,7 @@ enum DbgPageFocus {
     Ops,
     CpuViewer,
     MemViewer,
+    TtyViewer,
 }
 
 struct DbgPage {
@@ -74,6 +78,7 @@ struct DbgPage {
     cpu_viewer_show_cops:   bool,
     cpu_viewer_gpr_rect:    AreaRef,
     mem_view:               MemViewState,
+    tty_view:               TtyViewState,
 }
 
 #[derive(Debug, Clone)]
@@ -81,6 +86,7 @@ enum Msg {
     Quit,
     Event(Event),
     EmuRes(EmuResponse),
+    TtyLine(Arc<str>),
 }
 
 impl tea::Message for Msg {
@@ -96,6 +102,7 @@ impl Model {
             Err(err) => panic!("{err:?}"),
         };
         let rx = emu_handle.res_chan.1.clone();
+        let tty_rx = emu_handle.tty_rx.clone();
 
         (
             Model {
@@ -108,16 +115,25 @@ impl Model {
                     cpu_viewer_show_cops:   false,
                     cpu_viewer_gpr_rect:    AreaRef::empty(),
                     mem_view:               MemViewState::new(),
+                    tty_view:               TtyViewState::new(),
                 },
                 emu_handle,
                 emu_join_handle,
                 emu_stage: PipelineV2Stage::Uninit,
                 emu_task_state: EmuTaskState::Paused,
                 emu_cpu: Box::default(),
+                tty: vec![],
             },
             Effect::new(async move |tx| {
-                while let Ok(res) = rx.recv_async().await {
-                    _ = tx.send_async(Msg::EmuRes(res)).await;
+                loop {
+                    tokio::select! {
+                        Ok(res) = rx.recv_async() => {
+                            _ = tx.send_async(Msg::EmuRes(res)).await;
+                        }
+                        Ok(log) = tty_rx.recv_async() => {
+                            _ = tx.send_async(Msg::TtyLine(log)).await;
+                        }
+                    }
                 }
             }),
         )
@@ -180,6 +196,10 @@ impl Model {
                     self.no_effect()
                 }
             },
+            Msg::TtyLine(line) => {
+                self.tty.push(line);
+                self.no_effect()
+            }
         }
     }
 
@@ -205,6 +225,7 @@ impl Model {
                     }
                 }
 
+                self.dbg_page.tty_view = self.dbg_page.tty_view.update(&event);
                 (self.dbg_page.decoded_ops_list, self.dbg_page.focus) = self
                     .dbg_page
                     .focus
@@ -241,6 +262,7 @@ impl Model {
             .next((&self.dbg_page.decoded_ops_list, DbgPageFocus::Ops))
             .next((&self.dbg_page.cpu_gpr_list, DbgPageFocus::CpuViewer))
             .next((&self.dbg_page.mem_view, DbgPageFocus::MemViewer))
+            .next((&self.dbg_page.tty_view, DbgPageFocus::TtyViewer))
             .commit();
     }
 
@@ -252,7 +274,7 @@ impl Model {
 async fn view(model: &Model) -> View {
     ui! {
         <Block .rounded .title="+ 🐷🎗️ P-ちゃん dbg +" Width::grow() Height::grow() Direction::Horizontal>
-            <Block Width::grow() Height::grow() MaxWidth::percentage(25)>
+            <Block Width::percentage(25) Height::grow() MaxWidth::percentage(25)>
                 <Instructions .model={model} Height::grow()/>
                 <Summary .model={model} Width::grow()/>
             </Block>
@@ -261,6 +283,9 @@ async fn view(model: &Model) -> View {
             </Block>
             <Block Height::grow() Width::grow() MaxWidth::percentage(50)>
                 <MemView .view={&model.emu_handle.dbg_view} .state={&model.dbg_page.mem_view}/>
+            </Block>
+            <Block Height::grow() Width::grow()>
+                <TtyView .state={&model.dbg_page.tty_view} .tty={&model.tty} Width::grow() Height::grow()/>
             </Block>
             <CopView .model={model}/>
         </Block>

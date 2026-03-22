@@ -1,5 +1,6 @@
 use crate::Chan;
 use color_eyre::{Result, eyre::Context};
+use flume::Receiver;
 use pchan_emu::{
     Bus, Emu,
     bootloader::Bootloader,
@@ -39,6 +40,7 @@ pub(crate) struct EmuTaskHandle {
     pub(crate) req_chan: Chan<EmuRequest>,
     pub(crate) res_chan: Chan<EmuResponse>,
     pub(crate) dbg_view: DebugView,
+    pub(crate) tty_rx:   Receiver<Arc<str>>,
 }
 
 impl EmuTask {
@@ -51,10 +53,12 @@ impl EmuTask {
             .wrap_err("PCHAN_BIOS var contains invalid path.")?;
 
         let emu = Box::leak(Box::new(Emu::default()));
+        let tty_rx = emu.tty.set_channeled();
         let handle = EmuTaskHandle {
             req_chan,
             res_chan,
             dbg_view: DebugView::from_emu(emu),
+            tty_rx,
         };
         let task = EmuTask {
             handle: handle.clone(),
