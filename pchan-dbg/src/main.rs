@@ -62,6 +62,8 @@ struct Model {
     emu_stage:       PipelineV2Stage,
     emu_task_state:  EmuTaskState,
     emu_cpu:         Box<Cpu>,
+    emu_cpu_freq_hz: f64,
+    emu_running:     bool,
     tty:             Vec<Arc<str>>,
     objdump:         Option<Arc<str>>,
 }
@@ -132,6 +134,8 @@ impl Model {
                 emu_cpu: Box::default(),
                 tty: vec![],
                 objdump: None,
+                emu_cpu_freq_hz: 0.0,
+                emu_running: false,
             },
             Effect::new(async move |tx| {
                 loop {
@@ -232,6 +236,10 @@ impl Model {
                     self.objdump = Some(asm);
                     self.no_effect()
                 }
+                EmuResponse::FrequencyUpdate(freq_hz) => {
+                    self.emu_cpu_freq_hz = freq_hz;
+                    self.no_effect()
+                }
             },
             Msg::TtyLine(line) => {
                 self.tty.push(line);
@@ -248,6 +256,14 @@ impl Model {
             }
             keyv2!('n') => {
                 self.send_request(EmuRequest::Step).await;
+                self.no_effect()
+            }
+            keyv2!(space) => {
+                self.emu_running = !self.emu_running;
+                match self.emu_running {
+                    true => self.send_request(EmuRequest::Run).await,
+                    false => self.send_request(EmuRequest::Pause).await,
+                };
                 self.no_effect()
             }
             event => {
@@ -311,8 +327,10 @@ impl Model {
 }
 
 async fn view(model: &Model) -> View {
+    let freq_mhz = model.emu_cpu_freq_hz / 1_000_000.0;
+    let title = format!("+ 🐷🎗️ P-ちゃん dbg @ {freq_mhz:.2}Mhz +");
     ui! {
-        <Block .rounded .title="+ 🐷🎗️ P-ちゃん dbg +" Width::grow() Height::grow() Direction::Horizontal>
+        <Block .rounded .title={title} Width::grow() Height::grow() Direction::Horizontal>
             <Block Width::percentage(25) Height::grow() MaxWidth::percentage(25)>
                 <Instructions .model={model} Height::grow()/>
                 <Summary .model={model} Width::grow()/>

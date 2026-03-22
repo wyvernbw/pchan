@@ -7,13 +7,15 @@ use pchan_emu::{
     cpu::Cpu,
     dynarec_v2::{DynarecBlock, FETCH_CHANNEL, PipelineV2, PipelineV2Stage, emitters::DecodedOp},
 };
-use std::{io::Write, path::PathBuf, process::Stdio, sync::Arc};
-use tokio::task::JoinHandle;
+use std::{collections::VecDeque, io::Write, path::PathBuf, process::Stdio, sync::Arc};
+use tokio::{task::JoinHandle, time::Instant};
 
 #[derive(Debug, Clone)]
 pub(crate) enum EmuRequest {
     Quit,
     Step,
+    Run,
+    Pause,
 }
 #[derive(Debug, Clone)]
 pub(crate) enum EmuResponse {
@@ -22,6 +24,7 @@ pub(crate) enum EmuResponse {
     Compiled(u32, Arc<[DecodedOp]>, DynarecBlock),
     CpuUpdate(Box<Cpu>),
     ObjDump(Arc<str>),
+    FrequencyUpdate(f64),
 }
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum EmuTaskState {
@@ -30,11 +33,12 @@ pub(crate) enum EmuTaskState {
     Done,
 }
 pub(crate) struct EmuTask {
-    handle:    EmuTaskHandle,
-    state:     EmuTaskState,
-    bios_path: PathBuf,
-    emu:       &'static mut Emu,
-    pipe:      PipelineV2,
+    handle:        EmuTaskHandle,
+    state:         EmuTaskState,
+    bios_path:     PathBuf,
+    emu:           &'static mut Emu,
+    pipe:          PipelineV2,
+    cycle_samples: VecDeque<(u64, Instant)>,
 }
 #[derive(Debug, Clone)]
 pub(crate) struct EmuTaskHandle {
@@ -67,6 +71,7 @@ impl EmuTask {
             emu,
             pipe: PipelineV2::Uninit,
             bios_path,
+            cycle_samples: VecDeque::with_capacity(256),
         };
         let join_handle = task.run();
 
@@ -114,6 +119,29 @@ impl EmuTask {
         })
     }
     fn handle_pipe_effects(&mut self) -> Result<()> {
+        let sample = (self.emu.cpu().cycles, Instant::now());
+        const MAX_SAMPLES: usize = 256;
+        self.cycle_samples.push_back(sample);
+        if self.cycle_samples.len() > MAX_SAMPLES {
+            self.cycle_samples.pop_front();
+        }
+        if self.cycle_samples.len() > 1
+            && let Some((first, last)) = self.cycle_samples.front().zip(self.cycle_samples.back())
+        {
+            let (cycle_delta, overflowed) = last.0.overflowing_sub(first.0);
+            if overflowed {
+                self.cycle_samples.clear();
+                return Ok(());
+            }
+            let time_delta = last.1.duration_since(first.1);
+            let frequency_hz = cycle_delta as f64 / time_delta.as_secs_f64();
+            _ = self
+                .handle
+                .res_chan
+                .0
+                .send(EmuResponse::FrequencyUpdate(frequency_hz));
+        }
+
         match &self.pipe {
             PipelineV2::Uninit => {}
             PipelineV2::Init { dynarec, pc } => {}
@@ -162,6 +190,10 @@ impl EmuTask {
             }
             EmuRequest::Quit => {
                 self.state = EmuTaskState::Done;
+            }
+            EmuRequest::Run => self.state = EmuTaskState::Running,
+            EmuRequest::Pause => {
+                self.state = EmuTaskState::Paused;
             }
         };
         Ok(self)
