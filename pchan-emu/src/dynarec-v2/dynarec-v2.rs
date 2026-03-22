@@ -120,6 +120,10 @@ impl DynarecBlock {
 
         emu.run_io();
     }
+
+    pub fn buffer(&self) -> &ExecutableBuffer {
+        &self.function.exec
+    }
 }
 
 impl FnMut<DynarecBlockArgs<'_>> for DynarecBlock {

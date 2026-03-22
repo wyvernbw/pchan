@@ -11,7 +11,7 @@ manatui = { git = "https://github.com/wyvernbw/manatui.git", features = ["macros
 manatui-tea-ui = { git = "https://github.com/wyvernbw/manatui.git", version = "0.1.0" }
 pchan-emu = { version = "0.1.0", path = "../pchan-emu", features = ["fetch-channel"] }
 pchan-utils = { version = "0.1.0", path = "../pchan-utils" }
-tokio = { version = "*", features = ["macros", "rt"] }
+tokio = { version = "1.50.0", features = ["fs", "io-util", "macros", "process", "rt"] }
 
 # Read the optimization guideline for more details: https://ratatui.rs/recipes/apps/release-your-app/#optimizations
 [profile.release]

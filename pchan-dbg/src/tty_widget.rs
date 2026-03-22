@@ -168,7 +168,7 @@ pub(crate) fn tty_view(tty: &[Arc<str>], state: &TtyViewState) -> View {
 
     if state.minimized {
         return ui! {
-        <Block>
+        <Block Width::grow()>
             <Text>"TTY"</Text>
             <Block
                 .rounded .border_style={border_style} .title="+ tty +"
@@ -197,7 +197,9 @@ pub(crate) fn tty_view(tty: &[Arc<str>], state: &TtyViewState) -> View {
     }
 
     ui! {
-        <Block>
+        <Block
+            {width} {height}
+        >
             <Text>"TTY"</Text>
             <Block
                 .rounded .border_style={border_style} .title="+ tty +"

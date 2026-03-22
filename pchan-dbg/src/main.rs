@@ -1,6 +1,8 @@
+#![feature(try_blocks)]
 #![feature(iter_array_chunks)]
 #![feature(clone_from_ref)]
 
+pub(crate) mod asm_dump_widget;
 #[path = "./emu-task.rs"]
 pub(crate) mod emu_task;
 #[path = "./lipgloss-colors.rs"]
@@ -9,25 +11,27 @@ pub(crate) mod mem_widget;
 pub(crate) mod tty_widget;
 
 use std::borrow::Cow;
+use std::process::Stdio;
 use std::sync::Arc;
 
 use color_eyre::Result;
 use flume::{Receiver, Sender};
 use manatui::prelude::{strum::EnumCount, *};
 use manatui::ratatui::crossterm::event::Event;
-use manatui::ratatui::text::{Line, Span, ToSpan};
+use manatui::ratatui::text::{Line, Span};
 use manatui::tea;
 use manatui::tea::Effect;
-use manatui::tea::focus::{EventOutcome, Focus, FocusGroup};
+use manatui::tea::focus::{EventOutcome, FocusGroup};
 use manatui::tea::observe::AreaRef;
 use manatui::utils::keyv2;
 use manatui_tea_ui::components::list::{List, ListViewCompact};
 use pchan_emu::cpu::{Cpu, reg_str};
 use pchan_emu::dynarec_v2::PipelineV2Stage;
-use pchan_emu::io::IO;
-use pchan_utils::{hex, setup_tracing, setup_tracing_file_only};
+use pchan_utils::{hex, setup_tracing_file_only};
+use tokio::io::AsyncWriteExt;
 use tokio::task::JoinHandle;
 
+use crate::asm_dump_widget::{AsmDump, AsmDumpView};
 use crate::emu_task::EmuTaskState;
 use crate::emu_task::{EmuRequest, EmuResponse, EmuTask, EmuTaskHandle};
 use crate::mem_widget::{MemView, MemViewState};
@@ -59,6 +63,7 @@ struct Model {
     emu_task_state:  EmuTaskState,
     emu_cpu:         Box<Cpu>,
     tty:             Vec<Arc<str>>,
+    objdump:         Option<Arc<str>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -67,6 +72,7 @@ enum DbgPageFocus {
     CpuViewer,
     MemViewer,
     TtyViewer,
+    AsmViewer,
 }
 
 struct DbgPage {
@@ -79,6 +85,7 @@ struct DbgPage {
     cpu_viewer_gpr_rect:    AreaRef,
     mem_view:               MemViewState,
     tty_view:               TtyViewState,
+    asm_dump:               AsmDump,
 }
 
 #[derive(Debug, Clone)]
@@ -116,6 +123,7 @@ impl Model {
                     cpu_viewer_gpr_rect:    AreaRef::empty(),
                     mem_view:               MemViewState::new(),
                     tty_view:               TtyViewState::new(),
+                    asm_dump:               AsmDump::new(),
                 },
                 emu_handle,
                 emu_join_handle,
@@ -123,6 +131,7 @@ impl Model {
                 emu_task_state: EmuTaskState::Paused,
                 emu_cpu: Box::default(),
                 tty: vec![],
+                objdump: None,
             },
             Effect::new(async move |tx| {
                 loop {
@@ -164,7 +173,7 @@ impl Model {
             Msg::EmuRes(res) => match res {
                 EmuResponse::StageUpdate(stage) => self.set_emu_stage(stage).no_effect(),
                 EmuResponse::StateUpdate(state) => self.set_emu_task_state(state).no_effect(),
-                EmuResponse::Compiled(pc, decoded_ops) => {
+                EmuResponse::Compiled(pc, decoded_ops, func) => {
                     let decoded_ops = Some(
                         decoded_ops
                             .iter()
@@ -189,10 +198,38 @@ impl Model {
                         decoded_ops,
                         ..self.dbg_page
                     };
-                    self.no_effect()
+                    (
+                        self,
+                        Effect::new(async move |tx| {
+                            let _ = try {
+                                let mut file =
+                                    tokio::fs::File::create("/tmp/pchan-dump.bin").await?;
+                                file.write_all(func.buffer().as_ref()).await?;
+                                let mut cmd = tokio::process::Command::new("objdump");
+                                cmd.args([
+                                    "-D",
+                                    "-b",
+                                    "binary",
+                                    "-m",
+                                    "aarch64",
+                                    "/tmp/pchan-dump.bin",
+                                ])
+                                .stdout(Stdio::piped());
+                                cmd.spawn()?;
+                                let output = cmd.output().await?;
+                                let output = String::from_utf8_lossy(&output.stdout);
+                                let output = Arc::<str>::from(output);
+                                _ = tx.send(Msg::EmuRes(EmuResponse::ObjDump(output)));
+                            };
+                        }),
+                    )
                 }
                 EmuResponse::CpuUpdate(cpu) => {
                     self.emu_cpu = cpu;
+                    self.no_effect()
+                }
+                EmuResponse::ObjDump(asm) => {
+                    self.objdump = Some(asm);
                     self.no_effect()
                 }
             },
@@ -235,6 +272,7 @@ impl Model {
                     .focus
                     .pipe(self.dbg_page.cpu_gpr_list.update(&event));
                 self.dbg_page.mem_view = self.dbg_page.mem_view.update(&event);
+                self.dbg_page.asm_dump = self.dbg_page.asm_dump.update(&event);
 
                 self.build_focus();
 
@@ -263,6 +301,7 @@ impl Model {
             .next((&self.dbg_page.cpu_gpr_list, DbgPageFocus::CpuViewer))
             .next((&self.dbg_page.mem_view, DbgPageFocus::MemViewer))
             .next((&self.dbg_page.tty_view, DbgPageFocus::TtyViewer))
+            .next((&self.dbg_page.asm_dump, DbgPageFocus::AsmViewer))
             .commit();
     }
 
@@ -285,7 +324,12 @@ async fn view(model: &Model) -> View {
                 <MemView .view={&model.emu_handle.dbg_view} .state={&model.dbg_page.mem_view}/>
             </Block>
             <Block Height::grow() Width::grow()>
-                <TtyView .state={&model.dbg_page.tty_view} .tty={&model.tty} Width::grow() Height::grow()/>
+                <TtyView .state={&model.dbg_page.tty_view} .tty={&model.tty} />
+                <AsmDumpView
+                    .state={&model.dbg_page.asm_dump}
+                    .asm={model.objdump.clone().unwrap_or_default()}
+                    Width::grow() Height::grow()
+                />
             </Block>
             <CopView .model={model}/>
         </Block>

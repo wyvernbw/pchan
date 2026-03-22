@@ -5,9 +5,9 @@ use pchan_emu::{
     Bus, Emu,
     bootloader::Bootloader,
     cpu::Cpu,
-    dynarec_v2::{FETCH_CHANNEL, PipelineV2, PipelineV2Stage, emitters::DecodedOp},
+    dynarec_v2::{DynarecBlock, FETCH_CHANNEL, PipelineV2, PipelineV2Stage, emitters::DecodedOp},
 };
-use std::{path::PathBuf, sync::Arc};
+use std::{io::Write, path::PathBuf, process::Stdio, sync::Arc};
 use tokio::task::JoinHandle;
 
 #[derive(Debug, Clone)]
@@ -19,8 +19,9 @@ pub(crate) enum EmuRequest {
 pub(crate) enum EmuResponse {
     StageUpdate(PipelineV2Stage),
     StateUpdate(EmuTaskState),
-    Compiled(u32, Arc<[DecodedOp]>),
+    Compiled(u32, Arc<[DecodedOp]>, DynarecBlock),
     CpuUpdate(Box<Cpu>),
+    ObjDump(Arc<str>),
 }
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum EmuTaskState {
@@ -116,7 +117,7 @@ impl EmuTask {
         match &self.pipe {
             PipelineV2::Uninit => {}
             PipelineV2::Init { dynarec, pc } => {}
-            PipelineV2::Compiled { .. } => {
+            PipelineV2::Compiled { func, .. } => {
                 let mut first_addr = None;
                 let instructions = FETCH_CHANNEL
                     .1
@@ -127,10 +128,11 @@ impl EmuTask {
                     })
                     .collect();
                 if let Some(first_addr) = first_addr {
-                    self.handle
-                        .res_chan
-                        .0
-                        .send(EmuResponse::Compiled(first_addr, instructions))?;
+                    self.handle.res_chan.0.send(EmuResponse::Compiled(
+                        first_addr,
+                        instructions,
+                        func.clone(),
+                    ))?;
                 };
             }
             PipelineV2::Called {
