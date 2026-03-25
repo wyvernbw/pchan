@@ -16,7 +16,7 @@ use manatui_tea_ui::components::text_input::{TextInput, TextInputEvent, TextInpu
 use pchan_emu::{dynarec_v2::emitters::DecodedOp, io::IO};
 use pchan_utils::hex;
 
-use crate::{Hseparator, border_style_focus, emu_task::DebugView};
+use crate::{Hseparator, border_style_focus, emu_task::DebugView, lipgloss_colors::LipglossStyle};
 
 pub(crate) struct MemViewState {
     focused:       AtomicBool,
@@ -81,7 +81,7 @@ impl MemViewState {
         match self.go_to_visible {
             false => {
                 self = match event {
-                    keyv2!(':') => {
+                    keyv2!('g') => {
                         self.go_to_visible = true;
                         self
                     }
@@ -158,7 +158,7 @@ pub(crate) fn mem_view(state: &MemViewState, view: &DebugView) -> View {
             let words = words.map(|(word_address, word)| {
                 let word_address = word_address as u32 * 4 + mem_start;
                 let style = match word_address == state.address && focused {
-                    true => base_style.black().on_green(),
+                    true => base_style.black().on_c0700(),
                     false => base_style,
                 };
                 format!("{:08x}", word).set_style(style)
@@ -201,7 +201,7 @@ pub(crate) fn mem_view(state: &MemViewState, view: &DebugView) -> View {
                         <Block .rounded .title="jump to" Width::grow()>
                             <TextInputView
                                 .state={&state.go_to_input}
-                                .cursor_style={Style::new().black().on_green()}
+                                .cursor_style={Style::new().black().on_c0700()}
                                 .select_style={Style::new().reversed()}
                                 Width::grow()
                             />

@@ -9,10 +9,11 @@ use std::{
 };
 
 use rstest::*;
+use tracing_error::ErrorLayer;
 use tracing_indicatif::IndicatifLayer;
 use tracing_subscriber::{
     EnvFilter, Layer,
-    fmt::{self, format::FmtSpan},
+    fmt::{self, MakeWriter, format::FmtSpan, writer::BoxMakeWriter},
     util::SubscriberInitExt,
 };
 
@@ -79,6 +80,7 @@ pub fn setup_tracing() {
                 .from_env_lossy()
                 .add_directive("cranelift_jit::backend=off".parse().unwrap()),
         )
+        .with(ErrorLayer::default())
         .try_init();
 
     std::panic::set_hook(Box::new(|info| {
@@ -97,49 +99,77 @@ pub fn setup_tracing() {
     }));
 }
 
-pub fn setup_tracing_file_only() {
+#[bon::builder]
+pub fn init_tracing(
+    #[builder(default = true)] stdout: bool,
+    #[builder(default = true)] file: bool,
+    #[builder(default = true)] indicatif: bool,
+    #[builder(default = true)] panic_hook: bool,
+) {
+    let indicatif_layer_opt = indicatif.then(IndicatifLayer::new);
+
+    let stdout_layer = stdout.then(|| {
+        let writer: BoxMakeWriter = match &indicatif_layer_opt {
+            Some(l) => BoxMakeWriter::new(l.get_stdout_writer()),
+            None => BoxMakeWriter::new(std::io::stdout),
+        };
+
+        fmt::layer()
+            .with_ansi(true)
+            .with_file(false)
+            .without_time()
+            .with_test_writer()
+            .with_writer(writer)
+            .with_line_number(false)
+    });
+
+    let file_layer = file.then(|| {
+        fmt::layer()
+            .with_ansi(false)
+            .with_file(false)
+            .without_time()
+            .with_writer(std::fs::File::create("pchan.log").unwrap())
+            .with_line_number(false)
+    });
+
+    let span_layer = fmt::layer()
+        .with_ansi(true)
+        .with_span_events(FmtSpan::CLOSE)
+        .with_filter(
+            EnvFilter::from_default_env().add_directive("pchan_emu[fn]=trace".parse().unwrap()),
+        );
+
+    let env_filter = EnvFilter::builder()
+        .with_env_var("PCHAN_LOG")
+        .with_default_directive("info".parse().unwrap())
+        .from_env_lossy()
+        .add_directive("cranelift_jit::backend=off".parse().unwrap());
+
     _ = tracing_subscriber::registry()
-        .with(
-            fmt::layer()
-                .with_ansi(false)
-                .with_file(false)
-                .without_time()
-                .with_writer(std::fs::File::create("pchan.log").unwrap())
-                .with_line_number(false), // .with_span_events(FmtSpan::CLOSE),
-        )
-        .with(
-            fmt::layer()
-                .with_ansi(true)
-                .with_span_events(FmtSpan::CLOSE)
-                .with_filter(
-                    EnvFilter::from_default_env()
-                        // .add_directive("off".parse().unwrap())
-                        .add_directive("pchan_emu[fn]=trace".parse().unwrap()),
-                ),
-        )
-        .with(
-            EnvFilter::builder()
-                .with_env_var("PCHAN_LOG")
-                .with_default_directive("info".parse().unwrap())
-                .from_env_lossy()
-                .add_directive("cranelift_jit::backend=off".parse().unwrap()),
-        )
+        .with(stdout_layer)
+        .with(file_layer)
+        .with(indicatif_layer_opt)
+        .with(span_layer)
+        .with(env_filter)
+        .with(ErrorLayer::default())
         .try_init();
 
-    std::panic::set_hook(Box::new(|info| {
-        let (file, line, column) = info
-            .location()
-            .map(|loc| (loc.file(), loc.line(), loc.column()))
-            .unwrap_or_default();
-        tracing::error!(
-            src.file = file,
-            src.line = line,
-            src.column = column,
-            panic = %info.payload_as_str().unwrap_or_default()
-        );
-        let bt = Backtrace::capture();
-        tracing::error!("backtrace: \n\n{}", bt);
-    }));
+    if panic_hook {
+        std::panic::set_hook(Box::new(|info| {
+            let (file, line, column) = info
+                .location()
+                .map(|loc| (loc.file(), loc.line(), loc.column()))
+                .unwrap_or_default();
+            tracing::error!(
+                src.file = file,
+                src.line = line,
+                src.column = column,
+                panic = %info.payload_as_str().unwrap_or_default()
+            );
+            let bt = Backtrace::capture();
+            tracing::error!("backtrace: \n\n{}", bt);
+        }));
+    }
 }
 
 #[macro_export]

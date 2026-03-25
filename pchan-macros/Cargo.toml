@@ -9,6 +9,6 @@ proc-macro = true
 [dependencies]
 darling = "0.23.0"
 proc-macro2 = "1.0.106"
-quote = "1.0.44"
-syn = "2.0.116"
+quote = "1.0.45"
+syn = "2.0.117"
 unsynn = "0.3.0"

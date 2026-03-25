@@ -9,13 +9,7 @@ color-eyre = "*"
 flume = { version = "0.12.0", default-features = false, features = ["async"] }
 manatui = { git = "https://github.com/wyvernbw/manatui.git", features = ["macros", "nightly"] }
 manatui-tea-ui = { git = "https://github.com/wyvernbw/manatui.git", version = "0.1.0" }
-pchan-emu = { version = "0.1.0", path = "../pchan-emu", features = ["fetch-channel"] }
-pchan-utils = { version = "0.1.0", path = "../pchan-utils" }
+pchan-emu = { workspace = true, features = ["fetch-channel"] }
+pchan-utils = { workspace = true, path = "../pchan-utils" }
 tokio = { version = "1.50.0", features = ["fs", "io-util", "macros", "process", "rt"] }
-
-# Read the optimization guideline for more details: https://ratatui.rs/recipes/apps/release-your-app/#optimizations
-[profile.release]
-codegen-units = 1
-lto = true
-opt-level = "s"
-strip = true
+tracing.workspace = true

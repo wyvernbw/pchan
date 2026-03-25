@@ -1,3 +1,5 @@
+cargo-features = ["profile-rustflags"]
+
 [package]
 edition = "2024"
 name = "pchan"
@@ -39,7 +41,7 @@ slab = "0.4.12"
 tracing = "0.1.44"
 
 [workspace.dependencies.const-hex]
-version = "1.17.0"
+version = "1.18.1"
 features = [
     "nightly",
     "portable-simd",
@@ -55,7 +57,7 @@ path = "./pchan-macros"
 path = "./pchan-utils"
 
 [workspace.dependencies.tracing-subscriber]
-version = "0.3.22"
+version = "0.3.23"
 features = ["env-filter"]
 
 [profile.bench]
@@ -67,3 +69,15 @@ panic = "unwind"
 [profile.release]
 lto = "thin"
 panic = "unwind"
+
+[profile.san]
+inherits = "dev"          # or "release" if you want optimized + sanitized
+opt-level = 1             # 0 = fastest checks, 1-2 = better perf with still good debug
+debug = true              # full debug info (stack traces in reports)
+overflow-checks = true
+panic = "abort"           # optional: makes errors more obvious, but breaks some unwinding
+rustflags = [
+    "-Zsanitizer=address",
+    # "-Zsanitizer=leak",
+    # "-Zsanitizer=hwaddress",           
+]

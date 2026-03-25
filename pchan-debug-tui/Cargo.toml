@@ -9,7 +9,7 @@ amidog-tests = ["pchan-emu/amidog-tests"]
 [dependencies]
 ratatui = "0.30.0"
 derive_more = { version = "2.1.1", features = ["add", "debug", "display"] }
-strum = { version = "0.27.2", features = ["derive"] }
+strum = { version = "0.28.0", features = ["derive"] }
 pchan-macros = { workspace = true }
 pchan-utils = { workspace = true }
 pchan-emu = { workspace = true, features = ["fetch-channel"] }

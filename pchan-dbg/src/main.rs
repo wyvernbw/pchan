@@ -1,4 +1,5 @@
 #![feature(try_blocks)]
+#![feature(trim_prefix_suffix)]
 #![feature(iter_array_chunks)]
 #![feature(clone_from_ref)]
 
@@ -11,29 +12,36 @@ pub(crate) mod mem_widget;
 pub(crate) mod tty_widget;
 
 use std::borrow::Cow;
+use std::collections::HashSet;
 use std::process::Stdio;
 use std::sync::Arc;
 
 use color_eyre::Result;
+use color_eyre::eyre::Context;
 use flume::{Receiver, Sender};
-use manatui::prelude::{strum::EnumCount, *};
+use manatui::prelude::*;
 use manatui::ratatui::crossterm::event::Event;
 use manatui::ratatui::text::{Line, Span};
 use manatui::tea;
 use manatui::tea::Effect;
+use manatui::tea::focus::Focus;
 use manatui::tea::focus::{EventOutcome, FocusGroup};
 use manatui::tea::observe::AreaRef;
 use manatui::utils::keyv2;
+use manatui_tea_ui::common::FocusItemState;
 use manatui_tea_ui::components::list::{List, ListViewCompact};
+use manatui_tea_ui::components::text_input::{TextInput, TextInputEvent, TextInputView};
 use pchan_emu::cpu::{Cpu, reg_str};
-use pchan_emu::dynarec_v2::PipelineV2Stage;
-use pchan_utils::{hex, setup_tracing_file_only};
+use pchan_emu::dynarec_v2::{PipelineV2, PipelineV2Stage};
+use pchan_utils::{hex, init_tracing};
+use strum::EnumCount;
 use tokio::io::AsyncWriteExt;
 use tokio::task::JoinHandle;
 
 use crate::asm_dump_widget::{AsmDump, AsmDumpView};
 use crate::emu_task::EmuTaskState;
 use crate::emu_task::{EmuRequest, EmuResponse, EmuTask, EmuTaskHandle};
+use crate::lipgloss_colors::{LIPGLOSS, LipglossStyle};
 use crate::mem_widget::{MemView, MemViewState};
 use crate::tty_widget::{TtyView, TtyViewState};
 
@@ -41,7 +49,13 @@ pub(crate) type Chan<T> = (Sender<T>, Receiver<T>);
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
-    setup_tracing_file_only();
+    color_eyre::install()?;
+    init_tracing()
+        .file(true)
+        .stdout(false)
+        .panic_hook(false)
+        .indicatif(false)
+        .call();
     tea::run()
         .init(Model::init)
         .view(view)
@@ -64,6 +78,7 @@ struct Model {
     emu_cpu:         Box<Cpu>,
     emu_cpu_freq_hz: f64,
     emu_running:     bool,
+    emu_breakpoints: HashSet<u32>,
     tty:             Vec<Arc<str>>,
     objdump:         Option<Arc<str>>,
 }
@@ -72,6 +87,8 @@ struct Model {
 enum DbgPageFocus {
     Ops,
     CpuViewer,
+    Breakpoints,
+    Summary,
     MemViewer,
     TtyViewer,
     AsmViewer,
@@ -84,10 +101,27 @@ struct DbgPage {
     cpu_gpr_list:           List,
     cpu_viewer_show_zeroes: bool,
     cpu_viewer_show_cops:   bool,
+    summary_mode:           SummaryMode,
+    breakpoints_list:       List,
     cpu_viewer_gpr_rect:    AreaRef,
     mem_view:               MemViewState,
     tty_view:               TtyViewState,
     asm_dump:               AsmDump,
+    summary_input:          TextInput,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SummaryMode {
+    Hidden,
+    Idle,
+    Breakpoint,
+    BreakpointInput(BreakpointAction),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BreakpointAction {
+    Add,
+    Del,
 }
 
 #[derive(Debug, Clone)]
@@ -126,6 +160,9 @@ impl Model {
                     mem_view:               MemViewState::new(),
                     tty_view:               TtyViewState::new(),
                     asm_dump:               AsmDump::new(),
+                    breakpoints_list:       List::new(),
+                    summary_mode:           SummaryMode::Hidden,
+                    summary_input:          TextInput::new(),
                 },
                 emu_handle,
                 emu_join_handle,
@@ -136,6 +173,7 @@ impl Model {
                 objdump: None,
                 emu_cpu_freq_hz: 0.0,
                 emu_running: false,
+                emu_breakpoints: HashSet::default(),
             },
             Effect::new(async move |tx| {
                 loop {
@@ -249,61 +287,144 @@ impl Model {
     }
 
     async fn handle_event(mut self, event: Event) -> (Self, Effect<Msg>) {
-        match event {
-            keyv2!(ctrl + 'c') => {
-                self.send_request(EmuRequest::Quit).await;
-                (self, Effect::msg(Msg::Quit))
+        match (self.dbg_page.summary_mode, &event) {
+            (SummaryMode::Hidden, keyv2!(':')) => {
+                self.dbg_page.summary_mode = SummaryMode::Idle;
+                return self.no_effect();
             }
-            keyv2!('n') => {
+            (SummaryMode::Idle | SummaryMode::Breakpoint, keyv2!(esc)) => {
+                self.dbg_page.summary_mode = SummaryMode::Hidden;
+                return self.no_effect();
+            }
+            (SummaryMode::Idle, keyv2!('n')) => {
                 self.send_request(EmuRequest::Step).await;
-                self.no_effect()
+                return self.no_effect();
             }
-            keyv2!(space) => {
+            (SummaryMode::Idle, keyv2!('b')) => {
+                self.dbg_page.summary_mode = SummaryMode::Breakpoint;
+                return self.no_effect();
+            }
+            (SummaryMode::Breakpoint, keyv2!('a')) => {
+                self.dbg_page.summary_input.set_focus(true);
+                self.dbg_page.summary_mode = SummaryMode::BreakpointInput(BreakpointAction::Add);
+                return self.no_effect();
+            }
+            (SummaryMode::Breakpoint, keyv2!('d')) => {
+                self.dbg_page.summary_input.set_focus(true);
+                self.dbg_page.summary_mode = SummaryMode::BreakpointInput(BreakpointAction::Del);
+                return self.no_effect();
+            }
+            (SummaryMode::Idle, keyv2!(space)) => {
+                self.emu_running = !self.emu_running;
+                if self.emu_running {
+                    self.send_request(EmuRequest::Run).await;
+                } else {
+                    self.send_request(EmuRequest::Pause).await;
+                }
+                return self.no_effect();
+            }
+            (SummaryMode::BreakpointInput(action), event) => {
+                let effect;
+                (self.dbg_page.summary_input, effect) = self.dbg_page.summary_input.update(event);
+                match effect {
+                    TextInputEvent::None => {}
+                    TextInputEvent::Confirm => {
+                        self.dbg_page.summary_input.set_focus(false);
+                        self.dbg_page.summary_mode = SummaryMode::Breakpoint;
+                        let value: Result<u32> = try {
+                            let s = self
+                                .dbg_page
+                                .summary_input
+                                .value()
+                                .trim_prefix("0x")
+                                .trim_end();
+                            let s = u32::from_str_radix(s, 16)
+                                .wrap_err("address must be a valid hex value")?;
+                            s
+                        };
+                        let Ok(value) = value else {
+                            return self.no_effect();
+                        };
+                        match action {
+                            BreakpointAction::Add => {
+                                self.emu_breakpoints.insert(value);
+                                self.send_request(EmuRequest::AddBreakpoint(value)).await;
+                            }
+                            BreakpointAction::Del => {
+                                self.emu_breakpoints.remove(&value);
+                                self.send_request(EmuRequest::DelBreakpoint(value)).await;
+                            }
+                        }
+                    }
+                }
+                return self.no_effect();
+            }
+            (_, keyv2!(ctrl + 'c')) => {
+                self.send_request(EmuRequest::Quit).await;
+                return (self, Effect::msg(Msg::Quit));
+            }
+            _ => {}
+        }
+        if matches!(
+            self.dbg_page.summary_mode,
+            SummaryMode::Idle | SummaryMode::Breakpoint
+        ) {
+            return self.no_effect();
+        }
+
+        match self.dbg_page.focus.update(&event) {
+            EventOutcome::Consumed(focus) => {
+                self.dbg_page.focus = focus;
+                self.build_focus();
+                return self.no_effect();
+            }
+            EventOutcome::Unhandled(focus) => {
+                self.dbg_page.focus = focus;
+            }
+        }
+
+        self.dbg_page.tty_view = self.dbg_page.tty_view.update(&event);
+        (self.dbg_page.decoded_ops_list, self.dbg_page.focus) = self
+            .dbg_page
+            .focus
+            .pipe(self.dbg_page.decoded_ops_list.update(&event));
+        (self.dbg_page.breakpoints_list, self.dbg_page.focus) = self
+            .dbg_page
+            .focus
+            .pipe(self.dbg_page.breakpoints_list.update(&event));
+        (self.dbg_page.cpu_gpr_list, self.dbg_page.focus) = self
+            .dbg_page
+            .focus
+            .pipe(self.dbg_page.cpu_gpr_list.update(&event));
+        self.dbg_page.mem_view = self.dbg_page.mem_view.update(&event);
+        self.dbg_page.asm_dump = self.dbg_page.asm_dump.update(&event);
+
+        self.build_focus();
+
+        match (self.dbg_page.focus.tag(), &event) {
+            (Some(DbgPageFocus::CpuViewer), keyv2!('s')) => {
+                self.dbg_page.cpu_viewer_show_zeroes = !self.dbg_page.cpu_viewer_show_zeroes;
+            }
+            (Some(DbgPageFocus::CpuViewer), keyv2!('c')) => {
+                self.dbg_page.cpu_viewer_show_cops = !self.dbg_page.cpu_viewer_show_cops;
+            }
+            (Some(DbgPageFocus::Summary), keyv2!('n')) => {
+                self.send_request(EmuRequest::Step).await;
+            }
+            (Some(DbgPageFocus::Summary), keyv2!(space)) => {
                 self.emu_running = !self.emu_running;
                 match self.emu_running {
                     true => self.send_request(EmuRequest::Run).await,
                     false => self.send_request(EmuRequest::Pause).await,
                 };
-                self.no_effect()
             }
-            event => {
-                match self.dbg_page.focus.update(&event) {
-                    EventOutcome::Consumed(focus) => {
-                        self.dbg_page.focus = focus;
-                        self.build_focus();
-                        return self.no_effect();
-                    }
-                    EventOutcome::Unhandled(focus) => {
-                        self.dbg_page.focus = focus;
-                    }
-                }
+            _ => {}
+        }
 
-                self.dbg_page.tty_view = self.dbg_page.tty_view.update(&event);
-                (self.dbg_page.decoded_ops_list, self.dbg_page.focus) = self
-                    .dbg_page
-                    .focus
-                    .pipe(self.dbg_page.decoded_ops_list.update(&event));
-                (self.dbg_page.cpu_gpr_list, self.dbg_page.focus) = self
-                    .dbg_page
-                    .focus
-                    .pipe(self.dbg_page.cpu_gpr_list.update(&event));
-                self.dbg_page.mem_view = self.dbg_page.mem_view.update(&event);
-                self.dbg_page.asm_dump = self.dbg_page.asm_dump.update(&event);
-
-                self.build_focus();
-
-                match (self.dbg_page.focus.tag(), event) {
-                    (Some(DbgPageFocus::CpuViewer), keyv2!('s')) => {
-                        self.dbg_page.cpu_viewer_show_zeroes =
-                            !self.dbg_page.cpu_viewer_show_zeroes;
-                    }
-                    (Some(DbgPageFocus::CpuViewer), keyv2!('c')) => {
-                        self.dbg_page.cpu_viewer_show_cops = !self.dbg_page.cpu_viewer_show_cops;
-                    }
-                    _ => {}
-                }
-
-                self.no_effect()
+        match event {
+            keyv2!(ctrl + 'c') => {
+                self.send_request(EmuRequest::Quit).await;
+                (self, Effect::msg(Msg::Quit))
             }
             _ => (self, Effect::none()),
         }
@@ -314,6 +435,8 @@ impl Model {
             .focus
             .items()
             .next((&self.dbg_page.decoded_ops_list, DbgPageFocus::Ops))
+            .next((&self.dbg_page.breakpoints_list, DbgPageFocus::Breakpoints))
+            // .next((&self.dbg_page.summary, DbgPageFocus::Summary))
             .next((&self.dbg_page.cpu_gpr_list, DbgPageFocus::CpuViewer))
             .next((&self.dbg_page.mem_view, DbgPageFocus::MemViewer))
             .next((&self.dbg_page.tty_view, DbgPageFocus::TtyViewer))
@@ -331,8 +454,9 @@ async fn view(model: &Model) -> View {
     let title = format!("+ 🐷🎗️ P-ちゃん dbg @ {freq_mhz:.2}Mhz +");
     ui! {
         <Block .rounded .title={title} Width::grow() Height::grow() Direction::Horizontal>
-            <Block Width::percentage(25) Height::grow() MaxWidth::percentage(25)>
-                <Instructions .model={model} Height::grow()/>
+            <Block Width::percentage(25) Height::grow()>
+                <Instructions .model={model} Height::grow() />
+                <Breakpoints .model={model} Width::grow() Height::percentage(20)/>
                 <Summary .model={model} Width::grow()/>
             </Block>
             <Block Height::grow()>
@@ -356,19 +480,57 @@ async fn view(model: &Model) -> View {
 
 #[subview]
 fn summary(model: &Model) -> View {
+    let focused = model.dbg_page.summary_mode != SummaryMode::Hidden;
+    let border_style = border_style_focus(focused);
+
     let stage = model.emu_stage;
     let stage_idx = (model.emu_stage as u8).saturating_sub(1);
     let max_stage_idx = PipelineV2Stage::COUNT as u8 - 2;
     let ratio = stage_idx as f64 / max_stage_idx as f64;
-    let title = format!("{:?} n - step / r - run", model.emu_task_state);
+    let title = format!("{:?} :cmd ", model.emu_task_state);
+    let commands = match model.dbg_page.summary_mode {
+        SummaryMode::Idle => ui! {
+            <Block Direction::Horizontal Gap(1)>
+                <Block Width::grow()>
+                    <Text>"n"</Text>
+                    <Text>"spc"</Text>
+                    <Text>"b"</Text>
+                </Block>
+                <Block .style={Style::new().dim()} Width::grow()>
+                    <Text>"step"</Text>
+                    <Text>"run"</Text>
+                    <Text>"brk"</Text>
+                </Block>
+            </Block>
+        },
+        SummaryMode::Breakpoint => ui! {
+            <Block Direction::Horizontal Gap(1)>
+                <Block Width::grow()>
+                    <Text>"ba"</Text>
+                    <Text>"bd"</Text>
+                </Block>
+                <Block .style={Style::new().dim()} Width::grow()>
+                    <Text>"brk. add"</Text>
+                    <Text>"brk. del"</Text>
+                </Block>
+            </Block>
+        },
+        SummaryMode::BreakpointInput(_) => ui! {
+            <TextInputView .state={&model.dbg_page.summary_input} />
+        },
+        SummaryMode::Hidden => ui! {<Block/>},
+    };
     ui! {
-        <Block .rounded .title_bottom={Line::raw(title)} {Padding::new(2, 2, 1, 1)}>
+        <Block .rounded .title_bottom={Line::raw(title)} .border_style={border_style} {Padding::new(2, 2, 1, 1)}>
+            <Block>
+                {commands}
+            </Block>
             <Block
                 Direction::Horizontal Gap(1) MainJustify::SpaceBetween Width::fixed(24)
             >
                 <LineGauge
                     .ratio={ratio}
-                    .filled_style={Style::new().fg(Color::Green)}
+                    .filled_style={Style::new().c0700()}
                     .unfilled_style={Style::new().dim()}
                     Height::fixed(1) Width::grow()
                 />
@@ -387,7 +549,7 @@ fn instructions(model: &Model) -> View {
 
     let Some(instructions) = &model.dbg_page.decoded_ops else {
         return ui! {
-            <Block Width::grow()>
+            <Block Width::grow() Height::grow()>
                 <Text>"Opcodes"</Text>
                 <Block .rounded .border_style={border_style} Height::grow() Width::grow()>
                     <Block .style={Style::new().dim()} Center Width::grow() Height::grow()>
@@ -405,7 +567,7 @@ fn instructions(model: &Model) -> View {
                 <ListViewCompact
                     .state={&model.dbg_page.decoded_ops_list}
                     .items={instructions.iter().cloned()}
-                    .highlight_style={Style::new().bg(Color::Green).fg(Color::Black)}
+                    .highlight_style={Style::new().on_c0700().fg(Color::Black)}
                     Height::grow()
                 />
             </Block>
@@ -430,7 +592,7 @@ fn hseparator(
 
 fn border_style_focus(focused: bool) -> Style {
     match focused {
-        true => Style::new().green(),
+        true => Style::new().c0700(),
         false => Style::new().dim(),
     }
 }
@@ -529,7 +691,7 @@ fn cpu_viewer(model: &Model) -> View {
                     <ListViewCompact
                         .items={gpr}
                         .state={&model.dbg_page.cpu_gpr_list}
-                        .highlight_style={Style::new().black().on_green().not_dim()}
+                        .highlight_style={Style::new().black().on_c0700().not_dim()}
                         Height::grow()
                         // MaxHeight::percentage(75)
                     />
@@ -599,6 +761,40 @@ fn cop_view(model: &Model) -> View {
         } else {
             ui! {""}
         }}
+        </Block>
+    }
+}
+
+#[subview]
+fn breakpoints(model: &Model) -> View {
+    let focused = matches!(model.dbg_page.focus.tag(), Some(DbgPageFocus::Breakpoints));
+    let border_style = border_style_focus(focused);
+
+    let breakpoints = model.emu_breakpoints.iter().copied().map(|addr| {
+        let line = Line::raw(format!("  ✦ {}", hex(addr)));
+
+        if model.emu_handle.dbg_view.emu().cpu.pc == addr {
+            line.style(Style::new().bold().c0700())
+        } else {
+            line
+        }
+    });
+    ui! {
+        <Block Width::grow() Height::grow()>
+            <Text>"Brk"</Text>
+            <Block
+                .rounded
+                .border_style={border_style}
+                Width::grow() Height::grow()
+            >
+                <ListViewCompact
+                    .state={&model.dbg_page.breakpoints_list}
+                    .items={breakpoints}
+                    .highlight_style={Style::new().fg(Color::from_u32(0xffffff)).bg(LIPGLOSS[7][0])}
+                    .highlight_symbol={Line::raw("d: del  ").style(Style::new().dim())}
+                    Width::grow() Height::grow()
+                />
+            </Block>
         </Block>
     }
 }

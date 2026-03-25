@@ -7,8 +7,16 @@ use pchan_emu::{
     cpu::Cpu,
     dynarec_v2::{DynarecBlock, FETCH_CHANNEL, PipelineV2, PipelineV2Stage, emitters::DecodedOp},
 };
-use std::{collections::VecDeque, io::Write, path::PathBuf, process::Stdio, sync::Arc};
+use pchan_utils::hex;
+use std::{
+    collections::{HashSet, VecDeque},
+    io::Write,
+    path::PathBuf,
+    process::Stdio,
+    sync::Arc,
+};
 use tokio::{task::JoinHandle, time::Instant};
+use tracing::instrument;
 
 #[derive(Debug, Clone)]
 pub(crate) enum EmuRequest {
@@ -16,6 +24,8 @@ pub(crate) enum EmuRequest {
     Step,
     Run,
     Pause,
+    AddBreakpoint(u32),
+    DelBreakpoint(u32),
 }
 #[derive(Debug, Clone)]
 pub(crate) enum EmuResponse {
@@ -26,7 +36,7 @@ pub(crate) enum EmuResponse {
     ObjDump(Arc<str>),
     FrequencyUpdate(f64),
 }
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EmuTaskState {
     Running,
     Paused,
@@ -39,6 +49,7 @@ pub(crate) struct EmuTask {
     emu:           &'static mut Emu,
     pipe:          PipelineV2,
     cycle_samples: VecDeque<(u64, Instant)>,
+    breakpoints:   HashSet<u32>,
 }
 #[derive(Debug, Clone)]
 pub(crate) struct EmuTaskHandle {
@@ -72,6 +83,7 @@ impl EmuTask {
             pipe: PipelineV2::Uninit,
             bios_path,
             cycle_samples: VecDeque::with_capacity(256),
+            breakpoints: HashSet::new(),
         };
         let join_handle = task.run();
 
@@ -99,7 +111,7 @@ impl EmuTask {
                             self.handle_pipe_effects()?;
                         }
                     }
-                    EmuTaskState::Running => loop {
+                    EmuTaskState::Running => {
                         if let Ok(msg) = self.handle.req_chan.1.try_recv() {
                             self = self.handle_req(msg)?;
                         }
@@ -112,7 +124,7 @@ impl EmuTask {
                             .send(EmuResponse::StageUpdate(stage))?;
 
                         self.handle_pipe_effects()?;
-                    },
+                    }
                     EmuTaskState::Done => return Ok(()),
                 }
             }
@@ -161,6 +173,12 @@ impl EmuTask {
                         instructions,
                         func.clone(),
                     ))?;
+
+                    if self.state == EmuTaskState::Running
+                        && self.breakpoints.contains(&self.emu.cpu().pc)
+                    {
+                        self.state = EmuTaskState::Paused;
+                    }
                 };
             }
             PipelineV2::Called {
@@ -178,10 +196,11 @@ impl EmuTask {
         };
         Ok(())
     }
+    #[instrument(skip(self))]
     fn handle_req(mut self, req: EmuRequest) -> Result<Self> {
         match req {
             EmuRequest::Step => {
-                self.pipe = self.pipe.step(&mut self.emu)?;
+                self.pipe = self.pipe.step(self.emu)?;
                 let stage = self.pipe.stage();
                 self.handle
                     .res_chan
@@ -194,6 +213,14 @@ impl EmuTask {
             EmuRequest::Run => self.state = EmuTaskState::Running,
             EmuRequest::Pause => {
                 self.state = EmuTaskState::Paused;
+            }
+            EmuRequest::AddBreakpoint(addr) => {
+                tracing::debug!("brk added {}", hex(addr));
+                self.breakpoints.insert(addr);
+            }
+            EmuRequest::DelBreakpoint(addr) => {
+                tracing::debug!("brk deleted {}", hex(addr));
+                self.breakpoints.remove(&addr);
             }
         };
         Ok(self)
