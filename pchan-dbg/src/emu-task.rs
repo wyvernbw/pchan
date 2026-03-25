@@ -33,7 +33,7 @@ pub(crate) enum EmuRequest {
 pub(crate) enum EmuResponse {
     StageUpdate(PipelineV2Stage),
     StateUpdate(EmuTaskState),
-    Compiled(u32, Arc<[DecodedOp]>, DynarecBlock),
+    Compiled(DynarecBlock),
     ObjDump(Arc<str>),
     FrequencyUpdate(f64),
 }
@@ -153,16 +153,17 @@ impl EmuTask {
         _ = self.handle.res_chan.0.send(res);
     }
 
-    fn duration_since_last_sample(&self, d: Instant) -> Option<Duration> {
-        self.cycle_samples.back().map(|(_, s)| d.duration_since(*s))
+    fn cycles_since_last_sample(&self, clock: u64) -> Option<u64> {
+        self.cycle_samples
+            .back()
+            .map(|(x, _)| clock.saturating_sub(*x))
     }
 
     fn handle_pipe_effects(&mut self) -> Result<()> {
-        let should_sample = match self.duration_since_last_sample(Instant::now()) {
-            Some(duration) => duration > Duration::from_millis(40),
-            None => true,
-        };
-        if should_sample {
+        let cycles_since_last_sample = self
+            .cycles_since_last_sample(self.emu.cpu.cycles)
+            .unwrap_or(u64::MAX);
+        if cycles_since_last_sample >= 8_000_000 {
             let sample = (self.emu.cpu().cycles, Instant::now());
             const MAX_SAMPLES: usize = 256;
             self.cycle_samples.push_back(sample);
@@ -188,30 +189,24 @@ impl EmuTask {
             PipelineV2::Uninit => {}
             PipelineV2::Init { dynarec, pc } => {}
             PipelineV2::Compiled { func, .. } => {
-                let mut first_addr = None;
-                let instructions = FETCH_CHANNEL
-                    .1
-                    .try_iter()
-                    .map(|(addr, op)| {
-                        first_addr = first_addr.or(Some(addr));
-                        op
-                    })
-                    .collect();
-                if let Some(first_addr) = first_addr {
-                    self.handle.res_chan.0.send(EmuResponse::Compiled(
-                        first_addr,
-                        instructions,
-                        func.clone(),
-                    ))?;
+                if self.state != EmuTaskState::Running || (cycles_since_last_sample >= 8_000_000) {
+                    self.handle
+                        .res_chan
+                        .0
+                        .send(EmuResponse::Compiled(func.clone()))?;
+                }
 
-                    if self.state == EmuTaskState::Running
-                        && self.breakpoints.contains(&self.emu.cpu().pc)
-                    {
-                        self.state = EmuTaskState::Paused;
-                    }
-                };
+                if self.state == EmuTaskState::Running
+                    && self.breakpoints.contains(&self.emu.cpu().pc)
+                {
+                    self.state = EmuTaskState::Paused;
+                }
             }
-            PipelineV2::Called { .. } => {}
+            PipelineV2::Called { .. } => {
+                // if self.state == EmuTaskState::Running {
+                //     self.try_send_res(EmuResponse::StateUpdate(EmuTaskState::Running));
+                // }
+            }
             PipelineV2::Cached { dynarec, scheduler } => {}
         };
         Ok(())

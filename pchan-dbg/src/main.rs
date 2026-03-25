@@ -33,7 +33,8 @@ use manatui_tea_ui::components::list::{List, ListViewCompact};
 use manatui_tea_ui::components::text_input::{TextInput, TextInputEvent, TextInputView};
 use pchan_emu::Bus;
 use pchan_emu::cpu::{Cpu, reg_str};
-use pchan_emu::dynarec_v2::{PipelineV2, PipelineV2Stage};
+use pchan_emu::dynarec_v2::emitters::DecodedOp;
+use pchan_emu::dynarec_v2::{FETCH_CHANNEL, PipelineV2, PipelineV2Stage};
 use pchan_utils::{hex, init_tracing};
 use strum::EnumCount;
 use tokio::io::AsyncWriteExt;
@@ -130,6 +131,7 @@ enum Msg {
     Event(Event),
     EmuRes(EmuResponse),
     TtyLine(Arc<str>),
+    Fetched(u32, Arc<[DecodedOp]>),
 }
 
 impl tea::Message for Msg {
@@ -164,7 +166,7 @@ impl Model {
                     summary_mode:           SummaryMode::Hidden,
                     summary_input:          TextInput::new(),
                 },
-                emu_handle,
+                emu_handle: emu_handle.clone(),
                 emu_join_handle,
                 emu_stage: PipelineV2Stage::Uninit,
                 emu_task_state: EmuTaskState::Paused,
@@ -184,6 +186,17 @@ impl Model {
                             tracing::info!("tty: {}", log.trim());
                             _ = tx.send_async(Msg::TtyLine(log)).await;
                         }
+                    }
+                }
+            })
+            .chain(async move |tx| {
+                loop {
+                    if let Ok((pc, instr)) = FETCH_CHANNEL.1.recv_async().await {
+                        let instructions = std::iter::once((pc, instr))
+                            .chain(FETCH_CHANNEL.1.try_iter())
+                            .map(|(_, op)| op)
+                            .collect();
+                        _ = tx.send_async(Msg::Fetched(pc, instructions)).await;
                     }
                 }
             }),
@@ -215,57 +228,30 @@ impl Model {
             Msg::EmuRes(res) => match res {
                 EmuResponse::StageUpdate(stage) => self.set_emu_stage(stage).no_effect(),
                 EmuResponse::StateUpdate(state) => self.set_emu_task_state(state).no_effect(),
-                EmuResponse::Compiled(pc, decoded_ops, func) => {
-                    let decoded_ops = Some(
-                        decoded_ops
-                            .iter()
-                            .enumerate()
-                            .map(|(idx, op)| {
-                                let line = Line::from_iter([
-                                    Span::raw(hex(idx as u32 * 4 + pc).to_string())
-                                        .style(Style::new().dim()),
-                                    Span::raw(" "),
-                                    Span::raw(op.to_string()),
-                                ]);
-                                let style = match idx.is_multiple_of(2) {
-                                    true => Style::new(),
-                                    false => Style::new().fg(Color::from_u32(0xeeeeee)),
-                                };
-
-                                line.style(style)
-                            })
-                            .collect(),
-                    );
-                    self.dbg_page = DbgPage {
-                        decoded_ops,
-                        ..self.dbg_page
-                    };
-                    (
-                        self,
-                        Effect::new(async move |tx| {
-                            let _ = try {
-                                let mut file =
-                                    tokio::fs::File::create("/tmp/pchan-dump.bin").await?;
-                                file.write_all(func.buffer().as_ref()).await?;
-                                let mut cmd = tokio::process::Command::new("objdump");
-                                cmd.args([
-                                    "-D",
-                                    "-b",
-                                    "binary",
-                                    "-m",
-                                    "aarch64",
-                                    "/tmp/pchan-dump.bin",
-                                ])
-                                .stdout(Stdio::piped());
-                                cmd.spawn()?;
-                                let output = cmd.output().await?;
-                                let output = String::from_utf8_lossy(&output.stdout);
-                                let output = Arc::<str>::from(output);
-                                _ = tx.send(Msg::EmuRes(EmuResponse::ObjDump(output)));
-                            };
-                        }),
-                    )
-                }
+                EmuResponse::Compiled(func) => (
+                    self,
+                    Effect::new(async move |tx| {
+                        let _ = try {
+                            let mut file = tokio::fs::File::create("/tmp/pchan-dump.bin").await?;
+                            file.write_all(func.buffer().as_ref()).await?;
+                            let mut cmd = tokio::process::Command::new("objdump");
+                            cmd.args([
+                                "-D",
+                                "-b",
+                                "binary",
+                                "-m",
+                                "aarch64",
+                                "/tmp/pchan-dump.bin",
+                            ])
+                            .stdout(Stdio::piped());
+                            cmd.spawn()?;
+                            let output = cmd.output().await?;
+                            let output = String::from_utf8_lossy(&output.stdout);
+                            let output = Arc::<str>::from(output);
+                            _ = tx.send(Msg::EmuRes(EmuResponse::ObjDump(output)));
+                        };
+                    }),
+                ),
                 EmuResponse::ObjDump(asm) => {
                     self.objdump = Some(asm);
                     self.no_effect()
@@ -277,6 +263,33 @@ impl Model {
             },
             Msg::TtyLine(line) => {
                 self.tty.push(line);
+                self.no_effect()
+            }
+            Msg::Fetched(pc, decoded_ops) => {
+                let decoded_ops = Some(
+                    decoded_ops
+                        .iter()
+                        .enumerate()
+                        .map(|(idx, op)| {
+                            let line = Line::from_iter([
+                                Span::raw(hex(idx as u32 * 4 + pc).to_string())
+                                    .style(Style::new().dim()),
+                                Span::raw(" "),
+                                Span::raw(op.to_string()),
+                            ]);
+                            let style = match idx.is_multiple_of(2) {
+                                true => Style::new(),
+                                false => Style::new().fg(Color::from_u32(0xeeeeee)),
+                            };
+
+                            line.style(style)
+                        })
+                        .collect(),
+                );
+                self.dbg_page = DbgPage {
+                    decoded_ops,
+                    ..self.dbg_page
+                };
                 self.no_effect()
             }
         }
