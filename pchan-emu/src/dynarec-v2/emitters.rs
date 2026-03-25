@@ -1620,26 +1620,26 @@ impl DynarecOp for J {
         ctx.schedule_in(1)
             .emitter(move |mut ctx| {
                 ctx.dynarec.emit_write_pc(Reg::W(3), new_pc);
-                #[cfg(target_arch = "aarch64")]
-                dynasm!(
-                    ctx.dynarec.asm
-                    ; ldr x3, ->jump // defined in prelude
-                    ; str x0, [sp, #-16]!
-                    // load 32bit psx address into second argument
-                    // first argument is already context structure
-                    ; movz w1, new_pc >> 16, lsl #16
-                    ; movk w1, new_pc & 0x0000_ffff
-                    ; str w1, [x0, Emu::PC_OFFSET as _]
-                    ; blr x3
+                // #[cfg(target_arch = "aarch64")]
+                // dynasm!(
+                //     ctx.dynarec.asm
+                //     ; ldr x3, ->jump // defined in prelude
+                //     ; str x0, [sp, #-16]!
+                //     // load 32bit psx address into second argument
+                //     // first argument is already context structure
+                //     ; movz w1, new_pc >> 16, lsl #16
+                //     ; movk w1, new_pc & 0x0000_ffff
+                //     ; str w1, [x0, Emu::PC_OFFSET as _]
+                //     ; blr x3
 
-                    ; mov x3, x0
-                    ; ldr x0, [sp], #16
-                    ; cbz x3, >miss
-                    ;; ctx.drain_schedule()
-                    ;; ctx.dynarec.emit_block_epilogue(ctx.d_clock, None, false)
-                    ; br x3
-                    ; miss:
-                );
+                //     ; mov x3, x0
+                //     ; ldr x0, [sp], #16
+                //     ; cbz x3, >miss
+                //     ;; ctx.drain_schedule()
+                //     ;; ctx.dynarec.emit_block_epilogue(ctx.d_clock, None, false)
+                //     ; br x3
+                //     ; miss:
+                // );
                 EmitSummary::builder().pc_updated(true).build()
             })
             .call();
@@ -1958,66 +1958,74 @@ impl DynarecOp for Beq {
     #[allow(clippy::useless_conversion)]
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
         {
-            let mut ctx = ctx;
-            let rs = self.rs;
-            let rt = self.rt;
-            let imm = self.imm16;
-            let s = ctx.parity();
-            let rs = ctx.dynarec.emit_load_reg(rs);
-            let rt = ctx.dynarec.emit_load_reg(rt);
+            // let mut ctx = ctx;
+            // let rs = self.rs;
+            // let rt = self.rt;
+            // let imm = self.imm16;
+            // let s = ctx.parity();
+            // let rs = ctx.dynarec.emit_load_reg(rs);
+            // let rt = ctx.dynarec.emit_load_reg(rt);
 
-            // calculate branch value
+            // // calculate branch value
+            // dynasm!(
+            //     ctx.dynarec.asm
+            //     ; .arch aarch64
+            //     // ; stp W(*rs), W(*rt), [sp, #-16]!
+            //     ; fmov S(s(9)), W(*rs)
+            //     ; fmov S(s(10)), W(*rt)
+            // );
+
+            // let branch_dest = (ctx.pc + 0x4).wrapping_add_signed(ext::sign(imm) << 2);
+            // ctx.schedule_in(1)
+            //     .emitter(move |mut ctx| {
+            //         dynasm!(
+            //             ctx.dynarec.asm
+            //             ; .arch aarch64
+            //             // ; ldp w2, w3, [sp], #16
+            //             ; fmov w2, S(s(9))
+            //             ; fmov w3, S(s(10))
+            //             ; cmp w2, w3
+
+            //             ; b.eq >taken
+            //             ; movz w1, (ctx.pc + 0x8) >> 16, lsl #16
+            //             ; movk w1, (ctx.pc + 0x8) & 0x0000_ffff
+            //             ; b >got_pc
+            //             ; taken:
+            //             ; movz w1, branch_dest >> 16, lsl #16
+            //             ; movk w1, branch_dest & 0x0000_ffff
+            //             ; got_pc:
+            //             ; str w1, [x0, Emu::PC_OFFSET as _]
+
+            //             ; ldr x3, ->jump
+            //             ; str x0, [sp, #-16]!
+            //             ; blr x3
+            //             ; mov x3, x0
+            //             ; ldr x0, [sp], #16
+
+            //             ; cbz x3, >miss
+            //             ;; ctx.drain_schedule()
+            //             ;; ctx.dynarec.emit_block_epilogue(ctx.d_clock, None, false)
+            //             ; br x3
+            //             ; miss:
+            //         );
+
+            //         EmitSummary::builder().pc_updated(true).build()
+            //     })
+            //     .call();
+
+            // rt.restore(ctx.dynarec);
+            // rs.restore(ctx.dynarec);
+
+            // EmitSummary::default()
+        }
+        #[cfg(target_arch = "aarch64")]
+        emit_branch(ctx, self.rs, self.rt, self.imm16, move |ctx| {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
-                // ; stp W(*rs), W(*rt), [sp, #-16]!
-                ; fmov S(s(9)), W(*rs)
-                ; fmov S(s(10)), W(*rt)
-            );
-
-            let branch_dest = (ctx.pc + 0x4).wrapping_add_signed(ext::sign(imm) << 2);
-            ctx.schedule_in(1)
-                .emitter(move |mut ctx| {
-                    dynasm!(
-                        ctx.dynarec.asm
-                        ; .arch aarch64
-                        // ; ldp w2, w3, [sp], #16
-                        ; fmov w2, S(s(9))
-                        ; fmov w3, S(s(10))
-                        ; cmp w2, w3
-
-                        ; b.eq >taken
-                        ; movz w1, (ctx.pc + 0x8) >> 16, lsl #16
-                        ; movk w1, (ctx.pc + 0x8) & 0x0000_ffff
-                        ; b >got_pc
-                        ; taken:
-                        ; movz w1, branch_dest >> 16, lsl #16
-                        ; movk w1, branch_dest & 0x0000_ffff
-                        ; got_pc:
-                        ; str w1, [x0, Emu::PC_OFFSET as _]
-
-                        ; ldr x3, ->jump
-                        ; str x0, [sp, #-16]!
-                        ; blr x3
-                        ; mov x3, x0
-                        ; ldr x0, [sp], #16
-
-                        ; cbz x3, >miss
-                        ;; ctx.drain_schedule()
-                        ;; ctx.dynarec.emit_block_epilogue(ctx.d_clock, None, false)
-                        ; br x3
-                        ; miss:
-                    );
-
-                    EmitSummary::builder().pc_updated(true).build()
-                })
-                .call();
-
-            rt.restore(ctx.dynarec);
-            rs.restore(ctx.dynarec);
-
-            EmitSummary::default()
-        }
+                ; csel w2, w3, w2, eq
+            )
+        })
     }
 }
 

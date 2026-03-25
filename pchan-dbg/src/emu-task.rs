@@ -14,6 +14,7 @@ use std::{
     path::PathBuf,
     process::Stdio,
     sync::Arc,
+    time::Duration,
 };
 use tokio::{task::JoinHandle, time::Instant};
 use tracing::instrument;
@@ -33,7 +34,6 @@ pub(crate) enum EmuResponse {
     StageUpdate(PipelineV2Stage),
     StateUpdate(EmuTaskState),
     Compiled(u32, Arc<[DecodedOp]>, DynarecBlock),
-    CpuUpdate(Box<Cpu>),
     ObjDump(Arc<str>),
     FrequencyUpdate(f64),
 }
@@ -57,7 +57,7 @@ pub(crate) struct EmuTaskHandle {
     pub(crate) req_chan: Chan<EmuRequest>,
     pub(crate) res_chan: Chan<EmuResponse>,
     pub(crate) dbg_view: DebugView,
-    pub(crate) tty_rx:   Receiver<Arc<str>>,
+    pub(crate) tty_chan: Chan<Arc<str>>,
 }
 
 impl EmuTask {
@@ -70,12 +70,12 @@ impl EmuTask {
             .wrap_err("PCHAN_BIOS var contains invalid path.")?;
 
         let emu = Box::leak(Box::new(Emu::default()));
-        let tty_rx = emu.tty.set_channeled();
+        let tty_chan = emu.tty.set_channeled();
         let handle = EmuTaskHandle {
             req_chan,
             res_chan,
             dbg_view: DebugView::from_emu(emu),
-            tty_rx,
+            tty_chan,
         };
         let task = EmuTask {
             handle: handle.clone(),
@@ -98,6 +98,9 @@ impl EmuTask {
     }
     fn hard_reset(&mut self) -> Result<()> {
         *self.emu = Emu::default();
+        self.emu
+            .tty
+            .set_channeled_with(self.handle.tty_chan.0.clone());
         self.emu.set_bios_path(&self.bios_path);
         self.emu.load_bios()?;
         self.pipe = PipelineV2::new(self.emu);
@@ -118,6 +121,12 @@ impl EmuTask {
             loop {
                 match self.state {
                     EmuTaskState::Paused => {
+                        let stage = self.pipe.stage();
+                        self.handle
+                            .res_chan
+                            .0
+                            .send(EmuResponse::StageUpdate(stage))?;
+
                         if let Ok(msg) = self.handle.req_chan.1.recv() {
                             self = self.handle_req(msg)?;
                             self.handle_pipe_effects()?;
@@ -129,12 +138,6 @@ impl EmuTask {
                         }
 
                         self.pipe = self.pipe.step(self.emu)?;
-                        let stage = self.pipe.stage();
-                        self.handle
-                            .res_chan
-                            .0
-                            .send(EmuResponse::StageUpdate(stage))?;
-
                         self.handle_pipe_effects()?;
                     }
                     EmuTaskState::Done => return Ok(()),
@@ -142,28 +145,43 @@ impl EmuTask {
             }
         })
     }
-    fn handle_pipe_effects(&mut self) -> Result<()> {
-        let sample = (self.emu.cpu().cycles, Instant::now());
-        const MAX_SAMPLES: usize = 256;
-        self.cycle_samples.push_back(sample);
-        if self.cycle_samples.len() > MAX_SAMPLES {
-            self.cycle_samples.pop_front();
+
+    fn try_send_res(&self, res: EmuResponse) {
+        if self.handle.res_chan.1.is_full() {
+            return;
         }
-        if self.cycle_samples.len() > 1
-            && let Some((first, last)) = self.cycle_samples.front().zip(self.cycle_samples.back())
-        {
-            let (cycle_delta, overflowed) = last.0.overflowing_sub(first.0);
-            if overflowed {
-                self.cycle_samples.clear();
-                return Ok(());
+        _ = self.handle.res_chan.0.send(res);
+    }
+
+    fn duration_since_last_sample(&self, d: Instant) -> Option<Duration> {
+        self.cycle_samples.back().map(|(_, s)| d.duration_since(*s))
+    }
+
+    fn handle_pipe_effects(&mut self) -> Result<()> {
+        let should_sample = match self.duration_since_last_sample(Instant::now()) {
+            Some(duration) => duration > Duration::from_millis(40),
+            None => true,
+        };
+        if should_sample {
+            let sample = (self.emu.cpu().cycles, Instant::now());
+            const MAX_SAMPLES: usize = 256;
+            self.cycle_samples.push_back(sample);
+            if self.cycle_samples.len() > MAX_SAMPLES {
+                self.cycle_samples.pop_front();
             }
-            let time_delta = last.1.duration_since(first.1);
-            let frequency_hz = cycle_delta as f64 / time_delta.as_secs_f64();
-            _ = self
-                .handle
-                .res_chan
-                .0
-                .send(EmuResponse::FrequencyUpdate(frequency_hz));
+            if self.cycle_samples.len() > 1
+                && let Some((first, last)) =
+                    self.cycle_samples.front().zip(self.cycle_samples.back())
+            {
+                let (cycle_delta, overflowed) = last.0.overflowing_sub(first.0);
+                if overflowed {
+                    self.cycle_samples.clear();
+                    return Ok(());
+                }
+                let time_delta = last.1.duration_since(first.1);
+                let frequency_hz = cycle_delta as f64 / time_delta.as_secs_f64();
+                self.try_send_res(EmuResponse::FrequencyUpdate(frequency_hz));
+            }
         }
 
         match &self.pipe {
@@ -193,17 +211,7 @@ impl EmuTask {
                     }
                 };
             }
-            PipelineV2::Called {
-                pc,
-                times,
-                func,
-                dynarec,
-                scheduler,
-            } => {
-                let cpu = Box::clone_from_ref(self.emu.cpu());
-                self.emu.mem_mut();
-                self.handle.res_chan.0.send(EmuResponse::CpuUpdate(cpu))?;
-            }
+            PipelineV2::Called { .. } => {}
             PipelineV2::Cached { dynarec, scheduler } => {}
         };
         Ok(())
@@ -222,9 +230,19 @@ impl EmuTask {
             EmuRequest::Quit => {
                 self.state = EmuTaskState::Done;
             }
-            EmuRequest::Run => self.state = EmuTaskState::Running,
+            EmuRequest::Run => {
+                self.state = EmuTaskState::Running;
+                self.handle
+                    .res_chan
+                    .0
+                    .send(EmuResponse::StateUpdate(self.state))?;
+            }
             EmuRequest::Pause => {
                 self.state = EmuTaskState::Paused;
+                self.handle
+                    .res_chan
+                    .0
+                    .send(EmuResponse::StateUpdate(self.state))?;
             }
             EmuRequest::AddBreakpoint(addr) => {
                 tracing::debug!("brk added {}", hex(addr));
@@ -237,15 +255,16 @@ impl EmuTask {
             EmuRequest::HardReset => {
                 tracing::info!("hard reset");
                 self.hard_reset()?;
-                self.handle
-                    .res_chan
-                    .0
-                    .send(EmuResponse::CpuUpdate(Box::new(self.emu.cpu.clone())))?;
                 let stage = self.pipe.stage();
+                self.state = EmuTaskState::Paused;
                 self.handle
                     .res_chan
                     .0
                     .send(EmuResponse::StageUpdate(stage))?;
+                self.handle
+                    .res_chan
+                    .0
+                    .send(EmuResponse::StateUpdate(self.state))?;
             }
         };
         Ok(self)

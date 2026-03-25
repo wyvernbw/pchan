@@ -57,10 +57,14 @@ impl Tty {
         Ok(())
     }
 
-    pub fn set_channeled(&mut self) -> flume::Receiver<Arc<str>> {
+    pub fn set_channeled(&mut self) -> (flume::Sender<Arc<str>>, flume::Receiver<Arc<str>>) {
         let (tx, rx) = flume::bounded(1024);
-        self.mode = TtyMode::Channeled(tx);
-        rx
+        self.mode = TtyMode::Channeled(tx.clone());
+        (tx, rx)
+    }
+
+    pub fn set_channeled_with(&mut self, sender: flume::Sender<Arc<str>>) {
+        self.mode = TtyMode::Channeled(sender);
     }
 
     pub fn set_tracing(&mut self) {

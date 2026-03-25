@@ -31,6 +31,7 @@ use manatui::utils::keyv2;
 use manatui_tea_ui::common::FocusItemState;
 use manatui_tea_ui::components::list::{List, ListViewCompact};
 use manatui_tea_ui::components::text_input::{TextInput, TextInputEvent, TextInputView};
+use pchan_emu::Bus;
 use pchan_emu::cpu::{Cpu, reg_str};
 use pchan_emu::dynarec_v2::{PipelineV2, PipelineV2Stage};
 use pchan_utils::{hex, init_tracing};
@@ -75,7 +76,6 @@ struct Model {
     emu_join_handle: JoinHandle<Result<()>>,
     emu_stage:       PipelineV2Stage,
     emu_task_state:  EmuTaskState,
-    emu_cpu:         Box<Cpu>,
     emu_cpu_freq_hz: f64,
     emu_running:     bool,
     emu_breakpoints: HashSet<u32>,
@@ -145,7 +145,7 @@ impl Model {
             Err(err) => panic!("{err:?}"),
         };
         let rx = emu_handle.res_chan.1.clone();
-        let tty_rx = emu_handle.tty_rx.clone();
+        let tty_chan = emu_handle.tty_chan.clone();
 
         (
             Model {
@@ -168,7 +168,6 @@ impl Model {
                 emu_join_handle,
                 emu_stage: PipelineV2Stage::Uninit,
                 emu_task_state: EmuTaskState::Paused,
-                emu_cpu: Box::default(),
                 tty: vec![],
                 objdump: None,
                 emu_cpu_freq_hz: 0.0,
@@ -181,7 +180,8 @@ impl Model {
                         Ok(res) = rx.recv_async() => {
                             _ = tx.send_async(Msg::EmuRes(res)).await;
                         }
-                        Ok(log) = tty_rx.recv_async() => {
+                        Ok(log) = tty_chan.1.recv_async() => {
+                            tracing::info!("tty: {}", log.trim());
                             _ = tx.send_async(Msg::TtyLine(log)).await;
                         }
                     }
@@ -266,10 +266,6 @@ impl Model {
                         }),
                     )
                 }
-                EmuResponse::CpuUpdate(cpu) => {
-                    self.emu_cpu = cpu;
-                    self.no_effect()
-                }
                 EmuResponse::ObjDump(asm) => {
                     self.objdump = Some(asm);
                     self.no_effect()
@@ -301,8 +297,8 @@ impl Model {
                 return self.no_effect();
             }
             (SummaryMode::Idle, keyv2!(space)) => {
-                self.emu_running = !self.emu_running;
-                if self.emu_running {
+                let running = matches!(self.emu_task_state, EmuTaskState::Running);
+                if !running {
                     self.send_request(EmuRequest::Run).await;
                 } else {
                     self.send_request(EmuRequest::Pause).await;
@@ -672,17 +668,18 @@ fn cpu_viewer(model: &Model) -> View {
     let border_style = border_style_focus(focused);
 
     let show_zeroes = model.dbg_page.cpu_viewer_show_zeroes;
-    let hi = (model.emu_cpu.hilo >> 32) as u32;
-    let lo = model.emu_cpu.hilo as u32;
+    let cpu = &model.emu_handle.dbg_view.emu().cpu();
+    let hi = (cpu.hilo >> 32) as u32;
+    let lo = cpu.hilo as u32;
 
     let gpr = make_register_list(
-        model.emu_cpu.gpr.iter().chain([&hi, &lo]),
+        cpu.gpr.iter().chain([&hi, &lo]),
         |reg| reg_str(reg as u8).into(),
         show_zeroes,
         7,
     );
 
-    let pc = hex(model.emu_cpu.pc);
+    let pc = hex(cpu.pc);
 
     let cop_tooltip = Line::from_iter([
         Span::raw("c ").style(Style::new().dim()),
@@ -692,8 +689,8 @@ fn cpu_viewer(model: &Model) -> View {
         Span::raw(" s ").style(Style::new().dim()),
         Span::raw("toggle zeroes ").style(Style::new().fg(Color::from_u32(0xeeeeee)).dim()),
     ]);
-    let bev = model.emu_cpu.cop0.bev().onoff();
-    let isc = model.emu_cpu.cop0.isc().onoff();
+    let bev = cpu.cop0.bev().onoff();
+    let isc = cpu.cop0.isc().onoff();
     ui! {
         <Block Height::grow()>
             <Block Width::grow()>
@@ -734,14 +731,15 @@ fn cop_view(model: &Model) -> View {
     let focused = matches!(model.dbg_page.focus.tag(), Some(DbgPageFocus::CpuViewer));
     let border_style = border_style_focus(focused);
     let show_zeroes = model.dbg_page.cpu_viewer_show_zeroes;
+    let cpu = &model.emu_handle.dbg_view.emu().cpu();
     let cop0items = make_register_list(
-        model.emu_cpu.cop0.reg.iter(),
+        cpu.cop0.reg.iter(),
         |reg| format!("cop0reg{reg}").into(),
         show_zeroes,
         10,
     );
     let cop2items = make_register_list(
-        model.emu_cpu.cop2.reg.iter(),
+        cpu.cop2.reg.iter(),
         |reg| format!("cop2reg{reg}").into(),
         show_zeroes,
         10,
