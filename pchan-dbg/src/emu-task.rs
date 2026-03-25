@@ -110,6 +110,11 @@ impl EmuTask {
     fn run(mut self) -> JoinHandle<Result<()>> {
         tokio::task::spawn_blocking(move || -> Result<()> {
             self.hard_reset()?;
+            let stage = self.pipe.stage();
+            self.handle
+                .res_chan
+                .0
+                .send(EmuResponse::StageUpdate(stage))?;
             loop {
                 match self.state {
                     EmuTaskState::Paused => {
