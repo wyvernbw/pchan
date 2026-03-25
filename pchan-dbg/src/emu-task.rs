@@ -26,6 +26,7 @@ pub(crate) enum EmuRequest {
     Pause,
     AddBreakpoint(u32),
     DelBreakpoint(u32),
+    HardReset,
 }
 #[derive(Debug, Clone)]
 pub(crate) enum EmuResponse {
@@ -95,14 +96,20 @@ impl EmuTask {
     pub(crate) fn clone_handle(&self) -> EmuTaskHandle {
         self.handle().clone()
     }
+    fn hard_reset(&mut self) -> Result<()> {
+        *self.emu = Emu::default();
+        self.emu.set_bios_path(&self.bios_path);
+        self.emu.load_bios()?;
+        self.pipe = PipelineV2::new(self.emu);
+        self.soft_reset();
+        Ok(())
+    }
+    fn soft_reset(&mut self) {
+        self.emu.cpu_mut().jump_to_bios();
+    }
     fn run(mut self) -> JoinHandle<Result<()>> {
         tokio::task::spawn_blocking(move || -> Result<()> {
-            self.emu.set_bios_path(&self.bios_path);
-            self.emu.load_bios()?;
-            self.emu.cpu_mut().jump_to_bios();
-
-            self.pipe = PipelineV2::new(self.emu);
-
+            self.hard_reset()?;
             loop {
                 match self.state {
                     EmuTaskState::Paused => {
@@ -221,6 +228,19 @@ impl EmuTask {
             EmuRequest::DelBreakpoint(addr) => {
                 tracing::debug!("brk deleted {}", hex(addr));
                 self.breakpoints.remove(&addr);
+            }
+            EmuRequest::HardReset => {
+                tracing::info!("hard reset");
+                self.hard_reset()?;
+                self.handle
+                    .res_chan
+                    .0
+                    .send(EmuResponse::CpuUpdate(Box::new(self.emu.cpu.clone())))?;
+                let stage = self.pipe.stage();
+                self.handle
+                    .res_chan
+                    .0
+                    .send(EmuResponse::StageUpdate(stage))?;
             }
         };
         Ok(self)

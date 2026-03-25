@@ -292,12 +292,25 @@ impl Model {
                 self.dbg_page.summary_mode = SummaryMode::Idle;
                 return self.no_effect();
             }
-            (SummaryMode::Idle | SummaryMode::Breakpoint, keyv2!(esc)) => {
+            (SummaryMode::Idle, keyv2!(esc)) => {
                 self.dbg_page.summary_mode = SummaryMode::Hidden;
                 return self.no_effect();
             }
             (SummaryMode::Idle, keyv2!('n')) => {
                 self.send_request(EmuRequest::Step).await;
+                return self.no_effect();
+            }
+            (SummaryMode::Idle, keyv2!(space)) => {
+                self.emu_running = !self.emu_running;
+                if self.emu_running {
+                    self.send_request(EmuRequest::Run).await;
+                } else {
+                    self.send_request(EmuRequest::Pause).await;
+                }
+                return self.no_effect();
+            }
+            (SummaryMode::Idle, keyv2!(shift + 'R')) => {
+                self.send_request(EmuRequest::HardReset).await;
                 return self.no_effect();
             }
             (SummaryMode::Idle, keyv2!('b')) => {
@@ -314,14 +327,13 @@ impl Model {
                 self.dbg_page.summary_mode = SummaryMode::BreakpointInput(BreakpointAction::Del);
                 return self.no_effect();
             }
-            (SummaryMode::Idle, keyv2!(space)) => {
-                self.emu_running = !self.emu_running;
-                if self.emu_running {
-                    self.send_request(EmuRequest::Run).await;
-                } else {
-                    self.send_request(EmuRequest::Pause).await;
-                }
+            (SummaryMode::Breakpoint, keyv2!(esc)) => {
+                self.dbg_page.summary_mode = SummaryMode::Idle;
                 return self.no_effect();
+            }
+            (SummaryMode::BreakpointInput(_), keyv2!(esc)) => {
+                self.dbg_page.summary_input.set_focus(false);
+                self.dbg_page.summary_mode = SummaryMode::Breakpoint;
             }
             (SummaryMode::BreakpointInput(action), event) => {
                 let effect;
@@ -500,6 +512,14 @@ fn summary(model: &Model) -> View {
                     <Text>"step"</Text>
                     <Text>"run"</Text>
                     <Text>"brk"</Text>
+                </Block>
+                <Block Width::grow()>
+                    <Text>"r"</Text>
+                    <Text>"R"</Text>
+                </Block>
+                <Block .style={Style::new().dim()} Width::grow()>
+                    <Text>"soft reset (todo)"</Text>
+                    <Text>"hard reset"</Text>
                 </Block>
             </Block>
         },
