@@ -38,7 +38,7 @@ use crate::{
     cpu::Cpu,
     dynarec_v2::{DynarecBlock, DynarecCache},
     gpu::GpuState,
-    io::tty::Tty,
+    io::{dma::DmaState, tty::Tty},
     memory::MemoryState,
 };
 
@@ -91,6 +91,7 @@ pub struct Emu {
     pub boot:          BootloaderState,
     pub tty:           Tty,
     pub gpu:           GpuState,
+    pub dma:           DmaState,
 }
 
 impl Emu {

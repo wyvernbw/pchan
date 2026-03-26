@@ -3,7 +3,7 @@ extern crate proc_macro;
 use darling::*;
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{DeriveInput, Expr, ExprLit, Ident, Lit, Variant, parse_macro_input};
+use syn::{DeriveInput, Expr, ExprLit, Ident, ItemFn, Lit, LitStr, Variant, parse_macro_input};
 
 enum ValidRepr {
     U8,
@@ -312,4 +312,44 @@ pub fn instrument_write(_attr: TokenStream, item: TokenStream) -> TokenStream {
     )
     .parse()
     .expect("invalid tokens")
+}
+
+#[proc_macro_attribute]
+pub fn pchan_instrument_write(args: TokenStream, input: TokenStream) -> TokenStream {
+    pchan_instrument_generic(args, input, quote! {self, value})
+}
+
+#[proc_macro_attribute]
+pub fn pchan_instrument_read(args: TokenStream, input: TokenStream) -> TokenStream {
+    pchan_instrument_generic(args, input, quote! {self})
+}
+
+fn pchan_instrument_generic(
+    args: TokenStream,
+    input: TokenStream,
+    skip_values: proc_macro2::TokenStream,
+) -> TokenStream {
+    let span_name = if args.is_empty() {
+        None
+    } else {
+        Some(parse_macro_input!(args as LitStr).value())
+    };
+
+    let input_fn = parse_macro_input!(input as ItemFn);
+    let fn_name = &input_fn.sig.ident;
+
+    let name_str = span_name.unwrap_or_else(|| fn_name.to_string());
+
+    quote! {
+        #[cfg_attr(
+            debug_assertions,
+            ::tracing::instrument(
+                skip(#skip_values),
+                fields(address = %pchan_utils::hex(address)),
+                name = #name_str
+            )
+        )]
+        #input_fn
+    }
+    .into()
 }

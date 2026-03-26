@@ -5,6 +5,7 @@ use tracing::instrument;
 use crate::bootloader::Bootloader;
 use crate::cpu::exceptions::Exceptions;
 use crate::gpu::Gpu;
+use crate::io::dma::Dma;
 use crate::io::timers::Timers;
 use crate::io::vblank::VBlank;
 use crate::memory::{Extend, GUEST_MEM_MAP, MEM_MAP, ScratchpadMem};
@@ -12,6 +13,7 @@ use crate::{Bus, Emu, io::cdrom::CDRom, memory::fastmem::Fastmem};
 use derive_more as d;
 
 pub mod cdrom;
+pub mod dma;
 pub mod timers;
 pub mod tty;
 pub mod vblank;
@@ -161,6 +163,7 @@ impl IO for Emu {
             .or_else(|_| ScratchpadMem::read(self, address))
             .or_else(|_| Timers::read_timers(self, address))
             .or_else(|_| Gpu::read(self, address))
+            .or_else(|_| Dma::read(self, address))
             .or_else(|_| CDRom::read::<T>(self, address))
             .or_else(|_| GenericIOFallback::read::<T>(self, address))
             .or_else(|_| CacheControl::read::<T>(self, address))
@@ -169,6 +172,7 @@ impl IO for Emu {
     fn try_read_pure<T: Copy>(&self, address: u32) -> IOResult<T> {
         Fastmem::read::<T>(self, address)
             .or_else(|_| ScratchpadMem::read(self, address))
+            .or_else(|_| Dma::read(self, address))
             .or_else(|_| Timers::read_timers(self, address))
             .or_else(|_| CDRom::read::<T>(self, address))
             .or_else(|_| GenericIOFallback::read::<T>(self, address))
@@ -180,6 +184,7 @@ impl IO for Emu {
             .or_else(|_| ScratchpadMem::write(self, address, value))
             .or_else(|_| Timers::write_timers(self, address, value))
             .or_else(|_| Gpu::write(self, address, value))
+            .or_else(|_| Dma::write(self, address, value))
             .or_else(|_| CDRom::write::<T>(self, address, value))
             .or_else(|_| GenericIOFallback::write::<T>(self, address, value))
             .or_else(|_| CacheControl::write::<T>(self, address, value))
@@ -201,9 +206,10 @@ impl<T: Copy> CastIOInto for T {}
 
 pub trait CastIOFrom: Copy {
     fn io_from_u32<T>(self) -> T {
+        let typename = std::any::type_name::<T>();
         assert!(
             size_of::<T>() <= 4,
-            "invalid cast of IO channel value to T. T has size {} >= 4",
+            "invalid cast of IO channel value to {typename}. {typename} has size {} >= 4",
             size_of::<T>()
         );
         unsafe { std::mem::transmute_copy::<Self, T>(&self) }
