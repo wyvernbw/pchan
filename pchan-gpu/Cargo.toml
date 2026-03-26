@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 smol = "2.0.2"
-wgpu = "29.0.0"
+wgpu = "29.0.1"
 flume = "0.12.0"
 color-eyre = "*"
 slab.workspace = true

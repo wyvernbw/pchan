@@ -155,7 +155,9 @@ pub fn init_tracing(
         .try_init();
 
     if panic_hook {
-        std::panic::set_hook(Box::new(|info| {
+        let old_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            old_hook(info);
             let (file, line, column) = info
                 .location()
                 .map(|loc| (loc.file(), loc.line(), loc.column()))
