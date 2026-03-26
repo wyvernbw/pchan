@@ -202,6 +202,8 @@ impl Dynarec {
                 ; .u64 Emu::handle_rfe as *const () as _
                 ; -> jump:
                 ; .u64 DynarecCache::jump as *const () as _
+                ; -> run_io:
+                ; .u64 Emu::ext_run_io as *const () as _
                 ; after_table:
 
                 ; stp x19, x20, [sp, -16]!
@@ -1186,9 +1188,6 @@ impl DynarecCache {
 
 #[cfg(test)]
 mod tests {
-
-    extern crate test;
-
     use color_eyre::Result;
     use pchan_utils::setup_tracing;
 

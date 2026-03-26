@@ -1,5 +1,6 @@
 use crate::{
     Bus, Emu,
+    gpu::Gpu,
     io::{CastIOFrom, CastIOInto, IO, IOResult, UnhandledIO},
     memory::fastmem::Fastmem,
 };
@@ -61,7 +62,11 @@ pub trait Dma: Bus + IO + Fastmem {
             // dma 2
             0x1f8010a0 => todo!("read at dma2madr (gpu madr)"),
             0x1f8010a4 => todo!("read at dma2bcr (gpu bcr)"),
-            0x1f8010a8 => todo!("read at dma2chcr (gpu chcr)"),
+            0x1f8010a8 => {
+                let chcr = self.dma().dma2.chcr;
+                tracing::trace!("read at dma2chcr (gpu chcr): {:#?}", chcr);
+                Ok(chcr.io_from_u32())
+            }
 
             0x1f8010b0..=0x1f8010bf => todo!("read at dma3 (cdrom)"),
             0x1f8010c0..=0x1f8010cf => todo!("read at dma4 (spu)"),
@@ -89,12 +94,30 @@ pub trait Dma: Bus + IO + Fastmem {
             0x1f801090..=0x1f80109f => todo!("write at dma1 (MDECout)"),
 
             // dma 2
-            0x1f8010a0 => todo!("write at dma2madr (gpu madr)"),
-            0x1f8010a4 => todo!("write at dma2bcr (gpu bcr)"),
+            0x1f8010a0 => {
+                self.dma_mut().dma2.io_set_madr(value);
+                tracing::trace!("write at dma2madr (gpu madr): {:#?}", self.dma().dma2.madr);
+                Ok(())
+            }
+            0x1f8010a4 => {
+                self.dma_mut().dma2.io_set_bcr(value);
+                tracing::trace!("write at dma2bcr (gpu bcr): {:#?}", self.dma().dma2.madr);
+                Ok(())
+            }
             0x1f8010a8 => {
                 let chcr = DmaChcr::new_with_raw_value(value.io_into_u32());
                 self.dma_mut().dma2.chcr = chcr;
                 tracing::trace!("write at dma2chcr (gpu chcr): {:#?}", chcr);
+                match self.dma().dma2.chcr.transfer() {
+                    Transfer::StoppedCompleted => {}
+                    Transfer::StartBusy => {
+                        let gp0cmds = GP0Cmds {
+                            init_chan: self.dma().dma2,
+                        };
+                        let cycles = gp0cmds.cycles(self);
+                        self.schedule_in(cycles, DmaTransportKind::Gpu(gp0cmds));
+                    }
+                }
                 Ok(())
                 // todo!("write at dma2chcr (gpu chcr): {chcr:#?}")
             }
@@ -122,7 +145,10 @@ pub trait Dma: Bus + IO + Fastmem {
                 match self.dma().dma6.chcr.transfer() {
                     Transfer::StoppedCompleted => {}
                     Transfer::StartBusy => {
-                        self.schedule_in(1024, DmaTransportKind::Otc(OTC));
+                        self.schedule_in(
+                            self.dma().dma6.bcr.block_count() as u64,
+                            DmaTransportKind::Otc(OTC),
+                        );
                     }
                 }
                 tracing::trace!("write at dma6chcr (otc chcr): {:#?}", chcr);
@@ -167,6 +193,12 @@ pub trait Dma: Bus + IO + Fastmem {
                 DmaTransportKind::Otc(_) => {
                     OTC::write_data(self);
                     OTC::channel_mut(self)
+                        .chcr
+                        .set_transfer(Transfer::StoppedCompleted);
+                }
+                DmaTransportKind::Gpu(_) => {
+                    GP0Cmds::write_data(self);
+                    GP0Cmds::channel_mut(self)
                         .chcr
                         .set_transfer(Transfer::StoppedCompleted);
                 }
@@ -292,7 +324,7 @@ enum DmaIrqMode {
 ///   0-23  Memory Address where the DMA will start reading from/writing to
 ///   24-31 Not used (always zero)
 #[bitfield(u32, debug)]
-#[derive(Default)]
+#[derive(Default, PartialEq, Eq)]
 pub struct DmaMadr {
     #[bits(0..=23, rw)]
     addr: u24,
@@ -314,7 +346,7 @@ pub struct DmaMadr {
 ///
 ///   0-31  0     Not used (should be zero) (transfer ends at END-CODE in list)
 #[bitfield(u32, debug)]
-#[derive(Default)]
+#[derive(Default, PartialEq, Eq)]
 pub struct DmaBcr {
     // s0
     #[bits(0..=15, rw)]
@@ -357,7 +389,7 @@ pub struct DmaBcr {
 ///   31    Unused
 /// ```
 #[bitfield(u32, debug)]
-#[derive(Default)]
+#[derive(Default, PartialEq, Eq)]
 pub struct DmaChcr {
     #[bit(0, rw)]
     direction:     TransferDir,
@@ -403,7 +435,7 @@ pub enum MadrInc {
 }
 
 #[bitenum(u2, exhaustive = true)]
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum SyncMode {
     Burst      = 0x0,
     Slice      = 0x1,
@@ -418,7 +450,7 @@ pub enum Transfer {
     StartBusy        = 0x1,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DmaChannel {
     pub madr: DmaMadr,
     pub bcr:  DmaBcr,
@@ -428,6 +460,14 @@ pub struct DmaChannel {
 impl DmaChannel {
     fn transfer(&self) -> Transfer {
         self.chcr.transfer()
+    }
+    fn io_set_madr<T: Copy>(&mut self, value: T) {
+        let madr = DmaMadr::new_with_raw_value(value.io_into_u32());
+        self.madr = madr;
+    }
+    fn io_set_bcr<T: Copy>(&mut self, value: T) {
+        let bcr = DmaBcr::new_with_raw_value(value.io_into_u32());
+        self.bcr = bcr;
     }
 }
 
@@ -460,12 +500,14 @@ impl Ord for DmaEvent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DmaTransportKind {
     Otc(OTC),
+    Gpu(GP0Cmds),
 }
 
 impl DmaTransportKind {
     pub fn idx(&self) -> u8 {
         match self {
             DmaTransportKind::Otc(_) => 6,
+            DmaTransportKind::Gpu(_) => 2,
         }
     }
 }
@@ -481,18 +523,76 @@ impl<T: Dma + IO + Fastmem + ?Sized> DmaTransport<T> for OTC {
         let channel = Self::channel_mut(emu);
         let block_count = channel.bcr.block_count() as u32;
         let end = channel.madr.addr().as_u32();
-        let end_node =
-            DmaNodeHeader::new_with_raw_value(0x0).with_next(u24::new(DmaNodeHeader::END));
+        let end_node = DmaNodeHeader::new_with_raw_value(0x0).with_next(DmaNodeHeader::END.as_());
         Fastmem::write(emu, end, end_node).expect("dma6 otc write must go to ram!");
         let mut prev = end;
         for _ in 0..block_count {
             Fastmem::write(
                 emu,
                 prev + 0x4,
-                DmaNodeHeader::default().with_next(u24::new(prev)),
+                DmaNodeHeader::default().with_next(prev.as_()),
             )
             .expect("dma6 otc write must go to ram!");
             prev += 0x4;
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GP0Cmds {
+    init_chan: DmaChannel,
+}
+
+impl GP0Cmds {
+    fn cycles(&self, emu: &(impl IO + Fastmem + ?Sized)) -> u64 {
+        let direction = self.init_chan.chcr.direction();
+        let sync_mode = self.init_chan.chcr.sync_mode();
+        debug_assert_eq!(direction, TransferDir::RamToDevice);
+        debug_assert_eq!(sync_mode, SyncMode::LinkedList);
+        let mut addr = self.init_chan.madr.addr().as_u32();
+        let mut count = 0;
+        loop {
+            if count >= 1024 {
+                panic!("infinite loop detected")
+            }
+            let header = Fastmem::read::<DmaNodeHeader>(emu, addr).unwrap();
+            if header.is_end_marker() {
+                break;
+            }
+            addr = header.next().as_u32();
+            count += 1;
+        }
+        count
+    }
+}
+
+impl<T: IO + Dma + ?Sized> DmaTransport<T> for GP0Cmds {
+    fn channel_mut(emu: &mut T) -> &mut DmaChannel {
+        &mut emu.dma_mut().dma2
+    }
+    fn write_data(emu: &mut T) {
+        let channel = Self::channel_mut(emu);
+        let direction = channel.chcr.direction();
+        let sync_mode = channel.chcr.sync_mode();
+        debug_assert_eq!(direction, TransferDir::RamToDevice);
+        debug_assert_eq!(sync_mode, SyncMode::LinkedList);
+        let mut addr = channel.madr.addr().as_u32();
+        let mut count = 0;
+        loop {
+            if count >= 2048 {
+                panic!("infinite loop detected");
+            }
+            let header = Fastmem::read::<DmaNodeHeader>(emu, addr).unwrap();
+            let len = header.len();
+            for idx in 0..len {
+                let cmd = Fastmem::read::<u32>(emu, addr + idx as u32 * 0x4 + 0x4).unwrap();
+                _ = emu.gpu_mut().gp0cmd_queue.push_back(cmd);
+            }
+            addr = header.next().as_u32();
+            count += 1;
+            if header.is_end_marker() {
+                break;
+            }
         }
     }
 }

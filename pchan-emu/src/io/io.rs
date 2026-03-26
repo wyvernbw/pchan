@@ -25,6 +25,7 @@ impl Emu {
         self.run_timer_pipeline();
         self.run_io_kernel_functions();
         self.run_dma_transfers();
+        self.run_gpu_commands();
         self.run_vblank();
         #[cfg(feature = "amidog-tests")]
         {

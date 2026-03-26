@@ -20,18 +20,19 @@ use crate::memory::mb;
 #[derive(derive_more::Debug, Clone)]
 pub struct GpuState {
     #[debug(skip)]
-    vram:          Box<[u16]>,
+    pub vram:          Box<[u16]>,
     #[debug(skip)]
-    cmd_queue:     Deque<u32, 16>,
-    gpustat:       GpuStatReg,
-    gp0:           Gp0,
-    gp0read:       [u16; 2],
-    gp0read_queue: Deque<u32, 32>,
+    pub gpustat:       GpuStatReg,
+    pub gp0:           Gp0,
+    pub gp0read:       [u16; 2],
+    pub gp0cmd_queue:  Deque<u32, 16>,
+    pub gp0read_queue: Deque<u32, 32>,
+    pub gp1cmd_queue:  Deque<u32, 16>,
     /// GP0(0xe1) - Draw Mode setting (aka "Texpage")
-    tex_attr:      TexpageCmd,
+    pub tex_attr:      TexpageCmd,
     /// GP0(0xe2) - Texture Window setting
-    tex_window:    TexWindowCmd,
-    model:         GpuModel,
+    pub tex_window:    TexWindowCmd,
+    pub model:         GpuModel,
 }
 
 #[derive(derive_more::Debug, Clone, Default)]
@@ -54,7 +55,8 @@ impl Default for GpuState {
             gp0: Gp0::WaitingForCmd,
             gp0read: Default::default(),
             gp0read_queue: Deque::new(),
-            cmd_queue: Deque::new(),
+            gp0cmd_queue: Deque::new(),
+            gp1cmd_queue: Deque::default(),
             model: GpuModel::default(),
             tex_attr: Default::default(),
             tex_window: Default::default(),
@@ -98,11 +100,13 @@ pub trait Gpu: Bus {
         let address = address & 0x1fffffff;
         match address {
             0x1f80_1810 => {
-                self.gp0_command(value.io_into_u32());
+                self.gpu_mut().gp0cmd_queue.push_back(value.io_into_u32());
+                self.gp0_command();
                 Ok(())
             }
             0x1f80_1814 => {
-                self.gp1_command(value.io_into_u32());
+                self.gpu_mut().gp1cmd_queue.push_back(value.io_into_u32());
+                self.gp1_command();
                 Ok(())
             }
             _ => Err(UnhandledIO(address)),
@@ -136,8 +140,10 @@ pub trait Gpu: Bus {
     }
 
     #[cfg_attr(debug_assertions, instrument(skip_all))]
-    fn gp0_command<T: Copy>(&mut self, value: T) {
-        let value = value.io_into_u32();
+    fn gp0_command(&mut self) {
+        let Some(value) = self.gpu_mut().gp0cmd_queue.pop_front() else {
+            return;
+        };
         let cmd = GpuCmd::new_with_raw_value(value);
         let gp0 = match &self.gpu().gp0 {
             Gp0::WaitingForCmd => self.reduce(cmd),
@@ -184,17 +190,36 @@ pub trait Gpu: Bus {
         self.gpu_mut().gp0 = gp0;
     }
 
-    fn gp1_command<T: Copy>(&mut self, value: T) {
+    fn gp1_command(&mut self) {
+        let Some(value) = self.gpu_mut().gp1cmd_queue.pop_front() else {
+            return;
+        };
         let value = GpuCmd::new_with_raw_value(value.io_into_u32());
         match value.cmd() {
             0x00 => {
-                self.gpu_mut().cmd_queue.clear();
+                self.gpu_mut().gp0cmd_queue.clear();
                 self.gpu_mut().gpustat = GpuStatReg::new_with_raw_value(0x14802000);
                 self.gpu_mut().gpustat.mock_ready();
             }
             0x01 => {
-                self.gpu_mut().cmd_queue.clear();
+                self.gpu_mut().gp0cmd_queue.clear();
                 self.gpu_mut().gpustat.mock_ready();
+            }
+            0x04 => {
+                let dir = DmaDirection::new_with_raw_value(value.fields().as_());
+                self.gpu_mut().gpustat.set_dma_direction(dir);
+            }
+            0x05 => {
+                // TODO
+                tracing::info!("set framebuffer coords");
+            }
+            0x06 => {
+                // TODO
+                tracing::info!("set h framebuffer range");
+            }
+            0x07 => {
+                // TODO
+                tracing::info!("set v framebuffer range");
             }
             0x08 => {
                 let cmd = DisplayModeCmd::new_with_raw_value(value.raw_value);
@@ -222,6 +247,11 @@ pub trait Gpu: Bus {
             }
             value => todo!("gp1 command: {}", hex(value)),
         }
+    }
+
+    fn run_gpu_commands(&mut self) {
+        self.gp0_command();
+        self.gp1_command();
     }
 }
 
@@ -529,6 +559,7 @@ pub struct TexpageCmd {
 }
 
 /// # GP1(10h) - Get GPU Info
+///
 /// GP1(11h..1Fh) - Mirrors of GP1(10h), Get GPU Info
 ///
 /// After sending the command, the result can be immediately read from GPUREAD register (there's no NOP or other delay required) (namely GPUSTAT.Bit27 is used only for VRAM-Reads, but NOT for GPU-Info-Reads, so do not try to wait for that flag).
@@ -643,4 +674,24 @@ pub enum VRes {
 pub enum DisplayColorDepth {
     Depth15Bit,
     Depth24Bit,
+}
+
+/// # GP1(05h) - Start of Display area (in VRAM)
+///
+/// ```md
+///   0-9   X (0-1023)    (halfword address in VRAM)  (relative to begin of VRAM)
+///   10-18 Y (0-511)     (scanline number in VRAM)   (relative to begin of VRAM)
+///   19-23 Not used (zero)
+/// ```
+///
+/// Upper/left Display source address in VRAM. The size and target
+/// position on screen is set via Display Range registers; target=X1,Y2;
+/// size=(X2-X1/cycles_per_pix), (Y2-Y1). Unknown if using Y values in 512-1023
+/// range is supported (with 2 MB VRAM).
+#[bitfield(u19)]
+pub struct StartOfDisplayCmd {
+    #[bits(0..=9, rw)]
+    address:  u10,
+    #[bits(10..=18, rw)]
+    scanline: u9,
 }

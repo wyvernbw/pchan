@@ -1623,6 +1623,10 @@ impl DynarecOp for J {
                 #[cfg(target_arch = "aarch64")]
                 dynasm!(
                     ctx.dynarec.asm
+                    // ; ldr x3, ->run_io
+                    // ; str x0, [sp, #-16]!
+                    // ; blr x3
+                    // ; ldr x0, [sp], #16
                     ; ldr x3, ->jump // defined in prelude
                     ; str x0, [sp, #-16]!
                     // load 32bit psx address into second argument
