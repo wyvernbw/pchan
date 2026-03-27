@@ -1,3 +1,5 @@
+pub mod draw_call;
+
 use std::mem::transmute;
 
 use arbitrary_int::prelude::*;
@@ -10,6 +12,10 @@ use tracing::instrument;
 
 use crate::Bus;
 use crate::Emu;
+use crate::gpu::draw_call::DrawOptsRegister;
+use crate::gpu::draw_call::Gp0SetDrawAreaCmd;
+use crate::gpu::draw_call::Gp0SetDrawOffsetCmd;
+use crate::gpu::draw_call::Gp0SetMaskBitCmd;
 use crate::io::CastIOFrom;
 use crate::io::CastIOInto;
 use crate::io::IOResult;
@@ -28,10 +34,10 @@ pub struct GpuState {
     pub gp0cmd_queue:  Deque<u32, 16>,
     pub gp0read_queue: Deque<u32, 32>,
     pub gp1cmd_queue:  Deque<u32, 16>,
-    /// GP0(0xe1) - Draw Mode setting (aka "Texpage")
-    pub tex_attr:      TexpageCmd,
     /// GP0(0xe2) - Texture Window setting
-    pub tex_window:    TexWindowCmd,
+    pub tex_window:    Gp0TexWindowCmd,
+    // TODO: remove this
+    pub draw_opts_reg: DrawOptsRegister,
     pub model:         GpuModel,
 }
 
@@ -58,8 +64,8 @@ impl Default for GpuState {
             gp0cmd_queue: Deque::new(),
             gp1cmd_queue: Deque::default(),
             model: GpuModel::default(),
-            tex_attr: Default::default(),
             tex_window: Default::default(),
+            draw_opts_reg: Default::default(),
         }
     }
 }
@@ -101,19 +107,19 @@ pub trait Gpu: Bus {
         match address {
             0x1f80_1810 => {
                 self.gpu_mut().gp0cmd_queue.push_back(value.io_into_u32());
-                self.gp0_command();
+                self.flush_gp0_cmd_queue();
                 Ok(())
             }
             0x1f80_1814 => {
                 self.gpu_mut().gp1cmd_queue.push_back(value.io_into_u32());
-                self.gp1_command();
+                self.flush_gp1_cmd_queue();
                 Ok(())
             }
             _ => Err(UnhandledIO(address)),
         }
     }
 
-    fn reduce(&mut self, cmd: GpuCmd) -> Gp0 {
+    fn gp0reduce(&mut self, cmd: GpuCmd) -> Gp0 {
         match cmd.cmd() {
             // nop
             0xc0..=0xdf => Gp0::CpRectVramToCpu(Gp0CpRect::RecvDest),
@@ -122,7 +128,6 @@ pub trait Gpu: Bus {
             0xe1 => {
                 let texpage = TexpageCmd::new_with_raw_value(cmd.raw_value());
 
-                self.gpu_mut().tex_attr = texpage;
                 let gpustat = &mut self.gpu_mut().gpustat;
 
                 gpustat.set_texpage_x_base(texpage.texpage_x_base());
@@ -135,18 +140,61 @@ pub trait Gpu: Bus {
 
                 Gp0::WaitingForCmd
             }
+            // GP0(E2h) - Texture Window setting
+            0xe2 => {
+                let cmd = Gp0TexWindowCmd::new_with_raw_value(cmd.raw_value());
+                self.gpu_mut().tex_window = cmd;
+
+                Gp0::WaitingForCmd
+            }
+            // GP0(E3h) - Set Drawing Area top left (X1,Y1)
+            0xe3 => {
+                let opts = &mut self.gpu_mut().draw_opts_reg;
+                let cmd = Gp0SetDrawAreaCmd::new_with_raw_value(cmd.raw_value());
+                opts.draw_area_top_left.x = cmd.x_coord().as_();
+                opts.draw_area_top_left.y = cmd.y_coord_v2().as_();
+
+                Gp0::WaitingForCmd
+            }
+            // GP0(E4h) - Set Drawing Area bottom right (X2,Y2)
+            0xe4 => {
+                let opts = &mut self.gpu_mut().draw_opts_reg;
+                let cmd = Gp0SetDrawAreaCmd::new_with_raw_value(cmd.raw_value());
+                opts.draw_area_bottom_right.x = cmd.x_coord().as_();
+                opts.draw_area_bottom_right.y = cmd.y_coord_v2().as_();
+
+                Gp0::WaitingForCmd
+            }
+            // GP0(E5h) - Set Drawing Offset (X,Y)
+            0xe5 => {
+                let opts = &mut self.gpu_mut().draw_opts_reg;
+                let cmd = Gp0SetDrawOffsetCmd::new_with_raw_value(cmd.raw_value());
+                opts.draw_offset.x = cmd.x_offset().as_();
+                opts.draw_offset.y = cmd.y_offset().as_();
+
+                Gp0::WaitingForCmd
+            }
+            // GP0(E6h) - Mask Bit Setting
+            0xe6 => {
+                let cmd = Gp0SetMaskBitCmd::new_with_raw_value(cmd.raw_value());
+                let gpustat = &mut self.gpu_mut().gpustat;
+                gpustat.set_set_mask(cmd.draw_mask());
+                gpustat.set_draw_pixels(cmd.draw_pixels());
+
+                Gp0::WaitingForCmd
+            }
             value => todo!("gp0 command: {}", hex(value)),
         }
     }
 
     #[cfg_attr(debug_assertions, instrument(skip_all))]
-    fn gp0_command(&mut self) {
+    fn flush_gp0_cmd_queue(&mut self) {
         let Some(value) = self.gpu_mut().gp0cmd_queue.pop_front() else {
             return;
         };
         let cmd = GpuCmd::new_with_raw_value(value);
         let gp0 = match &self.gpu().gp0 {
-            Gp0::WaitingForCmd => self.reduce(cmd),
+            Gp0::WaitingForCmd => self.gp0reduce(cmd),
             Gp0::CpRectCpuToVram(Gp0CpRect::RecvDest) => {
                 let dest: VramCoord = unsafe { transmute(value) };
                 Gp0::CpRectCpuToVram(Gp0CpRect::RecvSize { dest })
@@ -181,7 +229,7 @@ pub trait Gpu: Bus {
             Gp0::CpRectVramToCpu(Gp0CpRect::RecvData(_)) => {
                 self.gpu_mut().gpustat.set_ready_send_vram(false);
 
-                self.reduce(cmd)
+                self.gp0reduce(cmd)
             }
         };
 
@@ -190,7 +238,7 @@ pub trait Gpu: Bus {
         self.gpu_mut().gp0 = gp0;
     }
 
-    fn gp1_command(&mut self) {
+    fn flush_gp1_cmd_queue(&mut self) {
         let Some(value) = self.gpu_mut().gp1cmd_queue.pop_front() else {
             return;
         };
@@ -250,8 +298,8 @@ pub trait Gpu: Bus {
     }
 
     fn run_gpu_commands(&mut self) {
-        self.gp0_command();
-        self.gp1_command();
+        self.flush_gp0_cmd_queue();
+        self.flush_gp1_cmd_queue();
     }
 }
 
@@ -291,7 +339,7 @@ pub enum Gp0 {
     CpRectVramToCpu(Gp0CpRect),
 }
 
-#[derive(Debug, Clone, Copy, d::Add, d::AddAssign, PartialEq, PartialOrd, Ord, Eq)]
+#[derive(Debug, Clone, Copy, d::Add, d::AddAssign, PartialEq, PartialOrd, Ord, Eq, Default)]
 #[repr(C)]
 pub struct VramCoord {
     x: u16,
@@ -300,6 +348,19 @@ pub struct VramCoord {
 
 impl VramCoord {
     pub fn new(xpos: u16, ypos: u16) -> Self {
+        Self { x: xpos, y: ypos }
+    }
+}
+
+#[derive(Debug, Clone, Copy, d::Add, d::AddAssign, PartialEq, PartialOrd, Ord, Eq, Default)]
+#[repr(C)]
+pub struct IVramCoord {
+    x: i16,
+    y: i16,
+}
+
+impl IVramCoord {
+    pub fn new(xpos: i16, ypos: i16) -> Self {
         Self { x: xpos, y: ypos }
     }
 }
@@ -429,7 +490,7 @@ pub struct GpuStatReg {
     #[bit(10, rw)]
     draw_to_display:      bool,
     #[bit(11, rw)]
-    draw_mask:            bool,
+    set_mask:             bool,
     #[bit(12, rw)]
     draw_pixels:          DrawPixels,
     #[bit(13, rw)]
@@ -607,7 +668,7 @@ pub enum GpuInfoCmd {
 ///   24-31  Command  (E2h)
 #[bitfield(u32)]
 #[derive(Debug, Default)]
-pub struct TexWindowCmd {
+pub struct Gp0TexWindowCmd {
     #[bits(0..=4)]
     mask_x:   u5,
     #[bits(5..=9)]
