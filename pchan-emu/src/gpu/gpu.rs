@@ -12,7 +12,10 @@ use tracing::instrument;
 
 use crate::Bus;
 use crate::Emu;
+use crate::gpu::draw_call::DrawCall;
+use crate::gpu::draw_call::DrawCallDecoder;
 use crate::gpu::draw_call::DrawOptsRegister;
+use crate::gpu::draw_call::DrawRectDecoder;
 use crate::gpu::draw_call::Gp0SetDrawAreaCmd;
 use crate::gpu::draw_call::Gp0SetDrawOffsetCmd;
 use crate::gpu::draw_call::Gp0SetMaskBitCmd;
@@ -26,19 +29,20 @@ use crate::memory::mb;
 #[derive(derive_more::Debug, Clone)]
 pub struct GpuState {
     #[debug(skip)]
-    pub vram:          Box<[u16]>,
+    pub vram:            Box<[u16]>,
     #[debug(skip)]
-    pub gpustat:       GpuStatReg,
-    pub gp0:           Gp0,
-    pub gp0read:       [u16; 2],
-    pub gp0cmd_queue:  Deque<u32, 16>,
-    pub gp0read_queue: Deque<u32, 32>,
-    pub gp1cmd_queue:  Deque<u32, 16>,
+    pub gpustat:         GpuStatReg,
+    pub gp0:             Gp0,
+    pub gp0read:         [u16; 2],
+    pub gp0cmd_queue:    Deque<u32, 16>,
+    pub gp0read_queue:   Deque<u32, 32>,
+    pub gp1cmd_queue:    Deque<u32, 16>,
     /// GP0(0xe2) - Texture Window setting
-    pub tex_window:    Gp0TexWindowCmd,
+    pub tex_window:      Gp0TexWindowCmd,
     // TODO: remove this
-    pub draw_opts_reg: DrawOptsRegister,
-    pub model:         GpuModel,
+    pub draw_opts_reg:   DrawOptsRegister,
+    pub draw_call_queue: Vec<DrawCall>,
+    pub model:           GpuModel,
 }
 
 #[derive(derive_more::Debug, Clone, Default)]
@@ -66,6 +70,7 @@ impl Default for GpuState {
             model: GpuModel::default(),
             tex_window: Default::default(),
             draw_opts_reg: Default::default(),
+            draw_call_queue: vec![],
         }
     }
 }
@@ -183,6 +188,8 @@ pub trait Gpu: Bus {
 
                 Gp0::WaitingForCmd
             }
+            // Draw Rect
+            0x60 => Gp0::DrawRectDecode(DrawRectDecoder::new(cmd.raw_value())),
             value => todo!("gp0 command: {}", hex(value)),
         }
     }
@@ -230,6 +237,19 @@ pub trait Gpu: Bus {
                 self.gpu_mut().gpustat.set_ready_send_vram(false);
 
                 self.gp0reduce(cmd)
+            }
+            Gp0::DrawRectDecode(decoder) => {
+                let decoder = decoder.advance(value);
+                match decoder {
+                    Ok(decoder) => Gp0::DrawRectDecode(decoder),
+                    Err(draw_call) => {
+                        tracing::info!(?draw_call);
+                        self.gpu_mut()
+                            .draw_call_queue
+                            .push(DrawCall::Rect(draw_call));
+                        Gp0::WaitingForCmd
+                    }
+                }
             }
         };
 
@@ -337,9 +357,11 @@ pub enum Gp0 {
     WaitingForCmd,
     CpRectCpuToVram(Gp0CpRect),
     CpRectVramToCpu(Gp0CpRect),
+    DrawRectDecode(DrawRectDecoder),
 }
 
-#[derive(Debug, Clone, Copy, d::Add, d::AddAssign, PartialEq, PartialOrd, Ord, Eq, Default)]
+#[derive(Debug, Copy, PartialEq, PartialOrd, Ord, Eq)]
+#[derive_const(Clone, d::Add, d::AddAssign, Default)]
 #[repr(C)]
 pub struct VramCoord {
     x: u16,
@@ -349,6 +371,12 @@ pub struct VramCoord {
 impl VramCoord {
     pub fn new(xpos: u16, ypos: u16) -> Self {
         Self { x: xpos, y: ypos }
+    }
+}
+
+impl const From<u32> for VramCoord {
+    fn from(value: u32) -> Self {
+        unsafe { transmute(value) }
     }
 }
 

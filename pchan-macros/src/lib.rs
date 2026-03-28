@@ -353,3 +353,14 @@ fn pchan_instrument_generic(
     }
     .into()
 }
+
+#[proc_macro_attribute]
+pub fn instrument(args: TokenStream, input: TokenStream) -> TokenStream {
+    let args: proc_macro2::TokenStream = args.into();
+    let input: proc_macro2::TokenStream = input.into();
+    quote! {
+        #[cfg_attr(debug_assertions, ::tracing::instrument(#args))]
+        #input
+    }
+    .into()
+}
