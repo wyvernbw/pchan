@@ -2851,6 +2851,8 @@ dependencies = [
 name = "pchan-dbg"
 version = "0.1.0"
 dependencies = [
+ "arbitrary-int",
+ "bitbybit",
  "color-eyre",
  "flume",
  "manatui",

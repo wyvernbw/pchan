@@ -5,6 +5,8 @@ authors = ["wyvernbw <iamwyvern511@gmail.com>"]
 edition = "2024"
 
 [dependencies]
+arbitrary-int = "2.1.1"
+bitbybit = "2.0.0"
 color-eyre = "*"
 flume = { version = "0.12.0", default-features = false, features = ["async"] }
 manatui = { git = "https://github.com/wyvernbw/manatui.git", features = ["macros", "nightly"] }

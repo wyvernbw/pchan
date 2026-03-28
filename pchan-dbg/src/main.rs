@@ -10,6 +10,7 @@ pub(crate) mod emu_task;
 pub(crate) mod lipgloss_colors;
 pub(crate) mod mem_widget;
 pub(crate) mod tty_widget;
+pub(crate) mod vram_widget;
 
 use std::borrow::Cow;
 use std::collections::HashSet;
@@ -46,6 +47,7 @@ use crate::emu_task::{EmuRequest, EmuResponse, EmuTask, EmuTaskHandle};
 use crate::lipgloss_colors::{LIPGLOSS, LipglossStyle};
 use crate::mem_widget::{MemView, MemViewState};
 use crate::tty_widget::{TtyView, TtyViewState};
+use crate::vram_widget::{VramCanvas, VramCanvasView};
 
 pub(crate) type Chan<T> = (Sender<T>, Receiver<T>);
 
@@ -73,6 +75,8 @@ async fn main() -> Result<()> {
 
 struct Model {
     dbg_page:        DbgPage,
+    gpu_page:        GpuPage,
+    current_page:    Page,
     emu_handle:      EmuTaskHandle,
     emu_join_handle: JoinHandle<Result<()>>,
     emu_stage:       PipelineV2Stage,
@@ -109,6 +113,22 @@ struct DbgPage {
     tty_view:               TtyViewState,
     asm_dump:               AsmDump,
     summary_input:          TextInput,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum GpuPageFocus {
+    VramCanvas,
+}
+
+struct GpuPage {
+    focus:       FocusGroup<GpuPageFocus>,
+    vram_canvas: VramCanvas,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Page {
+    Dbg,
+    Gpu,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -166,6 +186,11 @@ impl Model {
                     summary_mode:           SummaryMode::Hidden,
                     summary_input:          TextInput::new(),
                 },
+                gpu_page: GpuPage {
+                    focus:       FocusGroup::new(),
+                    vram_canvas: VramCanvas::new(),
+                },
+                current_page: Page::Dbg,
                 emu_handle: emu_handle.clone(),
                 emu_join_handle,
                 emu_stage: PipelineV2Stage::Uninit,
@@ -393,53 +418,72 @@ impl Model {
             return self.no_effect();
         }
 
-        match self.dbg_page.focus.update(&event) {
-            EventOutcome::Consumed(focus) => {
-                self.dbg_page.focus = focus;
-                self.build_focus();
-                return self.no_effect();
-            }
-            EventOutcome::Unhandled(focus) => {
-                self.dbg_page.focus = focus;
-            }
-        }
+        match self.current_page {
+            Page::Dbg => {
+                match self.dbg_page.focus.update(&event) {
+                    EventOutcome::Consumed(focus) => {
+                        self.dbg_page.focus = focus;
+                        self.build_dbg_page_focus();
+                        return self.no_effect();
+                    }
+                    EventOutcome::Unhandled(focus) => {
+                        self.dbg_page.focus = focus;
+                    }
+                }
 
-        self.dbg_page.tty_view = self.dbg_page.tty_view.update(&event);
-        (self.dbg_page.decoded_ops_list, self.dbg_page.focus) = self
-            .dbg_page
-            .focus
-            .pipe(self.dbg_page.decoded_ops_list.update(&event));
-        (self.dbg_page.breakpoints_list, self.dbg_page.focus) = self
-            .dbg_page
-            .focus
-            .pipe(self.dbg_page.breakpoints_list.update(&event));
-        (self.dbg_page.cpu_gpr_list, self.dbg_page.focus) = self
-            .dbg_page
-            .focus
-            .pipe(self.dbg_page.cpu_gpr_list.update(&event));
-        self.dbg_page.mem_view = self.dbg_page.mem_view.update(&event);
-        self.dbg_page.asm_dump = self.dbg_page.asm_dump.update(&event);
+                self.dbg_page.tty_view = self.dbg_page.tty_view.update(&event);
+                (self.dbg_page.decoded_ops_list, self.dbg_page.focus) = self
+                    .dbg_page
+                    .focus
+                    .pipe(self.dbg_page.decoded_ops_list.update(&event));
+                (self.dbg_page.breakpoints_list, self.dbg_page.focus) = self
+                    .dbg_page
+                    .focus
+                    .pipe(self.dbg_page.breakpoints_list.update(&event));
+                (self.dbg_page.cpu_gpr_list, self.dbg_page.focus) = self
+                    .dbg_page
+                    .focus
+                    .pipe(self.dbg_page.cpu_gpr_list.update(&event));
+                self.dbg_page.mem_view = self.dbg_page.mem_view.update(&event);
+                self.dbg_page.asm_dump = self.dbg_page.asm_dump.update(&event);
 
-        self.build_focus();
+                self.build_dbg_page_focus();
 
-        match (self.dbg_page.focus.tag(), &event) {
-            (Some(DbgPageFocus::CpuViewer), keyv2!('s')) => {
-                self.dbg_page.cpu_viewer_show_zeroes = !self.dbg_page.cpu_viewer_show_zeroes;
+                match (self.dbg_page.focus.tag(), &event) {
+                    (Some(DbgPageFocus::CpuViewer), keyv2!('s')) => {
+                        self.dbg_page.cpu_viewer_show_zeroes =
+                            !self.dbg_page.cpu_viewer_show_zeroes;
+                    }
+                    (Some(DbgPageFocus::CpuViewer), keyv2!('c')) => {
+                        self.dbg_page.cpu_viewer_show_cops = !self.dbg_page.cpu_viewer_show_cops;
+                    }
+                    (Some(DbgPageFocus::Summary), keyv2!('n')) => {
+                        self.send_request(EmuRequest::Step).await;
+                    }
+                    (Some(DbgPageFocus::Summary), keyv2!(space)) => {
+                        self.emu_running = !self.emu_running;
+                        match self.emu_running {
+                            true => self.send_request(EmuRequest::Run).await,
+                            false => self.send_request(EmuRequest::Pause).await,
+                        };
+                    }
+                    _ => {}
+                }
             }
-            (Some(DbgPageFocus::CpuViewer), keyv2!('c')) => {
-                self.dbg_page.cpu_viewer_show_cops = !self.dbg_page.cpu_viewer_show_cops;
+            Page::Gpu => {
+                match self.gpu_page.focus.update(&event) {
+                    EventOutcome::Consumed(focus) => {
+                        self.gpu_page.focus = focus;
+                        self.build_gpu_page_focus();
+                        return self.no_effect();
+                    }
+                    EventOutcome::Unhandled(focus) => {
+                        self.gpu_page.focus = focus;
+                    }
+                }
+
+                self.build_gpu_page_focus();
             }
-            (Some(DbgPageFocus::Summary), keyv2!('n')) => {
-                self.send_request(EmuRequest::Step).await;
-            }
-            (Some(DbgPageFocus::Summary), keyv2!(space)) => {
-                self.emu_running = !self.emu_running;
-                match self.emu_running {
-                    true => self.send_request(EmuRequest::Run).await,
-                    false => self.send_request(EmuRequest::Pause).await,
-                };
-            }
-            _ => {}
         }
 
         match event {
@@ -447,11 +491,19 @@ impl Model {
                 self.send_request(EmuRequest::Quit).await;
                 (self, Effect::msg(Msg::Quit))
             }
+            keyv2!('1') => {
+                self.current_page = Page::Dbg;
+                self.no_effect()
+            }
+            keyv2!('2') => {
+                self.current_page = Page::Gpu;
+                self.no_effect()
+            }
             _ => (self, Effect::none()),
         }
     }
 
-    fn build_focus(&mut self) {
+    fn build_dbg_page_focus(&mut self) {
         self.dbg_page
             .focus
             .items()
@@ -465,6 +517,14 @@ impl Model {
             .commit();
     }
 
+    fn build_gpu_page_focus(&self) {
+        self.gpu_page
+            .focus
+            .items()
+            .next((&self.gpu_page.vram_canvas, GpuPageFocus::VramCanvas))
+            .commit();
+    }
+
     async fn send_request(&self, req: EmuRequest) {
         _ = self.emu_handle.req_chan.0.send_async(req).await;
     }
@@ -475,6 +535,18 @@ async fn view(model: &Model) -> View {
     let title = format!("+ 🐷🎗️ P-ちゃん dbg @ {freq_mhz:.2}Mhz +");
     ui! {
         <Block .rounded .title={title} Width::grow() Height::grow() Direction::Horizontal>
+        {match model.current_page {
+            Page::Dbg => ui!{<DbgPageView .model={model}/>},
+            Page::Gpu => ui!{<GpuPageView .model={model}/>},
+        }}
+        </Block>
+    }
+}
+
+#[subview]
+fn dbg_page_view(model: &Model) -> View {
+    ui! {
+        <Block Width::grow() Height::grow() Direction::Horizontal>
             <Block Width::percentage(25) Height::grow()>
                 <Instructions .model={model} Height::grow() />
                 <Breakpoints .model={model} Width::grow() Height::percentage(20)/>
@@ -495,6 +567,25 @@ async fn view(model: &Model) -> View {
                 />
             </Block>
             <CopView .model={model}/>
+        </Block>
+    }
+}
+
+#[subview]
+fn gpu_page_view(model: &Model) -> View {
+    let focused = matches!(model.gpu_page.focus.tag(), Some(GpuPageFocus::VramCanvas));
+    let border_style = border_style_focus(focused);
+
+    ui! {
+        <Block Width::grow() Height::grow()>
+            <Block .rounded .border_style={border_style} .title="+ ヴィデオRAM +"
+                Width::grow() Height::grow()
+            >
+                <VramCanvasView
+                    .dbg_view={model.emu_handle.dbg_view}
+                    .state={&model.gpu_page.vram_canvas}
+                />
+            </Block>
         </Block>
     }
 }

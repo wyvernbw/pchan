@@ -281,3 +281,9 @@ impl DebugView {
         unsafe { &*self.0 }
     }
 }
+
+impl Default for DebugView {
+    fn default() -> Self {
+        Self(std::ptr::null_mut())
+    }
+}
