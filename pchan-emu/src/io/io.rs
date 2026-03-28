@@ -1,19 +1,19 @@
-use bitbybit::{bitenum, bitfield};
+use arbitrary_int::prelude::*;
 use pchan_utils::hex;
 use tracing::instrument;
 
 use crate::bootloader::Bootloader;
-use crate::cpu::exceptions::Exceptions;
 use crate::gpu::Gpu;
 use crate::io::dma::Dma;
+use crate::io::irq::Interrupts;
 use crate::io::timers::Timers;
 use crate::io::vblank::VBlank;
 use crate::memory::{Extend, GUEST_MEM_MAP, MEM_MAP, ScratchpadMem};
 use crate::{Bus, Emu, io::cdrom::CDRom, memory::fastmem::Fastmem};
-use derive_more as d;
 
 pub mod cdrom;
 pub mod dma;
+pub mod irq;
 pub mod timers;
 pub mod tty;
 pub mod vblank;
@@ -80,7 +80,6 @@ trait GenericIOFallback: Bus {
         let address = address & 0x1fffffff;
         match address {
             0x1f801000..0x1fa00000 => {
-                tracing::trace!("fallback to generic io read");
                 Ok(self
                     .mem()
                     .read_region(MEM_MAP.io, GUEST_MEM_MAP.io, address))
@@ -93,7 +92,6 @@ trait GenericIOFallback: Bus {
         let address = address & 0x1fffffff;
         match address {
             0x1f801000..0x1fa00000 => {
-                tracing::trace!("fallback to generic io write");
                 self.mem_mut()
                     .write_region(MEM_MAP.io, GUEST_MEM_MAP.io, address, value);
                 Ok(())
@@ -163,9 +161,10 @@ impl IO for Emu {
     fn try_read<T: Copy>(&mut self, address: u32) -> IOResult<T> {
         Fastmem::read::<T>(self, address)
             .or_else(|_| ScratchpadMem::read(self, address))
-            .or_else(|_| Timers::read_timers(self, address))
+            .or_else(|_| Interrupts::read(self, address))
             .or_else(|_| Gpu::read(self, address))
             .or_else(|_| Dma::read(self, address))
+            .or_else(|_| Timers::read_timers(self, address))
             .or_else(|_| CDRom::read::<T>(self, address))
             .or_else(|_| GenericIOFallback::read::<T>(self, address))
             .or_else(|_| CacheControl::read::<T>(self, address))
@@ -174,6 +173,7 @@ impl IO for Emu {
     fn try_read_pure<T: Copy>(&self, address: u32) -> IOResult<T> {
         Fastmem::read::<T>(self, address)
             .or_else(|_| ScratchpadMem::read(self, address))
+            .or_else(|_| Interrupts::read(self, address))
             .or_else(|_| Dma::read(self, address))
             .or_else(|_| Timers::read_timers(self, address))
             .or_else(|_| CDRom::read::<T>(self, address))
@@ -185,6 +185,7 @@ impl IO for Emu {
         Fastmem::write::<T>(self, address, value)
             .or_else(|_| ScratchpadMem::write(self, address, value))
             .or_else(|_| Timers::write_timers(self, address, value))
+            .or_else(|_| Interrupts::write(self, address, value))
             .or_else(|_| Gpu::write(self, address, value))
             .or_else(|_| Dma::write(self, address, value))
             .or_else(|_| CDRom::write::<T>(self, address, value))
@@ -200,7 +201,15 @@ pub trait CastIOInto: Copy {
             "invalid cast of IO channel value to T. T has size {} >= 4",
             size_of::<Self>()
         );
-        unsafe { std::mem::transmute_copy::<Self, u32>(self) }
+        let mut buf = [0u8; 4];
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                self as *const Self as *const u8,
+                buf.as_mut_ptr(),
+                size_of::<Self>(),
+            );
+        }
+        u32::from_ne_bytes(buf)
     }
 }
 
@@ -230,36 +239,3 @@ fn test_io_from_u32() {
     assert_eq!(0xdeadbeefu32.io_from_u32::<i16>(), 0xbeefu32 as i16);
     assert_eq!(0xdeadbeefu32.io_from_u32::<i8>(), 0xefu32 as i8);
 }
-
-#[bitfield(u32)]
-#[derive(d::Deref)]
-pub struct IrqField {
-    #[bit(0)]
-    irq0_vblank: bool,
-    #[bit(4)]
-    irq4_timer0: bool,
-    #[bit(5)]
-    irq5_timer1: bool,
-    #[bit(6)]
-    irq6_timer2: bool,
-}
-
-#[bitenum(u8)]
-pub enum Irq {
-    Irq0Vblank = 0x0,
-    Irq4Timer0 = 0x4,
-    Irq5Timer1 = 0x5,
-    Irq6Timer2 = 0x6,
-}
-
-pub trait Interrupts: Bus + IO + Exceptions {
-    fn trigger_irq(&mut self, irq: Irq) {
-        let stat = self.read::<IrqField>(0x1f801070);
-        let mask = self.read::<IrqField>(0x1f801074);
-        let stat = *stat & *mask & (1 << irq as u8);
-        self.write(0x1f801070, stat);
-        self.handle_exception(crate::cpu::exceptions::Exception::Interrupt);
-    }
-}
-
-impl Interrupts for Emu {}

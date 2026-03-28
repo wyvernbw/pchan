@@ -56,6 +56,11 @@ pub trait Exceptions: Bus {
 impl Exceptions for Emu {
     #[cfg_attr(debug_assertions, instrument(ret, skip(self)))]
     fn handle_exception(&mut self, exception: Exception) {
+        let sr = self.cpu().cop0.reg[12];
+        // Push the KU/IE stack and disable interrupts
+        let new_sr = (sr & !0x3F) | ((sr & 0xF) << 2);
+        self.cpu_mut().cop0.reg[12] = new_sr;
+
         let cause = self.cpu().cop0.reg[13];
         let mut cause = CauseRegister(cause);
         cause.set_excode(exception as u32);
@@ -71,7 +76,6 @@ impl Exceptions for Emu {
 
     #[unsafe(no_mangle)]
     extern "C" fn handle_rfe(&mut self) {
-        tracing::trace!("running rfe");
         let sr = self.cpu().cop0.reg[12];
         self.cpu_mut().cop0.reg[12] = (sr & !0x3F) | ((sr >> 2) & 0x3F);
         // panic!("rfe breakpoint");
@@ -79,7 +83,6 @@ impl Exceptions for Emu {
 
     #[unsafe(no_mangle)]
     extern "C" fn handle_break(&mut self) {
-        tracing::trace!("break");
         self.handle_exception(Exception::Break);
     }
 

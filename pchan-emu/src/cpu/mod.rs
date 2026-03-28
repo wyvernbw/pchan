@@ -4,7 +4,7 @@ use bitfield::bitfield;
 use derive_more as d;
 use pchan_utils::{array, hex};
 
-use crate::cpu::ops::OpCode;
+use crate::{cpu::ops::OpCode, io::irq::IrqState};
 
 pub mod ops;
 
@@ -21,6 +21,7 @@ pub struct Cpu {
     pub cop2:         Cop2,
     pub vblank_timer: u32,
     pub cycles:       u64,
+    pub irq:          IrqState,
 }
 
 use std::fmt;

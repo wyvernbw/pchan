@@ -29,7 +29,7 @@ use crate::{
     cpu::Cpu,
     dynarec_v2::{DynarecBlock, DynarecCache},
     gpu::GpuState,
-    io::{dma::DmaState, tty::Tty},
+    io::{dma::DmaState, irq::IrqState, tty::Tty},
     memory::MemoryState,
 };
 

@@ -144,7 +144,17 @@ impl TtyViewState {
 
 #[subview]
 pub(crate) fn tty_view(tty: &[Arc<str>], state: &TtyViewState) -> View {
-    let tty_iter = tty.iter().map(|line| ui! {"{line}"});
+    let tty_iter = tty
+        .iter()
+        .map(|line| ui! {"{line}"})
+        .rev()
+        .take(
+            state
+                .rect()
+                .map(|rect| rect.height as usize)
+                .unwrap_or(usize::MAX),
+        )
+        .rev();
     let focused = state.focus();
     let border_style = border_style_focus(focused);
 

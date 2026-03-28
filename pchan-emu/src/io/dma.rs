@@ -1,7 +1,6 @@
 use crate::{
     Bus, Emu,
-    gpu::Gpu,
-    io::{CastIOFrom, CastIOInto, IO, IOResult, UnhandledIO},
+    io::{CastIOFrom, CastIOInto, IO, IOResult, Interrupts, UnhandledIO, irq::Irq},
     memory::fastmem::Fastmem,
 };
 use arbitrary_int::prelude::*;
@@ -48,7 +47,7 @@ impl Default for DmaState {
 /// These ports control DMA at the CPU-side. In most cases, you'll additionally
 /// need to initialize an address (and transfer direction, transfer enabled, etc.)
 /// at the remote-side (eg. at the GPU-side for DMA2).
-pub trait Dma: Bus + IO + Fastmem {
+pub trait Dma: Bus + IO + Fastmem + Interrupts {
     fn dma(&self) -> &DmaState;
     fn dma_mut(&mut self) -> &mut DmaState;
     #[pchan_instrument_read("dma:r")]
@@ -162,7 +161,18 @@ pub trait Dma: Bus + IO + Fastmem {
             }
             // dicr
             0x1f8010f4 => {
-                self.dma_mut().dicr = Dicr::new_with_raw_value(value.io_into_u32());
+                let dicr = &mut self.dma_mut().dicr;
+                let new_dicr = Dicr::new_with_raw_value(value.io_into_u32());
+                let irq_flags = dicr.combined_irq_flags();
+                let new_irq_flags = new_dicr.combined_irq_flags();
+
+                // writing 1 to irq flag resets it to 0
+                let irq_flags = irq_flags ^ new_irq_flags;
+                tracing::trace!("dma_irq_flags: {irq_flags:b}");
+
+                let new_dicr = new_dicr.with_combined_irq_flags(irq_flags);
+
+                *dicr = new_dicr;
                 Ok(())
             }
             _ => Err(UnhandledIO(address)),
@@ -189,6 +199,7 @@ pub trait Dma: Bus + IO + Fastmem {
             if event.finish_at > self.cpu().cycles {
                 break;
             }
+            let idx = event.dma_t.idx();
             match event.dma_t {
                 DmaTransportKind::Otc(_) => {
                     OTC::write_data(self);
@@ -203,8 +214,28 @@ pub trait Dma: Bus + IO + Fastmem {
                         .set_transfer(Transfer::StoppedCompleted);
                 }
             }
+            self.dma_irq_raise_complete(idx as usize);
             _ = self.dma_mut().queue.heap.pop();
         }
+    }
+
+    // ```
+    // Bits 24-30 are acknowledged (reset to zero) when writing a "1" to that
+    // bits (and additionally, IRQ3 must be acknowledged via I_STAT).
+    // ```
+    fn dma_irq_raise_complete(&mut self, idx: usize) {
+        let dicr = &mut self.dma_mut().dicr;
+        if dicr.irq_mask(idx) && dicr.master_on() {
+            dicr.set_irq_flag(idx, true);
+        }
+        let new_master_irq =
+            dicr.bus_error() || (dicr.master_on() && dicr.combined_irq_flags().as_u8() > 0);
+        if let (false, true) = (dicr.master_irq(), new_master_irq) {
+            self.trigger_irq(Irq::Irq3Dma);
+        }
+        let dicr = &mut self.dma_mut().dicr;
+        dicr.set_master_irq(new_master_irq);
+        tracing::trace!("dma_irq_flags: {:b}", dicr.combined_irq_flags());
     }
 }
 
@@ -297,18 +328,22 @@ pub struct Dpcr {
 #[derive(Debug, Default)]
 pub struct Dicr {
     #[bit(0, rw)]
-    irq_mode:   [DmaIrqMode; 7],
+    irq_mode:  [DmaIrqMode; 7],
     #[bits(7..=14)]
-    _padding:   u8,
-    #[bit(15)]
-    bus_error:  bool,
+    _padding:  u8,
+    #[bit(15, rw)]
+    bus_error: bool,
     #[bit(16, rw)]
-    irq_mask:   [bool; 7],
-    #[bit(23)]
-    master_on:  bool,
+    irq_mask:  [bool; 7],
+    #[bit(23, rw)]
+    master_on: bool,
     #[bit(24, rw)]
-    master_on:  [bool; 7],
-    #[bit(31)]
+    irq_flag:  [bool; 7],
+
+    #[bits(24..=30, rw)]
+    combined_irq_flags: u7,
+
+    #[bit(31, rw)]
     master_irq: bool,
 }
 

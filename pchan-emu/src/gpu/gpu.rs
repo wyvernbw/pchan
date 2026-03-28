@@ -243,7 +243,7 @@ pub trait Gpu: Bus {
                 match decoder {
                     Ok(decoder) => Gp0::DrawRectDecode(decoder),
                     Err(draw_call) => {
-                        tracing::info!(?draw_call);
+                        tracing::info!(?draw_call, "decoded");
                         self.gpu_mut()
                             .draw_call_queue
                             .push(DrawCall::Rect(draw_call));
