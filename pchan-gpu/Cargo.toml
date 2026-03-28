@@ -10,6 +10,7 @@ flume = "0.12.0"
 color-eyre = "*"
 slab.workspace = true
 thiserror = "2.0.18"
+pchan-emu = {workspace = true}
 pchan-macros = { workspace = true }
 pchan-utils = { workspace = true }
 tracing = { workspace = true }
@@ -22,3 +23,6 @@ pretty_assertions = {version = "1.4.1", features = ["unstable"]}
 rstest = "*"
 color-eyre = "*" 
 criterion = { version = "0.8", features = ["html_reports"] }
+ratatui = "*"
+bitbybit.workspace = true
+arbitrary-int.workspace = true

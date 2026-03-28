@@ -39,6 +39,8 @@ resolver = "3"
 color-eyre = "0.6.5"
 slab = "0.4.12"
 tracing = "0.1.44"
+bitbybit = "2.0.0"
+arbitrary-int = "2.1.1"
 
 [workspace.dependencies.const-hex]
 version = "1.18.1"

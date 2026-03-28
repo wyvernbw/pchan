@@ -13,8 +13,8 @@ tracing-subscriber = { workspace = true }
 pchan-macros = { workspace = true }
 pchan-utils = { workspace = true }
 
-arbitrary-int = "2.1.1"
-bitbybit = "2.0.0"
+arbitrary-int.workspace = true
+bitbybit.workspace = true
 bitvec = "1.0.1"
 bon = "3.9.1"
 byteorder = "1.5.0"

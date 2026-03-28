@@ -2923,13 +2923,17 @@ dependencies = [
 name = "pchan-gpu"
 version = "0.1.0"
 dependencies = [
+ "arbitrary-int",
+ "bitbybit",
  "bon",
  "color-eyre",
  "criterion",
  "flume",
+ "pchan-emu",
  "pchan-macros",
  "pchan-utils",
  "pretty_assertions",
+ "ratatui",
  "rstest",
  "slab",
  "smol",

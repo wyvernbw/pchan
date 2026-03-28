@@ -39,14 +39,6 @@ impl Widget for VramCanvasWidget {
                         let vram = &self.dbg_view.emu().gpu().vram;
                         let vram_addr = 1024 * y + x;
                         let pixel = vram[vram_addr];
-                        // ctx.draw(&Rectangle {
-                        //     x:      x as f64,
-                        //     y:      y as f64,
-                        //     width:  1.0,
-                        //     height: 1.0,
-                        //     color:  Color::Rgb((x * 255 / 1024) as u8, (y * 255 / 512) as u8, 255),
-                        // });
-                        // continue;
                         let pixel = Pixel::new_with_raw_value(pixel);
 
                         ctx.draw(&Rectangle {
@@ -54,7 +46,11 @@ impl Widget for VramCanvasWidget {
                             y:      y as f64,
                             width:  1.0,
                             height: 1.0,
-                            color:  Color::Rgb(pixel.r().as_(), pixel.g().as_(), pixel.b().as_()),
+                            color:  Color::Rgb(
+                                (pixel.r().as_::<u16>() * 255 / 31) as u8,
+                                (pixel.g().as_::<u16>() * 255 / 31) as u8,
+                                (pixel.b().as_::<u16>() * 255 / 31) as u8,
+                            ),
                         });
                     }
                 }
