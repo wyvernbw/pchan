@@ -17,6 +17,7 @@ tracing-indicatif = "0.3.14"
 smol = "2.0.2"
 bon = "3.9.1"
 tracing-error = "0.2.1"
+flume.workspace = true
 
 [dev-dependencies]
 pretty_assertions = {version = "1.4.1", features = ["unstable"]}

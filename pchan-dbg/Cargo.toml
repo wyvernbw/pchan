@@ -12,6 +12,7 @@ flume = { version = "0.12.0", default-features = false, features = ["async"] }
 manatui = { git = "https://github.com/wyvernbw/manatui.git", features = ["macros", "nightly"] }
 manatui-tea-ui = { git = "https://github.com/wyvernbw/manatui.git", version = "0.1.0" }
 pchan-emu = { workspace = true, features = ["fetch-channel"] }
+pchan-gpu.workspace = true
 pchan-utils = { workspace = true, path = "../pchan-utils" }
 tokio = { version = "1.50.0", features = ["fs", "io-util", "macros", "process", "rt"] }
 tracing.workspace = true

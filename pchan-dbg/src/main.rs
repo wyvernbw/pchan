@@ -162,7 +162,7 @@ impl tea::Model for Model {}
 
 impl Model {
     async fn init() -> (Self, Effect<Msg>) {
-        let (emu_handle, emu_join_handle) = match EmuTask::spawn() {
+        let (emu_handle, emu_join_handle) = match EmuTask::spawn().await {
             Ok(handle) => handle,
             Err(err) => panic!("{err:?}"),
         };

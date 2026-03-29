@@ -52,18 +52,20 @@ pub trait Interrupts: Bus + IO + Exceptions {
     fn irq(&self) -> &IrqState {
         &self.cpu().irq
     }
+
     fn trigger_irq(&mut self, irq: Irq) {
-        let stat = self.read::<IrqField>(0x1f801070);
-        let mask = self.read::<IrqField>(0x1f801074);
+        let stat = self.irq().i_stat;
+        let mask = self.irq().i_mask;
 
-        let new_stat = IrqField::new_with_raw_value(*stat | (1 << irq as u8));
+        let new_stat = IrqField::new_with_raw_value(*stat | (1 << irq as u8) & *mask);
+        self.irq_mut().i_stat = new_stat;
 
-        IO::write(self, 0x1f801070, new_stat);
         if irq != Irq::Irq0Vblank {
             tracing::trace!(
                 ?irq,
-                "{:010b} -> {:010b}",
+                "{:010b} mask{:010b} -> {:010b}",
                 stat.irq_flags_combined(),
+                mask.irq_flags_combined(),
                 new_stat.irq_flags_combined()
             );
         }
@@ -87,7 +89,7 @@ pub trait Interrupts: Bus + IO + Exceptions {
                 let irq = self.irq_mut();
                 let i_stat = irq.i_stat.raw_value();
                 let write = value.io_into_u32();
-                let i_stat = i_stat & (!write);
+                let i_stat = i_stat & write;
                 irq.i_stat = IrqField::new_with_raw_value(i_stat);
 
                 Ok(())

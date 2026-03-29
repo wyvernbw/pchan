@@ -70,6 +70,7 @@ impl<'a> RenderPass<'a> {
         render_pass.draw(0..self.scene.vertex_buf.len() as u32, 0..1);
     }
 
+    #[pchan_macros::instrument(err)]
     pub fn finish(mut self, vram: &mut [u16]) -> color_eyre::Result<()> {
         let output_buffer = self.renderer.device.create_buffer(&BufferDescriptor {
             label: Some("output"),

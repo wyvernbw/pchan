@@ -1,20 +1,17 @@
 use crate::Chan;
 use color_eyre::{Result, eyre::Context};
-use flume::Receiver;
 use pchan_emu::{
     Bus, Emu,
     bootloader::Bootloader,
-    cpu::Cpu,
-    dynarec_v2::{DynarecBlock, FETCH_CHANNEL, PipelineV2, PipelineV2Stage, emitters::DecodedOp},
+    dynarec_v2::{DynarecBlock, PipelineV2, PipelineV2Stage},
+    gpu::Gpu,
 };
+use pchan_gpu::Renderer;
 use pchan_utils::hex;
 use std::{
     collections::{HashSet, VecDeque},
-    io::Write,
     path::PathBuf,
-    process::Stdio,
     sync::Arc,
-    time::Duration,
 };
 use tokio::{task::JoinHandle, time::Instant};
 use tracing::instrument;
@@ -51,6 +48,7 @@ pub(crate) struct EmuTask {
     pipe:          PipelineV2,
     cycle_samples: VecDeque<(u64, Instant)>,
     breakpoints:   HashSet<u32>,
+    renderer_task: JoinHandle<()>,
 }
 #[derive(Debug, Clone)]
 pub(crate) struct EmuTaskHandle {
@@ -61,7 +59,7 @@ pub(crate) struct EmuTaskHandle {
 }
 
 impl EmuTask {
-    pub(crate) fn spawn() -> Result<(EmuTaskHandle, JoinHandle<Result<()>>)> {
+    pub(crate) async fn spawn() -> Result<(EmuTaskHandle, JoinHandle<Result<()>>)> {
         let req_chan = flume::unbounded();
         let res_chan = flume::unbounded();
         let bios_path = std::env::var("PCHAN_BIOS")
@@ -70,7 +68,10 @@ impl EmuTask {
             .wrap_err("PCHAN_BIOS var contains invalid path.")?;
 
         let emu = Box::leak(Box::new(Emu::default()));
+        let mut renderer = Renderer::try_new().await?;
         let tty_chan = emu.tty.set_channeled();
+        renderer.connect_emu(emu);
+        let renderer_task = tokio::task::spawn(renderer.start());
         let handle = EmuTaskHandle {
             req_chan,
             res_chan,
@@ -85,6 +86,7 @@ impl EmuTask {
             bios_path,
             cycle_samples: VecDeque::with_capacity(256),
             breakpoints: HashSet::new(),
+            renderer_task,
         };
         let join_handle = task.run();
 
@@ -97,7 +99,9 @@ impl EmuTask {
         self.handle().clone()
     }
     fn hard_reset(&mut self) -> Result<()> {
-        *self.emu = Emu::default();
+        let mut new_emu = Emu::default();
+        new_emu.gpu_reconnect(self.emu);
+        *self.emu = new_emu;
         self.emu
             .tty
             .set_channeled_with(self.handle.tty_chan.0.clone());

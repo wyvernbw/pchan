@@ -8,6 +8,7 @@ use std::{
     sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard},
 };
 
+use flume::{Receiver, Sender};
 use rstest::*;
 use tracing_error::ErrorLayer;
 use tracing_indicatif::IndicatifLayer;
@@ -40,6 +41,8 @@ pub const fn max_simd_width_bytes() -> usize {
 }
 
 pub const MAX_SIMD_WIDTH: usize = max_simd_width_bytes();
+
+pub type Chan<T> = (Sender<T>, Receiver<T>);
 
 #[fixture]
 pub fn setup_tracing() {

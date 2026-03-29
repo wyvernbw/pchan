@@ -5,10 +5,12 @@ use std::mem::offset_of;
 use arbitrary_int::prelude::*;
 use color_eyre::eyre::bail;
 use glam::{U8Vec2, U8Vec3, U8Vec4, U16Vec2, u8vec2, u16vec2};
-use pchan_emu::Emu;
 use pchan_emu::gpu::draw_call::{DrawCall, DrawCallKind, DrawRect, DrawRectColor, RectSize, Uv};
-use pchan_emu::gpu::{GpuStatReg, TextureColorMode, VramCoord};
+use pchan_emu::gpu::{GpuStatReg, TextureColorMode, VramCoord, create_vram};
 use pchan_emu::memory::mb;
+use pchan_emu::{Bus, Emu};
+use pchan_utils::Chan;
+use smol::Executor;
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
 use wgpu::*;
 
@@ -23,6 +25,10 @@ pub struct Renderer {
     render_pipeline: RenderPipeline,
     render_texture: Texture,
     render_view: TextureView,
+
+    draw_call_chan: Chan<Vec<DrawCall>>,
+    vram_in_chan: Chan<Box<[u16]>>,
+    vram_out_chan: Chan<Box<[u16]>>,
 }
 
 impl Renderer {
@@ -150,11 +156,52 @@ impl Renderer {
             render_pipeline,
             render_texture,
             render_view,
+            // rendezvous channels
+            draw_call_chan: flume::bounded(0),
+            vram_in_chan: flume::bounded(0),
+            // fire and forget
+            vram_out_chan: flume::bounded(1),
         })
     }
 
     pub async fn new() -> Self {
         Self::try_new().await.unwrap()
+    }
+
+    pub fn connect_emu(&mut self, emu: &mut Emu) {
+        emu.gpu_mut().draw_call_chan = self.draw_call_chan.clone();
+        emu.gpu_mut().vram_in_chan = self.vram_in_chan.clone();
+    }
+
+    pub async fn start(self) {
+        tracing::info!("started gpu renderer task");
+        loop {
+            match self.draw_call_chan.1.recv_async().await {
+                Ok(draw_calls) => {
+                    tracing::info!(
+                        "received {} draw_calls: {:#?}",
+                        draw_calls.len(),
+                        draw_calls
+                    );
+                    tracing::info!("waiting on vram...");
+                    let Ok(mut vram) = self.vram_in_chan.1.recv_async().await else {
+                        continue;
+                    };
+                    tracing::info!("received vram");
+                    let scene = Scene::new_from_draw_calls(&draw_calls);
+                    let mut pass = self.create_render_pass(scene).await;
+                    pass.draw();
+                    if pass.finish(&mut vram).is_ok() {
+                        _ = self.vram_out_chan.0.send_async(vram).await;
+                    }
+                    tracing::info!("finished render");
+                }
+                Err(err) => {
+                    tracing::error!(%err);
+                    break;
+                }
+            }
+        }
     }
 }
 

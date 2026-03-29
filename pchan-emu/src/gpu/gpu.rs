@@ -6,12 +6,16 @@ use arbitrary_int::prelude::*;
 use bitbybit::bitenum;
 use bitbybit::bitfield;
 use derive_more as d;
+use flume::Receiver;
+use flume::Sender;
 use heapless::Deque;
+use pchan_utils::Chan;
 use pchan_utils::hex;
 use tracing::instrument;
 
 use crate::Bus;
 use crate::Emu;
+use crate::gpu::draw_call::DrawCall;
 use crate::gpu::draw_call::DrawCallDecoder;
 use crate::gpu::draw_call::DrawCallKind;
 use crate::gpu::draw_call::DrawOptsRegister;
@@ -41,8 +45,11 @@ pub struct GpuState {
     pub tex_window:      Gp0TexWindowCmd,
     // TODO: remove this
     pub draw_opts_reg:   DrawOptsRegister,
-    pub draw_call_queue: Vec<DrawCallKind>,
+    pub draw_call_queue: Vec<DrawCall>,
     pub model:           GpuModel,
+    pub draw_call_chan:  Chan<Vec<DrawCall>>,
+    pub vram_in_chan:    Chan<Box<[u16]>>,
+    pub vram_out_chan:   Chan<Box<[u16]>>,
 }
 
 #[derive(derive_more::Debug, Clone, Default)]
@@ -61,7 +68,7 @@ impl Default for GpuState {
         gpustat.mock_ready();
         Self {
             gpustat,
-            vram: vec![0; mb(1)].into_boxed_slice(),
+            vram: create_vram(),
             gp0: Gp0::WaitingForCmd,
             gp0read: Default::default(),
             gp0read_queue: Deque::new(),
@@ -71,8 +78,15 @@ impl Default for GpuState {
             tex_window: Default::default(),
             draw_opts_reg: Default::default(),
             draw_call_queue: vec![],
+            draw_call_chan: flume::bounded(0),
+            vram_in_chan: flume::bounded(0),
+            vram_out_chan: flume::bounded(0),
         }
     }
+}
+
+pub fn create_vram() -> Box<[u16]> {
+    vec![0; mb(1)].into_boxed_slice()
 }
 
 pub trait Gpu: Bus {
@@ -196,130 +210,164 @@ pub trait Gpu: Bus {
 
     #[cfg_attr(debug_assertions, instrument(skip_all))]
     fn flush_gp0_cmd_queue(&mut self) {
-        let Some(value) = self.gpu_mut().gp0cmd_queue.pop_front() else {
-            return;
-        };
-        let cmd = GpuCmd::new_with_raw_value(value);
-        let gp0 = match &self.gpu().gp0 {
-            Gp0::WaitingForCmd => self.gp0reduce(cmd),
-            Gp0::CpRectCpuToVram(Gp0CpRect::RecvDest) => {
-                let dest: VramCoord = unsafe { transmute(value) };
-                Gp0::CpRectCpuToVram(Gp0CpRect::RecvSize { dest })
-            }
-            Gp0::CpRectCpuToVram(Gp0CpRect::RecvSize { dest }) => {
-                let size: VramCoord = unsafe { transmute(value) };
-                Gp0::CpRectCpuToVram(Gp0CpRect::RecvData(VramCursor::new(*dest, *dest + size)))
-            }
-            Gp0::CpRectCpuToVram(Gp0CpRect::RecvData(cursor)) => {
-                let mut cursor = *cursor;
-                for (at, halfword) in cursor.iter().take(2).zip(halfwords(value)) {
-                    self.gpu_mut().vram_write(at, halfword);
+        while let Some(value) = self.gpu_mut().gp0cmd_queue.pop_front() {
+            let cmd = GpuCmd::new_with_raw_value(value);
+            let gp0 = match &self.gpu().gp0 {
+                Gp0::WaitingForCmd => self.gp0reduce(cmd),
+                Gp0::CpRectCpuToVram(Gp0CpRect::RecvDest) => {
+                    let dest: VramCoord = unsafe { transmute(value) };
+                    Gp0::CpRectCpuToVram(Gp0CpRect::RecvSize { dest })
                 }
-                match cursor.done() {
-                    true => Gp0::WaitingForCmd,
-                    false => Gp0::CpRectCpuToVram(Gp0CpRect::RecvData(cursor)),
+                Gp0::CpRectCpuToVram(Gp0CpRect::RecvSize { dest }) => {
+                    let size: VramCoord = unsafe { transmute(value) };
+                    Gp0::CpRectCpuToVram(Gp0CpRect::RecvData(VramCursor::new(*dest, *dest + size)))
                 }
-            }
-
-            Gp0::CpRectVramToCpu(Gp0CpRect::RecvDest) => {
-                let dest: VramCoord = unsafe { transmute(value) };
-                Gp0::CpRectVramToCpu(Gp0CpRect::RecvSize { dest })
-            }
-
-            Gp0::CpRectVramToCpu(Gp0CpRect::RecvSize { dest }) => {
-                let dest = *dest;
-                let size: VramCoord = unsafe { transmute(value) };
-
-                self.gpu_mut().gpustat.set_ready_send_vram(true);
-                Gp0::CpRectVramToCpu(Gp0CpRect::RecvData(VramCursor::new(dest, dest + size)))
-            }
-            Gp0::CpRectVramToCpu(Gp0CpRect::RecvData(_)) => {
-                self.gpu_mut().gpustat.set_ready_send_vram(false);
-
-                self.gp0reduce(cmd)
-            }
-            Gp0::DrawRectDecode(decoder) => {
-                let decoder = decoder.advance(value);
-                match decoder {
-                    Ok(decoder) => Gp0::DrawRectDecode(decoder),
-                    Err(draw_call) => {
-                        tracing::info!(?draw_call, "decoded");
-                        self.gpu_mut()
-                            .draw_call_queue
-                            .push(DrawCallKind::Rect(draw_call));
-                        Gp0::WaitingForCmd
+                Gp0::CpRectCpuToVram(Gp0CpRect::RecvData(cursor)) => {
+                    let mut cursor = *cursor;
+                    for (at, halfword) in cursor.iter().take(2).zip(halfwords(value)) {
+                        self.gpu_mut().vram_write(at, halfword);
+                    }
+                    match cursor.done() {
+                        true => Gp0::WaitingForCmd,
+                        false => Gp0::CpRectCpuToVram(Gp0CpRect::RecvData(cursor)),
                     }
                 }
-            }
-        };
 
-        tracing::trace!(?gp0);
+                Gp0::CpRectVramToCpu(Gp0CpRect::RecvDest) => {
+                    let dest: VramCoord = unsafe { transmute(value) };
+                    Gp0::CpRectVramToCpu(Gp0CpRect::RecvSize { dest })
+                }
 
-        self.gpu_mut().gp0 = gp0;
+                Gp0::CpRectVramToCpu(Gp0CpRect::RecvSize { dest }) => {
+                    let dest = *dest;
+                    let size: VramCoord = unsafe { transmute(value) };
+
+                    self.gpu_mut().gpustat.set_ready_send_vram(true);
+                    Gp0::CpRectVramToCpu(Gp0CpRect::RecvData(VramCursor::new(dest, dest + size)))
+                }
+                Gp0::CpRectVramToCpu(Gp0CpRect::RecvData(_)) => {
+                    self.gpu_mut().gpustat.set_ready_send_vram(false);
+
+                    self.gp0reduce(cmd)
+                }
+                Gp0::DrawRectDecode(decoder) => {
+                    let decoder = decoder.advance(value);
+                    match decoder {
+                        Ok(decoder) => Gp0::DrawRectDecode(decoder),
+                        Err(draw_call) => {
+                            tracing::info!(?draw_call, "decoded");
+                            self.issue_draw_call(DrawCallKind::Rect(draw_call));
+                            Gp0::WaitingForCmd
+                        }
+                    }
+                }
+            };
+
+            tracing::trace!(?gp0);
+
+            self.gpu_mut().gp0 = gp0;
+        }
     }
 
     fn flush_gp1_cmd_queue(&mut self) {
-        let Some(value) = self.gpu_mut().gp1cmd_queue.pop_front() else {
-            return;
-        };
-        let value = GpuCmd::new_with_raw_value(value.io_into_u32());
-        match value.cmd() {
-            0x00 => {
-                self.gpu_mut().gp0cmd_queue.clear();
-                self.gpu_mut().gpustat = GpuStatReg::new_with_raw_value(0x14802000);
-                self.gpu_mut().gpustat.mock_ready();
-            }
-            0x01 => {
-                self.gpu_mut().gp0cmd_queue.clear();
-                self.gpu_mut().gpustat.mock_ready();
-            }
-            0x04 => {
-                let dir = DmaDirection::new_with_raw_value(value.fields().as_());
-                self.gpu_mut().gpustat.set_dma_direction(dir);
-            }
-            0x05 => {
-                // TODO
-                tracing::info!("set framebuffer coords");
-            }
-            0x06 => {
-                // TODO
-                tracing::info!("set h framebuffer range");
-            }
-            0x07 => {
-                // TODO
-                tracing::info!("set v framebuffer range");
-            }
-            0x08 => {
-                let cmd = DisplayModeCmd::new_with_raw_value(value.raw_value);
-                let gpustat = &mut self.gpu_mut().gpustat;
-                gpustat.set_h_resolution_1(cmd.hres_1());
-                gpustat.set_v_resolution(cmd.vres());
-                gpustat.set_video_mode(cmd.video_mode());
-                gpustat.set_display_color_depth(cmd.display_color_depth());
-                gpustat.set_v_interlace(cmd.v_interlace());
-                gpustat.set_h_resolution_2(cmd.hres_2());
-            }
-            // get gpu info
-            0x10 => {
-                let Some(cmd) = self.gpu().get_gpu_info_cmd(value) else {
-                    return;
-                };
-                match cmd {
-                    GpuInfoCmd::Unused00 | GpuInfoCmd::Unused01 => {}
-                    GpuInfoCmd::TexWindow => {
-                        self.gpu_mut().gp0read = unsafe {
-                            transmute::<u32, [u16; 2]>(self.gpu().tex_window.raw_value())
-                        };
+        while let Some(value) = self.gpu_mut().gp1cmd_queue.pop_front() {
+            let value = GpuCmd::new_with_raw_value(value.io_into_u32());
+            match value.cmd() {
+                0x00 => {
+                    self.gpu_mut().gp0cmd_queue.clear();
+                    self.gpu_mut().gpustat = GpuStatReg::new_with_raw_value(0x14802000);
+                    self.gpu_mut().gpustat.mock_ready();
+                }
+                0x01 => {
+                    self.gpu_mut().gp0cmd_queue.clear();
+                    self.gpu_mut().gpustat.mock_ready();
+                }
+                0x04 => {
+                    let dir = DmaDirection::new_with_raw_value(value.fields().as_());
+                    self.gpu_mut().gpustat.set_dma_direction(dir);
+                }
+                0x05 => {
+                    // TODO
+                    tracing::info!("set framebuffer coords");
+                }
+                0x06 => {
+                    // TODO
+                    tracing::info!("set h framebuffer range");
+                }
+                0x07 => {
+                    // TODO
+                    tracing::info!("set v framebuffer range");
+                }
+                0x08 => {
+                    let cmd = DisplayModeCmd::new_with_raw_value(value.raw_value);
+                    let gpustat = &mut self.gpu_mut().gpustat;
+                    gpustat.set_h_resolution_1(cmd.hres_1());
+                    gpustat.set_v_resolution(cmd.vres());
+                    gpustat.set_video_mode(cmd.video_mode());
+                    gpustat.set_display_color_depth(cmd.display_color_depth());
+                    gpustat.set_v_interlace(cmd.v_interlace());
+                    gpustat.set_h_resolution_2(cmd.hres_2());
+                }
+                // get gpu info
+                0x10 => {
+                    let Some(cmd) = self.gpu().get_gpu_info_cmd(value) else {
+                        return;
+                    };
+                    match cmd {
+                        GpuInfoCmd::Unused00 | GpuInfoCmd::Unused01 => {}
+                        GpuInfoCmd::TexWindow => {
+                            self.gpu_mut().gp0read = unsafe {
+                                transmute::<u32, [u16; 2]>(self.gpu().tex_window.raw_value())
+                            };
+                        }
                     }
                 }
+                value => todo!("gp1 command: {}", hex(value)),
             }
-            value => todo!("gp1 command: {}", hex(value)),
         }
+    }
+
+    fn create_draw_call(&self, kind: DrawCallKind) -> DrawCall {
+        DrawCall {
+            gpustat: self.gpu().gpustat,
+            inner:   kind,
+        }
+    }
+
+    fn issue_draw_call(&mut self, kind: DrawCallKind) {
+        let draw_call = self.create_draw_call(kind);
+        self.gpu_mut().draw_call_queue.push(draw_call);
+    }
+
+    fn flush_draw_calls(&mut self) {
+        if self.gpu().draw_call_queue.is_empty() {
+            return;
+        }
+
+        tracing::info!("flushing {} draw calls", self.gpu().draw_call_queue.len());
+        let queue = std::mem::take(&mut self.gpu_mut().draw_call_queue);
+        self.gpu().draw_call_chan.0.send(queue).unwrap();
+        self.gpu()
+            .vram_in_chan
+            .0
+            .send(self.gpu().vram.clone())
+            .unwrap();
+    }
+
+    fn gpu_reconnect(&mut self, other: &Self) {
+        self.gpu_mut().draw_call_chan = other.gpu().draw_call_chan.clone();
+        self.gpu_mut().vram_in_chan = other.gpu().vram_in_chan.clone();
+        self.gpu_mut().vram_out_chan = other.gpu().vram_out_chan.clone();
     }
 
     fn run_gpu_commands(&mut self) {
         self.flush_gp0_cmd_queue();
         self.flush_gp1_cmd_queue();
+
+        if let Ok(vram) = self.gpu().vram_out_chan.1.try_recv() {
+            tracing::info!("received gpu result (vram)");
+            self.gpu_mut().vram = vram;
+        }
     }
 }
 
@@ -561,7 +609,7 @@ impl GpuStatReg {
     pub fn mock_ready(&mut self) {
         self.set_ready_recv_cmd(true);
         self.set_ready_recv_dma_block(true);
-        // self.set_ready_send_vram(true);
+        self.set_ready_send_vram(true);
     }
 }
 

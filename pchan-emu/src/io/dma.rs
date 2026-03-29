@@ -7,6 +7,7 @@ use arbitrary_int::prelude::*;
 use bitbybit::{bitenum, bitfield};
 use heapless::binary_heap::Min;
 use pchan_macros::{pchan_instrument_read, pchan_instrument_write};
+use pchan_utils::hex;
 
 #[derive(Debug, Clone)]
 pub struct DmaState {
@@ -63,7 +64,7 @@ pub trait Dma: Bus + IO + Fastmem + Interrupts {
             0x1f8010a4 => todo!("read at dma2bcr (gpu bcr)"),
             0x1f8010a8 => {
                 let chcr = self.dma().dma2.chcr;
-                tracing::trace!("read at dma2chcr (gpu chcr): {:#?}", chcr);
+                tracing::trace!("read at dma2chcr (gpu chcr)");
                 Ok(chcr.io_from_u32())
             }
 
@@ -76,7 +77,7 @@ pub trait Dma: Bus + IO + Fastmem + Interrupts {
             0x1f8010e4 => todo!("read at dma6bcr (otc bcr)"),
             0x1f8010e8 => {
                 let chcr = self.dma().dma6.chcr;
-                tracing::trace!("read at dma6chcr (otc chcr): {:#?}", chcr);
+                tracing::trace!("read at dma6chcr (otc chcr)");
                 Ok(chcr.io_from_u32())
             }
 
@@ -114,6 +115,7 @@ pub trait Dma: Bus + IO + Fastmem + Interrupts {
                             init_chan: self.dma().dma2,
                         };
                         let cycles = gp0cmds.cycles(self);
+                        tracing::trace!(?cycles, "dma2 linked list transfer scheduled");
                         self.schedule_in(cycles, DmaTransportKind::Gpu(gp0cmds));
                     }
                 }
@@ -192,9 +194,6 @@ pub trait Dma: Bus + IO + Fastmem + Interrupts {
     }
 
     fn run_dma_transfers(&mut self) {
-        if !self.dma().queue.heap.is_empty() {
-            tracing::info!("polling {} dma events", self.dma().queue.heap.len());
-        }
         while let Some(event) = self.dma().queue.heap.peek() {
             if event.finish_at > self.cpu().cycles {
                 break;
@@ -560,16 +559,17 @@ impl<T: Dma + IO + Fastmem + ?Sized> DmaTransport<T> for OTC {
         let end = channel.madr.addr().as_u32();
         let end_node = DmaNodeHeader::new_with_raw_value(0x0).with_next(DmaNodeHeader::END.as_());
         Fastmem::write(emu, end, end_node).expect("dma6 otc write must go to ram!");
+
         let mut prev = end;
+        tracing::trace!("start otc linked list write");
+        tracing::trace!("[{}]={}", hex(end), hex(end_node));
         for _ in 0..block_count {
-            Fastmem::write(
-                emu,
-                prev + 0x4,
-                DmaNodeHeader::default().with_next(prev.as_()),
-            )
-            .expect("dma6 otc write must go to ram!");
+            let node = DmaNodeHeader::default().with_next(prev.as_());
+            Fastmem::write(emu, prev + 0x4, node).expect("dma6 otc write must go to ram!");
+            tracing::trace!("[{}]={}", hex(prev + 0x4), hex(node));
             prev += 0x4;
         }
+        tracing::trace!("end otc linked list write");
     }
 }
 
@@ -582,8 +582,8 @@ impl GP0Cmds {
     fn cycles(&self, emu: &(impl IO + Fastmem + ?Sized)) -> u64 {
         let direction = self.init_chan.chcr.direction();
         let sync_mode = self.init_chan.chcr.sync_mode();
-        debug_assert_eq!(direction, TransferDir::RamToDevice);
-        debug_assert_eq!(sync_mode, SyncMode::LinkedList);
+        assert_eq!(direction, TransferDir::RamToDevice);
+        assert_eq!(sync_mode, SyncMode::LinkedList);
         let mut addr = self.init_chan.madr.addr().as_u32();
         let mut count = 0;
         loop {
@@ -591,11 +591,11 @@ impl GP0Cmds {
                 panic!("infinite loop detected")
             }
             let header = Fastmem::read::<DmaNodeHeader>(emu, addr).unwrap();
+            addr = header.next().as_u32();
+            count += header.len() as u64 + 1;
             if header.is_end_marker() {
                 break;
             }
-            addr = header.next().as_u32();
-            count += 1;
         }
         count
     }
@@ -613,11 +613,13 @@ impl<T: IO + Dma + ?Sized> DmaTransport<T> for GP0Cmds {
         debug_assert_eq!(sync_mode, SyncMode::LinkedList);
         let mut addr = channel.madr.addr().as_u32();
         let mut count = 0;
+        tracing::trace!("start gp0 linked list traversal");
         loop {
             if count >= 2048 {
                 panic!("infinite loop detected");
             }
             let header = Fastmem::read::<DmaNodeHeader>(emu, addr).unwrap();
+            tracing::trace!(node = ?count, words = ?header.len(), next = %hex(header.next()));
             let len = header.len();
             for idx in 0..len {
                 let cmd = Fastmem::read::<u32>(emu, addr + idx as u32 * 0x4 + 0x4).unwrap();
@@ -629,6 +631,7 @@ impl<T: IO + Dma + ?Sized> DmaTransport<T> for GP0Cmds {
                 break;
             }
         }
+        tracing::trace!("end gp0 linked list traversal");
     }
 }
 
