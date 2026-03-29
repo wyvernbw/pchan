@@ -19,6 +19,8 @@ use crate::gpu::draw_call::DrawCall;
 use crate::gpu::draw_call::DrawCallDecoder;
 use crate::gpu::draw_call::DrawCallKind;
 use crate::gpu::draw_call::DrawOptsRegister;
+use crate::gpu::draw_call::DrawPolygonDecoder;
+use crate::gpu::draw_call::DrawPolygonHeader;
 use crate::gpu::draw_call::DrawRectDecoder;
 use crate::gpu::draw_call::Gp0SetDrawAreaCmd;
 use crate::gpu::draw_call::Gp0SetDrawOffsetCmd;
@@ -202,8 +204,12 @@ pub trait Gpu: Bus {
 
                 Gp0::WaitingForCmd
             }
+            // Draw polygon
+            0x20..=0x3f => Gp0::DrawPolygonDecode(DrawPolygonDecoder::new(cmd.raw_value())),
+            // Draw line
+            0x40..=0x5f => todo!("gp0 render line command"),
             // Draw Rect
-            0x60 => Gp0::DrawRectDecode(DrawRectDecoder::new(cmd.raw_value())),
+            0x60..=0x7f => Gp0::DrawRectDecode(DrawRectDecoder::new(cmd.raw_value())),
             value => todo!("gp0 command: {}", hex(value)),
         }
     }
@@ -212,7 +218,7 @@ pub trait Gpu: Bus {
     fn flush_gp0_cmd_queue(&mut self) {
         while let Some(value) = self.gpu_mut().gp0cmd_queue.pop_front() {
             let cmd = GpuCmd::new_with_raw_value(value);
-            let gp0 = match &self.gpu().gp0 {
+            let gp0 = match &mut self.gpu_mut().gp0 {
                 Gp0::WaitingForCmd => self.gp0reduce(cmd),
                 Gp0::CpRectCpuToVram(Gp0CpRect::RecvDest) => {
                     let dest: VramCoord = unsafe { transmute(value) };
@@ -257,6 +263,20 @@ pub trait Gpu: Bus {
                         Err(draw_call) => {
                             tracing::info!(?draw_call, "decoded");
                             self.issue_draw_call(DrawCallKind::Rect(draw_call));
+                            Gp0::WaitingForCmd
+                        }
+                    }
+                }
+                Gp0::DrawPolygonDecode(decoder) => {
+                    // we put this back in at the end of the function
+                    let decoder = std::mem::take(decoder);
+
+                    let decoder = decoder.advance(value);
+                    match decoder {
+                        Ok(decoder) => Gp0::DrawPolygonDecode(decoder),
+                        Err(draw_call) => {
+                            tracing::info!(?draw_call, "decoded");
+                            self.issue_draw_call(DrawCallKind::DrawPolygon(draw_call));
                             Gp0::WaitingForCmd
                         }
                     }
@@ -403,6 +423,7 @@ pub enum Gp0 {
     WaitingForCmd,
     CpRectCpuToVram(Gp0CpRect),
     CpRectVramToCpu(Gp0CpRect),
+    DrawPolygonDecode(DrawPolygonDecoder),
     DrawRectDecode(DrawRectDecoder),
 }
 

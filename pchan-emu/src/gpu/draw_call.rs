@@ -9,6 +9,7 @@ use arbitrary_int::prelude::*;
 use bitbybit::bitenum;
 use bitbybit::bitfield;
 use bon::Builder;
+use glam::I16Vec2;
 use glam::U8Vec2;
 use tracing::Level;
 
@@ -21,6 +22,7 @@ pub struct DrawCall {
 #[derive(Debug, Clone)]
 pub enum DrawCallKind {
     Rect(DrawRect),
+    DrawPolygon(DrawPolygon),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -207,6 +209,198 @@ impl DrawCallDecoder for DrawRectDecoder {
                 uv: Some(uv),
                 var_size: Some(VramCoord::from(value.io_into_u32())),
             }),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DrawPolygon {
+    header: DrawPolygonHeader,
+    attrs:  heapless::Vec<DrawPolygonAttribute, 4>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DrawPolygonAttribute {
+    color:  Option<u32>,
+    vertex: I16Vec2,
+    uv:     Option<Uv>,
+}
+
+/// ```md
+///  bit number   value   meaning
+///  31-29        001    polygon render
+///    28         1/0    gouraud / flat shading
+///    27         1/0    4 / 3 vertices
+///    26         1/0    textured / untextured
+///    25         1/0    semi-transparent / opaque
+///    24         1/0    raw texture / modulation
+///   23-0        rgb    first color value.
+/// ```
+#[bitfield(u32, debug)]
+#[derive(Default)]
+pub struct DrawPolygonHeader {
+    #[bits(0..=23, rw)]
+    color: u24,
+    #[bit(24)]
+    raw:   bool,
+
+    #[bit(25, rw)]
+    semi_transparent: bool,
+
+    #[bit(26, rw)]
+    textured:     bool,
+    #[bit(27, rw)]
+    vertex_count: DrawPolygonVertexCount,
+    #[bit(28, rw)]
+    shading:      Shading,
+}
+
+#[bitenum(u1, exhaustive = true)]
+#[derive(Debug)]
+enum DrawPolygonVertexCount {
+    Three = 0x0,
+    Four  = 0x1,
+}
+
+#[bitenum(u1, exhaustive = true)]
+#[derive(Debug)]
+pub enum Shading {
+    Flat    = 0x0,
+    Gouraud = 0x1,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DrawPolygonDecoder {
+    header:       DrawPolygonHeader,
+    attrs:        heapless::Vec<DrawPolygonAttribute, 4>,
+    current_attr: DrawPolygonAttributeDecoder,
+}
+
+#[derive(Debug, Clone, Default)]
+enum DrawPolygonAttributeDecoder {
+    #[default]
+    IdleGoraudUntextured,
+    IdleFlatUntextured,
+    IdleGoraudTextured,
+    IdleFlatTextured,
+
+    ColorUntextured {
+        color: u32,
+    },
+    ColorTextured {
+        color: u32,
+    },
+
+    // these are both textured
+    VertexFlat {
+        vertex: I16Vec2,
+    },
+    VertexGoraud {
+        color:  u32,
+        vertex: I16Vec2,
+    },
+}
+
+impl DrawCallDecoder for DrawPolygonAttributeDecoder {
+    type Output = DrawPolygonAttribute;
+
+    fn advance<T: Copy>(self, value: T) -> Result<Self, Self::Output> {
+        let value = value.io_into_u32();
+        let vertex_value = unsafe { transmute::<u32, I16Vec2>(value) };
+        let uv_value = unsafe { transmute::<u32, Uv>(value) };
+        match self {
+            DrawPolygonAttributeDecoder::IdleGoraudUntextured => {
+                Ok(Self::ColorUntextured { color: value })
+            }
+            DrawPolygonAttributeDecoder::IdleFlatUntextured => Err(DrawPolygonAttribute {
+                color:  None,
+                vertex: vertex_value,
+                uv:     None,
+            }),
+            DrawPolygonAttributeDecoder::IdleFlatTextured => Ok(Self::VertexFlat {
+                vertex: vertex_value,
+            }),
+            DrawPolygonAttributeDecoder::IdleGoraudTextured => {
+                Ok(Self::ColorTextured { color: value })
+            }
+            DrawPolygonAttributeDecoder::ColorUntextured { color } => Err(DrawPolygonAttribute {
+                color:  Some(color),
+                vertex: vertex_value,
+                uv:     None,
+            }),
+            DrawPolygonAttributeDecoder::ColorTextured { color } => Ok(Self::VertexGoraud {
+                color,
+                vertex: vertex_value,
+            }),
+            DrawPolygonAttributeDecoder::VertexFlat { vertex } => Err(DrawPolygonAttribute {
+                color: None,
+                vertex,
+                uv: Some(uv_value),
+            }),
+            DrawPolygonAttributeDecoder::VertexGoraud { color, vertex } => {
+                Err(DrawPolygonAttribute {
+                    color: Some(color),
+                    vertex,
+                    uv: Some(uv_value),
+                })
+            }
+        }
+    }
+}
+
+impl DrawCallDecoder for DrawPolygonDecoder {
+    type Output = DrawPolygon;
+
+    fn advance<T: Copy>(mut self, value: T) -> Result<Self, Self::Output> {
+        match self.current_attr.advance(value) {
+            Ok(decoder) => {
+                self.current_attr = decoder;
+                Ok(self)
+            }
+            Err(attribute) => {
+                // SAFETY: no point in checking
+                unsafe {
+                    self.attrs.push_unchecked(attribute);
+                }
+                let expected = match self.header.vertex_count() {
+                    DrawPolygonVertexCount::Three => 3,
+                    DrawPolygonVertexCount::Four => 4,
+                };
+                if self.attrs.len() >= expected {
+                    Err(DrawPolygon {
+                        header: self.header,
+                        attrs:  self.attrs,
+                    })
+                } else {
+                    Ok(Self {
+                        current_attr: DrawPolygonAttributeDecoder::from_header(self.header),
+                        ..self
+                    })
+                }
+            }
+        }
+    }
+}
+
+impl DrawPolygonAttributeDecoder {
+    pub const fn from_header(header: DrawPolygonHeader) -> Self {
+        match (header.shading(), header.textured()) {
+            (Shading::Flat, true) => Self::IdleFlatTextured,
+            (Shading::Flat, false) => Self::IdleFlatUntextured,
+            (Shading::Gouraud, true) => Self::IdleGoraudTextured,
+            (Shading::Gouraud, false) => Self::IdleGoraudUntextured,
+        }
+    }
+}
+
+impl DrawPolygonDecoder {
+    pub fn new(value: u32) -> Self {
+        let header = DrawPolygonHeader::new_with_raw_value(value);
+        let current_attr = DrawPolygonAttributeDecoder::from_header(header);
+        Self {
+            header,
+            attrs: Default::default(),
+            current_attr,
         }
     }
 }
