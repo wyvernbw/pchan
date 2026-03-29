@@ -556,20 +556,18 @@ impl<T: Dma + IO + Fastmem + ?Sized> DmaTransport<T> for OTC {
     fn write_data(emu: &mut T) {
         let channel = Self::channel_mut(emu);
         let block_count = channel.bcr.block_count() as u32;
-        let end = channel.madr.addr().as_u32();
-        let end_node = DmaNodeHeader::new_with_raw_value(0x0).with_next(DmaNodeHeader::END.as_());
-        Fastmem::write(emu, end, end_node).expect("dma6 otc write must go to ram!");
+        let start = channel.madr.addr().as_u32();
 
-        let mut prev = end;
-        tracing::trace!("start otc linked list write");
-        tracing::trace!("[{}]={}", hex(end), hex(end_node));
+        let mut addr = start;
         for _ in 0..block_count {
-            let node = DmaNodeHeader::default().with_next(prev.as_());
-            Fastmem::write(emu, prev + 0x4, node).expect("dma6 otc write must go to ram!");
-            tracing::trace!("[{}]={}", hex(prev + 0x4), hex(node));
-            prev += 0x4;
+            let next_addr = addr - 0x4;
+            let node = DmaNodeHeader::default().with_next(next_addr.as_());
+            Fastmem::write(emu, addr, node).expect("dma6 otc write must go to ram!");
+            addr = next_addr;
         }
-        tracing::trace!("end otc linked list write");
+
+        let end_node = DmaNodeHeader::new_with_raw_value(0x0).with_next(DmaNodeHeader::END.as_());
+        Fastmem::write(emu, addr, end_node).expect("dma6 otc write must go to ram!");
     }
 }
 
@@ -587,7 +585,7 @@ impl GP0Cmds {
         let mut addr = self.init_chan.madr.addr().as_u32();
         let mut count = 0;
         loop {
-            if count >= 1024 {
+            if count > 10_000 {
                 panic!("infinite loop detected")
             }
             let header = Fastmem::read::<DmaNodeHeader>(emu, addr).unwrap();
@@ -615,14 +613,15 @@ impl<T: IO + Dma + ?Sized> DmaTransport<T> for GP0Cmds {
         let mut count = 0;
         tracing::trace!("start gp0 linked list traversal");
         loop {
-            if count >= 2048 {
+            if count >= 10_000 {
                 panic!("infinite loop detected");
             }
             let header = Fastmem::read::<DmaNodeHeader>(emu, addr).unwrap();
-            tracing::trace!(node = ?count, words = ?header.len(), next = %hex(header.next()));
+            tracing::trace!("[{}]={}", hex(addr), hex(header));
             let len = header.len();
             for idx in 0..len {
                 let cmd = Fastmem::read::<u32>(emu, addr + idx as u32 * 0x4 + 0x4).unwrap();
+                tracing::trace!(cmd = %hex(cmd));
                 _ = emu.gpu_mut().gp0cmd_queue.push_back(cmd);
             }
             addr = header.next().as_u32();

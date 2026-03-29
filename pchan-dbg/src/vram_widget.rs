@@ -32,7 +32,7 @@ impl Widget for VramCanvasWidget {
         let canvas = Canvas::default()
             .x_bounds([0.0, 1024.0])
             .y_bounds([0.0, 512.0])
-            .marker(symbols::Marker::Quadrant)
+            .marker(symbols::Marker::Octant)
             .paint(|ctx| {
                 for y in 0..512 {
                     for x in 0..1024 {

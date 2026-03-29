@@ -171,6 +171,7 @@ impl Renderer {
     pub fn connect_emu(&mut self, emu: &mut Emu) {
         emu.gpu_mut().draw_call_chan = self.draw_call_chan.clone();
         emu.gpu_mut().vram_in_chan = self.vram_in_chan.clone();
+        emu.gpu_mut().vram_out_chan = self.vram_out_chan.clone();
     }
 
     pub async fn start(self) {

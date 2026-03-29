@@ -263,8 +263,6 @@ pub trait Gpu: Bus {
                 }
             };
 
-            tracing::trace!(?gp0);
-
             self.gpu_mut().gp0 = gp0;
         }
     }
