@@ -32,6 +32,7 @@ strum = { version = "0.27.2", features = ["derive"] }
 thiserror = "2.0.18"
 bstr = "1.12.1"
 bitfield = "0.19.4"
+glam = "0.32.1"
 
 [dev-dependencies]
 pretty_assertions = {version = "1.4.1", features = ["unstable"]}

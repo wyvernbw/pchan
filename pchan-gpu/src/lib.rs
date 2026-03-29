@@ -1,309 +1,341 @@
-#![feature(iter_array_chunks)]
-#![feature(proc_macro_hygiene)]
-#![feature(try_blocks)]
+pub(crate) mod render_pass;
 
+use std::mem::offset_of;
+
+use arbitrary_int::prelude::*;
+use color_eyre::eyre::bail;
+use glam::{U8Vec2, U8Vec3, U8Vec4, U16Vec2, u8vec2, u16vec2};
 use pchan_emu::Emu;
-use pchan_emu::gpu::VramCoord;
+use pchan_emu::gpu::draw_call::{DrawCall, DrawCallKind, DrawRect, DrawRectColor, RectSize, Uv};
+use pchan_emu::gpu::{GpuStatReg, TextureColorMode, VramCoord};
 use pchan_emu::memory::mb;
-use smol::Executor;
-use wgpu::BackendOptions;
-use wgpu::Backends;
-use wgpu::BindGroupLayoutDescriptor;
-use wgpu::BindGroupLayoutEntry;
-use wgpu::BindingType;
-use wgpu::BufferUsages;
-use wgpu::ColorTargetState;
-use wgpu::ColorWrites;
-use wgpu::CommandEncoderDescriptor;
-use wgpu::DeviceDescriptor;
-use wgpu::ExperimentalFeatures;
-use wgpu::Extent3d;
-use wgpu::Face;
-use wgpu::Features;
-use wgpu::FragmentState;
-use wgpu::FrontFace;
-use wgpu::Instance;
-use wgpu::InstanceDescriptor;
-use wgpu::InstanceFlags;
-use wgpu::Limits;
-use wgpu::LoadOp;
-use wgpu::MapMode;
-use wgpu::MemoryBudgetThresholds;
-use wgpu::MemoryHints;
-use wgpu::MultisampleState;
-use wgpu::Operations;
-use wgpu::Origin3d;
-use wgpu::PipelineCompilationOptions;
-use wgpu::PipelineLayoutDescriptor;
-use wgpu::PolygonMode;
-use wgpu::PowerPreference;
-use wgpu::PrimitiveState;
-use wgpu::PrimitiveTopology;
-use wgpu::RenderPassColorAttachment;
-use wgpu::RenderPipelineDescriptor;
-use wgpu::RequestAdapterOptions;
-use wgpu::ShaderStages;
-use wgpu::StoreOp;
-use wgpu::TexelCopyBufferInfo;
-use wgpu::TexelCopyBufferLayout;
-use wgpu::TexelCopyTextureInfoBase;
-use wgpu::TextureAspect;
-use wgpu::TextureDescriptor;
-use wgpu::TextureDimension;
-use wgpu::TextureFormat;
-use wgpu::TextureUsages;
-use wgpu::TextureView;
-use wgpu::Trace;
-use wgpu::VertexAttribute;
-use wgpu::VertexBufferLayout;
-use wgpu::VertexFormat;
-use wgpu::VertexState;
-use wgpu::VertexStepMode;
-use wgpu::include_wgsl;
-use wgpu::util::BufferInitDescriptor;
-use wgpu::util::DeviceExt;
-use wgpu::wgt::BufferDescriptor;
-use wgpu::wgt::PollType;
+use wgpu::util::{BufferInitDescriptor, DeviceExt};
+use wgpu::*;
+
+#[derive(Debug, Clone)]
+pub struct Renderer {
+    instance: Instance,
+    adapter: Adapter,
+    device: Device,
+    queue: Queue,
+
+    pipeline_layout: PipelineLayout,
+    render_pipeline: RenderPipeline,
+    render_texture: Texture,
+    render_view: TextureView,
+}
+
+impl Renderer {
+    pub async fn try_new() -> color_eyre::Result<Self> {
+        let instance = Instance::new(InstanceDescriptor {
+            backends: Backends::PRIMARY,
+            flags: InstanceFlags::from_env_or_default(),
+            memory_budget_thresholds: MemoryBudgetThresholds::default(),
+            backend_options: BackendOptions::from_env_or_default(),
+            display: None,
+        });
+
+        let adapter = instance
+            .request_adapter(&RequestAdapterOptions {
+                power_preference: PowerPreference::HighPerformance,
+                force_fallback_adapter: false,
+                compatible_surface: None,
+            })
+            .await?;
+
+        let (device, queue) = adapter
+            .request_device(&DeviceDescriptor {
+                label: None,
+                required_features: Features::default(),
+                required_limits: Limits::defaults(),
+                experimental_features: ExperimentalFeatures::disabled(),
+                memory_hints: MemoryHints::Performance,
+                trace: Trace::Off,
+            })
+            .await?;
+        let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
+            label: None,
+            bind_group_layouts: &[],
+            immediate_size: 0,
+        });
+
+        let shader_module =
+            device.create_shader_module(include_wgsl!("../shaders/draw_call_rect.wgsl"));
+
+        let render_pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
+            label: None,
+            layout: Some(&pipeline_layout),
+            vertex: VertexState {
+                module: &shader_module,
+                entry_point: None,
+                compilation_options: PipelineCompilationOptions::default(),
+                buffers: &[VertexBufferLayout {
+                    array_stride: size_of::<Vertex>() as u64, // 8
+                    step_mode: VertexStepMode::Vertex,
+                    attributes: &[
+                        // position @location(0)
+                        VertexAttribute {
+                            format: VertexFormat::Uint16x2,
+                            offset: 0x0,
+                            shader_location: 0,
+                        },
+                        // color_and_mode @location(1)
+                        VertexAttribute {
+                            format: VertexFormat::Uint32,
+                            offset: offset_of!(Vertex, color) as _,
+                            shader_location: 1,
+                        },
+                        // clut @location(2)
+                        VertexAttribute {
+                            format: VertexFormat::Uint16,
+                            offset: offset_of!(Vertex, uv.clut) as _,
+                            shader_location: 2,
+                        },
+                        // uv @location(3)
+                        VertexAttribute {
+                            format: VertexFormat::Uint8x2,
+                            offset: offset_of!(Vertex, uv.uv) as _,
+                            shader_location: 3,
+                        },
+                    ],
+                }],
+            },
+            primitive: PrimitiveState {
+                topology: PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: FrontFace::Ccw,
+                cull_mode: Some(Face::Back),
+                unclipped_depth: false,
+                polygon_mode: PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: MultisampleState::default(),
+            fragment: Some(FragmentState {
+                module: &shader_module,
+                entry_point: None,
+                compilation_options: PipelineCompilationOptions::default(),
+                targets: &[Some(ColorTargetState {
+                    format: TextureFormat::R16Uint,
+                    blend: None,
+                    write_mask: ColorWrites::default(),
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        let render_texture = device.create_texture(&TextureDescriptor {
+            label: Some("render_tex"),
+            size: Extent3d {
+                width: 1024,
+                height: 512,
+                ..Default::default()
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: TextureDimension::D2,
+            format: TextureFormat::R16Uint,
+            usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
+            view_formats: &[TextureFormat::R16Uint],
+        });
+        let render_view = render_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        Ok(Self {
+            instance,
+            adapter,
+            device,
+            queue,
+            pipeline_layout,
+            render_pipeline,
+            render_texture,
+            render_view,
+        })
+    }
+
+    pub async fn new() -> Self {
+        Self::try_new().await.unwrap()
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+struct Vertex {
+    pos: U16Vec2,
+
+    // these 2 must be packed together
+    color: U8Vec3,
+    color_mode: TextureColorMode,
+
+    uv: Uv,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct Scene {
+    vertex_buf: Vec<Vertex>,
+}
+
+impl From<VramCoord> for Vertex {
+    fn from(value: VramCoord) -> Self {
+        Self {
+            pos: u16vec2(value.x, value.y),
+            ..Default::default()
+        }
+    }
+}
+
+impl Vertex {
+    const SIZE: u64 = size_of::<Self>() as u64;
+
+    pub fn with_pos(mut self, pos: U16Vec2) -> Self {
+        self.pos = pos;
+        self
+    }
+    pub fn with_color(mut self, color: U8Vec3) -> Self {
+        self.color = color;
+        self
+    }
+    pub fn with_uv(mut self, uv: U8Vec2) -> Self {
+        self.uv.uv = uv;
+        self
+    }
+    pub fn with_clut(mut self, clut: U8Vec2) -> Self {
+        self.uv.clut = clut;
+        self
+    }
+    pub fn repeat_tex_window(size: U16Vec2) -> U8Vec2 {
+        (size % u16vec2(255, 255)).as_u8vec2()
+    }
+    pub fn with_color_mode(mut self, mode: TextureColorMode) -> Self {
+        self.color_mode = mode;
+        self
+    }
+}
+
+#[derive(Debug)]
+pub struct Quad {
+    top_left: Vertex,
+    top_right: Vertex,
+    bottom_left: Vertex,
+    bottom_right: Vertex,
+}
+
+impl Quad {
+    fn new_with_topleft_and_size(top_left: Vertex, size: U16Vec2) -> Self {
+        let tex_size = Vertex::repeat_tex_window(size);
+        Quad {
+            top_left,
+            top_right: top_left
+                .with_pos(top_left.pos + u16vec2(size.x, 0))
+                .with_uv(top_left.uv.uv + u8vec2(tex_size.x, 0)),
+            bottom_left: top_left
+                .with_pos(top_left.pos + u16vec2(0, size.y))
+                .with_uv(top_left.uv.uv + u8vec2(0, tex_size.y)),
+            bottom_right: top_left
+                .with_pos(top_left.pos + u16vec2(size.x, size.y))
+                .with_uv(top_left.uv.uv + u8vec2(tex_size.x, tex_size.y)),
+        }
+    }
+    fn triangulate(self) -> [Vertex; 6] {
+        [
+            self.top_left,
+            self.top_right,
+            self.bottom_left,
+            self.bottom_left,
+            self.top_right,
+            self.bottom_right,
+        ]
+    }
+}
+
+impl Scene {
+    pub fn new_from_draw_calls(cmds: &[DrawCall]) -> Scene {
+        let mut scene = Scene::default();
+        for cmd in cmds {
+            match &cmd.inner {
+                DrawCallKind::Rect(draw_rect) => {
+                    _ = scene.add_draw_rect_draw_call(draw_rect);
+                }
+            }
+        }
+
+        scene
+    }
+
+    #[pchan_macros::instrument(skip_all, err)]
+    fn add_draw_rect_draw_call(&mut self, draw_rect: &DrawRect) -> color_eyre::Result<()> {
+        let top_left: Vertex = draw_rect.vertex1.into();
+        let rgb = draw_rect.color.rgb().to_ne_bytes();
+        let top_left = top_left
+            .with_color(U8Vec3::from_array(rgb))
+            .with_color_mode(TextureColorMode::C24BitDirect);
+
+        let quad: Quad = match (draw_rect.color.size(), draw_rect.var_size) {
+            (RectSize::VarSize, None) => bail!("malformed draw call: missing var size"),
+            (RectSize::VarSize, Some(size)) => {
+                Quad::new_with_topleft_and_size(top_left, u16vec2(size.x, size.y))
+            }
+            (RectSize::SinglePixel, _) => Quad::new_with_topleft_and_size(top_left, u16vec2(1, 1)),
+            (RectSize::Sprite8x8, _) => Quad::new_with_topleft_and_size(top_left, u16vec2(8, 8)),
+            (RectSize::Sprite16x16, _) => {
+                Quad::new_with_topleft_and_size(top_left, u16vec2(16, 16))
+            }
+        };
+        let vertices = quad.triangulate();
+        self.vertex_buf.extend_from_slice(&vertices);
+        Ok(())
+    }
+}
 
 pub async fn test_gpu(emu: &mut Emu) -> color_eyre::Result<()> {
     color_eyre::install()?;
 
-    let mut instance = Instance::new(InstanceDescriptor {
-        backends: Backends::PRIMARY,
-        flags: InstanceFlags::from_env_or_default(),
-        memory_budget_thresholds: MemoryBudgetThresholds::default(),
-        backend_options: BackendOptions::from_env_or_default(),
-        display: None,
-    });
-
-    let mut adapter = instance
-        .request_adapter(&RequestAdapterOptions {
-            power_preference: PowerPreference::HighPerformance,
-            force_fallback_adapter: false,
-            compatible_surface: None,
-        })
-        .await?;
-
-    let (mut device, mut queue) = adapter
-        .request_device(&DeviceDescriptor {
-            label: None,
-            required_features: Features::default(),
-            required_limits: Limits::defaults(),
-            experimental_features: ExperimentalFeatures::disabled(),
-            memory_hints: MemoryHints::Performance,
-            trace: Trace::Off,
-        })
-        .await?;
-
-    let features = adapter.get_texture_format_features(TextureFormat::R16Uint);
-    tracing::info!("R16Uint usages: {:?}", features.allowed_usages);
-
-    let render_target = device.create_texture(&TextureDescriptor {
-        label: Some("render_tex"),
-        size: Extent3d {
-            width: 1024,
-            height: 512,
-            ..Default::default()
+    let renderer = Renderer::try_new().await?;
+    let scene = Scene::new_from_draw_calls(&[
+        // Solid color rect — top-left area
+        DrawCall {
+            gpustat: GpuStatReg::default(),
+            inner: DrawCallKind::Rect(DrawRect {
+                color: DrawRectColor::default().with_rgb(u24::new(0xff0000)),
+                vertex1: VramCoord::new(0, 0),
+                uv: None,
+                var_size: Some(VramCoord { x: 64, y: 64 }),
+            }),
         },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: TextureDimension::D2,
-        format: TextureFormat::R16Uint,
-        usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
-        view_formats: &[TextureFormat::R16Uint],
-    });
-    let render_view = render_target.create_view(&wgpu::TextureViewDescriptor::default());
-
-    let shader_module =
-        device.create_shader_module(include_wgsl!("../shaders/draw_call_rect.wgsl"));
-
-    let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
-        label: None,
-        bind_group_layouts: &[],
-        immediate_size: 0,
-    });
-
-    let render_pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
-        label: None,
-        layout: Some(&pipeline_layout),
-        vertex: VertexState {
-            module: &shader_module,
-            entry_point: None,
-            compilation_options: PipelineCompilationOptions::default(),
-            buffers: &[VertexBufferLayout {
-                array_stride: size_of::<Vertex>() as u64, // 8
-                step_mode: VertexStepMode::Vertex,
-                attributes: &[
-                    // position @location(0)
-                    VertexAttribute {
-                        format: VertexFormat::Uint16x2,
-                        offset: 0,
-                        shader_location: 0,
-                    },
-                    // color @location(1)
-                    VertexAttribute {
-                        format: VertexFormat::Uint16,
-                        offset: 4,
-                        shader_location: 1,
-                    },
-                ],
-            }],
+        // Solid color rect — different hue, overlapping slightly
+        DrawCall {
+            gpustat: GpuStatReg::default(),
+            inner: DrawCallKind::Rect(DrawRect {
+                color: DrawRectColor::default().with_rgb(u24::new(0x00ff00)),
+                vertex1: VramCoord::new(48, 48),
+                uv: None,
+                var_size: Some(VramCoord { x: 64, y: 64 }),
+            }),
         },
-        primitive: PrimitiveState {
-            topology: PrimitiveTopology::TriangleList,
-            strip_index_format: None,
-            front_face: FrontFace::Ccw,
-            cull_mode: Some(Face::Back),
-            unclipped_depth: false,
-            polygon_mode: PolygonMode::Fill,
-            conservative: false,
+        // Wide short rect — stresses horizontal spans
+        DrawCall {
+            gpustat: GpuStatReg::default(),
+            inner: DrawCallKind::Rect(DrawRect {
+                color: DrawRectColor::default().with_rgb(u24::new(0x0000FF)),
+                vertex1: VramCoord::new(0, 200),
+                uv: None,
+                var_size: Some(VramCoord { x: 512, y: 8 }),
+            }),
         },
-        depth_stencil: None,
-        multisample: MultisampleState::default(),
-        fragment: Some(FragmentState {
-            module: &shader_module,
-            entry_point: None,
-            compilation_options: PipelineCompilationOptions::default(),
-            targets: &[Some(ColorTargetState {
-                format: TextureFormat::R16Uint,
-                blend: None,
-                write_mask: ColorWrites::default(),
-            })],
-        }),
-        multiview_mask: None,
-        cache: None,
-    });
-
-    #[repr(C)]
-    struct Vertex {
-        pos: [u16; 2],
-        color: u16,
-        _pad: u16,
-    }
-
-    let quad_vertices = [
-        Vertex {
-            pos: [10, 10],
-            color: 0x0f30,
-            _pad: 0,
+        // Tall narrow rect — stresses vertical spans
+        DrawCall {
+            gpustat: GpuStatReg::default(),
+            inner: DrawCallKind::Rect(DrawRect {
+                color: DrawRectColor::default().with_rgb(u24::new(0xFF00FF)),
+                vertex1: VramCoord::new(300, 0),
+                uv: None,
+                var_size: Some(VramCoord { x: 8, y: 256 }),
+            }),
         },
-        Vertex {
-            pos: [512, 10],
-            color: 0x001f,
-            _pad: 0,
-        },
-        Vertex {
-            pos: [10, 256],
-            color: 0x0000,
-            _pad: 0,
-        },
-        Vertex {
-            pos: [10, 256],
-            color: 0x7FFF,
-            _pad: 0,
-        },
-        Vertex {
-            pos: [512, 10],
-            color: 0x00aa0,
-            _pad: 0,
-        },
-        Vertex {
-            pos: [512, 256],
-            color: 0x7FFF,
-            _pad: 0,
-        },
-    ];
-
-    let quad_vertices = unsafe {
-        let ptr = quad_vertices.as_ptr() as *const u8;
-        std::slice::from_raw_parts(ptr, std::mem::size_of_val(&quad_vertices))
-    };
-
-    let vertex_buffer = device.create_buffer_init(&BufferInitDescriptor {
-        label: None,
-        usage: BufferUsages::VERTEX,
-        contents: quad_vertices,
-    });
-    tracing::info!(
-        "vertex buffer size: {} bytes (expected {})",
-        vertex_buffer.size(),
-        size_of::<Vertex>() * 6
-    );
-
-    let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor::default());
-    {
-        let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: None,
-            color_attachments: &[Some(RenderPassColorAttachment {
-                view: &render_view,
-                depth_slice: None,
-                resolve_target: None,
-                ops: Operations {
-                    load: LoadOp::Clear(wgpu::Color {
-                        r: 0.5,
-                        g: 0.25,
-                        b: 1.0,
-                        a: 1.0,
-                    }),
-                    store: StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
-        render_pass.set_pipeline(&render_pipeline);
-        render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-        render_pass.draw(0..6, 0..1);
-    }
-
-    let output_buffer = device.create_buffer(&BufferDescriptor {
-        label: Some("output"),
-        size: mb(1) as u64,
-        usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
-
-    encoder.copy_texture_to_buffer(
-        TexelCopyTextureInfoBase {
-            texture: &render_target,
-            mip_level: 0,
-            origin: Origin3d::default(),
-            aspect: TextureAspect::All,
-        },
-        TexelCopyBufferInfo {
-            buffer: &output_buffer,
-            layout: TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(1024 * 2),
-                rows_per_image: Some(512),
-            },
-        },
-        Extent3d {
-            width: 1024,
-            height: 512,
-            depth_or_array_layers: 1,
-        },
-    );
-
-    queue.submit([encoder.finish()]);
-    output_buffer.map_async(MapMode::Read, .., move |res| {
-        res.unwrap();
-    });
-    device.poll(PollType::wait_indefinitely())?;
-    let buf = &output_buffer.get_mapped_range(..)[..];
-
-    assert!(!buf.iter().all(|value| *value == 0), "empty buffer");
-
-    for y in 0..512usize {
-        for x in 0..1024usize {
-            let offset = (y * 1024 + x) * 2;
-            let vram_addr = y * 1024 + x;
-            let pixel = u16::from_ne_bytes([buf[offset], buf[offset + 1]]);
-            emu.gpu.vram[vram_addr] = pixel;
-        }
-    }
+    ]);
+    let mut pass = renderer.create_render_pass(scene).await;
+    pass.draw();
+    pass.finish(&mut emu.gpu.vram)?;
 
     Ok(())
 }
@@ -371,7 +403,7 @@ mod test {
             let canvas = Canvas::default()
                 .x_bounds([0.0, 1024.0])
                 .y_bounds([0.0, 512.0])
-                .marker(symbols::Marker::Quadrant)
+                .marker(symbols::Marker::Octant)
                 .paint(|ctx| {
                     for y in 0..512 {
                         for x in 0..1024 {

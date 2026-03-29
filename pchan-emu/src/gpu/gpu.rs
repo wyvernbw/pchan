@@ -12,8 +12,8 @@ use tracing::instrument;
 
 use crate::Bus;
 use crate::Emu;
-use crate::gpu::draw_call::DrawCall;
 use crate::gpu::draw_call::DrawCallDecoder;
+use crate::gpu::draw_call::DrawCallKind;
 use crate::gpu::draw_call::DrawOptsRegister;
 use crate::gpu::draw_call::DrawRectDecoder;
 use crate::gpu::draw_call::Gp0SetDrawAreaCmd;
@@ -41,7 +41,7 @@ pub struct GpuState {
     pub tex_window:      Gp0TexWindowCmd,
     // TODO: remove this
     pub draw_opts_reg:   DrawOptsRegister,
-    pub draw_call_queue: Vec<DrawCall>,
+    pub draw_call_queue: Vec<DrawCallKind>,
     pub model:           GpuModel,
 }
 
@@ -246,7 +246,7 @@ pub trait Gpu: Bus {
                         tracing::info!(?draw_call, "decoded");
                         self.gpu_mut()
                             .draw_call_queue
-                            .push(DrawCall::Rect(draw_call));
+                            .push(DrawCallKind::Rect(draw_call));
                         Gp0::WaitingForCmd
                     }
                 }
@@ -364,8 +364,8 @@ pub enum Gp0 {
 #[derive_const(Clone, d::Add, d::AddAssign, Default)]
 #[repr(C)]
 pub struct VramCoord {
-    x: u16,
-    y: u16,
+    pub x: u16,
+    pub y: u16,
 }
 
 impl VramCoord {
@@ -512,7 +512,7 @@ pub struct GpuStatReg {
     #[bits(5..=6, rw)]
     semi_transparency:    u2,
     #[bits(7..=8, rw)]
-    texpage_colors:       u2,
+    texpage_colors:       TextureColorMode,
     #[bit(9, rw)]
     dither:               bool,
     #[bit(10, rw)]
@@ -634,7 +634,7 @@ pub struct TexpageCmd {
     #[bits(5..=6, rw)]
     semi_transparency: u2,
     #[bits(7..=8, rw)]
-    texpage_colors:    u2,
+    texpage_colors:    TextureColorMode,
     #[bit(9, rw)]
     dither:            bool,
     #[bit(10, rw)]
@@ -645,6 +645,18 @@ pub struct TexpageCmd {
     tex_rect_x_flip:   bool,
     #[bit(13, rw)]
     tex_rect_y_flip:   bool,
+}
+
+#[bitenum(u2, exhaustive = true)]
+#[derive(Debug, Default)]
+pub enum TextureColorMode {
+    C4Bit        = 0x0,
+    C7Bit        = 0x1,
+    #[default]
+    C15BitDirect = 0x2,
+    // this is usually reserved but we can use it to
+    // mark 24bit direct mode (for untextured rectangles etc)
+    C24BitDirect = 0x3,
 }
 
 /// # GP1(10h) - Get GPU Info

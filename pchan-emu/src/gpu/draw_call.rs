@@ -1,4 +1,7 @@
+use std::mem::transmute;
+
 use crate::gpu::DrawPixels;
+use crate::gpu::GpuStatReg;
 use crate::gpu::IVramCoord;
 use crate::gpu::VramCoord;
 use crate::io::CastIOInto;
@@ -6,10 +9,17 @@ use arbitrary_int::prelude::*;
 use bitbybit::bitenum;
 use bitbybit::bitfield;
 use bon::Builder;
+use glam::U8Vec2;
 use tracing::Level;
 
 #[derive(Debug, Clone)]
-pub enum DrawCall {
+pub struct DrawCall {
+    pub gpustat: GpuStatReg,
+    pub inner:   DrawCallKind,
+}
+
+#[derive(Debug, Clone)]
+pub enum DrawCallKind {
     Rect(DrawRect),
 }
 
@@ -31,18 +41,29 @@ pub enum DrawRectDecoder {
     Uv {
         color:   DrawRectColor,
         vertex1: VramCoord,
-        uv:      u32,
+        uv:      Uv,
     },
 }
 
 #[derive(Debug, Clone, Builder)]
 #[derive_const(Default)]
 pub struct DrawRect {
-    color:    DrawRectColor,
-    vertex1:  VramCoord,
-    // TODO: uv attribute
-    uv:       Option<u32>,
-    var_size: Option<VramCoord>,
+    pub color:    DrawRectColor,
+    pub vertex1:  VramCoord,
+    pub uv:       Option<Uv>,
+    pub var_size: Option<VramCoord>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Builder)]
+pub struct Uv {
+    pub clut: U8Vec2,
+    pub uv:   U8Vec2,
+}
+
+impl Uv {
+    pub fn from_u32(value: u32) -> Self {
+        unsafe { transmute(value) }
+    }
 }
 
 #[bitfield(u32)]
@@ -158,12 +179,12 @@ impl DrawCallDecoder for DrawRectDecoder {
                 RectSize::VarSize => Ok(Self::Uv {
                     color,
                     vertex1,
-                    uv: value.io_into_u32(),
+                    uv: Uv::from_u32(value.io_into_u32()),
                 }),
                 _ => Err(DrawRect {
                     color,
                     vertex1,
-                    uv: Some(value.io_into_u32()),
+                    uv: Some(Uv::from_u32(value.io_into_u32())),
                     var_size: None,
                 }),
             },
@@ -171,7 +192,7 @@ impl DrawCallDecoder for DrawRectDecoder {
                 true => Ok(Self::Uv {
                     color,
                     vertex1,
-                    uv: value.io_into_u32(),
+                    uv: Uv::from_u32(value.io_into_u32()),
                 }),
                 false => Err(DrawRect {
                     color,
