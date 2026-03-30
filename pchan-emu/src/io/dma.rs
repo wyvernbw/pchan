@@ -114,13 +114,9 @@ pub trait Dma: Bus + IO + Fastmem + Interrupts {
                         let gp0cmds = GP0Cmds {
                             init_chan: self.dma().dma2,
                         };
-                        assert!(
-                            self.dma().dma2.chcr.sync_mode() == SyncMode::LinkedList,
-                            "non linked list sync mode not yet implemented"
-                        );
                         let cycles = gp0cmds.cycles(self);
-                        tracing::trace!(?cycles, "dma2 linked list transfer scheduled");
                         self.schedule_in(cycles, DmaTransportKind::Gpu(gp0cmds));
+                        tracing::trace!(?cycles, "dma2 linked list transfer scheduled");
                     }
                 }
                 Ok(())
@@ -152,7 +148,7 @@ pub trait Dma: Bus + IO + Fastmem + Interrupts {
 
                 if chcr.raw_value() == 0x11000002 {
                     self.schedule_in(
-                        self.dma().dma6.bcr.block_size() as u64,
+                        self.dma().dma6.bcr.s0_block_count() as u64,
                         DmaTransportKind::Otc(OTC),
                     );
                     tracing::trace!("dma6 scheduled");
@@ -395,13 +391,13 @@ pub struct DmaMadr {
 pub struct DmaBcr {
     // s0
     #[bits(0..=15, rw)]
-    block_count: u16,
+    s0_block_count: u16,
 
     // s1
     #[bits(0..=15, rw)]
-    block_size:   u16,
+    s1_block_size:  u16,
     #[bits(16..=31, rw)]
-    block_amount: u16,
+    s1_block_count: u16,
 }
 
 /// ## 1F801088h+N*10h - D#_CHCR - DMA Channel Control (Channel 0..6) (R/W)
@@ -566,7 +562,7 @@ impl<T: Dma + IO + Fastmem + ?Sized> DmaTransport<T> for OTC {
     }
     fn write_data(emu: &mut T) {
         let channel = Self::channel_mut(emu);
-        let block_count = channel.bcr.block_count() as u32;
+        let block_count = channel.bcr.s0_block_count() as u32;
         let start = channel.madr.addr().as_u32();
 
         let mut addr = start;
@@ -590,24 +586,32 @@ pub struct GP0Cmds {
 
 impl GP0Cmds {
     fn cycles(&self, emu: &(impl IO + Fastmem + ?Sized)) -> u64 {
-        let direction = self.init_chan.chcr.direction();
+        // let direction = self.init_chan.chcr.direction();
         let sync_mode = self.init_chan.chcr.sync_mode();
-        assert_eq!(direction, TransferDir::RamToDevice);
-        assert_eq!(sync_mode, SyncMode::LinkedList);
-        let mut addr = self.init_chan.madr.addr().as_u32();
-        let mut count = 0;
-        loop {
-            if count > 10_000 {
-                panic!("infinite loop detected")
+        match sync_mode {
+            SyncMode::Burst => self.init_chan.bcr.s0_block_count() as u64,
+            SyncMode::Slice => {
+                self.init_chan.bcr.s1_block_count() as u64
+                    * self.init_chan.bcr.s1_block_size() as u64
             }
-            let header = Fastmem::read::<DmaNodeHeader>(emu, addr).unwrap();
-            addr = header.next().as_u32();
-            count += header.len() as u64 + 1;
-            if header.is_end_marker() {
-                break;
+            SyncMode::LinkedList => {
+                let mut addr = self.init_chan.madr.addr().as_u32();
+                let mut count = 0;
+                loop {
+                    if count > 10_000 {
+                        panic!("infinite loop detected")
+                    }
+                    let header = Fastmem::read::<DmaNodeHeader>(emu, addr).unwrap();
+                    addr = header.next().as_u32();
+                    count += header.len() as u64 + 1;
+                    if header.is_end_marker() {
+                        break;
+                    }
+                }
+                count
             }
+            SyncMode::Reserved => u64::MAX,
         }
-        count
     }
 }
 
@@ -624,7 +628,7 @@ impl<T: IO + Dma + ?Sized> DmaTransport<T> for GP0Cmds {
                 TransferDir::DeviceToRam => todo!(),
                 TransferDir::RamToDevice => {
                     let mut addr = channel.madr.addr().as_u32();
-                    for _ in 0..channel.bcr.block_size() {
+                    for _ in 0..channel.bcr.s0_block_count() {
                         let value = Fastmem::read(emu, addr).unwrap();
                         emu.gpu_mut().gp0cmd_queue.push_back(value).unwrap();
                         addr += 0x4;
@@ -692,7 +696,7 @@ pub trait DmaTransport<T: IO + ?Sized> {
         };
         match channel.chcr.sync_mode() {
             SyncMode::Burst => {
-                let block_count = channel.bcr.block_count() as u32;
+                let block_count = channel.bcr.s0_block_count() as u32;
                 let mut addr = channel.madr.addr().as_u32();
                 let mut i = 0;
                 while i < block_count {

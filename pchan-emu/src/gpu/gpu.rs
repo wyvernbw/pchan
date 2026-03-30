@@ -168,6 +168,11 @@ pub trait Gpu: Bus + Interrupts {
             // nop
             0x0 | 0x4..=0x1e | 0xe0 | 0xe7..=0xef => Gp0::WaitingForCmd,
 
+            0x01 => {
+                // clear cache?
+                Gp0::WaitingForCmd
+            }
+
             0xc0..=0xdf => {
                 self.gpu_mut().gpustat.set_ready_recv_cmd(false);
                 Gp0::CpRectVramToCpu(Gp0CpRect::RecvDest)
