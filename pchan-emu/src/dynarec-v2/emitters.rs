@@ -1623,26 +1623,23 @@ impl DynarecOp for J {
                 #[cfg(target_arch = "aarch64")]
                 dynasm!(
                     ctx.dynarec.asm
-                    ; ldr x3, ->run_io
-                    ; str x0, [sp, #-16]!
-                    ; blr x3
-                    ; ldr x0, [sp], #16
                     ; ldr x3, ->jump // defined in prelude
                     ; str x0, [sp, #-16]!
-                    // load 32bit psx address into second argument
-                    // first argument is already context structure
-                    ; movz w1, new_pc >> 16, lsl #16
-                    ; movk w1, new_pc & 0x0000_ffff
-                    ; str w1, [x0, Emu::PC_OFFSET as _]
                     ; blr x3
-
                     ; mov x3, x0
                     ; ldr x0, [sp], #16
+
                     ; cbz x3, >miss
+
                     ;; ctx.drain_schedule()
                     ;; ctx.dynarec.emit_block_epilogue(ctx.d_clock, None, false)
                     ; br x3
                     ; miss:
+                    ; ldr x3, ->run_io
+                    ; str x0, [sp, #-16]!
+                    ; blr x3
+                    ; ldr x0, [sp], #16
+
                 );
                 EmitSummary::builder().pc_updated(true).build()
             })

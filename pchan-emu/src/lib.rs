@@ -4,6 +4,7 @@
 #![allow(incomplete_features)]
 #![allow(clippy::collapsible_if)]
 #![feature(arbitrary_self_types_pointers)]
+#![cfg_attr(test, feature(random))]
 #![feature(slice_swap_unchecked)]
 #![feature(read_array)]
 #![feature(stmt_expr_attributes)]

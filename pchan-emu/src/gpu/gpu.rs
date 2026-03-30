@@ -107,15 +107,18 @@ pub trait Gpu: Bus {
                         let gp0 = match cursor.done() {
                             true => {
                                 self.gpu_mut().gpustat.set_ready_send_vram(false);
+                                self.gpu_mut().gpustat.set_ready_recv_cmd(true);
                                 Gp0::WaitingForCmd
                             }
                             false => Gp0::CpRectVramToCpu(Gp0CpRect::RecvData(cursor)),
                         };
                         self.gpu_mut().gp0 = gp0;
                     }
-                    _ => {}
+                    _ => {
+                        self.gpu_mut().gpustat.set_ready_recv_cmd(false);
+                    }
                 }
-                tracing::trace!(gp0 = ?self.gpu().gp0);
+                tracing::trace!(gp0read = ?self.gpu().gp0read);
                 Ok(self.gpu().gp0read.io_from_u32())
             }
             0x1f80_1814 => Ok(self.gpu().gpustat.io_from_u32()),
@@ -143,9 +146,18 @@ pub trait Gpu: Bus {
     fn gp0reduce(&mut self, cmd: GpuCmd) -> Gp0 {
         match cmd.cmd() {
             // nop
-            0xc0..=0xdf => Gp0::CpRectVramToCpu(Gp0CpRect::RecvDest),
-            0x00 | 0x04..0x1e | 0xe0 | 0xe7..0xef => Gp0::WaitingForCmd,
-            0xa0 => Gp0::CpRectCpuToVram(Gp0CpRect::RecvDest),
+            0xc0..=0xdf => {
+                self.gpu_mut().gpustat.set_ready_recv_cmd(false);
+                Gp0::CpRectVramToCpu(Gp0CpRect::RecvDest)
+            }
+            0x00 | 0x04..0x1e | 0xe0 | 0xe7..0xef => {
+                self.gpu_mut().gpustat.set_ready_recv_cmd(true);
+                Gp0::WaitingForCmd
+            }
+            0xa0 => {
+                self.gpu_mut().gpustat.set_ready_recv_cmd(false);
+                Gp0::CpRectCpuToVram(Gp0CpRect::RecvDest)
+            }
             0xe1 => {
                 let texpage = TexpageCmd::new_with_raw_value(cmd.raw_value());
 
@@ -205,11 +217,17 @@ pub trait Gpu: Bus {
                 Gp0::WaitingForCmd
             }
             // Draw polygon
-            0x20..=0x3f => Gp0::DrawPolygonDecode(DrawPolygonDecoder::new(cmd.raw_value())),
+            0x20..=0x3f => {
+                self.gpu_mut().gpustat.set_ready_recv_cmd(false);
+                Gp0::DrawPolygonDecode(DrawPolygonDecoder::new(cmd.raw_value()))
+            }
             // Draw line
             0x40..=0x5f => todo!("gp0 render line command"),
             // Draw Rect
-            0x60..=0x7f => Gp0::DrawRectDecode(DrawRectDecoder::new(cmd.raw_value())),
+            0x60..=0x7f => {
+                self.gpu_mut().gpustat.set_ready_recv_cmd(false);
+                Gp0::DrawRectDecode(DrawRectDecoder::new(cmd.raw_value()))
+            }
             value => todo!("gp0 command: {}", hex(value)),
         }
     }
@@ -234,7 +252,10 @@ pub trait Gpu: Bus {
                         self.gpu_mut().vram_write(at, halfword);
                     }
                     match cursor.done() {
-                        true => Gp0::WaitingForCmd,
+                        true => {
+                            self.gpu_mut().gpustat.set_ready_recv_cmd(true);
+                            Gp0::WaitingForCmd
+                        }
                         false => Gp0::CpRectCpuToVram(Gp0CpRect::RecvData(cursor)),
                     }
                 }
@@ -251,10 +272,12 @@ pub trait Gpu: Bus {
                     self.gpu_mut().gpustat.set_ready_send_vram(true);
                     Gp0::CpRectVramToCpu(Gp0CpRect::RecvData(VramCursor::new(dest, dest + size)))
                 }
+                // cancel vram to cpu
                 Gp0::CpRectVramToCpu(Gp0CpRect::RecvData(_)) => {
-                    self.gpu_mut().gpustat.set_ready_send_vram(false);
+                    // self.gpu_mut().gpustat.set_ready_send_vram(false);
 
-                    self.gp0reduce(cmd)
+                    // self.gp0reduce(cmd)
+                    self.gpu().gp0.clone()
                 }
                 Gp0::DrawRectDecode(decoder) => {
                     let decoder = decoder.advance(value);
@@ -262,6 +285,7 @@ pub trait Gpu: Bus {
                         Ok(decoder) => Gp0::DrawRectDecode(decoder),
                         Err(draw_call) => {
                             tracing::info!(?draw_call, "decoded");
+                            self.gpu_mut().gpustat.set_ready_recv_cmd(true);
                             self.issue_draw_call(DrawCallKind::Rect(draw_call));
                             Gp0::WaitingForCmd
                         }
@@ -276,6 +300,7 @@ pub trait Gpu: Bus {
                         Ok(decoder) => Gp0::DrawPolygonDecode(decoder),
                         Err(draw_call) => {
                             tracing::info!(?draw_call, "decoded");
+                            self.gpu_mut().gpustat.set_ready_recv_cmd(true);
                             self.issue_draw_call(DrawCallKind::DrawPolygon(draw_call));
                             Gp0::WaitingForCmd
                         }
@@ -325,6 +350,7 @@ pub trait Gpu: Bus {
                     gpustat.set_display_color_depth(cmd.display_color_depth());
                     gpustat.set_v_interlace(cmd.v_interlace());
                     gpustat.set_h_resolution_2(cmd.hres_2());
+                    gpustat.set_reverse_flag(cmd.screen_hflip());
                 }
                 // get gpu info
                 0x10 => {
@@ -337,6 +363,7 @@ pub trait Gpu: Bus {
                             self.gpu_mut().gp0read = unsafe {
                                 transmute::<u32, [u16; 2]>(self.gpu().tex_window.raw_value())
                             };
+                            self.gpu_mut().gpustat.set_ready_recv_cmd(false);
                         }
                     }
                 }
@@ -628,7 +655,7 @@ impl GpuStatReg {
     pub fn mock_ready(&mut self) {
         self.set_ready_recv_cmd(true);
         self.set_ready_recv_dma_block(true);
-        self.set_ready_send_vram(true);
+        self.set_ready_send_vram(false);
     }
 }
 
@@ -815,7 +842,7 @@ pub struct DisplayModeCmd {
     #[bit(6, rw)]
     hres_2:              HRes2,
     #[bit(7, rw)]
-    screen_hflip:        bool,
+    screen_hflip:        ReverseFlag,
 }
 
 #[bitenum(u2, exhaustive = true)]

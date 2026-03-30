@@ -196,12 +196,16 @@ impl IO for Emu {
 
 pub trait CastIOInto: Copy {
     fn io_into_u32(&self) -> u32 {
+        self.io_into_u32_overwrite(0x0)
+    }
+
+    fn io_into_u32_overwrite(&self, original: u32) -> u32 {
         assert!(
             size_of::<Self>() <= 4,
             "invalid cast of IO channel value to T. T has size {} >= 4",
             size_of::<Self>()
         );
-        let mut buf = [0u8; 4];
+        let mut buf = original.to_ne_bytes();
         unsafe {
             std::ptr::copy_nonoverlapping(
                 self as *const Self as *const u8,
@@ -238,4 +242,13 @@ fn test_io_from_u32() {
     assert_eq!(0xdeadbeefu32.io_from_u32::<i32>(), 0xdeadbeefu32 as i32);
     assert_eq!(0xdeadbeefu32.io_from_u32::<i16>(), 0xbeefu32 as i16);
     assert_eq!(0xdeadbeefu32.io_from_u32::<i8>(), 0xefu32 as i8);
+}
+
+#[cfg(test)]
+#[test]
+fn test_io_into_u32_overwrite() {
+    let original = 0xff00a0u32;
+    let new = 0x0000ffu8;
+    let result = new.io_into_u32_overwrite(original);
+    assert_eq!(result, 0xff00ff);
 }

@@ -617,7 +617,6 @@ impl<T: IO + Dma + ?Sized> DmaTransport<T> for GP0Cmds {
                 panic!("infinite loop detected");
             }
             let header = Fastmem::read::<DmaNodeHeader>(emu, addr).unwrap();
-            tracing::trace!("[{}]={}", hex(addr), hex(header));
             let len = header.len();
             for idx in 0..len {
                 let cmd = Fastmem::read::<u32>(emu, addr + idx as u32 * 0x4 + 0x4).unwrap();

@@ -57,7 +57,7 @@ pub trait Interrupts: Bus + IO + Exceptions {
         let stat = self.irq().i_stat;
         let mask = self.irq().i_mask;
 
-        let new_stat = IrqField::new_with_raw_value(*stat | (1 << irq as u8) & *mask);
+        let new_stat = IrqField::new_with_raw_value((*stat | (1 << irq as u8)) & *mask);
         self.irq_mut().i_stat = new_stat;
 
         if irq != Irq::Irq0Vblank {
@@ -88,14 +88,16 @@ pub trait Interrupts: Bus + IO + Exceptions {
             0x1f801070 => {
                 let irq = self.irq_mut();
                 let i_stat = irq.i_stat.raw_value();
-                let write = value.io_into_u32();
+                let write = value.io_into_u32_overwrite(i_stat);
                 let i_stat = i_stat & write;
                 irq.i_stat = IrqField::new_with_raw_value(i_stat);
 
                 Ok(())
             }
             0x1f801074 => {
-                self.irq_mut().i_mask = IrqField::new_with_raw_value(value.io_into_u32());
+                self.irq_mut().i_mask = IrqField::new_with_raw_value(
+                    value.io_into_u32_overwrite(self.irq_mut().i_mask.raw_value()),
+                );
                 Ok(())
             }
             _ => Err(UnhandledIO(address)),
