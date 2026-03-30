@@ -729,9 +729,20 @@ enum DmaDirection {
 
 #[derive(Debug)]
 #[bitenum(u1, exhaustive = true)]
-enum DrawEvenOdd {
+pub enum DrawEvenOdd {
     EvenOrVBlank = 0x0,
     Odd          = 0x1,
+}
+
+impl std::ops::Not for DrawEvenOdd {
+    type Output = Self;
+
+    fn not(self) -> Self::Output {
+        match self {
+            DrawEvenOdd::EvenOrVBlank => Self::Odd,
+            DrawEvenOdd::Odd => Self::EvenOrVBlank,
+        }
+    }
 }
 
 /// #  GP0(E1h) - Draw Mode setting (aka "Texpage")

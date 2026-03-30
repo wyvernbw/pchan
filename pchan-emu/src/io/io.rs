@@ -34,6 +34,7 @@ impl Emu {
             use crate::bootloader::AMIDOG_TESTS;
             self.run_sideloading(AMIDOG_TESTS).unwrap();
         }
+        // 0x80059d54
     }
 
     pub fn run_io_kernel_functions(&mut self) {
