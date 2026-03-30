@@ -71,7 +71,7 @@ impl<'a> RenderPass<'a> {
     }
 
     #[pchan_macros::instrument(err)]
-    pub fn finish(mut self, vram: &mut [u16]) -> color_eyre::Result<()> {
+    pub async fn finish(mut self, vram: &mut [u16]) -> color_eyre::Result<()> {
         let output_buffer = self.renderer.device.create_buffer(&BufferDescriptor {
             label: Some("output"),
             size: mb(1) as u64,
@@ -105,7 +105,11 @@ impl<'a> RenderPass<'a> {
         output_buffer.map_async(MapMode::Read, .., move |res| {
             res.unwrap();
         });
-        self.renderer.device.poll(PollType::wait_indefinitely())?;
+        let device = self.renderer.device.clone();
+        smol::unblock(move || {
+            _ = device.poll(PollType::wait_indefinitely());
+        })
+        .await;
         let buf = &output_buffer.get_mapped_range(..)[..];
 
         for y in 0..512usize {

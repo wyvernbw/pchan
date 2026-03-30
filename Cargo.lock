@@ -1977,6 +1977,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "kanal"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9e3953adf0cd667798b396c2fa13552d6d9b3269d7dd1154c4c416442d1ff574"
+dependencies = [
+ "futures-core",
+ "lock_api",
+]
+
+[[package]]
 name = "kasuari"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2908,6 +2918,7 @@ dependencies = [
  "flume",
  "glam",
  "heapless",
+ "kanal",
  "pchan-macros",
  "pchan-utils",
  "pretty_assertions",
@@ -2932,6 +2943,7 @@ dependencies = [
  "criterion",
  "flume",
  "glam",
+ "kanal",
  "pchan-emu",
  "pchan-macros",
  "pchan-utils",
@@ -2967,8 +2979,8 @@ dependencies = [
  "const-hex",
  "criterion",
  "derive_more",
- "flume",
  "heapless",
+ "kanal",
  "pretty_assertions",
  "rstest",
  "slab",

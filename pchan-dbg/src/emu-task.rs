@@ -48,7 +48,6 @@ pub(crate) struct EmuTask {
     pipe:          PipelineV2,
     cycle_samples: VecDeque<(u64, Instant)>,
     breakpoints:   HashSet<u32>,
-    renderer_task: JoinHandle<()>,
 }
 #[derive(Debug, Clone)]
 pub(crate) struct EmuTaskHandle {
@@ -71,7 +70,7 @@ impl EmuTask {
         let mut renderer = Renderer::try_new().await?;
         let tty_chan = emu.tty.set_channeled();
         renderer.connect_emu(emu);
-        let renderer_task = tokio::task::spawn(renderer.start());
+        renderer.start();
         let handle = EmuTaskHandle {
             req_chan,
             res_chan,
@@ -86,7 +85,6 @@ impl EmuTask {
             bios_path,
             cycle_samples: VecDeque::with_capacity(256),
             breakpoints: HashSet::new(),
-            renderer_task,
         };
         let join_handle = task.run();
 

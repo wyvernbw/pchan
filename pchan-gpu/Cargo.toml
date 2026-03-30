@@ -19,6 +19,7 @@ winit = "0.30.13"
 bon = { version = "3.9.1", features = ["experimental-getter", "experimental-overwritable"] }
 glam = "0.32.1"
 arbitrary-int.workspace = true
+kanal.workspace = true
 
 [dev-dependencies]
 pretty_assertions = {version = "1.4.1", features = ["unstable"]}

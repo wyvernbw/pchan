@@ -37,6 +37,7 @@ pchan-gpu = { path = "./pchan-gpu" }
 pchan-macros = { path = "./pchan-macros" }
 pchan-utils = { path = "./pchan-utils" }
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+kanal = "0.1.1"
 
 [profile.dev]
 panic = "unwind"

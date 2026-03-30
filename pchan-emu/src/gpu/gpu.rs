@@ -6,10 +6,8 @@ use arbitrary_int::prelude::*;
 use bitbybit::bitenum;
 use bitbybit::bitfield;
 use derive_more as d;
-use flume::Receiver;
-use flume::Sender;
 use heapless::Deque;
-use pchan_utils::Chan;
+use pchan_utils::AsyncChan;
 use pchan_utils::hex;
 use tracing::instrument;
 
@@ -34,6 +32,13 @@ use crate::io::irq::Irq;
 use crate::memory::kb;
 use crate::memory::mb;
 
+#[derive(Debug, Clone)]
+pub struct Conn<D> {
+    pub draw_call_chan: AsyncChan<Vec<D>>,
+    pub vram_in_chan:   AsyncChan<Box<[u16]>>,
+    pub vram_out_chan:  AsyncChan<Box<[u16]>>,
+}
+
 #[derive(derive_more::Debug, Clone)]
 pub struct GpuState {
     #[debug(skip)]
@@ -51,9 +56,8 @@ pub struct GpuState {
     pub draw_opts_reg:   DrawOptsRegister,
     pub draw_call_queue: Vec<DrawCall>,
     pub model:           GpuModel,
-    pub draw_call_chan:  Chan<Vec<DrawCall>>,
-    pub vram_in_chan:    Chan<Box<[u16]>>,
-    pub vram_out_chan:   Chan<Box<[u16]>>,
+    #[debug(skip)]
+    pub conn:            Conn<DrawCall>,
 }
 
 #[derive(derive_more::Debug, Clone, Default)]
@@ -82,9 +86,11 @@ impl Default for GpuState {
             tex_window: Default::default(),
             draw_opts_reg: Default::default(),
             draw_call_queue: vec![],
-            draw_call_chan: flume::bounded(0),
-            vram_in_chan: flume::bounded(0),
-            vram_out_chan: flume::bounded(0),
+            conn: Conn {
+                draw_call_chan: kanal::bounded_async(0),
+                vram_in_chan:   kanal::bounded_async(0),
+                vram_out_chan:  kanal::bounded_async(1),
+            },
         }
     }
 }
@@ -411,25 +417,26 @@ pub trait Gpu: Bus + Interrupts {
 
         tracing::info!("flushing {} draw calls", self.gpu().draw_call_queue.len());
         let queue = std::mem::take(&mut self.gpu_mut().draw_call_queue);
-        self.gpu().draw_call_chan.0.send(queue).unwrap();
+        let vram = self.gpu().vram.clone();
         self.gpu()
-            .vram_in_chan
+            .conn
+            .draw_call_chan
             .0
-            .send(self.gpu().vram.clone())
+            .as_sync()
+            .send(queue)
             .unwrap();
+        self.gpu().conn.vram_in_chan.0.as_sync().send(vram).unwrap();
     }
 
-    fn gpu_reconnect(&mut self, other: &Self) {
-        self.gpu_mut().draw_call_chan = other.gpu().draw_call_chan.clone();
-        self.gpu_mut().vram_in_chan = other.gpu().vram_in_chan.clone();
-        self.gpu_mut().vram_out_chan = other.gpu().vram_out_chan.clone();
+    fn gpu_reconnect(&mut self, other: &impl Gpu) {
+        self.gpu_mut().conn = other.gpu().conn.clone();
     }
 
     fn run_gpu_commands(&mut self) {
         self.flush_gp0_cmd_queue();
         self.flush_gp1_cmd_queue();
 
-        if let Ok(vram) = self.gpu().vram_out_chan.1.try_recv() {
+        if let Ok(Some(vram)) = self.gpu().conn.vram_out_chan.1.try_recv() {
             tracing::info!("received gpu result (vram)");
             self.gpu_mut().vram = vram;
         }
