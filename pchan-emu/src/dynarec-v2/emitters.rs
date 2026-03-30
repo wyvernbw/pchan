@@ -1635,11 +1635,6 @@ impl DynarecOp for J {
                     ;; ctx.dynarec.emit_block_epilogue(ctx.d_clock, None, false)
                     ; br x3
                     ; miss:
-                    ; ldr x3, ->run_io
-                    ; str x0, [sp, #-16]!
-                    ; blr x3
-                    ; ldr x0, [sp], #16
-
                 );
                 EmitSummary::builder().pc_updated(true).build()
             })
@@ -2361,6 +2356,37 @@ fn test_mtcn_enable_isc() -> color_eyre::Result<()> {
 
     assert_eq!(emu.cpu.cop0.reg[12], 0x0001_0000);
     assert!(emu.cpu.isc());
+
+    Ok(())
+}
+
+#[cfg(test)]
+#[rstest]
+fn test_mtcn_enable_irq() -> color_eyre::Result<()> {
+    use crate::cpu::exceptions::Exception;
+    use crate::cpu::exceptions::Exceptions;
+    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use pchan_utils::setup_tracing;
+
+    setup_tracing();
+    let mut emu = Emu::default();
+
+    emu.write_many(
+        0x0,
+        &program([addiu(9, 9, 0x0401), mtcn(0, 9, 12), OpCode::HALT]),
+    );
+
+    PipelineV2::new(&emu).run_once(&mut emu)?;
+    tracing::info!(?emu.cpu);
+
+    assert_eq!(emu.cpu.cop0.reg[12], 0x0000_0401);
+    assert!(emu.cpu.cop0.status().iec());
+    assert!(emu.cpu.cop0.status().irq_mask(2));
+
+    emu.raise_exception(Exception::Interrupt);
+    emu.run_io();
+
+    assert_eq!(emu.cpu.pc, 0x8000_0080);
 
     Ok(())
 }

@@ -793,8 +793,8 @@ fn cpu_viewer(model: &Model) -> View {
         Span::raw(" s ").style(Style::new().dim()),
         Span::raw("toggle zeroes ").style(Style::new().fg(Color::from_u32(0xeeeeee)).dim()),
     ]);
-    let bev = cpu.cop0.bev().onoff();
-    let isc = cpu.cop0.isc().onoff();
+    let bev = cpu.cop0.status().bev().onoff();
+    let isc = cpu.cop0.status().isc().onoff();
     ui! {
         <Block Height::grow()>
             <Block Width::grow()>

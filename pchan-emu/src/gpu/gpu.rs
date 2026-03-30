@@ -29,6 +29,8 @@ use crate::io::CastIOFrom;
 use crate::io::CastIOInto;
 use crate::io::IOResult;
 use crate::io::UnhandledIO;
+use crate::io::irq::Interrupts;
+use crate::io::irq::Irq;
 use crate::memory::kb;
 use crate::memory::mb;
 
@@ -91,7 +93,7 @@ pub fn create_vram() -> Box<[u16]> {
     vec![0; mb(1)].into_boxed_slice()
 }
 
-pub trait Gpu: Bus {
+pub trait Gpu: Bus + Interrupts {
     #[cfg_attr(debug_assertions, instrument(skip(self), "gpu:r"))]
     fn read<T: Copy>(&mut self, address: u32) -> IOResult<T> {
         let address = address & 0x1fffffff;
@@ -114,8 +116,9 @@ pub trait Gpu: Bus {
                         };
                         self.gpu_mut().gp0 = gp0;
                     }
+                    Gp0::CpRectCpuToVram(_) => {}
                     _ => {
-                        self.gpu_mut().gpustat.set_ready_recv_cmd(false);
+                        self.gpu_mut().gpustat.set_ready_recv_cmd(true);
                     }
                 }
                 tracing::trace!(gp0read = ?self.gpu().gp0read);
@@ -125,18 +128,29 @@ pub trait Gpu: Bus {
             _ => Err(UnhandledIO(address)),
         }
     }
+    fn read_pure<T: Copy>(&self, address: u32) -> IOResult<T> {
+        let address = address & 0x1fffffff;
+        match address {
+            0x1f80_1814 => Ok(self.gpu().gpustat.io_from_u32()),
+            _ => Err(UnhandledIO(address)),
+        }
+    }
     #[cfg_attr(debug_assertions, instrument(skip(self, value), "gpu:w"))]
     fn write<T: Copy>(&mut self, address: u32, value: T) -> Result<(), UnhandledIO> {
         let address = address & 0x1fffffff;
         match address {
             0x1f80_1810 => {
-                self.gpu_mut().gp0cmd_queue.push_back(value.io_into_u32());
-                self.flush_gp0_cmd_queue();
+                self.gpu_mut()
+                    .gp0cmd_queue
+                    .push_back(value.io_into_u32())
+                    .unwrap();
                 Ok(())
             }
             0x1f80_1814 => {
-                self.gpu_mut().gp1cmd_queue.push_back(value.io_into_u32());
-                self.flush_gp1_cmd_queue();
+                self.gpu_mut()
+                    .gp1cmd_queue
+                    .push_back(value.io_into_u32())
+                    .unwrap();
                 Ok(())
             }
             _ => Err(UnhandledIO(address)),
@@ -146,12 +160,15 @@ pub trait Gpu: Bus {
     fn gp0reduce(&mut self, cmd: GpuCmd) -> Gp0 {
         match cmd.cmd() {
             // nop
+            0x0 | 0x4..=0x1e | 0xe0 | 0xe7..=0xef => Gp0::WaitingForCmd,
+
             0xc0..=0xdf => {
                 self.gpu_mut().gpustat.set_ready_recv_cmd(false);
                 Gp0::CpRectVramToCpu(Gp0CpRect::RecvDest)
             }
-            0x00 | 0x04..0x1e | 0xe0 | 0xe7..0xef => {
-                self.gpu_mut().gpustat.set_ready_recv_cmd(true);
+            0x1f => {
+                self.gpu_mut().gpustat.set_irq(true);
+                self.trigger_irq(Irq::Irq1Gpu);
                 Gp0::WaitingForCmd
             }
             0xa0 => {
@@ -315,6 +332,7 @@ pub trait Gpu: Bus {
     fn flush_gp1_cmd_queue(&mut self) {
         while let Some(value) = self.gpu_mut().gp1cmd_queue.pop_front() {
             let value = GpuCmd::new_with_raw_value(value.io_into_u32());
+            tracing::info!(cmd = ?value.cmd());
             match value.cmd() {
                 0x00 => {
                     self.gpu_mut().gp0cmd_queue.clear();
@@ -324,6 +342,9 @@ pub trait Gpu: Bus {
                 0x01 => {
                     self.gpu_mut().gp0cmd_queue.clear();
                     self.gpu_mut().gpustat.mock_ready();
+                }
+                0x02 => {
+                    self.gpu_mut().gpustat.set_irq(false);
                 }
                 0x04 => {
                     let dir = DmaDirection::new_with_raw_value(value.fields().as_());
@@ -363,7 +384,6 @@ pub trait Gpu: Bus {
                             self.gpu_mut().gp0read = unsafe {
                                 transmute::<u32, [u16; 2]>(self.gpu().tex_window.raw_value())
                             };
-                            self.gpu_mut().gpustat.set_ready_recv_cmd(false);
                         }
                     }
                 }
@@ -430,12 +450,14 @@ impl GpuState {
         )
     }
     fn vram_write(&mut self, coord: VramCoord, value: u16) {
+        let coord = coord.wrap();
         let addr = coord.x as usize + coord.y as usize * kb(1);
         self.vram[addr] = value;
     }
 
     /// returns value through `self.gp0read`
     fn vram_read(&mut self, coord: VramCoord, idx: usize) {
+        let coord = coord.wrap();
         let addr = coord.x as usize + coord.y as usize * kb(1);
         self.gp0read[idx] = self.vram[addr];
     }
@@ -465,6 +487,15 @@ pub struct VramCoord {
 impl VramCoord {
     pub fn new(xpos: u16, ypos: u16) -> Self {
         Self { x: xpos, y: ypos }
+    }
+    pub fn wrap(mut self) -> Self {
+        if self.x >= 1024 {
+            self.x = 0;
+        }
+        if self.y >= 512 {
+            self.y = 0;
+        }
+        self
     }
 }
 

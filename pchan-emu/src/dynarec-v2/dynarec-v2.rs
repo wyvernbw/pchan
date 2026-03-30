@@ -116,9 +116,9 @@ impl DynarecBlock {
             (self.function.func)(emu)
         };
 
-        assert_eq!(emu.cpu.gpr[0], 0);
-
         emu.run_io();
+
+        assert_eq!(emu.cpu.gpr[0], 0);
     }
 
     pub fn buffer(&self) -> &ExecutableBuffer {

@@ -1,10 +1,13 @@
 use std::{fmt::Display, mem::offset_of};
 
-use bitfield::bitfield;
+use bitbybit::bitfield;
 use derive_more as d;
 use pchan_utils::{array, hex};
 
-use crate::{cpu::ops::OpCode, io::irq::IrqState};
+use crate::{
+    cpu::{exceptions::CauseRegister, ops::OpCode},
+    io::irq::IrqState,
+};
 
 pub mod ops;
 
@@ -66,32 +69,57 @@ coprocessor_definition!(Cop0);
 coprocessor_definition!(Cop1);
 coprocessor_definition!(Cop2);
 
-bitfield! {
-    pub struct Cop0StatusReg(u32);
+// bitfield! {
+//     pub struct Cop0StatusReg(u32);
 
-    // TODO: other fields
-    bev, set_bev: 22;
-    isc, set_isc: 16;
+//     // TODO: other fields
+//     bev, set_bev: 22;
+//     isc, set_isc: 16;
+// }
+
+#[bitfield(u32)]
+pub struct Cop0StatusReg {
+    #[bit(0, rw)]
+    iec: bool,
+
+    #[bit(8, rw)]
+    irq_mask: [bool; 8],
+
+    #[bits(8..=15, rw)]
+    irq_mask_combined: u8,
+
+    #[bit(16, rw)]
+    isc: bool,
+    #[bit(22, rw)]
+    bev: bool,
 }
 
 impl Default for Cop0 {
     fn default() -> Self {
         let mut reg = Regs([0u32; 32]);
 
-        let mut r12 = Cop0StatusReg(0);
+        let mut r12 = Cop0StatusReg::new_with_raw_value(0);
         r12.set_bev(true);
-        reg[12] = r12.0;
+        reg[12] = r12.raw_value();
 
         Self { reg }
     }
 }
 
 impl Cop0 {
-    pub fn bev(&self) -> bool {
-        self.reg[12] & (1 << 22) != 0
+    pub fn status(&self) -> Cop0StatusReg {
+        Cop0StatusReg::new_with_raw_value(self.reg[12])
     }
-    pub fn isc(&self) -> bool {
-        Cop0StatusReg(self.reg[12]).isc()
+    pub fn cause(&self) -> CauseRegister {
+        CauseRegister::new_with_raw_value(self.reg[13])
+    }
+    pub fn set_cause(&mut self, cause: CauseRegister) {
+        self.reg[13] = cause.raw_value();
+    }
+    pub fn update_cause(&mut self, f: impl FnOnce(CauseRegister) -> CauseRegister) {
+        let cause = self.cause();
+        let new_cause = f(cause);
+        self.set_cause(new_cause);
     }
 }
 
@@ -154,7 +182,7 @@ impl Cpu {
     }
 
     pub fn isc(&self) -> bool {
-        self.cop0.isc()
+        self.cop0.status().isc()
     }
 }
 

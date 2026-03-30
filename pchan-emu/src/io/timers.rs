@@ -3,10 +3,12 @@ use std::ops::RangeInclusive;
 use crate::{
     Bus, Emu,
     cpu::exceptions::{Exception, Exceptions},
-    io::{IO, UnhandledIO},
+    io::{IO, UnhandledIO, irq::Interrupts},
     memory::{GUEST_MEM_MAP, MEM_MAP},
 };
 use bitfield::bitfield;
+
+use super::irq::Irq;
 
 bitfield! {
     #[derive(Clone, Copy)]
@@ -72,7 +74,7 @@ pub struct AdvanceTimerSummary {
     timer_0_new: u16,
 }
 
-pub trait Timers: Bus + IO + Exceptions {
+pub trait Timers: Bus + IO + Interrupts {
     fn read_timers<T: Copy>(&self, address: u32) -> Result<T, UnhandledIO> {
         let address = address & 0x1fffffff;
         match address {
@@ -234,7 +236,7 @@ pub trait Timers: Bus + IO + Exceptions {
         self.set_timer_counter_mode(0, new_timer_0_mode);
 
         if new_timer_0_mode.irq() {
-            self.handle_exception(Exception::Interrupt);
+            self.trigger_irq(Irq::Irq4Timer0);
         }
     }
 }

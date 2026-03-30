@@ -1,16 +1,34 @@
-use bitfield::bitfield;
+use arbitrary_int::prelude::*;
+use bitbybit::{bitenum, bitfield};
 use tracing::instrument;
 
 use crate::{Bus, Emu};
 
-bitfield! {
-    #[derive(Clone, Copy)]
-    pub struct CauseRegister(u32);
+// bitfield! {
+//     #[derive(Clone, Copy)]
+//     pub struct CauseRegister(u32);
 
-    excode, set_excode: 6, 2;
-    interrupt_pending, set_interrupt_pending: 15, 8;
-    cop_number, set_cop_number: 29, 28;
-    branch_delay, set_branch_delay: 31;
+//     excode, set_excode: 6, 2;
+//     interrupt_pending, set_interrupt_pending: 15, 8;
+//     cop_number, set_cop_number: 29, 28;
+//     branch_delay, set_branch_delay: 31;
+// }
+
+#[bitfield(u32, debug)]
+pub struct CauseRegister {
+    #[bits(2..=6, rw)]
+    excode:      u5,
+    #[bit(8, rw)]
+    irq_pending: [bool; 8],
+
+    #[bits(8..=15, rw)]
+    irq_pending_combined: u8,
+
+    #[bits(28..=29, rw)]
+    cop_number: u2,
+
+    #[bit(31)]
+    bd: u1,
 }
 
 /// # Exception
@@ -38,8 +56,8 @@ bitfield! {
 /// 0Bh CpU     Coprocessor unusable
 /// 0Ch Ov      Arithmetic overflow
 /// ```
-#[derive(Debug, Clone, Copy)]
-#[repr(u8)]
+#[bitenum(u5)]
+#[derive(Debug)]
 pub enum Exception {
     Interrupt = 0x0,
     Syscall   = 0x8,
@@ -51,24 +69,25 @@ pub trait Exceptions: Bus {
     extern "C" fn handle_rfe(&mut self);
     extern "C" fn handle_break(&mut self);
     extern "C" fn handle_syscall(&mut self);
+    fn run_exceptions_io(&mut self);
+    fn raise_exception(&mut self, exception: Exception);
+    fn clear_exception(&mut self);
 }
 
 impl Exceptions for Emu {
-    #[cfg_attr(debug_assertions, instrument(ret, skip(self)))]
     fn handle_exception(&mut self, exception: Exception) {
-        let sr = self.cpu().cop0.reg[12];
-        // Push the KU/IE stack and disable interrupts
-        let new_sr = (sr & !0x3F) | ((sr & 0xF) << 2);
-        self.cpu_mut().cop0.reg[12] = new_sr;
-
         let cause = self.cpu().cop0.reg[13];
-        let mut cause = CauseRegister(cause);
-        cause.set_excode(exception as u32);
-        self.cpu_mut().cop0.reg[13] = cause.0;
+        let mut cause = CauseRegister::new_with_raw_value(cause);
+        cause.set_excode(exception.raw_value());
+        self.cpu_mut().cop0.reg[13] = cause.raw_value();
 
         self.cpu_mut().cop0.reg[14] = self.cpu().pc;
 
-        self.cpu_mut().pc = match self.cpu().cop0.bev() {
+        let sr = self.cpu().cop0.reg[12];
+        let new_sr = (sr & !0x3F) | ((sr & 0xF) << 2);
+        self.cpu_mut().cop0.reg[12] = new_sr;
+
+        self.cpu_mut().pc = match self.cpu().cop0.status().bev() {
             false => 0x8000_0080,
             true => 0xbfc0_0180,
         }
@@ -90,5 +109,30 @@ impl Exceptions for Emu {
     extern "C" fn handle_syscall(&mut self) {
         tracing::trace!("syscall");
         self.handle_exception(Exception::Syscall);
+    }
+
+    fn run_exceptions_io(&mut self) {
+        let sr = self.cpu.cop0.status();
+        let cause = self.cpu.cop0.cause();
+        // index 2 = bit 10
+        if cause.irq_pending(2) && sr.irq_mask(2) && sr.iec() {
+            let excode = Exception::new_with_raw_value(cause.excode())
+                .expect("unknown exception not yet implemented.");
+            self.handle_exception(excode);
+        }
+    }
+
+    fn raise_exception(&mut self, exception: Exception) {
+        self.cpu.cop0.update_cause(|cause| {
+            cause
+                .with_irq_pending(2, true)
+                .with_excode(exception.raw_value())
+        });
+    }
+
+    fn clear_exception(&mut self) {
+        self.cpu
+            .cop0
+            .update_cause(|cause| cause.with_irq_pending(2, false));
     }
 }

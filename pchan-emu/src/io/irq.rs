@@ -39,6 +39,7 @@ pub struct IrqField {
 #[derive(Debug, PartialEq, Eq)]
 pub enum Irq {
     Irq0Vblank = 0x0,
+    Irq1Gpu    = 0x1,
     Irq3Dma    = 0x3,
     Irq4Timer0 = 0x4,
     Irq5Timer1 = 0x5,
@@ -57,7 +58,8 @@ pub trait Interrupts: Bus + IO + Exceptions {
         let stat = self.irq().i_stat;
         let mask = self.irq().i_mask;
 
-        let new_stat = IrqField::new_with_raw_value((*stat | (1 << irq as u8)) & *mask);
+        // irq flag is set even when masked!
+        let new_stat = IrqField::new_with_raw_value(*stat | (1 << irq as u8));
         self.irq_mut().i_stat = new_stat;
 
         if irq != Irq::Irq0Vblank {
@@ -71,7 +73,9 @@ pub trait Interrupts: Bus + IO + Exceptions {
         }
 
         if new_stat.irq_flags_combined().as_u32() & mask.irq_flags_combined().as_u32() != 0 {
-            self.handle_exception(Exception::Interrupt);
+            self.raise_exception(Exception::Interrupt);
+        } else {
+            self.clear_exception();
         }
     }
     #[pchan_instrument_read("irq:r")]

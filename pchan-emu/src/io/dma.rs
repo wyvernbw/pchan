@@ -60,7 +60,7 @@ pub trait Dma: Bus + IO + Fastmem + Interrupts {
             // 0x1f8010a0..=0x1f8010af => todo!("read at dma2 (gpu)"),
 
             // dma 2
-            0x1f8010a0 => todo!("read at dma2madr (gpu madr)"),
+            0x1f8010a0 => Ok(self.dma().dma2.madr.addr().io_from_u32()),
             0x1f8010a4 => todo!("read at dma2bcr (gpu bcr)"),
             0x1f8010a8 => {
                 let chcr = self.dma().dma2.chcr;
@@ -77,7 +77,7 @@ pub trait Dma: Bus + IO + Fastmem + Interrupts {
             0x1f8010e4 => todo!("read at dma6bcr (otc bcr)"),
             0x1f8010e8 => {
                 let chcr = self.dma().dma6.chcr;
-                tracing::trace!("read at dma6chcr (otc chcr)");
+                tracing::trace!(dma6 = ?chcr.transfer(), "read at dma6chcr (otc chcr)");
                 Ok(chcr.io_from_u32())
             }
 
@@ -101,7 +101,7 @@ pub trait Dma: Bus + IO + Fastmem + Interrupts {
             }
             0x1f8010a4 => {
                 self.dma_mut().dma2.io_set_bcr(value);
-                tracing::trace!("write at dma2bcr (gpu bcr): {:#?}", self.dma().dma2.madr);
+                tracing::trace!("write at dma2bcr (gpu bcr): {:#?}", self.dma().dma2.bcr);
                 Ok(())
             }
             0x1f8010a8 => {
@@ -114,6 +114,10 @@ pub trait Dma: Bus + IO + Fastmem + Interrupts {
                         let gp0cmds = GP0Cmds {
                             init_chan: self.dma().dma2,
                         };
+                        assert!(
+                            self.dma().dma2.chcr.sync_mode() == SyncMode::LinkedList,
+                            "non linked list sync mode not yet implemented"
+                        );
                         let cycles = gp0cmds.cycles(self);
                         tracing::trace!(?cycles, "dma2 linked list transfer scheduled");
                         self.schedule_in(cycles, DmaTransportKind::Gpu(gp0cmds));
@@ -143,16 +147,16 @@ pub trait Dma: Bus + IO + Fastmem + Interrupts {
             0x1f8010e8 => {
                 let chcr = DmaChcr::new_with_raw_value(value.io_into_u32());
                 self.dma_mut().dma6.chcr = chcr;
-                match self.dma().dma6.chcr.transfer() {
-                    Transfer::StoppedCompleted => {}
-                    Transfer::StartBusy => {
-                        self.schedule_in(
-                            self.dma().dma6.bcr.block_count() as u64,
-                            DmaTransportKind::Otc(OTC),
-                        );
-                    }
-                }
+
                 tracing::trace!("write at dma6chcr (otc chcr): {:#?}", chcr);
+
+                if chcr.raw_value() == 0x11000002 {
+                    self.schedule_in(
+                        self.dma().dma6.bcr.block_size() as u64,
+                        DmaTransportKind::Otc(OTC),
+                    );
+                    tracing::trace!("dma6 scheduled");
+                }
                 Ok(())
             }
 
@@ -169,8 +173,8 @@ pub trait Dma: Bus + IO + Fastmem + Interrupts {
                 let new_irq_flags = new_dicr.combined_irq_flags();
 
                 // writing 1 to irq flag resets it to 0
-                let irq_flags = irq_flags ^ new_irq_flags;
-                tracing::trace!("dma_irq_flags: {irq_flags:b}");
+                let irq_flags = irq_flags & !new_irq_flags;
+                tracing::trace!("read at dicr: dma_irq_flags: {irq_flags:b}");
 
                 let new_dicr = new_dicr.with_combined_irq_flags(irq_flags);
 
@@ -218,12 +222,15 @@ pub trait Dma: Bus + IO + Fastmem + Interrupts {
         }
     }
 
-    // ```
-    // Bits 24-30 are acknowledged (reset to zero) when writing a "1" to that
-    // bits (and additionally, IRQ3 must be acknowledged via I_STAT).
-    // ```
     fn dma_irq_raise_complete(&mut self, idx: usize) {
         let dicr = &mut self.dma_mut().dicr;
+        tracing::trace!(
+            "dma{} irq, mask: {}, master-on: {}, old master_irq: {}",
+            idx,
+            dicr.irq_mask(idx),
+            dicr.master_on(),
+            dicr.master_irq()
+        );
         if dicr.irq_mask(idx) && dicr.master_on() {
             dicr.set_irq_flag(idx, true);
         }
@@ -234,7 +241,11 @@ pub trait Dma: Bus + IO + Fastmem + Interrupts {
         }
         let dicr = &mut self.dma_mut().dicr;
         dicr.set_master_irq(new_master_irq);
-        tracing::trace!("dma_irq_flags: {:b}", dicr.combined_irq_flags());
+        tracing::trace!(
+            "dma irq @ {}: dma_irq_flags: {:b}",
+            idx,
+            dicr.combined_irq_flags()
+        );
     }
 }
 
@@ -559,7 +570,8 @@ impl<T: Dma + IO + Fastmem + ?Sized> DmaTransport<T> for OTC {
         let start = channel.madr.addr().as_u32();
 
         let mut addr = start;
-        for _ in 0..block_count {
+        // end node is written separately
+        for _ in 0..(block_count - 1) {
             let next_addr = addr - 0x4;
             let node = DmaNodeHeader::default().with_next(next_addr.as_());
             Fastmem::write(emu, addr, node).expect("dma6 otc write must go to ram!");
@@ -647,7 +659,7 @@ impl DmaNodeHeader {
     fn is_end_marker(&self) -> bool {
         match self.next().value() {
             Self::END => true,
-            value if value & 0x0040_0000 != 0 => true,
+            value if value & 0x0080_0000 != 0 => true,
             _ => false,
         }
     }

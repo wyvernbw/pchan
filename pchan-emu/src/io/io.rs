@@ -3,6 +3,7 @@ use pchan_utils::hex;
 use tracing::instrument;
 
 use crate::bootloader::Bootloader;
+use crate::cpu::exceptions::Exceptions;
 use crate::gpu::Gpu;
 use crate::io::dma::Dma;
 use crate::io::irq::Interrupts;
@@ -27,6 +28,7 @@ impl Emu {
         self.run_dma_transfers();
         self.run_vblank();
         self.run_gpu_commands();
+        self.run_exceptions_io();
         #[cfg(feature = "amidog-tests")]
         {
             use crate::bootloader::AMIDOG_TESTS;
@@ -174,6 +176,7 @@ impl IO for Emu {
         Fastmem::read::<T>(self, address)
             .or_else(|_| ScratchpadMem::read(self, address))
             .or_else(|_| Interrupts::read(self, address))
+            .or_else(|_| Gpu::read_pure(self, address))
             .or_else(|_| Dma::read(self, address))
             .or_else(|_| Timers::read_timers(self, address))
             .or_else(|_| CDRom::read::<T>(self, address))
