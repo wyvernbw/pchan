@@ -619,29 +619,43 @@ impl<T: IO + Dma + ?Sized> DmaTransport<T> for GP0Cmds {
         let channel = Self::channel_mut(emu);
         let direction = channel.chcr.direction();
         let sync_mode = channel.chcr.sync_mode();
-        debug_assert_eq!(direction, TransferDir::RamToDevice);
-        debug_assert_eq!(sync_mode, SyncMode::LinkedList);
-        let mut addr = channel.madr.addr().as_u32();
-        let mut count = 0;
-        tracing::trace!("start gp0 linked list traversal");
-        loop {
-            if count >= 10_000 {
-                panic!("infinite loop detected");
+        match sync_mode {
+            SyncMode::Burst | SyncMode::Slice => match direction {
+                TransferDir::DeviceToRam => todo!(),
+                TransferDir::RamToDevice => {
+                    let mut addr = channel.madr.addr().as_u32();
+                    for _ in 0..channel.bcr.block_size() {
+                        let value = Fastmem::read(emu, addr).unwrap();
+                        emu.gpu_mut().gp0cmd_queue.push_back(value).unwrap();
+                        addr += 0x4;
+                    }
+                }
+            },
+            SyncMode::LinkedList => {
+                let mut addr = channel.madr.addr().as_u32();
+                let mut count = 0;
+                tracing::trace!("start gp0 linked list traversal");
+                loop {
+                    if count >= 10_000 {
+                        panic!("infinite loop detected");
+                    }
+                    let header = Fastmem::read::<DmaNodeHeader>(emu, addr).unwrap();
+                    let len = header.len();
+                    for idx in 0..len {
+                        let cmd = Fastmem::read::<u32>(emu, addr + idx as u32 * 0x4 + 0x4).unwrap();
+                        tracing::trace!(cmd = %hex(cmd));
+                        emu.gpu_mut().gp0cmd_queue.push_back(cmd).unwrap();
+                    }
+                    addr = header.next().as_u32();
+                    count += 1;
+                    if header.is_end_marker() {
+                        break;
+                    }
+                }
+                tracing::trace!("end gp0 linked list traversal");
             }
-            let header = Fastmem::read::<DmaNodeHeader>(emu, addr).unwrap();
-            let len = header.len();
-            for idx in 0..len {
-                let cmd = Fastmem::read::<u32>(emu, addr + idx as u32 * 0x4 + 0x4).unwrap();
-                tracing::trace!(cmd = %hex(cmd));
-                _ = emu.gpu_mut().gp0cmd_queue.push_back(cmd);
-            }
-            addr = header.next().as_u32();
-            count += 1;
-            if header.is_end_marker() {
-                break;
-            }
+            SyncMode::Reserved => todo!(),
         }
-        tracing::trace!("end gp0 linked list traversal");
     }
 }
 
