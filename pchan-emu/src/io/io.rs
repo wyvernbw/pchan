@@ -25,9 +25,12 @@ impl Emu {
         self.cpu_mut().cycles = self.cpu().cycles.wrapping_add(self.cpu().d_clock as u64);
         self.run_timer_pipeline();
         self.run_io_kernel_functions();
+
+        // gpu commands must run before dma to ensure gp0 fifo is cleared
+        self.run_gpu_commands();
+
         self.run_dma_transfers();
         self.run_vblank();
-        self.run_gpu_commands();
         self.run_exceptions_io();
         #[cfg(feature = "amidog-tests")]
         {

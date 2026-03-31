@@ -115,7 +115,7 @@ pub trait Dma: Bus + IO + Fastmem + Interrupts {
                             init_chan: self.dma().dma2,
                         };
                         let cycles = gp0cmds.cycles(self);
-                        self.schedule_in(cycles, DmaTransportKind::Gpu(gp0cmds));
+                        self.dma_schedule_in(cycles, DmaTransportKind::Gpu(gp0cmds));
                         tracing::trace!(?cycles, "dma2 linked list transfer scheduled");
                     }
                 }
@@ -147,7 +147,7 @@ pub trait Dma: Bus + IO + Fastmem + Interrupts {
                 tracing::trace!("write at dma6chcr (otc chcr): {:#?}", chcr);
 
                 if chcr.raw_value() == 0x11000002 {
-                    self.schedule_in(
+                    self.dma_schedule_in(
                         self.dma().dma6.bcr.s0_block_count() as u64,
                         DmaTransportKind::Otc(OTC),
                     );
@@ -181,7 +181,7 @@ pub trait Dma: Bus + IO + Fastmem + Interrupts {
         }
     }
 
-    fn schedule_in(&mut self, cycles: u64, dma_kind: DmaTransportKind) {
+    fn dma_schedule_in(&mut self, cycles: u64, dma_kind: DmaTransportKind) {
         let finish_at = self.cpu().cycles + cycles;
         self.dma_mut()
             .queue
@@ -590,10 +590,7 @@ impl GP0Cmds {
         let sync_mode = self.init_chan.chcr.sync_mode();
         match sync_mode {
             SyncMode::Burst => self.init_chan.bcr.s0_block_count() as u64,
-            SyncMode::Slice => {
-                self.init_chan.bcr.s1_block_count() as u64
-                    * self.init_chan.bcr.s1_block_size() as u64
-            }
+            SyncMode::Slice => self.init_chan.bcr.s1_block_size() as u64,
             SyncMode::LinkedList => {
                 let mut addr = self.init_chan.madr.addr().as_u32();
                 let mut count = 0;
@@ -624,7 +621,36 @@ impl<T: IO + Dma + ?Sized> DmaTransport<T> for GP0Cmds {
         let direction = channel.chcr.direction();
         let sync_mode = channel.chcr.sync_mode();
         match sync_mode {
-            SyncMode::Burst | SyncMode::Slice => match direction {
+            SyncMode::Slice => match direction {
+                TransferDir::DeviceToRam => todo!(),
+                TransferDir::RamToDevice => {
+                    let mut addr = channel.madr.addr().as_u32();
+                    let mut channel = *channel;
+                    let len = channel.bcr.s1_block_size();
+                    for _ in 0..len {
+                        let value = Fastmem::read(emu, addr).unwrap();
+                        emu.gpu_mut()
+                            .gp0cmd_queue
+                            .push_back(value)
+                            .expect("gpu gp0 fifo is full");
+                        addr += 0x4;
+                    }
+                    match channel.bcr.s1_block_count() {
+                        0 => {}
+                        1.. => {
+                            channel
+                                .bcr
+                                .set_s1_block_count(channel.bcr.s1_block_count() - 1);
+                            let gp0cmds = Self { init_chan: channel };
+                            emu.dma_schedule_in(
+                                gp0cmds.cycles(emu),
+                                DmaTransportKind::Gpu(gp0cmds),
+                            );
+                        }
+                    }
+                }
+            },
+            SyncMode::Burst => match direction {
                 TransferDir::DeviceToRam => todo!(),
                 TransferDir::RamToDevice => {
                     let mut addr = channel.madr.addr().as_u32();

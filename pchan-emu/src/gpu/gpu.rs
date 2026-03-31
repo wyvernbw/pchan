@@ -47,7 +47,7 @@ pub struct GpuState {
     pub gpustat:         GpuStatReg,
     pub gp0:             Gp0,
     pub gp0read:         [u16; 2],
-    pub gp0cmd_queue:    Deque<u32, 16>,
+    pub gp0cmd_queue:    Deque<u32, 20>, // 4 word legroom
     pub gp0read_queue:   Deque<u32, 32>,
     pub gp1cmd_queue:    Deque<u32, 16>,
     /// GP0(0xe2) - Texture Window setting
