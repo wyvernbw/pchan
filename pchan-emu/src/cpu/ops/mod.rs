@@ -278,6 +278,24 @@ pub struct Lw {
 }
 
 #[derive(Encode, Debug, Clone, Copy, Hash, PartialEq, Eq, d::Display)]
+#[encode(opcode = 0x22)]
+#[display("lwl ${}, ${}, {}", reg_str(self.rt), reg_str(self.rs), hex(self.imm16))]
+pub struct Lwl {
+    pub rt:    u8,
+    pub rs:    u8,
+    pub imm16: i16,
+}
+
+#[derive(Encode, Debug, Clone, Copy, Hash, PartialEq, Eq, d::Display)]
+#[encode(opcode = 0x26)]
+#[display("lwr ${}, ${}, {}", reg_str(self.rt), reg_str(self.rs), hex(self.imm16))]
+pub struct Lwr {
+    pub rt:    u8,
+    pub rs:    u8,
+    pub imm16: i16,
+}
+
+#[derive(Encode, Debug, Clone, Copy, Hash, PartialEq, Eq, d::Display)]
 #[encode(opcode = 0x30, cop = self.cop)]
 #[display("lwc{} ${}, ${}, {}", self.cop, reg_str(self.rt), reg_str(self.rs), hex(self.imm16))]
 pub struct Lwcn {

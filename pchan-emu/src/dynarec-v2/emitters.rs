@@ -176,6 +176,7 @@ pub enum DecodedOp {
     Lbu(Lbu),
     Lh(Lh),
     Lhu(Lhu),
+    Lwl(Lwl),
     Lw(Lw),
 }
 
@@ -289,7 +290,7 @@ impl DecodedOp {
                 (0x14..=0x1F, _, _, _) => Self::illegal(),
                 (0x20, _, _, _) => Self::Lb(Lb::new(rt, rs, fields.imm16())),
                 (0x21, _, _, _) => Self::Lh(Lh::new(rt, rs, fields.imm16())),
-                (0x22, _, _, _) => todo!("lwl"),
+                (0x22, _, _, _) => Self::Lwl(Lwl::new(rt, rs, fields.imm16())),
                 (0x23, _, _, _) => Self::Lw(Lw::new(rt, rs, fields.imm16())),
                 (0x24, _, _, _) => Self::Lbu(Lbu::new(rt, rs, fields.imm16())),
                 (0x25, _, _, _) => Self::Lhu(Lhu::new(rt, rs, fields.imm16())),
@@ -886,6 +887,128 @@ fn test_load_delay(#[case] instr: impl Fn(u8, u8, i16) -> OpCode) -> color_eyre:
     assert_eq!(emu.cpu.gpr[13], 69 + 420);
 
     tracing::info!("returning from test...");
+    Ok(())
+}
+
+impl DynarecOp for Lwl {
+    #[allow(clippy::useless_conversion)]
+    fn emit<'a>(&self, mut ctx: EmitCtx<'a>) -> EmitSummary {
+        let Self { rt, rs, imm16 } = *self;
+
+        let s = ctx.parity();
+        ctx.dynarec.emit_load_temp_reg(rs, Reg::W(1));
+        dynasm!(
+            ctx.dynarec.asm
+            ; .arch aarch64
+            ;; ctx.dynarec.emit_add_imm16().dest(Reg::W(1)).base(Reg::W(1)).offset(imm16).call()
+            // lowest (4 - n % 4) bytes of result must go in upper bytes of register
+            ; and w2, w1, 3
+            ; and w1, w1, !3 // - w1 % 4
+            ; fmov S(s(8)), w1
+            ; fmov S(s(9)), w2
+        );
+
+        ctx.schedule_in(1)
+            .emitter(move |ctx| {
+                let rta = ctx.dynarec.alloc_reg(rt);
+                dynasm!(
+                    ctx.dynarec.asm
+                    ; .arch aarch64
+                    ;; let saved = ctx.dynarec.emit_save_volatile_registers()
+                    ; fmov w1, S(s(8))
+                    ; fmov w2, S(s(9))
+                    ; stp w1, w2, [sp, #-16]!
+                    ; ldr x3, ->read32v2
+                    ; blr x3
+                    ; ldp wzr, w1, [sp], #16 // load stored  byte offset into w1
+                    ; lsl w1, w1, 3          // bytes -> bits
+                    ; mvn w2, wzr            // 0xffffffff mask
+                    ; lsl w2, w2, w1         // 0xffff0000 for example
+                    ; and w0, w0, w2         // mask upper
+
+                    ; fmov S(s(8)), w0       // place return value in s8+
+                    ; fmov S(s(9)), w1       // place shift amount in s9+
+
+                    ;; ctx.dynarec.emit_restore_saved_registers(saved.into_iter())
+                );
+
+                if rt != 0 {
+                    dynasm!(
+                        ctx.dynarec.asm
+                        ; fmov w1, S(s(8))   // return value
+                        ; fmov w2, S(s(9))   // shift amount (in bits)
+                        ; mvn w3, wzr
+                        ; lsl w3, w3, w2          // upper mask
+                        ; mvn w3, w3              // lower mask
+                        ; and w3, W(*rta), w3     // preserve lower bytes of original rt
+                        ; orr W(*rta), w1, w3     // merge
+                    );
+                    ctx.dynarec.mark_dirty(rt);
+                }
+
+                rta.restore(ctx.dynarec);
+                EmitSummary::default()
+            })
+            .call();
+
+        EmitSummary::default()
+    }
+    fn cycles(&self) -> u16 {
+        3
+    }
+    fn hazard(&self) -> u16 {
+        2
+    }
+}
+
+/// value at 0x100 is always 0xcafe_babe
+#[cfg(test)]
+#[rstest]
+#[case(lwl(9, 10, 0x0), 0x101, 0xcafe_ba00)]
+#[case(lwl(9, 10, 0x0), 0x102, 0xcafe_0000)]
+#[case(lwl(9, 10, 0x0), 0x103, 0xca00_0000)]
+#[case(lwl(9, 10, 0x0), 0x104, 0x0000_0000)] // this is just an aligned read
+// same but with immediates
+#[case(lwl(9, 10, 0x1), 0x100, 0xcafe_ba00)]
+#[case(lwl(9, 10, 0x2), 0x100, 0xcafe_0000)]
+#[case(lwl(9, 10, 0x3), 0x100, 0xca00_0000)]
+#[case(lwl(9, 10, 0x4), 0x100, 0x0000_0000)]
+fn test_lwl(
+    #[case] instr: OpCode,
+    #[case] at: u32,
+    #[case] expected: u32,
+) -> color_eyre::Result<()> {
+    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use arbitrary_int::prelude::*;
+    use assert_hex::assert_eq_hex;
+    use pchan_utils::setup_tracing;
+
+    setup_tracing();
+    let mut emu = Emu::default();
+    emu.cpu.gpr[instr.rs().as_usize()] = at;
+    emu.write(0x100, 0xcafe_babe_u32);
+    tracing::info!(read = %hex(emu.read::<u32>(at - at % 4)));
+    emu.write_many(
+        0x0,
+        &program([
+            instr,
+            addiu(12, instr.rt().as_(), 420),
+            addiu(13, instr.rt().as_(), 420),
+            OpCode::HALT,
+        ]),
+    );
+
+    PipelineV2::new(&emu).run_once(&mut emu)?;
+
+    tracing::info!("finished running");
+    tracing::info!(?emu.cpu);
+
+    assert_eq_hex!(emu.cpu.d_clock, 5);
+    assert_eq_hex!(emu.cpu.pc, 0x10);
+    assert_eq_hex!(emu.cpu.gpr[instr.rt().as_usize()], expected);
+    assert_eq_hex!(emu.cpu.gpr[12], 420);
+    assert_eq_hex!(emu.cpu.gpr[13], expected + 420);
+
     Ok(())
 }
 

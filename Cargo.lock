@@ -176,6 +176,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "assert_hex"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f7010f1430f0fc8ca80bdb5e5d074db68776a2e268ec6cf80b53712d3ea4bca7"
+
+[[package]]
 name = "async-channel"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2903,6 +2909,7 @@ name = "pchan-emu"
 version = "0.1.0"
 dependencies = [
  "arbitrary-int",
+ "assert_hex",
  "bitbybit",
  "bitfield",
  "bitvec",
