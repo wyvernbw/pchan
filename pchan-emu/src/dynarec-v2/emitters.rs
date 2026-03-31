@@ -1063,11 +1063,9 @@ impl DynarecOp for Lwr {
         dynasm!(
             ctx.dynarec.asm
             ; .arch aarch64
-            ;; ctx.dynarec.emit_add_imm16().dest(Reg::W(1)).base(Reg::W(1)).offset(imm16).call()
+            ;; ctx.dynarec.emit_add_imm16().dest(Reg::W(1)).base(Reg::W(1)).offset(imm16 + 0x4).call()
             // lowest (4 - n % 4) bytes of result must go in upper bytes of register
             ; and w2, w1, 3
-            // ; mov w3, 4
-            // ; sub w2, w3, w2
             ; and w1, w1, !3 // - w1 % 4
             ; fmov S(s(8)), w1
             ; fmov S(s(9)), w2
@@ -1075,7 +1073,7 @@ impl DynarecOp for Lwr {
 
         ctx.schedule_in(1)
             .emitter(move |ctx| {
-                let rta = ctx.dynarec.alloc_reg(rt);
+                let rta = ctx.dynarec.emit_load_reg(rt);
                 dynasm!(
                     ctx.dynarec.asm
                     ; .arch aarch64
@@ -1086,14 +1084,17 @@ impl DynarecOp for Lwr {
                     ; ldr x3, ->read32v2
                     ; blr x3
                     ; ldp wzr, w1, [sp], #16 // load stored  byte offset into w1
-                    ; lsl w1, w1, 3          // bytes -> bits
+                    ; mov w2, 4
+                    ; sub w2, w2, w1
+                    ; lsl w2, w2, 3          // bytes -> bits
+                    ; lsr w0, w0, w2
+
                     ; mvn w2, wzr            // 0xffffffff mask
+                    ; lsl w1, w1, 3
                     ; lsl w2, w2, w1         // 0xffff0000 for example
-                    ; mvn w2, w2             // 0x0000ffff flip saves us one instruction
-                    ; and w0, w0, w2         // mask upper
 
                     ; fmov S(s(8)), w0       // place return value in s8+
-                    ; fmov S(s(9)), w1       // place shift amount in s9+
+                    ; fmov S(s(9)), w2       // place mask in s9+
 
                     ;; ctx.dynarec.emit_restore_saved_registers(saved.into_iter())
                 );
@@ -1102,10 +1103,8 @@ impl DynarecOp for Lwr {
                     dynasm!(
                         ctx.dynarec.asm
                         ; fmov w1, S(s(8))   // return value
-                        ; fmov w2, S(s(9))   // shift amount (in bits)
-                        ; mvn w3, wzr
-                        ; lsl w3, w3, w2          // upper mask
-                        ; and w3, W(*rta), w3     // preserve upper bytes of original rt
+                        ; fmov w2, S(s(9))   // mask
+                        ; and w3, W(*rta), w2     // preserve upper bytes of original rt
                         ; orr W(*rta), w1, w3     // merge
                     );
                     ctx.dynarec.mark_dirty(rt);
@@ -1127,27 +1126,28 @@ impl DynarecOp for Lwr {
 }
 
 /// value at 0x100 is always 0xcafe_babe
+/// value at 0x104 is always 0xdead_beef
 // lwr
 #[cfg(test)]
 #[rstest]
 #[case::lwl(lwl(9, 10, 0x0), 0x101, 0xfeba_be11)]
 #[case::lwl(lwl(9, 10, 0x0), 0x102, 0xbabe_1111)]
 #[case::lwl(lwl(9, 10, 0x0), 0x103, 0xbe11_1111)]
-#[case::lwl(lwl(9, 10, 0x0), 0x104, 0x0000_0000)] // this is just an aligned read
+#[case::lwl(lwl(9, 10, 0x0), 0x104, 0xdead_beef)] // this is just an aligned read
 // same but with immediates
 #[case::lwl(lwl(9, 10, 0x1), 0x100, 0xfeba_be11)]
 #[case::lwl(lwl(9, 10, 0x2), 0x100, 0xbabe_1111)]
 #[case::lwl(lwl(9, 10, 0x3), 0x100, 0xbe11_1111)]
-#[case::lwl(lwl(9, 10, 0x4), 0x100, 0x0000_0000)]
+#[case::lwl(lwl(9, 10, 0x4), 0x100, 0xdead_beef)]
 // lwr
-#[case::lwr(lwr(9, 10, 0x0), 0x101, 0x1111_11be)]
-#[case::lwr(lwr(9, 10, 0x0), 0x102, 0x1111_babe)]
-#[case::lwr(lwr(9, 10, 0x0), 0x103, 0x11fe_babe)]
+#[case::lwr(lwr(9, 10, 0x0), 0x101, 0x1111_11de)]
+#[case::lwr(lwr(9, 10, 0x0), 0x102, 0x1111_dead)]
+#[case::lwr(lwr(9, 10, 0x0), 0x103, 0x11de_adbe)]
 #[case::lwr(lwr(9, 10, 0x0), 0x104, 0x1111_1111)]
 // immediates
-#[case::lwr(lwr(9, 10, 0x1), 0x100, 0x1111_11be)]
-#[case::lwr(lwr(9, 10, 0x2), 0x100, 0x1111_babe)]
-#[case::lwr(lwr(9, 10, 0x3), 0x100, 0x11fe_babe)]
+#[case::lwr(lwr(9, 10, 0x1), 0x100, 0x1111_11de)]
+#[case::lwr(lwr(9, 10, 0x2), 0x100, 0x1111_dead)]
+#[case::lwr(lwr(9, 10, 0x3), 0x100, 0x11de_adbe)]
 #[case::lwr(lwr(9, 10, 0x4), 0x100, 0x1111_1111)]
 fn test_unaligned_loads(
     #[case] instr: OpCode,
@@ -1164,6 +1164,7 @@ fn test_unaligned_loads(
     emu.cpu.gpr[instr.rs().as_usize()] = at;
     emu.cpu.gpr[instr.rt().as_usize()] = 0x1111_1111;
     emu.write(0x100, 0xcafe_babe_u32);
+    emu.write(0x104, 0xdead_beef_u32);
     tracing::info!(read = %hex(emu.read::<u32>(at - at % 4)));
     emu.write_many(
         0x0,
@@ -1179,6 +1180,36 @@ fn test_unaligned_loads(
     assert_eq_hex!(emu.cpu.pc, 0x10);
     assert_eq_hex!(emu.cpu.gpr[instr.rt().as_usize()], expected);
     assert_eq_hex!(emu.cpu.gpr[13], expected + 420);
+
+    Ok(())
+}
+
+#[cfg(test)]
+#[rstest]
+fn test_combined_unaligned_loads() -> color_eyre::Result<()> {
+    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use assert_hex::assert_eq_hex;
+    use pchan_utils::setup_tracing;
+
+    setup_tracing();
+    let mut emu = Emu::default();
+    emu.cpu.gpr[9] = 0x102;
+    emu.cpu.gpr[8] = 0x1111_1111;
+    emu.write(0x100, 0xcafe_babe_u32);
+    emu.write(0x104, 0xdead_beef_u32);
+    emu.write_many(
+        0x0,
+        &program([lwl(8, 9, 0x0), lwr(8, 9, 0x0), nop(), OpCode::HALT]),
+    );
+
+    PipelineV2::new(&emu).run_once(&mut emu)?;
+
+    tracing::info!("finished running");
+    tracing::info!(?emu.cpu);
+
+    assert_eq_hex!(emu.cpu.d_clock, 5);
+    assert_eq_hex!(emu.cpu.pc, 0x10);
+    assert_eq_hex!(emu.cpu.gpr[8], 0xbabe_dead);
 
     Ok(())
 }
