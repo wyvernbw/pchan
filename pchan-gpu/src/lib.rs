@@ -301,7 +301,8 @@ impl Scene {
                 DrawCallKind::Rect(draw_rect) => {
                     _ = scene.add_draw_rect_draw_call(draw_rect);
                 }
-                DrawCallKind::DrawPolygon(draw_polygon) => {}
+                DrawCallKind::Polygon(draw_polygon) => {}
+                DrawCallKind::Line(draw_line) => {}
             }
         }
 

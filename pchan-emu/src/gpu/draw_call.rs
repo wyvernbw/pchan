@@ -11,6 +11,8 @@ use bitbybit::bitfield;
 use bon::Builder;
 use glam::I16Vec2;
 use glam::U8Vec2;
+use smallvec::SmallVec;
+use smallvec::smallvec;
 use tracing::Level;
 
 #[derive(Debug, Clone)]
@@ -22,7 +24,8 @@ pub struct DrawCall {
 #[derive(Debug, Clone)]
 pub enum DrawCallKind {
     Rect(DrawRect),
-    DrawPolygon(DrawPolygon),
+    Polygon(DrawPolygon),
+    Line(DrawLine),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -401,6 +404,141 @@ impl DrawPolygonDecoder {
             header,
             attrs: Default::default(),
             current_attr,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DrawLine {
+    header: DrawLineHeader,
+    // most lines are 2 vertices, for poly-lines
+    // we do a heap allocation
+    attrs:  SmallVec<[DrawLineAttribute; 2]>,
+}
+
+/// ```md
+///  bit number   value   meaning
+///  31-29        010    line render
+///    28         1/0    gouraud / flat shading
+///    27         1/0    polyline / single line
+///    25         1/0    semi-transparent / opaque
+///   23-0        rgb    first color value.
+/// ```
+#[bitfield(u32, debug)]
+#[derive(Default)]
+pub struct DrawLineHeader {
+    #[bits(0..=23, rw)]
+    rgb:              u24,
+    #[bit(25, rw)]
+    semi_transparent: bool,
+    #[bit(27, rw)]
+    poly:             bool,
+    #[bit(28, rw)]
+    shading:          Shading,
+}
+
+#[derive(Debug, Clone)]
+pub struct DrawLineAttribute {
+    color:  Option<u32>,
+    vertex: I16Vec2,
+}
+
+#[derive(Debug, Clone, Default)]
+pub enum DrawLineAttributeDecoder {
+    #[default]
+    Flat,
+    Goraud,
+    GoraudColor {
+        color: u32,
+    },
+}
+
+impl DrawCallDecoder for DrawLineAttributeDecoder {
+    type Output = DrawLineAttribute;
+
+    fn advance<T: Copy>(self, value: T) -> Result<Self, Self::Output> {
+        let value32 = value.io_into_u32();
+
+        let vertex = unsafe { transmute::<u32, I16Vec2>(value32) };
+        match self {
+            DrawLineAttributeDecoder::Flat => Err(DrawLineAttribute {
+                color: None,
+                vertex,
+            }),
+            DrawLineAttributeDecoder::Goraud => Ok(Self::GoraudColor { color: value32 }),
+            DrawLineAttributeDecoder::GoraudColor { color } => Err(DrawLineAttribute {
+                color: Some(color),
+                vertex,
+            }),
+        }
+    }
+}
+
+impl DrawLineAttributeDecoder {
+    pub const fn from_header(header: DrawLineHeader) -> Self {
+        match header.shading() {
+            Shading::Flat => Self::Flat,
+            Shading::Gouraud => Self::Goraud,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DrawLineDecoder {
+    header:       DrawLineHeader,
+    attrs:        SmallVec<[DrawLineAttribute; 2]>,
+    current_attr: DrawLineAttributeDecoder,
+}
+
+impl DrawCallDecoder for DrawLineDecoder {
+    type Output = DrawLine;
+
+    fn advance<T: Copy>(mut self, value: T) -> Result<Self, Self::Output> {
+        let value32 = value.io_into_u32();
+        if self.header.poly() {
+            if value32 & 0xf000f000 == 0x50005000 {
+                return Err(DrawLine {
+                    header: self.header,
+                    attrs:  self.attrs,
+                });
+            }
+        }
+        match self.current_attr.advance(value) {
+            Ok(decoder) => {
+                self.current_attr = decoder;
+                Ok(self)
+            }
+            Err(attribute) => match (self.header.poly(), self.attrs.len()) {
+                (false, 0) => {
+                    self.attrs.push(attribute);
+                    self.current_attr = DrawLineAttributeDecoder::from_header(self.header);
+                    Ok(self)
+                }
+                (false, 1) => {
+                    self.attrs.push(attribute);
+                    Err(DrawLine {
+                        header: self.header,
+                        attrs:  self.attrs,
+                    })
+                }
+                (false, _) => unreachable!(),
+                (true, _) => {
+                    self.attrs.push(attribute);
+                    self.current_attr = DrawLineAttributeDecoder::from_header(self.header);
+                    Ok(self)
+                }
+            },
+        }
+    }
+}
+
+impl DrawLineDecoder {
+    pub const fn new(header: u32) -> Self {
+        let header = DrawLineHeader::new_with_raw_value(header);
+        Self {
+            header,
+            attrs: SmallVec::new_const(),
+            current_attr: DrawLineAttributeDecoder::from_header(header),
         }
     }
 }

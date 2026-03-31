@@ -220,13 +220,6 @@ pub trait Dma: Bus + IO + Fastmem + Interrupts {
 
     fn dma_irq_raise_complete(&mut self, idx: usize) {
         let dicr = &mut self.dma_mut().dicr;
-        tracing::trace!(
-            "dma{} irq, mask: {}, master-on: {}, old master_irq: {}",
-            idx,
-            dicr.irq_mask(idx),
-            dicr.master_on(),
-            dicr.master_irq()
-        );
         if dicr.irq_mask(idx) && dicr.master_on() {
             dicr.set_irq_flag(idx, true);
         }
@@ -237,11 +230,6 @@ pub trait Dma: Bus + IO + Fastmem + Interrupts {
         }
         let dicr = &mut self.dma_mut().dicr;
         dicr.set_master_irq(new_master_irq);
-        tracing::trace!(
-            "dma irq @ {}: dma_irq_flags: {:b}",
-            idx,
-            dicr.combined_irq_flags()
-        );
     }
 }
 

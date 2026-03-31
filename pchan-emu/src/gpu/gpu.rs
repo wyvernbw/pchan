@@ -16,6 +16,7 @@ use crate::Emu;
 use crate::gpu::draw_call::DrawCall;
 use crate::gpu::draw_call::DrawCallDecoder;
 use crate::gpu::draw_call::DrawCallKind;
+use crate::gpu::draw_call::DrawLineDecoder;
 use crate::gpu::draw_call::DrawOptsRegister;
 use crate::gpu::draw_call::DrawPolygonDecoder;
 use crate::gpu::draw_call::DrawPolygonHeader;
@@ -250,7 +251,10 @@ pub trait Gpu: Bus + Interrupts {
                 Gp0::DrawPolygonDecode(DrawPolygonDecoder::new(cmd.raw_value()))
             }
             // Draw line
-            0x40..=0x5f => todo!("gp0 render line command"),
+            0x40..=0x5f => {
+                self.gpu_mut().gpustat.set_ready_recv_cmd(false);
+                Gp0::DrawLineDecode(DrawLineDecoder::new(cmd.raw_value()))
+            }
             // Draw Rect
             0x60..=0x7f => {
                 self.gpu_mut().gpustat.set_ready_recv_cmd(false);
@@ -329,7 +333,20 @@ pub trait Gpu: Bus + Interrupts {
                         Err(draw_call) => {
                             tracing::info!(?draw_call, "decoded");
                             self.gpu_mut().gpustat.set_ready_recv_cmd(true);
-                            self.issue_draw_call(DrawCallKind::DrawPolygon(draw_call));
+                            self.issue_draw_call(DrawCallKind::Polygon(draw_call));
+                            Gp0::WaitingForCmd
+                        }
+                    }
+                }
+                Gp0::DrawLineDecode(decoder) => {
+                    let decoder = std::mem::take(decoder);
+                    let decoder = decoder.advance(value);
+                    match decoder {
+                        Ok(decoder) => Gp0::DrawLineDecode(decoder),
+                        Err(draw_call) => {
+                            tracing::info!(?draw_call, "decoded");
+                            self.gpu_mut().gpustat.set_ready_recv_cmd(true);
+                            self.issue_draw_call(DrawCallKind::Line(draw_call));
                             Gp0::WaitingForCmd
                         }
                     }
@@ -485,6 +502,7 @@ pub enum Gp0 {
     CpRectCpuToVram(Gp0CpRect),
     CpRectVramToCpu(Gp0CpRect),
     DrawPolygonDecode(DrawPolygonDecoder),
+    DrawLineDecode(DrawLineDecoder),
     DrawRectDecode(DrawRectDecoder),
 }
 
