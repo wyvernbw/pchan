@@ -76,18 +76,16 @@ pub trait IO: Bus {
     #[pchan_macros::instrument(ret, skip_all)]
     fn try_write32_unaligned_l(&mut self, address: u32, value: u32) -> IOResult<()> {
         let spill = address % size_of::<u32>() as u32;
-        let spill_n = size_of::<u32>() as u32 - spill;
         if spill == 0 {
             return self.try_write(address, value);
         }
         let aligned_address = address - spill;
         let read_value = self.try_read::<u32>(aligned_address)?;
 
-        // let spill = spill << 3; // bytes to bits
-        let spill_n = spill_n << 3;
-        let mask = 0xffff_ffff >> spill_n;
+        let spill = spill << 3; // bytes to bits
+        let mask = 0xffff_ffff >> spill;
         let read_value = read_value & (!mask);
-        let value = value >> spill_n;
+        let value = value >> spill;
         let value = value | read_value;
         tracing::trace!(value = %hex(value), mask = %hex(mask));
 
@@ -96,6 +94,7 @@ pub trait IO: Bus {
     #[pchan_macros::instrument(ret, skip_all)]
     fn try_write32_unaligned_r(&mut self, address: u32, value: u32) -> IOResult<()> {
         let spill = address % size_of::<u32>() as u32;
+        let spill_n = size_of::<u32>() as u32 - spill;
         if spill == 0 {
             return self.try_write(address, value);
         }
@@ -103,13 +102,14 @@ pub trait IO: Bus {
         let read_value = self.try_read::<u32>(aligned_address + 0x4)?;
 
         let spill = spill << 3; // bytes to bits
-        let mask = 0xffff_ffff << spill;
-        let read_value = read_value & (!mask);
-        let value = value << spill;
+        let spill_n = spill_n << 3;
+        let mask = 0xffff_ffff >> spill;
+        let read_value = read_value & mask;
+        let value = value << spill_n;
         let value = value | read_value;
 
-        tracing::trace!(value = %hex(value), mask = %hex(mask));
-        self.try_write(aligned_address, value)
+        // tracing::trace!(value = %hex(value), mask = %hex(mask));
+        self.try_write(aligned_address + 0x4, value)
     }
     fn write32_unaligned_l(&mut self, address: u32, value: u32);
     fn write32_unaligned_r(&mut self, address: u32, value: u32);

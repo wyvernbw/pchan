@@ -709,15 +709,17 @@ impl DynarecOp for Swr {
 
 #[cfg(test)]
 #[rstest]
-#[case(swl, 0xcafe_babe, 0x101, 0x0, 0x1111_11ca, 0x0)]
-#[case(swl, 0xcafe_babe, 0x102, 0x0, 0x1111_cafe, 0x0)]
-#[case(swl, 0xcafe_babe, 0x103, 0x0, 0x11ca_feba, 0x0)]
-#[case(swl, 0xcafe_babe, 0x104, 0x0, 0x1111_1111, -0x4)] // 0x100 untouched
-#[case(swl, 0xcafe_babe, 0x104, 0x0, 0xcafe_babe, 0x0)] // 0x104 gets full word
-#[case(swr, 0xcafe_babe, 0x101, 0x0, 0xfeba_be11, 0x0)]
-#[case(swr, 0xcafe_babe, 0x102, 0x0, 0xbabe_1111, 0x0)]
-#[case(swr, 0xcafe_babe, 0x103, 0x0, 0xbe11_1111, 0x0)]
-#[case(swr, 0xcafe_babe, 0x104, 0x0, 0xcafe_babe, 0x0)] // aligned, full word
+// swl
+#[case::swl(swl, 0xcafe_babe, 0x101, 0x0, 0x11ca_feba, 0x0)]
+#[case::swl(swl, 0xcafe_babe, 0x102, 0x0, 0x1111_cafe, 0x0)]
+#[case::swl(swl, 0xcafe_babe, 0x103, 0x0, 0x1111_11ca, 0x0)]
+#[case::swl(swl, 0xcafe_babe, 0x104, 0x0, 0x1111_1111, -0x4)] // 0x100 untouched
+#[case::swl(swl, 0xcafe_babe, 0x104, 0x0, 0xcafe_babe, 0x0)] // 0x104 gets full word
+// swr
+#[case::swr(swr, 0xcafe_babe, 0x101, 0x0, 0xbe11_1111, 0x4)]
+#[case::swr(swr, 0xcafe_babe, 0x102, 0x0, 0xbabe_1111, 0x4)]
+#[case::swr(swr, 0xcafe_babe, 0x103, 0x0, 0xfeba_be11, 0x4)]
+#[case::swr(swr, 0xcafe_babe, 0x104, 0x0, 0xcafe_babe, 0x0)] // aligned, full word
 fn test_unaligned_stores(
     #[case] instr: impl Fn(u8, u8, i16) -> OpCode,
     #[case] value_to_write: u32,
@@ -750,10 +752,9 @@ fn test_unaligned_stores(
 
     assert_eq_hex!(emu.cpu.d_clock, 3);
     assert_eq_hex!(emu.cpu.pc, 0x8);
-    assert_eq_hex!(
-        emu.read::<u32>((at - at % 4).wrapping_add_signed(offset)),
-        expected
-    );
+    let addr = (at - at % 4).wrapping_add_signed(offset);
+    tracing::info!("checking at {}", hex(addr));
+    assert_eq_hex!(emu.read::<u32>(addr), expected);
 
     Ok(())
 }
@@ -1210,6 +1211,43 @@ fn test_combined_unaligned_loads() -> color_eyre::Result<()> {
     assert_eq_hex!(emu.cpu.d_clock, 5);
     assert_eq_hex!(emu.cpu.pc, 0x10);
     assert_eq_hex!(emu.cpu.gpr[8], 0xbabe_dead);
+
+    Ok(())
+}
+
+#[cfg(test)]
+#[rstest]
+fn test_combined_unaligned_store_loads() -> color_eyre::Result<()> {
+    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use assert_hex::assert_eq_hex;
+    use pchan_utils::setup_tracing;
+
+    setup_tracing();
+    let mut emu = Emu::default();
+    emu.cpu.gpr[9] = 0x102;
+    emu.cpu.gpr[8] = 0x1111_1111;
+    emu.cpu.gpr[10] = 0xcafe_babe;
+    emu.write_many(
+        0x0,
+        &program([
+            swl(10, 9, 0x0),
+            swr(10, 9, 0x0),
+            nop(),
+            lwl(8, 9, 0x0),
+            lwr(8, 9, 0x0),
+            nop(),
+            OpCode::HALT,
+        ]),
+    );
+    PipelineV2::new(&emu).run_once(&mut emu)?;
+
+    tracing::info!("finished running");
+    tracing::info!(?emu.cpu);
+
+    tracing::info!(read0x4 = %hex(emu.read::<u32>(0x100 - 4)));
+    tracing::info!(read0x0 = %hex(emu.read::<u32>(0x100)));
+    tracing::info!(read0x4 = %hex(emu.read::<u32>(0x104)));
+    assert_eq_hex!(emu.cpu.gpr[8], 0xcafe_babe);
 
     Ok(())
 }
