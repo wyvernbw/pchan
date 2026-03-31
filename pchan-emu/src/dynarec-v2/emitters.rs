@@ -161,6 +161,7 @@ pub enum DecodedOp {
     HaltBlock(HaltBlock),
     Sb(Sb),
     Sh(Sh),
+    Swl(Swl),
     Sw(Sw),
     Addiu(Addiu),
     Slti(Slti),
@@ -299,7 +300,7 @@ impl DecodedOp {
                 (0x27, _, _, _) => Self::illegal(),
                 (0x28, _, _, _) => Self::Sb(Sb::new(rt, rs, fields.imm16())),
                 (0x29, _, _, _) => Self::Sh(Sh::new(rt, rs, fields.imm16())),
-                (0x2A, _, _, _) => todo!("swl"),
+                (0x2A, _, _, _) => Self::Swl(Swl::new(rt, rs, fields.imm16())),
                 (0x2B, _, _, _) => Self::Sw(Sw::new(rt, rs, fields.imm16())),
                 (0x2C..=0x2D, _, _, _) => Self::illegal(),
                 (0x2E, _, _, _) => todo!("swr"),
@@ -667,6 +668,67 @@ fn test_weird_store() {
 
     let result = emu.read::<u32>(0x801ffee4);
     assert_eq!(result, 0xbfc06ed4);
+}
+
+impl DynarecOp for Swl {
+    #[allow(clippy::useless_conversion)]
+    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+        emit_store(ctx, self.rt, self.rs, self.imm16, move |ctx| {
+            dynasm!(
+                ctx.dynarec.asm
+                ; .arch aarch64
+                ; ldr x3, ->ulwrite32
+                ; blr x3
+            );
+        })
+    }
+
+    fn cycles(&self) -> u16 {
+        2
+    }
+}
+
+#[cfg(test)]
+#[rstest]
+#[case(swl, 0xcafe_babe, 0x101, 0x0, 0x0000_00ca, 0x0)]
+#[case(swl, 0xcafe_babe, 0x102, 0x0, 0x0000_cafe, 0x0)]
+#[case(swl, 0xcafe_babe, 0x103, 0x0, 0x00ca_feba, 0x0)]
+#[case(swl, 0xcafe_babe, 0x104, 0x0, 0x0000_0000, -0x4)] // read would go to 0x104, so we need to offset it back
+fn test_unaligned_stores(
+    #[case] instr: impl Fn(u8, u8, i16) -> OpCode,
+    #[case] value_to_write: u32,
+    #[case] at: u32,
+    #[case] imm16: i16,
+    #[case] expected: u32,
+    #[case] offset: i32,
+) -> color_eyre::Result<()> {
+    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use assert_hex::assert_eq_hex;
+    use pchan_utils::setup_tracing;
+
+    setup_tracing();
+    let mut emu = Emu::default();
+    emu.cpu.gpr[8] = value_to_write;
+    emu.cpu.gpr[9] = at;
+    emu.write_many(0x0, &program([instr(8, 9, imm16), OpCode::HALT]));
+
+    PipelineV2::new(&emu).run_once(&mut emu)?;
+
+    tracing::info!("finished running");
+    tracing::info!(?emu.cpu);
+    tracing::info!(read = %hex(emu.read::<u32>(at - at % 4 - 0x4)));
+    tracing::info!(read = %hex(emu.read::<u32>(at - at % 4)));
+    tracing::info!(read = %hex(emu.read::<u32>(at - at % 4 + 0x4)));
+    tracing::info!(read = %hex(emu.read::<u32>(at - at % 4 + 0x8)));
+
+    assert_eq_hex!(emu.cpu.d_clock, 3);
+    assert_eq_hex!(emu.cpu.pc, 0x8);
+    assert_eq_hex!(
+        emu.read::<u32>((at - at % 4).wrapping_add_signed(offset)),
+        expected
+    );
+
+    Ok(())
 }
 
 #[cfg(target_arch = "aarch64")]

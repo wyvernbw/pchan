@@ -428,6 +428,24 @@ pub struct Sh {
 }
 
 #[derive(Encode, Debug, Clone, Copy, Hash, PartialEq, Eq, d::Display)]
+#[encode(opcode = 0x2a)]
+#[display("swl ${}, ${}, {}", reg_str(self.rt), reg_str(self.rs), hex(self.imm16))]
+pub struct Swl {
+    pub rt:    u8,
+    pub rs:    u8,
+    pub imm16: i16,
+}
+
+#[derive(Encode, Debug, Clone, Copy, Hash, PartialEq, Eq, d::Display)]
+#[encode(opcode = 0x2e)]
+#[display("swr ${}, ${}, {}", reg_str(self.rt), reg_str(self.rs), hex(self.imm16))]
+pub struct Swr {
+    pub rt:    u8,
+    pub rs:    u8,
+    pub imm16: i16,
+}
+
+#[derive(Encode, Debug, Clone, Copy, Hash, PartialEq, Eq, d::Display)]
 #[encode(opcode = 0x00, funct = 0x00, order = "rt_rs")]
 #[display("sll ${}, ${}, {}", reg_str(self.rd), reg_str(self.rt), hex(self.shamt))]
 pub struct Sll {

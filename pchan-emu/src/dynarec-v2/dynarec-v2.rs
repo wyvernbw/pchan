@@ -186,6 +186,10 @@ impl Dynarec {
                 ; .u64 Emu::write16v2 as *const () as _
                 ; -> write8v2:
                 ; .u64 Emu::write8v2 as *const () as _
+                ; -> ulwrite32:
+                ; .u64 Emu::ulwrite32 as *const () as _
+                ; -> urwrite32:
+                ; .u64 Emu::urwrite32 as *const () as _
                 ; -> readi8v2:
                 ; .u64 Emu::readi8v2 as *const () as _
                 ; -> readu8v2:

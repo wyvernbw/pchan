@@ -73,6 +73,39 @@ pub trait IO: Bus {
         let value = Extend::<E>::ext(value);
         self.write(address, value);
     }
+    #[pchan_macros::instrument(ret, skip_all)]
+    fn try_write32_unaligned_l(&mut self, address: u32, value: u32) -> IOResult<()> {
+        let spill = address % size_of::<u32>() as u32;
+        let spill_n = size_of::<u32>() as u32 - spill;
+        if spill == 0 {
+            return self.try_write(address, value);
+        }
+        let aligned_address = address - spill;
+        let read_value = self.try_read::<u32>(aligned_address)?;
+
+        let spill = spill << 3; // bytes to bits
+        let spill_n = spill_n << 3;
+        let mask = 0xffff_ffff << spill;
+        let read_value = read_value & (!mask);
+        let value = value >> spill_n;
+        let value = value | read_value;
+
+        tracing::info!(value = %hex(value), mask = %hex(mask));
+        self.try_write(aligned_address, value)
+    }
+    #[pchan_macros::instrument(ret, skip_all)]
+    fn try_write32_unaligned_r(&mut self, address: u32, value: u32) -> IOResult<()> {
+        let spill = address % size_of::<u32>() as u32;
+        let aligned_address = address - spill + 0x4;
+        let read_value = self.try_read::<u32>(aligned_address)?;
+        let mask = 0xffff_ffff >> spill;
+        let read_value = read_value & mask;
+        let value = value & !mask;
+        let value = value | read_value;
+        self.try_write(aligned_address, value)
+    }
+    fn write32_unaligned_l(&mut self, address: u32, value: u32);
+    fn write32_unaligned_r(&mut self, address: u32, value: u32);
 }
 
 pub type IOResult<T> = Result<T, UnhandledIO>;
@@ -196,6 +229,20 @@ impl IO for Emu {
             .or_else(|_| GenericIOFallback::write::<T>(self, address, value))
             .or_else(|_| CacheControl::write::<T>(self, address, value))
     }
+
+    #[pchan_macros::instrument(ret, skip_all)]
+    fn write32_unaligned_l(&mut self, address: u32, value: u32) {
+        if let Err(err) = self.try_write32_unaligned_l(address, value) {
+            self.panic(&format!("{}", err));
+        }
+    }
+
+    #[pchan_macros::instrument(ret, skip_all)]
+    fn write32_unaligned_r(&mut self, address: u32, value: u32) {
+        if let Err(err) = self.try_write32_unaligned_r(address, value) {
+            self.panic(&format!("{}", err));
+        }
+    }
 }
 
 pub trait CastIOInto: Copy {
@@ -218,6 +265,10 @@ pub trait CastIOInto: Copy {
             );
         }
         u32::from_ne_bytes(buf)
+    }
+
+    fn io_as(&self) -> UInt<u32, { size_of::<Self>() }> {
+        self.io_into_u32().into()
     }
 }
 

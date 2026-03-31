@@ -4,6 +4,21 @@ use crate::memory::ext;
 impl Emu {
     /// # Safety
     #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn ulwrite32(self: *mut Emu, address: u32, value: u32) {
+        unsafe {
+            IO::write32_unaligned_l(&mut *self, address, value as _);
+        }
+    }
+    /// # Safety
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn urwrite32(self: *mut Emu, address: u32, value: u32) {
+        unsafe {
+            IO::write32_unaligned_r(&mut *self, address, value as _);
+        }
+    }
+
+    /// # Safety
+    #[unsafe(no_mangle)]
     pub unsafe extern "C" fn write8v2(self: *mut Emu, address: u32, value: i32) {
         unsafe {
             IO::write::<i8>(&mut *self, address, value as _);
