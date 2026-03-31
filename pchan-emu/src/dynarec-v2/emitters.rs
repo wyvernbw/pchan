@@ -163,6 +163,7 @@ pub enum DecodedOp {
     Sh(Sh),
     Swl(Swl),
     Sw(Sw),
+    Swr(Swr),
     Addiu(Addiu),
     Slti(Slti),
     Sltiu(Sltiu),
@@ -303,7 +304,7 @@ impl DecodedOp {
                 (0x2A, _, _, _) => Self::Swl(Swl::new(rt, rs, fields.imm16())),
                 (0x2B, _, _, _) => Self::Sw(Sw::new(rt, rs, fields.imm16())),
                 (0x2C..=0x2D, _, _, _) => Self::illegal(),
-                (0x2E, _, _, _) => todo!("swr"),
+                (0x2E, _, _, _) => Self::Swr(Swr::new(rt, rs, fields.imm16())),
                 (0x2F, _, _, _) => Self::illegal(),
                 (0x30..=0x33, _, _, _) => todo!("lwcn"),
                 (0x34..=0x37, _, _, _) => Self::illegal(),
@@ -688,12 +689,35 @@ impl DynarecOp for Swl {
     }
 }
 
+impl DynarecOp for Swr {
+    #[allow(clippy::useless_conversion)]
+    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+        emit_store(ctx, self.rt, self.rs, self.imm16, move |ctx| {
+            dynasm!(
+                ctx.dynarec.asm
+                ; .arch aarch64
+                ; ldr x3, ->urwrite32
+                ; blr x3
+            );
+        })
+    }
+
+    fn cycles(&self) -> u16 {
+        2
+    }
+}
+
 #[cfg(test)]
 #[rstest]
-#[case(swl, 0xcafe_babe, 0x101, 0x0, 0x0000_00ca, 0x0)]
-#[case(swl, 0xcafe_babe, 0x102, 0x0, 0x0000_cafe, 0x0)]
-#[case(swl, 0xcafe_babe, 0x103, 0x0, 0x00ca_feba, 0x0)]
-#[case(swl, 0xcafe_babe, 0x104, 0x0, 0x0000_0000, -0x4)] // read would go to 0x104, so we need to offset it back
+#[case(swl, 0xcafe_babe, 0x101, 0x0, 0x1111_11ca, 0x0)]
+#[case(swl, 0xcafe_babe, 0x102, 0x0, 0x1111_cafe, 0x0)]
+#[case(swl, 0xcafe_babe, 0x103, 0x0, 0x11ca_feba, 0x0)]
+#[case(swl, 0xcafe_babe, 0x104, 0x0, 0x1111_1111, -0x4)] // 0x100 untouched
+#[case(swl, 0xcafe_babe, 0x104, 0x0, 0xcafe_babe, 0x0)] // 0x104 gets full word
+#[case(swr, 0xcafe_babe, 0x101, 0x0, 0xfeba_be11, 0x0)]
+#[case(swr, 0xcafe_babe, 0x102, 0x0, 0xbabe_1111, 0x0)]
+#[case(swr, 0xcafe_babe, 0x103, 0x0, 0xbe11_1111, 0x0)]
+#[case(swr, 0xcafe_babe, 0x104, 0x0, 0xcafe_babe, 0x0)] // aligned, full word
 fn test_unaligned_stores(
     #[case] instr: impl Fn(u8, u8, i16) -> OpCode,
     #[case] value_to_write: u32,
@@ -710,6 +734,9 @@ fn test_unaligned_stores(
     let mut emu = Emu::default();
     emu.cpu.gpr[8] = value_to_write;
     emu.cpu.gpr[9] = at;
+    emu.write(at, 0x1111_1111);
+    emu.write(at + 0x4, 0x1111_1111);
+    emu.write(at - 0x4, 0x1111_1111);
     emu.write_many(0x0, &program([instr(8, 9, imm16), OpCode::HALT]));
 
     PipelineV2::new(&emu).run_once(&mut emu)?;
