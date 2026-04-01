@@ -223,6 +223,7 @@ impl EmuTask {
                 self.state = EmuTaskState::Done;
             }
             EmuRequest::Run => {
+                self = self.handle_req(EmuRequest::Step)?; // skip past potential breakpoint
                 self.state = EmuTaskState::Running;
                 self.handle
                     .res_chan

@@ -31,6 +31,7 @@ impl Emu {
 
         self.run_dma_transfers();
         self.run_vblank();
+        self.run_irq_io();
         self.run_exceptions_io();
         #[cfg(feature = "amidog-tests")]
         {

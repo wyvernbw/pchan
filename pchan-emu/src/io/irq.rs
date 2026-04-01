@@ -71,12 +71,6 @@ pub trait Interrupts: Bus + IO + Exceptions {
                 new_stat.irq_flags_combined()
             );
         }
-
-        if new_stat.irq_flags_combined().as_u32() & mask.irq_flags_combined().as_u32() != 0 {
-            self.raise_exception(Exception::Interrupt);
-        } else {
-            self.clear_exception();
-        }
     }
     #[pchan_instrument_read("irq:r")]
     fn read<T: Copy>(&self, address: u32) -> IOResult<T> {
@@ -105,6 +99,17 @@ pub trait Interrupts: Bus + IO + Exceptions {
                 Ok(())
             }
             _ => Err(UnhandledIO(address)),
+        }
+    }
+
+    fn run_irq_io(&mut self) {
+        if self.irq().i_stat.irq_flags_combined().as_u32()
+            & self.irq().i_mask.irq_flags_combined().as_u32()
+            != 0
+        {
+            self.raise_exception(Exception::Interrupt);
+        } else {
+            self.clear_exception();
         }
     }
 }

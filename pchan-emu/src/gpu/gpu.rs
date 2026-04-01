@@ -184,6 +184,7 @@ pub trait Gpu: Bus + Interrupts {
                 Gp0::WaitingForCmd
             }
             0xa0 => {
+                tracing::info!("start cpu to vram copy");
                 self.gpu_mut().gpustat.set_ready_recv_cmd(false);
                 Gp0::CpRectCpuToVram(Gp0CpRect::RecvDest)
             }
@@ -273,14 +274,20 @@ pub trait Gpu: Bus + Interrupts {
                 Gp0::WaitingForCmd => self.gp0reduce(cmd),
                 Gp0::CpRectCpuToVram(Gp0CpRect::RecvDest) => {
                     let dest: VramCoord = unsafe { transmute(value) };
+                    tracing::info!("cpu to vram copy destination: {dest:?}");
                     Gp0::CpRectCpuToVram(Gp0CpRect::RecvSize { dest })
                 }
                 Gp0::CpRectCpuToVram(Gp0CpRect::RecvSize { dest }) => {
                     let size: VramCoord = unsafe { transmute(value) };
+                    tracing::info!("cpu to vram copy size: {size:?}");
                     Gp0::CpRectCpuToVram(Gp0CpRect::RecvData(VramCursor::new(*dest, *dest + size)))
                 }
                 Gp0::CpRectCpuToVram(Gp0CpRect::RecvData(cursor)) => {
                     let mut cursor = *cursor;
+                    let progress = cursor.curr.x - cursor.start.x
+                        + (cursor.curr.y - cursor.start.y) * (cursor.border.x - cursor.start.x);
+                    let done =
+                        (cursor.border.x - cursor.start.x) * (cursor.border.y - cursor.start.y);
                     for (at, halfword) in cursor.iter().take(2).zip(halfwords(value)) {
                         self.gpu_mut().vram_write(at, halfword);
                     }
@@ -597,6 +604,7 @@ impl VramCursor {
         if self.done() {
             return None;
         }
+        self.curr = self.curr.wrap();
         let curr = self.curr;
 
         self.curr.x += 1;
@@ -609,7 +617,7 @@ impl VramCursor {
     }
 
     fn done(&self) -> bool {
-        self.curr.y == self.border.y
+        self.curr.y >= self.border.y
     }
 
     fn iter(&mut self) -> impl Iterator<Item = VramCoord> {
