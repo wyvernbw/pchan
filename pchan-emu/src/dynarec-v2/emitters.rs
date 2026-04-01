@@ -3415,3 +3415,33 @@ pub fn test_mthi_mfhi() -> color_eyre::Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+#[rstest]
+fn test_branch_and_store() -> color_eyre::Result<()> {
+    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use assert_hex::*;
+    use pchan_utils::setup_tracing;
+
+    setup_tracing();
+    let mut emu = Emu::default();
+
+    emu.write_many(
+        0x0,
+        &program([
+            addiu(7, 7, 0x200),
+            addiu(8, 8, 0x12),
+            beq(9, 0, 0x8),
+            sw(8, 7, 0),
+            nop(),
+            nop(),
+            OpCode::HALT,
+        ]),
+    );
+
+    PipelineV2::new(&emu).run_once(&mut emu)?;
+
+    assert_eq_hex!(emu.read::<u32>(0x200), 0x12);
+
+    Ok(())
+}

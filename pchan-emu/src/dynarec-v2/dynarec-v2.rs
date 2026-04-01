@@ -1028,10 +1028,7 @@ fn fetch_and_compile_single_threaded(
     #[cfg(feature = "fetch-channel")]
     let mut ops: Vec<DecodedOp> = Vec::new();
 
-    loop {
-        let Some((opcode, op)) = state.pop_item() else {
-            break;
-        };
+    while let Some((opcode, op)) = state.pop_item() {
         state.pc = initial_pc + state.op_count as u32 * 0x4;
 
         state.cycles += op.cycles() as u32;
@@ -1065,7 +1062,6 @@ fn fetch_and_compile_single_threaded(
         }));
 
         if let Some(emitter) = delayed {
-            // tracing::info!(queue_count = dynarec.scheduler.queue.len());
             state.apply(emitter.emitter.call((EmitCtx {
                 dynarec: &mut dynarec,
                 cache:   &emu.dynarec_cache,
@@ -1096,6 +1092,7 @@ fn fetch_and_compile_single_threaded(
     // FIXME: rescheduling needs top happen
     // scheduler must pass remaining events to the next block somehow
     while let Some(emitter) = dynarec.scheduler.queue.pop() {
+        tracing::trace!("draining {:?}", emitter);
         state.apply(emitter.emitter.call((EmitCtx {
             dynarec: &mut dynarec,
             cache:   &emu.dynarec_cache,
