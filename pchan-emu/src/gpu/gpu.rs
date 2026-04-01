@@ -267,6 +267,7 @@ pub trait Gpu: Bus + Interrupts {
     #[cfg_attr(debug_assertions, instrument(skip_all))]
     fn flush_gp0_cmd_queue(&mut self) {
         while let Some(value) = self.gpu_mut().gp0cmd_queue.pop_front() {
+            tracing::info!(gp0cmd = %hex(value));
             let cmd = GpuCmd::new_with_raw_value(value);
             let gp0 = match &mut self.gpu_mut().gp0 {
                 Gp0::WaitingForCmd => self.gp0reduce(cmd),
@@ -377,6 +378,7 @@ pub trait Gpu: Bus + Interrupts {
                 0x04 => {
                     let dir = DmaDirection::new_with_raw_value(value.fields().as_());
                     self.gpu_mut().gpustat.set_dma_direction(dir);
+                    self.gpu_mut().compute_dma_request();
                 }
                 0x05 => {
                     // TODO
@@ -457,6 +459,7 @@ pub trait Gpu: Bus + Interrupts {
     fn run_gpu_commands(&mut self) {
         self.flush_gp0_cmd_queue();
         self.flush_gp1_cmd_queue();
+        self.gpu_mut().compute_dma_request();
 
         if let Ok(Some(vram)) = self.gpu().conn.vram_out_chan.1.try_recv() {
             tracing::info!("received gpu result (vram)");
@@ -489,6 +492,33 @@ impl GpuState {
         let coord = coord.wrap();
         let addr = coord.x as usize + coord.y as usize * kb(1);
         self.gp0read[idx] = self.vram[addr];
+    }
+
+    pub fn compute_dma_request(&mut self) {
+        let direction = self.gpustat.dma_direction();
+        match direction {
+            DmaDirection::Off => {
+                self.gpustat.set_dma_request(false);
+            }
+            DmaDirection::Unknown => {
+                let fifo_available = !self.gp0cmd_queue.is_full();
+                self.gpustat.set_dma_request(fifo_available);
+            }
+            DmaDirection::CpuToGp0 => {
+                self.gpustat
+                    .set_dma_request(self.gpustat.ready_recv_dma_block());
+            }
+            DmaDirection::CpuReadToCpu => {
+                self.gpustat.set_dma_request(self.gpustat.ready_send_vram());
+            }
+        }
+    }
+
+    pub fn flip_even_odd(&mut self, even_odd: Option<DrawEvenOdd>) {
+        if self.gpustat.v_interlace() {
+            let even_odd = even_odd.unwrap_or_else(|| self.gpustat.even_odd_in_vblank());
+            self.gpustat.set_even_odd_in_vblank(!even_odd);
+        }
     }
 }
 

@@ -21,7 +21,7 @@ pub trait VBlank: Interrupts + Gpu {
             self.flush_draw_calls();
             self.trigger_irq(Irq::Irq0Vblank);
 
-            self.gpu_mut().gpustat.set_even_odd_in_vblank(!even_odd);
+            self.gpu_mut().flip_even_odd(Some(even_odd));
         }
     }
 }

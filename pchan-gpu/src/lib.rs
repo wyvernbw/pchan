@@ -4,8 +4,10 @@ use std::mem::offset_of;
 
 use arbitrary_int::prelude::*;
 use color_eyre::eyre::bail;
-use glam::{U8Vec2, U8Vec3, U8Vec4, U16Vec2, u8vec2, u16vec2};
-use pchan_emu::gpu::draw_call::{DrawCall, DrawCallKind, DrawRect, DrawRectColor, RectSize, Uv};
+use glam::{I16Vec2, U8Vec2, U8Vec3, U8Vec4, U16Vec2, i16vec2, u8vec2, u16vec2};
+use pchan_emu::gpu::draw_call::{
+    DrawCall, DrawCallKind, DrawPolygon, DrawRect, DrawRectColor, RectSize, Shading, Uv,
+};
 use pchan_emu::gpu::{Conn, GpuStatReg, TextureColorMode, VramCoord, create_vram};
 use pchan_emu::{Bus, Emu};
 use wgpu::*;
@@ -206,7 +208,7 @@ impl Renderer {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
 struct Vertex {
-    pos: U16Vec2,
+    pos: I16Vec2,
 
     // these 2 must be packed together
     color: U8Vec3,
@@ -223,7 +225,7 @@ pub struct Scene {
 impl From<VramCoord> for Vertex {
     fn from(value: VramCoord) -> Self {
         Self {
-            pos: u16vec2(value.x, value.y),
+            pos: i16vec2(value.x as i16, value.y as i16),
             ..Default::default()
         }
     }
@@ -232,7 +234,7 @@ impl From<VramCoord> for Vertex {
 impl Vertex {
     const SIZE: u64 = size_of::<Self>() as u64;
 
-    pub fn with_pos(mut self, pos: U16Vec2) -> Self {
+    pub fn with_pos(mut self, pos: I16Vec2) -> Self {
         self.pos = pos;
         self
     }
@@ -271,13 +273,13 @@ impl Quad {
         Quad {
             top_left,
             top_right: top_left
-                .with_pos(top_left.pos + u16vec2(size.x, 0))
+                .with_pos(top_left.pos + i16vec2(size.x as i16, 0))
                 .with_uv(top_left.uv.uv + u8vec2(tex_size.x, 0)),
             bottom_left: top_left
-                .with_pos(top_left.pos + u16vec2(0, size.y))
+                .with_pos(top_left.pos + i16vec2(0, size.y as i16))
                 .with_uv(top_left.uv.uv + u8vec2(0, tex_size.y)),
             bottom_right: top_left
-                .with_pos(top_left.pos + u16vec2(size.x, size.y))
+                .with_pos(top_left.pos + i16vec2(size.x as i16, size.y as i16))
                 .with_uv(top_left.uv.uv + u8vec2(tex_size.x, tex_size.y)),
         }
     }
@@ -301,7 +303,9 @@ impl Scene {
                 DrawCallKind::Rect(draw_rect) => {
                     _ = scene.add_draw_rect_draw_call(draw_rect);
                 }
-                DrawCallKind::Polygon(draw_polygon) => {}
+                DrawCallKind::Polygon(draw_polygon) => {
+                    _ = scene.add_draw_polygon_draw_call(draw_polygon);
+                }
                 DrawCallKind::Line(draw_line) => {}
             }
         }
@@ -331,6 +335,81 @@ impl Scene {
         let vertices = quad.triangulate();
         self.vertex_buf.extend_from_slice(&vertices);
         Ok(())
+    }
+
+    #[pchan_macros::instrument(skip_all, err)]
+    fn add_draw_polygon_draw_call(&mut self, draw_polygon: &DrawPolygon) -> color_eyre::Result<()> {
+        let header = draw_polygon.header;
+        let color = header.color();
+        let shading = header.shading();
+        let vertices = match shading {
+            Shading::Flat => draw_polygon
+                .attrs
+                .iter()
+                .map(|attr| Vertex {
+                    pos: attr.vertex,
+                    color: U8Vec3::from_array(color.to_ne_bytes()),
+                    color_mode: TextureColorMode::C15BitDirect,
+                    uv: attr.uv.unwrap_or_default(),
+                })
+                .collect::<Vec<_>>(),
+            Shading::Gouraud => todo!(),
+        };
+
+        self.vertex_buf.extend(triangulate(&vertices));
+
+        Ok(())
+    }
+}
+
+struct TriangulateIter<'a> {
+    values: &'a [Vertex],
+    idx: usize,
+}
+
+impl<'a> Iterator for TriangulateIter<'a> {
+    type Item = &'a Vertex;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let idx = self.idx;
+        self.idx += 1;
+
+        if self.values.len() < 3 {
+            return None;
+        }
+
+        let triangle = idx / 3;
+        let corner = idx % 3;
+
+        let max_triangles = self.values.len() - 2;
+        if triangle >= max_triangles {
+            return None;
+        }
+
+        let vertex_idx = match corner {
+            0 => 0,
+            1 => triangle + 1,
+            2 => triangle + 2,
+            _ => unreachable!(),
+        };
+
+        Some(&self.values[vertex_idx])
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = if self.values.len() < 3 {
+            0
+        } else {
+            let total = (self.values.len() - 2) * 3;
+            total.saturating_sub(self.idx)
+        };
+        (remaining, Some(remaining))
+    }
+}
+
+fn triangulate(vertices: &[Vertex]) -> TriangulateIter<'_> {
+    TriangulateIter {
+        values: vertices,
+        idx: 0,
     }
 }
 

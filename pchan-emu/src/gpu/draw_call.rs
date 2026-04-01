@@ -218,15 +218,15 @@ impl DrawCallDecoder for DrawRectDecoder {
 
 #[derive(Debug, Clone)]
 pub struct DrawPolygon {
-    header: DrawPolygonHeader,
-    attrs:  heapless::Vec<DrawPolygonAttribute, 4>,
+    pub header: DrawPolygonHeader,
+    pub attrs:  heapless::Vec<DrawPolygonAttribute, 4>,
 }
 
 #[derive(Debug, Clone)]
 pub struct DrawPolygonAttribute {
-    color:  Option<u32>,
-    vertex: I16Vec2,
-    uv:     Option<Uv>,
+    pub color:  Option<u32>,
+    pub vertex: I16Vec2,
+    pub uv:     Option<Uv>,
 }
 
 /// ```md
@@ -493,7 +493,9 @@ pub struct DrawLineDecoder {
 impl DrawCallDecoder for DrawLineDecoder {
     type Output = DrawLine;
 
+    #[tracing::instrument(skip_all)]
     fn advance<T: Copy>(mut self, value: T) -> Result<Self, Self::Output> {
+        tracing::info!(attrs = self.attrs.len());
         let value32 = value.io_into_u32();
         if self.header.poly() {
             if value32 & 0xf000f000 == 0x50005000 {

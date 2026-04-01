@@ -116,7 +116,6 @@ pub trait Dma: Bus + IO + Fastmem + Interrupts {
                         };
                         let cycles = gp0cmds.cycles(self);
                         self.dma_schedule_in(cycles, DmaTransportKind::Gpu(gp0cmds));
-                        tracing::trace!(?cycles, "dma2 linked list transfer scheduled");
                     }
                 }
                 Ok(())
@@ -613,7 +612,6 @@ impl<T: IO + Dma + ?Sized> DmaTransport<T> for GP0Cmds {
                 TransferDir::DeviceToRam => todo!(),
                 TransferDir::RamToDevice => {
                     let mut addr = channel.madr.addr().as_u32();
-                    let mut channel = *channel;
                     let len = channel.bcr.s1_block_size();
                     for _ in 0..len {
                         let value = Fastmem::read(emu, addr).unwrap();
@@ -623,13 +621,17 @@ impl<T: IO + Dma + ?Sized> DmaTransport<T> for GP0Cmds {
                             .expect("gpu gp0 fifo is full");
                         addr += 0x4;
                     }
+                    let channel = Self::channel_mut(emu);
+                    channel.madr.set_addr(u24::new(addr));
                     match channel.bcr.s1_block_count() {
                         0 => {}
                         1.. => {
                             channel
                                 .bcr
                                 .set_s1_block_count(channel.bcr.s1_block_count() - 1);
-                            let gp0cmds = Self { init_chan: channel };
+                            let gp0cmds = Self {
+                                init_chan: *channel,
+                            };
                             emu.dma_schedule_in(
                                 gp0cmds.cycles(emu),
                                 DmaTransportKind::Gpu(gp0cmds),
