@@ -49,10 +49,25 @@ pub static CACHE_HITS: AtomicU64 = AtomicU64::new(0);
 pub static CACHE_MISSES: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(feature = "fetch-channel")]
-pub type FetchedOp = (u32, DecodedOp);
-#[cfg(feature = "fetch-channel")]
-pub static FETCH_CHANNEL: LazyLock<(Sender<FetchedOp>, Receiver<FetchedOp>)> =
-    LazyLock::new(|| flume::bounded(1024));
+pub mod fetch_map {
+    use std::{
+        collections::HashMap,
+        sync::{Arc, LazyLock, Mutex, RwLock},
+    };
+
+    use crate::dynarec_v2::emitters::DecodedOp;
+
+    pub static FETCH_MAP: LazyLock<RwLock<HashMap<u32, Arc<[DecodedOp]>>>> =
+        LazyLock::new(|| RwLock::new(HashMap::new()));
+
+    pub fn fetch_map_insert(pc: u32, ops: impl Into<Arc<[DecodedOp]>>) {
+        FETCH_MAP.write().unwrap().insert(pc, ops.into());
+    }
+
+    pub fn fetch_map_get(pc: u32) -> Option<Arc<[DecodedOp]>> {
+        FETCH_MAP.read().unwrap().get(&pc).cloned()
+    }
+}
 
 #[cfg(target_arch = "aarch64")]
 type Reloc = dynasmrt::aarch64::Aarch64Relocation;
@@ -1009,6 +1024,10 @@ fn fetch_and_compile_single_threaded(
 
     state.push_item(iter.next());
     state.push_item(iter.next());
+
+    #[cfg(feature = "fetch-channel")]
+    let mut ops: Vec<DecodedOp> = Vec::new();
+
     loop {
         let Some((opcode, op)) = state.pop_item() else {
             break;
@@ -1017,6 +1036,11 @@ fn fetch_and_compile_single_threaded(
 
         state.cycles += op.cycles() as u32;
         state.op_count += 1;
+
+        #[cfg(feature = "fetch-channel")]
+        {
+            ops.push(op);
+        }
 
         if let Some((_, next)) = state.back() {
             state.cycles -= next.cycles().min(op.hazard()) as u32;
@@ -1040,10 +1064,6 @@ fn fetch_and_compile_single_threaded(
             d_clock: state.cycles,
         }));
 
-        #[cfg(feature = "fetch-channel")]
-        {
-            let _ = FETCH_CHANNEL.0.send((state.pc, op));
-        }
         if let Some(emitter) = delayed {
             // tracing::info!(queue_count = dynarec.scheduler.queue.len());
             state.apply(emitter.emitter.call((EmitCtx {
@@ -1057,6 +1077,11 @@ fn fetch_and_compile_single_threaded(
         // tracing::info!(queue_count = dynarec.scheduler.queue.len());
 
         tracing::trace!(pc = %hex(state.pc), %op);
+    }
+
+    #[cfg(feature = "fetch-channel")]
+    {
+        fetch_map::fetch_map_insert(initial_pc, ops);
     }
 
     state.pc = initial_pc + (state.op_count as u32) * 0x4;

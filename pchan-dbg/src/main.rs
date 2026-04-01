@@ -35,7 +35,8 @@ use manatui_tea_ui::components::text_input::{TextInput, TextInputEvent, TextInpu
 use pchan_emu::Bus;
 use pchan_emu::cpu::{Cpu, reg_str};
 use pchan_emu::dynarec_v2::emitters::DecodedOp;
-use pchan_emu::dynarec_v2::{FETCH_CHANNEL, PipelineV2, PipelineV2Stage};
+use pchan_emu::dynarec_v2::fetch_map::fetch_map_get;
+use pchan_emu::dynarec_v2::{PipelineV2, PipelineV2Stage};
 use pchan_utils::{hex, init_tracing};
 use strum::EnumCount;
 use tokio::io::AsyncWriteExt;
@@ -78,7 +79,7 @@ struct Model {
     gpu_page:        GpuPage,
     current_page:    Page,
     emu_handle:      EmuTaskHandle,
-    emu_join_handle: JoinHandle<Result<()>>,
+    emu_join_handle: std::thread::JoinHandle<Result<()>>,
     emu_stage:       PipelineV2Stage,
     emu_task_state:  EmuTaskState,
     emu_cpu_freq_hz: f64,
@@ -213,17 +214,6 @@ impl Model {
                         }
                     }
                 }
-            })
-            .chain(async move |tx| {
-                loop {
-                    if let Ok((pc, instr)) = FETCH_CHANNEL.1.recv_async().await {
-                        let instructions = std::iter::once((pc, instr))
-                            .chain(FETCH_CHANNEL.1.try_iter())
-                            .map(|(_, op)| op)
-                            .collect();
-                        _ = tx.send_async(Msg::Fetched(pc, instructions)).await;
-                    }
-                }
             }),
         )
     }
@@ -251,7 +241,18 @@ impl Model {
             Msg::Quit => unreachable!(),
             Msg::Event(event) => self.handle_event(event).await,
             Msg::EmuRes(res) => match res {
-                EmuResponse::StageUpdate(stage) => self.set_emu_stage(stage).no_effect(),
+                EmuResponse::StageUpdate(stage) => {
+                    let pc = self.emu_handle.dbg_view.emu().cpu.pc;
+                    let decoded_ops = fetch_map_get(pc);
+                    let effect = match decoded_ops {
+                        Some(decoded_ops) => {
+                            tracing::info!("got {} decoded ops", decoded_ops.len());
+                            Effect::msg(Msg::Fetched(pc, decoded_ops))
+                        }
+                        None => Effect::none(),
+                    };
+                    (self.set_emu_stage(stage), effect)
+                }
                 EmuResponse::StateUpdate(state) => self.set_emu_task_state(state).no_effect(),
                 EmuResponse::Compiled(func) => (
                     self,

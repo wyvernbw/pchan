@@ -58,7 +58,7 @@ pub(crate) struct EmuTaskHandle {
 }
 
 impl EmuTask {
-    pub(crate) async fn spawn() -> Result<(EmuTaskHandle, JoinHandle<Result<()>>)> {
+    pub(crate) async fn spawn() -> Result<(EmuTaskHandle, std::thread::JoinHandle<Result<()>>)> {
         let req_chan = flume::unbounded();
         let res_chan = flume::unbounded();
         let bios_path = std::env::var("PCHAN_BIOS")
@@ -112,8 +112,8 @@ impl EmuTask {
     fn soft_reset(&mut self) {
         self.emu.cpu_mut().jump_to_bios();
     }
-    fn run(mut self) -> JoinHandle<Result<()>> {
-        tokio::task::spawn_blocking(move || -> Result<()> {
+    fn run(mut self) -> std::thread::JoinHandle<Result<()>> {
+        std::thread::spawn(move || -> Result<()> {
             self.hard_reset()?;
             let stage = self.pipe.stage();
             self.handle
@@ -123,16 +123,15 @@ impl EmuTask {
             loop {
                 match self.state {
                     EmuTaskState::Paused => {
+                        if let Ok(msg) = self.handle.req_chan.1.recv() {
+                            self = self.handle_req(msg)?;
+                            self.handle_pipe_effects()?;
+                        }
                         let stage = self.pipe.stage();
                         self.handle
                             .res_chan
                             .0
                             .send(EmuResponse::StageUpdate(stage))?;
-
-                        if let Ok(msg) = self.handle.req_chan.1.recv() {
-                            self = self.handle_req(msg)?;
-                            self.handle_pipe_effects()?;
-                        }
                     }
                     EmuTaskState::Running => {
                         if let Ok(msg) = self.handle.req_chan.1.try_recv() {
@@ -204,11 +203,7 @@ impl EmuTask {
                     self.state = EmuTaskState::Paused;
                 }
             }
-            PipelineV2::Called { .. } => {
-                // if self.state == EmuTaskState::Running {
-                //     self.try_send_res(EmuResponse::StateUpdate(EmuTaskState::Running));
-                // }
-            }
+            PipelineV2::Called { .. } => {}
             PipelineV2::Cached { dynarec, scheduler } => {}
         };
         Ok(())
@@ -240,6 +235,8 @@ impl EmuTask {
                     .res_chan
                     .0
                     .send(EmuResponse::StateUpdate(self.state))?;
+                let stage = self.pipe.stage();
+                _ = self.handle.res_chan.0.send(EmuResponse::StageUpdate(stage));
             }
             EmuRequest::AddBreakpoint(addr) => {
                 tracing::debug!("brk added {}", hex(addr));
