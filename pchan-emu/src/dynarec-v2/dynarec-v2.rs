@@ -25,6 +25,7 @@ use tracing::Instrument;
 use tracing::Level;
 use tracing::enabled;
 
+use crate::Bus;
 use crate::Emu;
 use crate::cpu::exceptions::Exceptions;
 use crate::cpu::ops::OpCode;
@@ -34,6 +35,7 @@ use crate::dynarec_v2::emitters::DynarecOp;
 use crate::dynarec_v2::emitters::EmitCtx;
 use crate::dynarec_v2::emitters::EmitSummary;
 use crate::dynarec_v2::regalloc::*;
+use crate::gpu::VideoEvents;
 use crate::io::IO;
 use crate::max_simd_elements;
 use crate::memory::kb;
@@ -1028,6 +1030,8 @@ fn fetch_and_compile_single_threaded(
     #[cfg(feature = "fetch-channel")]
     let mut ops: Vec<DecodedOp> = Vec::new();
 
+    let scheduled_event = emu.gpu().dp.pending_event().1;
+    let scheduled_event = emu.video_cycles_to_cpu_cycles_approx(scheduled_event);
     while let Some((opcode, op)) = state.pop_item() {
         state.pc = initial_pc + state.op_count as u32 * 0x4;
 
@@ -1050,6 +1054,11 @@ fn fetch_and_compile_single_threaded(
             state.hit_boundary = true;
         } else if !state.hit_boundary {
             state.push_item(iter.next());
+        }
+
+        if state.cycles as u64 >= scheduled_event {
+            state.clear_items();
+            state.hit_boundary = true;
         }
 
         let delayed = dynarec.pop_scheduled_at(state.pc);

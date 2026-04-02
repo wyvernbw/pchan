@@ -1054,9 +1054,17 @@ pub trait VideoEvents: Gpu + VBlank {
         };
         let cycles = cycles * factor;
         let cycles = cycles + self.gpu().dp.fract_01;
-        self.gpu_mut().dp.fract_01 = cycles / 451584;
+        self.gpu_mut().dp.fract_01 = cycles % 451584;
 
         cycles / 451584
+    }
+
+    fn video_cycles_to_cpu_cycles_approx(&self, cycles: u64) -> u64 {
+        let factor = match self.gpu().gpustat.video_mode() {
+            VideoMode::Ntsc => 715909,
+            VideoMode::Pal => 709379,
+        };
+        cycles * 451584 / factor
     }
 
     fn run_video_io(&mut self, by_cpu_cycles: u64) {
@@ -1069,7 +1077,8 @@ pub trait VideoEvents: Gpu + VBlank {
         let cycles_per_scanline = self.gpu().video_cycles_per_scanline();
         self.gpu_mut().dp.video_cycle_in_scanline += advance_by;
         if self.gpu_mut().dp.video_cycle_in_scanline < cycles_per_scanline {
-            // TODO: Timer 1 update
+            // DONE: Timer 1 update
+            self.timers_mut().trigger_hblank();
             return;
         }
         let scanlines_to_run = self.gpu().dp.video_cycle_in_scanline / cycles_per_scanline;
@@ -1080,7 +1089,8 @@ pub trait VideoEvents: Gpu + VBlank {
             let dp = &self.gpu().dp;
             let new_vblank = !dp.in_vblank() && dp.in_vblank_with(dp.current_scanline + y);
 
-            // TODO: timer 1 update
+            // DONE: timer 1 update
+            self.timers_mut().trigger_hblank();
 
             if new_vblank {
                 self.run_vblank();
@@ -1138,5 +1148,32 @@ impl Display {
 
     fn in_vblank_with(&self, line: u64) -> bool {
         (self.v_start()..self.v_end()).contains(&line)
+    }
+
+    pub fn cycles_hblank_pending(&self) -> u64 {
+        if self.video_cycle_in_scanline > self.h_end() {
+            Self::NTSC_TOTAL_VCYCLES_PER_LINE - self.video_cycle_in_scanline + self.h_end()
+        } else {
+            self.h_end() - self.video_cycle_in_scanline
+        }
+    }
+
+    pub fn cycles_vblank_pending(&self) -> u64 {
+        if self.current_scanline > self.v_end() {
+            Self::NTSC_TOTAL_LINES - self.current_scanline + self.v_end()
+        } else {
+            self.v_end() - self.current_scanline
+        }
+    }
+
+    pub fn pending_event(&self) -> (VideoEventKind, u64) {
+        let hblank = self.cycles_hblank_pending();
+        let vblank = self.cycles_vblank_pending();
+
+        if hblank < vblank {
+            (VideoEventKind::Hblank, hblank)
+        } else {
+            (VideoEventKind::Vblank, vblank)
+        }
     }
 }
