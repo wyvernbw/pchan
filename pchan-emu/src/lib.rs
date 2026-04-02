@@ -30,7 +30,7 @@ use crate::{
     cpu::Cpu,
     dynarec_v2::{DynarecBlock, DynarecCache},
     gpu::GpuState,
-    io::{dma::DmaState, irq::IrqState, tty::Tty},
+    io::{dma::DmaState, irq::IrqState, timers::TimerState, tty::Tty},
     memory::MemoryState,
 };
 
@@ -84,6 +84,7 @@ pub struct Emu {
     pub tty:           Tty,
     pub gpu:           GpuState,
     pub dma:           DmaState,
+    pub timers:        TimerState,
 }
 
 impl Emu {
@@ -115,6 +116,8 @@ pub trait Bus {
     fn bootloader(&mut self) -> &BootloaderState;
     fn gpu(&self) -> &GpuState;
     fn gpu_mut(&mut self) -> &mut GpuState;
+    fn timers(&self) -> &TimerState;
+    fn timers_mut(&mut self) -> &mut TimerState;
 }
 
 impl Bus for Emu {
@@ -149,6 +152,14 @@ impl Bus for Emu {
     #[inline(always)]
     fn gpu(&self) -> &GpuState {
         &self.gpu
+    }
+    #[inline(always)]
+    fn timers(&self) -> &TimerState {
+        &self.timers
+    }
+    #[inline(always)]
+    fn timers_mut(&mut self) -> &mut TimerState {
+        &mut self.timers
     }
 }
 

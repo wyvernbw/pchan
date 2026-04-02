@@ -36,8 +36,9 @@ pub struct IrqField {
 }
 
 #[bitenum(u8)]
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Default)]
 pub enum Irq {
+    #[default]
     Irq0Vblank = 0x0,
     Irq1Gpu    = 0x1,
     Irq3Dma    = 0x3,
