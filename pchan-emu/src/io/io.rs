@@ -8,7 +8,6 @@ use crate::gpu::{Gpu, VideoEvents};
 use crate::io::dma::Dma;
 use crate::io::irq::Interrupts;
 use crate::io::timers::Timers;
-use crate::io::vblank::VBlank;
 use crate::memory::{Extend, GUEST_MEM_MAP, MEM_MAP, ScratchpadMem};
 use crate::{Bus, Emu, io::cdrom::CDRom, memory::fastmem::Fastmem};
 
@@ -44,7 +43,6 @@ impl Emu {
             use crate::bootloader::AMIDOG_TESTS;
             self.run_sideloading(AMIDOG_TESTS).unwrap();
         }
-        // 0x80059d54
     }
 
     pub fn run_io_kernel_functions(&mut self) {

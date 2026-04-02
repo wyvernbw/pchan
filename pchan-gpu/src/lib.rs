@@ -1,6 +1,6 @@
 pub(crate) mod render_pass;
 
-use std::mem::offset_of;
+use std::mem::{offset_of, transmute};
 
 use arbitrary_int::prelude::*;
 use color_eyre::eyre::bail;
@@ -105,8 +105,9 @@ impl Renderer {
             primitive: PrimitiveState {
                 topology: PrimitiveTopology::TriangleList,
                 strip_index_format: None,
-                front_face: FrontFace::Ccw,
-                cull_mode: Some(Face::Back),
+                front_face: FrontFace::Cw,
+                // psx gpu does not perform backface/frontface culling
+                cull_mode: None,
                 unclipped_depth: false,
                 polygon_mode: PolygonMode::Fill,
                 conservative: false,
@@ -319,9 +320,14 @@ impl Scene {
     fn add_draw_rect_draw_call(&mut self, draw_rect: &DrawRect) -> color_eyre::Result<()> {
         let top_left: Vertex = draw_rect.vertex1.into();
         let rgb = draw_rect.color.rgb().to_ne_bytes();
+        let color_mode = match draw_rect.color.textured() {
+            // TODO: pick the correct color mode for textured polygons
+            true => TextureColorMode::C15BitDirect,
+            false => TextureColorMode::C24BitDirect,
+        };
         let top_left = top_left
             .with_color(U8Vec3::from_array(rgb))
-            .with_color_mode(TextureColorMode::C24BitDirect);
+            .with_color_mode(color_mode);
 
         let quad: Quad = match (draw_rect.color.size(), draw_rect.var_size) {
             (RectSize::VarSize, None) => bail!("malformed draw call: missing var size"),
@@ -344,18 +350,35 @@ impl Scene {
         let header = draw_polygon.header;
         let color = header.color();
         let shading = header.shading();
+        let color_mode = match header.textured() {
+            // TODO: pick the correct color mode for textured polygons
+            true => TextureColorMode::C15BitDirect,
+            false => TextureColorMode::C24BitDirect,
+        };
         let vertices = match shading {
-            // TODO: Goraud shading
-            Shading::Gouraud | Shading::Flat => draw_polygon
+            // DONE: Goraud shading
+            Shading::Flat => draw_polygon
                 .attrs
                 .iter()
                 .map(|attr| Vertex {
                     pos: attr.vertex,
                     color: U8Vec3::from_array(color.to_ne_bytes()),
-                    color_mode: TextureColorMode::C15BitDirect,
+                    color_mode,
                     uv: attr.uv.unwrap_or_default(),
                 })
                 .collect::<Vec<_>>(),
+            Shading::Gouraud => draw_polygon
+                .attrs
+                .iter()
+                .map(|attr| Vertex {
+                    pos: attr.vertex,
+                    color: attr
+                        .color
+                        .unwrap_or(U8Vec3::from_array(header.color().to_ne_bytes())),
+                    color_mode,
+                    uv: attr.uv.unwrap_or_default(),
+                })
+                .collect(),
         };
 
         self.vertex_buf.extend(triangulate(&vertices));
@@ -383,8 +406,7 @@ impl<'a> Iterator for TriangulateIter<'a> {
         let triangle = idx / 3;
         let corner = idx % 3;
 
-        let max_triangles = self.values.len() - 2;
-        if triangle >= max_triangles {
+        if triangle > self.values.len() / 3 - 1 {
             return None;
         }
 

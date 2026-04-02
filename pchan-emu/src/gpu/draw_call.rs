@@ -11,6 +11,7 @@ use bitbybit::bitfield;
 use bon::Builder;
 use glam::I16Vec2;
 use glam::U8Vec2;
+use glam::U8Vec3;
 use smallvec::SmallVec;
 use smallvec::smallvec;
 use tracing::Level;
@@ -224,7 +225,7 @@ pub struct DrawPolygon {
 
 #[derive(Debug, Clone)]
 pub struct DrawPolygonAttribute {
-    pub color:  Option<u32>,
+    pub color:  Option<U8Vec3>,
     pub vertex: I16Vec2,
     pub uv:     Option<Uv>,
 }
@@ -327,7 +328,7 @@ impl DrawCallDecoder for DrawPolygonAttributeDecoder {
                 Ok(Self::ColorTextured { color: value })
             }
             DrawPolygonAttributeDecoder::ColorUntextured { color } => Err(DrawPolygonAttribute {
-                color:  Some(color),
+                color:  Some(u8vec3_from_u32(color)),
                 vertex: vertex_value,
                 uv:     None,
             }),
@@ -342,13 +343,17 @@ impl DrawCallDecoder for DrawPolygonAttributeDecoder {
             }),
             DrawPolygonAttributeDecoder::VertexGoraud { color, vertex } => {
                 Err(DrawPolygonAttribute {
-                    color: Some(color),
+                    color: Some(u8vec3_from_u32(color)),
                     vertex,
                     uv: Some(uv_value),
                 })
             }
         }
     }
+}
+
+fn u8vec3_from_u32(value: u32) -> U8Vec3 {
+    U8Vec3::from_slice(&value.to_le_bytes()[0..3])
 }
 
 impl DrawCallDecoder for DrawPolygonDecoder {
@@ -376,7 +381,7 @@ impl DrawCallDecoder for DrawPolygonDecoder {
                     })
                 } else {
                     Ok(Self {
-                        current_attr: DrawPolygonAttributeDecoder::from_header(self.header),
+                        current_attr: DrawPolygonAttributeDecoder::from_header(self.header, false),
                         ..self
                     })
                 }
@@ -386,7 +391,15 @@ impl DrawCallDecoder for DrawPolygonDecoder {
 }
 
 impl DrawPolygonAttributeDecoder {
-    pub const fn from_header(header: DrawPolygonHeader) -> Self {
+    pub const fn from_header(header: DrawPolygonHeader, is_first: bool) -> Self {
+        // first attribute is essentially flat shaded since its color is present
+        // in the header.
+        if is_first {
+            return match header.textured() {
+                true => Self::IdleFlatTextured,
+                false => Self::IdleFlatUntextured,
+            };
+        }
         match (header.shading(), header.textured()) {
             (Shading::Flat, true) => Self::IdleFlatTextured,
             (Shading::Flat, false) => Self::IdleFlatUntextured,
@@ -399,7 +412,7 @@ impl DrawPolygonAttributeDecoder {
 impl DrawPolygonDecoder {
     pub fn new(value: u32) -> Self {
         let header = DrawPolygonHeader::new_with_raw_value(value);
-        let current_attr = DrawPolygonAttributeDecoder::from_header(header);
+        let current_attr = DrawPolygonAttributeDecoder::from_header(header, true);
         Self {
             header,
             attrs: Default::default(),

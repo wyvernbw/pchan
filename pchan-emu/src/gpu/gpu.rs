@@ -1,6 +1,7 @@
 pub mod draw_call;
 
 use std::mem::transmute;
+use std::time::Instant;
 
 use arbitrary_int::prelude::*;
 use bitbybit::bitenum;
@@ -66,6 +67,8 @@ pub struct GpuState {
     #[debug(skip)]
     pub conn:          Conn<DrawCall>,
     waiting_on_render: bool,
+    pub last_vblank:   Instant,
+    pub vblank_signal: bool,
 }
 
 #[derive(derive_more::Debug, Clone, Default)]
@@ -101,6 +104,8 @@ impl Default for GpuState {
             },
             dp: Display::default(),
             waiting_on_render: false,
+            last_vblank: Instant::now(),
+            vblank_signal: false,
         }
     }
 }
@@ -494,7 +499,7 @@ pub trait Gpu: Bus + Interrupts {
 
         if let Ok(Some(vram)) = self.gpu().conn.vram_out_chan.1.try_recv() {
             tracing::info!("received gpu result (vram)");
-            // self.gpu_mut().vram = vram;
+            self.gpu_mut().vram = vram;
             self.gpu_mut().waiting_on_render = false;
         }
     }
