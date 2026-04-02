@@ -274,8 +274,19 @@ pub trait Gpu: Bus + Interrupts {
         }
     }
 
+    fn gp0_cmd_queue_push(&mut self, value: u32) -> Result<(), u32> {
+        self.gpu_mut().gp0cmd_queue.push_back(value)
+    }
+
+    fn gp0_cmd_queue_push_or_flush(&mut self, value: u32) {
+        if let Err(spill) = self.gp0_cmd_queue_push(value) {
+            self.gp0_cmd_queue_flush();
+            _ = self.gp0_cmd_queue_push(spill)
+        }
+    }
+
     #[cfg_attr(debug_assertions, instrument(skip_all))]
-    fn flush_gp0_cmd_queue(&mut self) {
+    fn gp0_cmd_queue_flush(&mut self) {
         while let Some(value) = self.gpu_mut().gp0cmd_queue.pop_front() {
             tracing::info!(gp0cmd = %hex(value));
             let cmd = GpuCmd::new_with_raw_value(value);
@@ -372,7 +383,7 @@ pub trait Gpu: Bus + Interrupts {
         }
     }
 
-    fn flush_gp1_cmd_queue(&mut self) {
+    fn gp1_cmd_queue_flush(&mut self) {
         while let Some(value) = self.gpu_mut().gp1cmd_queue.pop_front() {
             let value = GpuCmd::new_with_raw_value(value.io_into_u32());
             tracing::info!(cmd = ?value.cmd());
@@ -388,6 +399,11 @@ pub trait Gpu: Bus + Interrupts {
                 }
                 0x02 => {
                     self.gpu_mut().gpustat.set_irq(false);
+                }
+                // GP1(03h) - Display Enable
+                0x03 => {
+                    let cmd = Gp1DisplayEnableCmd::new_with_raw_value(value.raw_value());
+                    self.gpu_mut().gpustat.set_display_enable(cmd.on_off());
                 }
                 0x04 => {
                     let dir = DmaDirection::new_with_raw_value(value.fields().as_());
@@ -472,8 +488,8 @@ pub trait Gpu: Bus + Interrupts {
     }
 
     fn run_gpu_commands(&mut self) {
-        self.flush_gp0_cmd_queue();
-        self.flush_gp1_cmd_queue();
+        self.gp0_cmd_queue_flush();
+        self.gp1_cmd_queue_flush();
         self.gpu_mut().compute_dma_request();
 
         if let Ok(Some(vram)) = self.gpu().conn.vram_out_chan.1.try_recv() {
@@ -881,6 +897,17 @@ pub enum TextureColorMode {
     // this is usually reserved but we can use it to
     // mark 24bit direct mode (for untextured rectangles etc)
     C24BitDirect = 0x3,
+}
+
+/// # GP1(03h) - Display Enable
+/// ```md
+///   0     Display On/Off   (0=On, 1=Off)                         ;GPUSTAT.23
+///   1-23  Not used (zero)
+/// ```
+#[bitfield(u32)]
+pub struct Gp1DisplayEnableCmd {
+    #[bit(0, rw)]
+    on_off: bool,
 }
 
 /// # GP1(10h) - Get GPU Info

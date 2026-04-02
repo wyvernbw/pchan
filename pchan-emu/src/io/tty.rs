@@ -1,8 +1,12 @@
 use std::sync::Arc;
 
+use crate::memory::kb;
+
+const TTY_CAP: usize = kb(16);
+
 #[derive(derive_more::Debug, Clone)]
 pub struct Tty {
-    #[debug("buf: {}/1024", self.end)]
+    #[debug("buf: {}/{}", self.end, TTY_CAP)]
     buf:  Box<[u8]>,
     end:  usize,
     mode: TtyMode,
@@ -19,7 +23,7 @@ pub enum TtyMode {
 impl Default for Tty {
     fn default() -> Self {
         Self {
-            buf:  vec![0u8; 1024].into_boxed_slice(),
+            buf:  vec![0u8; TTY_CAP].into_boxed_slice(),
             end:  0,
             mode: TtyMode::Stdout,
         }
@@ -28,7 +32,7 @@ impl Default for Tty {
 
 impl Tty {
     pub fn putchar(&mut self, c: char) {
-        if self.end == 1024 {
+        if self.end == TTY_CAP {
             tracing::error!("tty buffer overflow");
             return;
         }

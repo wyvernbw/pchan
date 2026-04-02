@@ -345,7 +345,8 @@ impl Scene {
         let color = header.color();
         let shading = header.shading();
         let vertices = match shading {
-            Shading::Flat => draw_polygon
+            // TODO: Goraud shading
+            Shading::Gouraud | Shading::Flat => draw_polygon
                 .attrs
                 .iter()
                 .map(|attr| Vertex {
@@ -355,7 +356,6 @@ impl Scene {
                     uv: attr.uv.unwrap_or_default(),
                 })
                 .collect::<Vec<_>>(),
-            Shading::Gouraud => todo!(),
         };
 
         self.vertex_buf.extend(triangulate(&vertices));

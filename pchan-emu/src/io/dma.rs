@@ -659,14 +659,11 @@ pub trait DmaTransports: Bus + Fastmem + Gpu {
                     );
                     for _ in 0..len {
                         let value = Fastmem::read(self, addr).unwrap();
-                        if let Err(spill) = self.gpu_mut().gp0cmd_queue.push_back(value) {
-                            // flushing the queue here is not ideal, as real dma
-                            // would hang until the gpu has capacity for more
-                            // commands. but our commands do not take actual
-                            // time to execute
-                            self.flush_gp0_cmd_queue();
-                            self.gpu_mut().gp0cmd_queue.push_back(spill).unwrap();
-                        }
+                        // flushing the queue here is not ideal, as real dma
+                        // would hang until the gpu has capacity for more
+                        // commands. but our commands do not take actual
+                        // time to execute
+                        self.gp0_cmd_queue_push_or_flush(value);
                         addr += 0x4;
                     }
                     // do not mark as done until final event is reached
@@ -681,7 +678,7 @@ pub trait DmaTransports: Bus + Fastmem + Gpu {
                     let mut addr = channel.madr.addr().as_u32();
                     for _ in 0..channel.bcr.s0_block_count() {
                         let value = Fastmem::read(self, addr).unwrap();
-                        self.gpu_mut().gp0cmd_queue.push_back(value).unwrap();
+                        self.gp0_cmd_queue_push_or_flush(value);
                         addr += 0x4;
                     }
                     self.dma_mut().dma2.set_complete();
@@ -701,7 +698,7 @@ pub trait DmaTransports: Bus + Fastmem + Gpu {
                         let cmd =
                             Fastmem::read::<u32>(self, addr + idx as u32 * 0x4 + 0x4).unwrap();
                         tracing::trace!(cmd = %hex(cmd));
-                        self.gpu_mut().gp0cmd_queue.push_back(cmd).unwrap();
+                        self.gp0_cmd_queue_push_or_flush(cmd);
                     }
                     addr = header.next().as_u32();
                     count += 1;
