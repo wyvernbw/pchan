@@ -1,3 +1,5 @@
+use arbitrary_int::prelude::*;
+use derive_more as d;
 use std::ops::RangeInclusive;
 
 use crate::{
@@ -10,63 +12,91 @@ use bitfield::bitfield;
 
 use super::irq::Irq;
 
-bitfield! {
-    #[derive(Clone, Copy)]
-    pub struct TimerCounterValue(u32);
-    impl Debug;
-
-    u16;
-    value, set_value: 15, 0;
+#[bitbybit::bitfield(u32, debug)]
+pub struct TimerCounterValue {
+    #[bits(0..=15, rw)]
+    value: u16,
 }
 
-bitfield! {
-    #[derive(Clone, Copy)]
-    pub struct TimerCounterTarget(u32);
-    impl Debug;
+#[derive(Debug, Clone, Copy, d::Deref, d::DerefMut)]
+pub struct TimerTarget(TimerCounterValue);
 
-    u16;
-    value, set_value: 15, 0;
+///```md
+///   0     Synchronization Enable (0=Free Run, 1=Synchronize via Bit1-2)
+///  1-2   Synchronization Mode   (0-3, see lists below)
+///         Synchronization Modes for Counter 0:
+///           0 = Pause counter during Hblank(s)
+///           1 = Reset counter to 0000h at Hblank(s)
+///           2 = Reset counter to 0000h at Hblank(s) and pause outside of Hblank
+///           3 = Pause until Hblank occurs once, then switch to Free Run
+///         Synchronization Modes for Counter 1:
+///           Same as above, but using Vblank instead of Hblank
+///         Synchronization Modes for Counter 2:
+///           0 or 3 = Stop counter at current value (forever, no h/v-blank start)
+///           1 or 2 = Free Run (same as when Synchronization Disabled)
+///  3     Reset counter to 0000h  (0=After Counter=FFFFh, 1=After Counter=Target)
+///  4     IRQ when Counter=Target (0=Disable, 1=Enable)
+///  5     IRQ when Counter=FFFFh  (0=Disable, 1=Enable)
+///  6     IRQ Once/Repeat Mode    (0=One-shot, 1=Repeatedly)
+///  7     IRQ Pulse/Toggle Mode   (0=Short Bit10=0 Pulse, 1=Toggle Bit10 on/off)
+///  8-9   Clock Source (0-3, see list below)
+///         Counter 0:  0 or 2 = System Clock,  1 or 3 = Dotclock
+///         Counter 1:  0 or 2 = System Clock,  1 or 3 = Hblank
+///         Counter 2:  0 or 1 = System Clock,  2 or 3 = System Clock/8
+///  10    Interrupt Request       (0=Yes, 1=No) (Set after Writing)    (W=1) (R)
+///  11    Reached Target Value    (0=No, 1=Yes) (Reset after Reading)        (R)
+///  12    Reached FFFFh Value     (0=No, 1=Yes) (Reset after Reading)        (R)
+///  13-15 Unknown (seems to be always zero)
+///  16-31 Garbage (next opcode)
+/// ```
+#[bitbybit::bitfield(u32, debug)]
+pub struct TimerCounterMode {
+    #[bit(0, rw)]
+    sync_on:    bool,
+    #[bits(1..=2, rw)]
+    sync_mode:  u2,
+    #[bit(3, rw)]
+    reset_mode: TimerResetMode,
+
+    #[bit(4, rw)]
+    irq_on_target:   bool,
+    #[bit(5, rw)]
+    irq_on_overflow: bool,
+    #[bit(6, rw)]
+    irq_repeat_mode: TimerIrqRepeatMode,
+    #[bit(7, rw)]
+    irq_toggle_mode: TimerIrqRepeatMode,
+
+    #[bits(8..=9, rw)]
+    source: u2,
+
+    #[bit(10, rw)]
+    irq:              bool,
+    #[bit(11, rw)]
+    reached_target:   bool,
+    #[bit(12, rw)]
+    reached_overflow: bool,
 }
 
-bitfield! {
-    #[derive(Clone, Copy)]
-    pub struct TimerCounterMode(u32);
-    impl Debug;
-
-    sync_enabled, set_sync_enabled: 0;
-    sync_mode, set_sync_mode: 2, 1;
-
-    u8, reset_mode, set_reset_mode: 3, 3;
-
-    irq_on_target, set_irq_on_target: 4;
-    irq_on_overflow, set_irq_on_overflow: 5;
-    irq_repeat_mode, set_irq_repeat_mode: 6;
-    irq_toggle_mode, set_irq_toggle_mode: 7;
-    clock_source, set_clock_source: 9, 8;
-    irq, set_irq: 10;
-    reached_target, set_reached_target: 11;
-    reached_overflow, set_reached_overflow: 12;
-}
-
-#[repr(u8)]
+#[bitbybit::bitenum(u1, exhaustive = true)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum TimerResetMode {
     OnOverflow = 0x0,
     OnTarget   = 0x1,
 }
 
-pub enum TimerRepeatMode {
+#[bitbybit::bitenum(u1, exhaustive = true)]
+#[derive(Debug, PartialEq, Eq)]
+pub enum TimerIrqRepeatMode {
     Oneshot = 0x0,
     Repeat  = 0x1,
 }
 
-pub enum TimerToggleMode {
+#[bitbybit::bitenum(u1, exhaustive = true)]
+#[derive(Debug, PartialEq, Eq)]
+pub enum TimerIrqToggleMode {
     Pulse  = 0x0,
     Toggle = 0x1,
-}
-
-pub enum TimerClockSource {
-    SystemClock,
-    Other,
 }
 
 pub struct AdvanceTimerSummary {
@@ -110,13 +140,12 @@ pub trait Timers: Bus + IO + Interrupts {
         self.read_timers::<TimerCounterMode>(timer_address).unwrap()
     }
 
-    fn timer_counter_target(&self, timer: u8) -> TimerCounterTarget {
+    fn timer_counter_target(&self, timer: u8) -> TimerTarget {
         debug_assert!((0..=4).contains(&timer));
 
         let timer_address = 0x1f801108 + timer as u32 * 0x10;
 
-        self.read_timers::<TimerCounterTarget>(timer_address)
-            .unwrap()
+        self.read_timers::<TimerTarget>(timer_address).unwrap()
     }
 
     fn timer_counter_value(&self, timer: u8) -> TimerCounterValue {
@@ -175,7 +204,7 @@ pub trait Timers: Bus + IO + Interrupts {
                 timer_mode.set_irq(true);
             }
 
-            if timer_mode.reset_mode() == TimerResetMode::OnTarget as u8 {
+            if timer_mode.reset_mode() == TimerResetMode::OnTarget {
                 timer_value.set_value(0);
             }
         }
