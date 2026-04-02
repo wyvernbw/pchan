@@ -6,6 +6,8 @@ use arbitrary_int::prelude::*;
 use bitbybit::bitenum;
 use bitbybit::bitfield;
 use derive_more as d;
+use glam::U64Vec2;
+use glam::u64vec2;
 use heapless::Deque;
 use heapless::binary_heap::Min;
 use pchan_utils::AsyncChan;
@@ -53,17 +55,13 @@ pub struct GpuState {
     pub gp0cmd_queue:    Deque<u32, 20>, // 4 word legroom
     pub gp0read_queue:   Deque<u32, 32>,
     pub gp1cmd_queue:    Deque<u32, 16>,
-    pub gp1state:        Gp1,
+    pub dp:              Display,
     /// GP0(0xe2) - Texture Window setting
     pub tex_window:      Gp0TexWindowCmd,
     // TODO: remove this
     pub draw_opts_reg:   DrawOptsRegister,
     pub draw_call_queue: Vec<DrawCall>,
     pub model:           GpuModel,
-
-    /// video event queue
-    pub video_cycle:             u64,
-    pub video_cycle_in_scanline: u64,
 
     #[debug(skip)]
     pub conn: Conn<DrawCall>,
@@ -100,9 +98,7 @@ impl Default for GpuState {
                 vram_in_chan:   kanal::bounded_async(0),
                 vram_out_chan:  kanal::bounded_async(1),
             },
-            video_cycle: 0,
-            video_cycle_in_scanline: 0,
-            gp1state: Gp1::default(),
+            dp: Display::default(),
         }
     }
 }
@@ -668,18 +664,6 @@ pub struct GpuCmd {
     cmd:    u8,
 }
 
-#[derive(derive_more::Debug, Clone, Default)]
-pub struct Gp1 {
-    display_range_start: VramCoord,
-    display_range_end:   VramCoord,
-
-    current_scanline: u16,
-
-    /// used for storing fractional part when converting
-    /// from cpu to video cycles
-    fract_01: u64,
-}
-
 impl Gpu for Emu {}
 
 ///
@@ -1039,6 +1023,27 @@ impl GpuState {
     }
 }
 
+#[derive(derive_more::Debug, Clone, Default)]
+pub struct Display {
+    /// video event queue
+    pub video_cycle:             u64,
+    pub video_cycle_in_scanline: u64,
+
+    display_range_start: U64Vec2,
+    display_range_end:   U64Vec2,
+
+    current_scanline: u64,
+
+    /// used for storing fractional part when converting
+    /// from cpu to video cycles
+    fract_01: u64,
+}
+
+/// The functionality in this trait largely deals with video cycles (or video clock units).
+/// These cycles are *not* relative to the resolution, the way dot clocks are, meaning they
+/// are not absolute dot positions, but relative timings tied to HSYNC.
+///
+/// see [https://psx-spx.consoledev.net/graphicsprocessingunitgpu/#gp106h-horizontal-display-range-on-screen]
 pub trait VideoEvents: Gpu + VBlank {
     fn cpu_cycles_to_video_cycles(&mut self, cycles: u64) -> u64 {
         // this might be based on the actual console hardware not on the
@@ -1048,32 +1053,32 @@ pub trait VideoEvents: Gpu + VBlank {
             VideoMode::Pal => 709379,
         };
         let cycles = cycles * factor;
-        let cycles = cycles + self.gpu().gp1state.fract_01;
-        self.gpu_mut().gp1state.fract_01 = cycles / 451584;
+        let cycles = cycles + self.gpu().dp.fract_01;
+        self.gpu_mut().dp.fract_01 = cycles / 451584;
 
         cycles / 451584
     }
 
     fn run_video_io(&mut self, by_cpu_cycles: u64) {
         let cycles = self.cpu_cycles_to_video_cycles(by_cpu_cycles);
+        self.gpu_mut().dp.update_ranges();
         self.run_video_events(cycles);
     }
 
     fn run_video_events(&mut self, advance_by: u64) {
         let cycles_per_scanline = self.gpu().video_cycles_per_scanline();
-        self.gpu_mut().video_cycle_in_scanline += advance_by;
-        if self.gpu_mut().video_cycle_in_scanline < cycles_per_scanline {
+        self.gpu_mut().dp.video_cycle_in_scanline += advance_by;
+        if self.gpu_mut().dp.video_cycle_in_scanline < cycles_per_scanline {
             // TODO: Timer 1 update
             return;
         }
-        let scanlines_to_run = self.gpu().video_cycle_in_scanline / cycles_per_scanline;
-        self.gpu_mut().video_cycle_in_scanline =
-            self.gpu().video_cycle_in_scanline % cycles_per_scanline;
+        let scanlines_to_run = self.gpu().dp.video_cycle_in_scanline / cycles_per_scanline;
+        self.gpu_mut().dp.video_cycle_in_scanline =
+            self.gpu().dp.video_cycle_in_scanline % cycles_per_scanline;
 
-        for _ in 0..scanlines_to_run {
-            let gp1 = &self.gpu().gp1state;
-            let new_vblank = gp1.current_scanline < gp1.display_range_start.y
-                || gp1.current_scanline >= gp1.display_range_end.y;
+        for y in 0..scanlines_to_run {
+            let dp = &self.gpu().dp;
+            let new_vblank = !dp.in_vblank() && dp.in_vblank_with(dp.current_scanline + y);
 
             // TODO: timer 1 update
 
@@ -1081,14 +1086,57 @@ pub trait VideoEvents: Gpu + VBlank {
                 self.run_vblank();
             }
 
-            self.gpu_mut().gp1state.current_scanline += 1;
+            self.gpu_mut().dp.current_scanline += 1;
         }
 
-        // leftover vcycles
-        self.gpu_mut().video_cycle += advance_by;
+        let dp = &mut self.gpu_mut().dp;
+        if dp.current_scanline >= Display::NTSC_TOTAL_LINES {
+            dp.current_scanline = 0;
+            self.gpu_mut().flip_even_odd(None);
+        }
     }
-
-    fn run_video_event_io(&mut self, event: VideoEventKind) {}
 }
 
 impl VideoEvents for Emu {}
+
+impl Display {
+    const NTSC_TOTAL_VCYCLES_PER_LINE: u64 = 3413;
+    const NTSC_TOTAL_LINES: u64 = 263;
+    const NTSC_ACTIVE_H_START: u64 = 488;
+    const NTSC_ACTIVE_H_END: u64 = 3288;
+    const NTSC_ACTIVE_V_START: u64 = 16;
+    const NTSC_ACTIVE_V_END: u64 = 256;
+
+    fn update_ranges(&mut self) {
+        self.display_range_start = u64vec2(Self::NTSC_ACTIVE_H_START, Self::NTSC_ACTIVE_V_START);
+        self.display_range_end = u64vec2(Self::NTSC_ACTIVE_H_END, Self::NTSC_ACTIVE_V_END);
+    }
+
+    const fn h_start(&self) -> u64 {
+        self.display_range_start.x
+    }
+
+    const fn h_end(&self) -> u64 {
+        self.display_range_end.x
+    }
+
+    const fn v_start(&self) -> u64 {
+        self.display_range_start.y
+    }
+
+    const fn v_end(&self) -> u64 {
+        self.display_range_end.y
+    }
+
+    fn in_hblank(&self) -> bool {
+        !(self.h_start()..self.h_end()).contains(&self.video_cycle_in_scanline)
+    }
+
+    fn in_vblank(&self) -> bool {
+        !(self.v_start()..self.v_end()).contains(&self.current_scanline)
+    }
+
+    fn in_vblank_with(&self, line: u64) -> bool {
+        (self.v_start()..self.v_end()).contains(&line)
+    }
+}
