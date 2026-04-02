@@ -43,10 +43,43 @@ pub struct RenderPass<'a> {
 }
 
 impl<'a> RenderPass<'a> {
-    pub fn draw(&mut self) {
+    pub fn draw(&mut self, vram: &[u16]) {
         if self.scene.vertex_buf.is_empty() {
             return;
         }
+        let vram_buf = unsafe {
+            std::slice::from_raw_parts(vram.as_ptr() as *const u8, std::mem::size_of_val(vram))
+        };
+
+        let init_buffer = self
+            .renderer
+            .device
+            .create_buffer_init(&BufferInitDescriptor {
+                label: None,
+                contents: vram_buf,
+                usage: BufferUsages::COPY_SRC,
+            });
+        self.encoder.copy_buffer_to_texture(
+            TexelCopyBufferInfo {
+                buffer: &init_buffer,
+                layout: TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(1024 * 2),
+                    rows_per_image: Some(512),
+                },
+            },
+            TexelCopyTextureInfo {
+                texture: &self.renderer.render_texture,
+                mip_level: 0,
+                origin: Origin3d { x: 0, y: 0, z: 0 },
+                aspect: TextureAspect::All,
+            },
+            Extent3d {
+                width: 1024,
+                height: 512,
+                depth_or_array_layers: 1,
+            },
+        );
 
         let mut render_pass = self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: None,

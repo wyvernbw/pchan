@@ -33,6 +33,7 @@ pub(crate) enum EmuResponse {
     Compiled(DynarecBlock),
     ObjDump(Arc<str>),
     FrequencyUpdate(f64),
+    CalledFunc(u32),
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EmuTaskState {
@@ -203,7 +204,9 @@ impl EmuTask {
                     self.state = EmuTaskState::Paused;
                 }
             }
-            PipelineV2::Called { .. } => {}
+            PipelineV2::Called { pc, .. } => {
+                self.try_send_res(EmuResponse::CalledFunc(*pc));
+            }
             PipelineV2::Cached { dynarec, scheduler } => {}
         };
         Ok(())

@@ -28,7 +28,6 @@ members = [
 arbitrary-int = "2.1.1"
 bitbybit = "2.0.0"
 color-eyre = "0.6.5"
-flume = "0.12.0"
 slab = "0.4.12"
 tracing = "0.1.44"
 const-hex = { version = "1.18.1", features = ["nightly", "portable-simd"] }

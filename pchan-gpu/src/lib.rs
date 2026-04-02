@@ -138,7 +138,9 @@ impl Renderer {
             sample_count: 1,
             dimension: TextureDimension::D2,
             format: TextureFormat::R16Uint,
-            usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
+            usage: TextureUsages::RENDER_ATTACHMENT
+                | TextureUsages::COPY_SRC
+                | TextureUsages::COPY_DST,
             view_formats: &[TextureFormat::R16Uint],
         });
         let render_view = render_texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -188,7 +190,7 @@ impl Renderer {
                             tracing::info!("received vram");
                             let scene = Scene::new_from_draw_calls(&draw_calls);
                             let mut pass = self.create_render_pass(scene).await;
-                            pass.draw();
+                            pass.draw(&vram);
                             if pass.finish(&mut vram).await.is_ok() {
                                 _ = self.conn.vram_out_chan.0.send(vram).await;
                             }
@@ -428,6 +430,22 @@ pub async fn test_gpu(emu: &mut Emu) -> color_eyre::Result<()> {
                 var_size: Some(VramCoord { x: 64, y: 64 }),
             }),
         },
+        // Tall narrow rect — stresses vertical spans
+        DrawCall {
+            gpustat: GpuStatReg::default(),
+            inner: DrawCallKind::Rect(DrawRect {
+                color: DrawRectColor::default().with_rgb(u24::new(0xFF00FF)),
+                vertex1: VramCoord::new(300, 0),
+                uv: None,
+                var_size: Some(VramCoord { x: 8, y: 256 }),
+            }),
+        },
+    ]);
+    let mut pass = renderer.create_render_pass(scene).await;
+    pass.draw(&emu.gpu.vram);
+    pass.finish(&mut emu.gpu.vram).await?;
+
+    let scene = Scene::new_from_draw_calls(&[
         // Solid color rect — different hue, overlapping slightly
         DrawCall {
             gpustat: GpuStatReg::default(),
@@ -448,19 +466,9 @@ pub async fn test_gpu(emu: &mut Emu) -> color_eyre::Result<()> {
                 var_size: Some(VramCoord { x: 512, y: 8 }),
             }),
         },
-        // Tall narrow rect — stresses vertical spans
-        DrawCall {
-            gpustat: GpuStatReg::default(),
-            inner: DrawCallKind::Rect(DrawRect {
-                color: DrawRectColor::default().with_rgb(u24::new(0xFF00FF)),
-                vertex1: VramCoord::new(300, 0),
-                uv: None,
-                var_size: Some(VramCoord { x: 8, y: 256 }),
-            }),
-        },
     ]);
     let mut pass = renderer.create_render_pass(scene).await;
-    pass.draw();
+    pass.draw(&emu.gpu.vram);
     pass.finish(&mut emu.gpu.vram).await?;
 
     Ok(())

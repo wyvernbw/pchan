@@ -13,7 +13,7 @@ pub(crate) mod tty_widget;
 pub(crate) mod vram_widget;
 
 use std::borrow::Cow;
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::process::Stdio;
 use std::sync::Arc;
 
@@ -85,6 +85,7 @@ struct Model {
     emu_cpu_freq_hz: f64,
     emu_running:     bool,
     emu_breakpoints: HashSet<u32>,
+    emu_pc_history:  VecDeque<u32>,
     tty:             Vec<Arc<str>>,
     objdump:         Option<Arc<str>>,
 }
@@ -109,6 +110,8 @@ struct DbgPage {
     cpu_viewer_show_cops:   bool,
     summary_mode:           SummaryMode,
     breakpoints_list:       List,
+    history_list:           List,
+    breakpoints_or_history: bool,
     cpu_viewer_gpr_rect:    AreaRef,
     mem_view:               MemViewState,
     tty_view:               TtyViewState,
@@ -184,8 +187,10 @@ impl Model {
                     tty_view:               TtyViewState::new(),
                     asm_dump:               AsmDump::new(),
                     breakpoints_list:       List::new(),
+                    history_list:           List::new(),
                     summary_mode:           SummaryMode::Hidden,
                     summary_input:          TextInput::new(),
+                    breakpoints_or_history: true,
                 },
                 gpu_page: GpuPage {
                     focus:       FocusGroup::new(),
@@ -201,6 +206,7 @@ impl Model {
                 emu_cpu_freq_hz: 0.0,
                 emu_running: false,
                 emu_breakpoints: HashSet::default(),
+                emu_pc_history: VecDeque::default(),
             },
             Effect::new(async move |tx| {
                 loop {
@@ -284,6 +290,15 @@ impl Model {
                 }
                 EmuResponse::FrequencyUpdate(freq_hz) => {
                     self.emu_cpu_freq_hz = freq_hz;
+                    self.no_effect()
+                }
+                EmuResponse::CalledFunc(pc) => {
+                    if Some(&pc) != self.emu_pc_history.back() {
+                        self.emu_pc_history.push_back(pc);
+                        if self.emu_pc_history.len() >= 1024 {
+                            self.emu_pc_history.pop_front();
+                        }
+                    }
                     self.no_effect()
                 }
             },
@@ -437,10 +452,23 @@ impl Model {
                     .dbg_page
                     .focus
                     .pipe(self.dbg_page.decoded_ops_list.update(&event));
-                (self.dbg_page.breakpoints_list, self.dbg_page.focus) = self
-                    .dbg_page
-                    .focus
-                    .pipe(self.dbg_page.breakpoints_list.update(&event));
+                match self.dbg_page.breakpoints_or_history {
+                    true => {
+                        (self.dbg_page.breakpoints_list, self.dbg_page.focus) = self
+                            .dbg_page
+                            .focus
+                            .pipe(self.dbg_page.breakpoints_list.update(&event));
+                        self.dbg_page
+                            .history_list
+                            .set_focus(self.dbg_page.breakpoints_list.focus());
+                    }
+                    false => {
+                        (self.dbg_page.history_list, _) = self.dbg_page.history_list.update(&event);
+                        self.dbg_page
+                            .breakpoints_list
+                            .set_focus(self.dbg_page.history_list.focus());
+                    }
+                }
                 (self.dbg_page.cpu_gpr_list, self.dbg_page.focus) = self
                     .dbg_page
                     .focus
@@ -454,6 +482,37 @@ impl Model {
                     (Some(DbgPageFocus::CpuViewer), keyv2!('s')) => {
                         self.dbg_page.cpu_viewer_show_zeroes =
                             !self.dbg_page.cpu_viewer_show_zeroes;
+                    }
+                    (Some(DbgPageFocus::Breakpoints), keyv2!('f')) => {
+                        self.dbg_page.breakpoints_or_history =
+                            !self.dbg_page.breakpoints_or_history;
+                        if !self.dbg_page.breakpoints_or_history {
+                            self.dbg_page.history_list = self.dbg_page.history_list.select_last();
+                        }
+                    }
+                    (Some(DbgPageFocus::Breakpoints), keyv2!('g')) => {
+                        match self.dbg_page.breakpoints_or_history {
+                            true => {
+                                self.dbg_page.breakpoints_list =
+                                    self.dbg_page.breakpoints_list.select_first();
+                            }
+                            false => {
+                                self.dbg_page.history_list =
+                                    self.dbg_page.history_list.select_first();
+                            }
+                        }
+                    }
+                    (Some(DbgPageFocus::Breakpoints), keyv2!(shift + 'G')) => {
+                        match self.dbg_page.breakpoints_or_history {
+                            true => {
+                                self.dbg_page.breakpoints_list =
+                                    self.dbg_page.breakpoints_list.select_last();
+                            }
+                            false => {
+                                self.dbg_page.history_list =
+                                    self.dbg_page.history_list.select_last();
+                            }
+                        }
                     }
                     (Some(DbgPageFocus::CpuViewer), keyv2!('c')) => {
                         self.dbg_page.cpu_viewer_show_cops = !self.dbg_page.cpu_viewer_show_cops;
@@ -893,31 +952,60 @@ fn breakpoints(model: &Model) -> View {
     let focused = matches!(model.dbg_page.focus.tag(), Some(DbgPageFocus::Breakpoints));
     let border_style = border_style_focus(focused);
 
-    let breakpoints = model.emu_breakpoints.iter().copied().map(|addr| {
-        let line = Line::raw(format!("  ✦ {}", hex(addr)));
+    if model.dbg_page.breakpoints_or_history {
+        let breakpoints = model.emu_breakpoints.iter().copied().map(|addr| {
+            let line = Line::raw(format!("  ✦ {}", hex(addr)));
 
-        if model.emu_handle.dbg_view.emu().cpu.pc == addr {
-            line.style(Style::new().bold().c0700())
-        } else {
-            line
-        }
-    });
-    ui! {
-        <Block Width::grow() Height::grow()>
-            <Text>"Brk"</Text>
-            <Block
-                .rounded
-                .border_style={border_style}
-                Width::grow() Height::grow()
-            >
-                <ListViewCompact
-                    .state={&model.dbg_page.breakpoints_list}
-                    .items={breakpoints}
-                    .highlight_style={Style::new().fg(Color::from_u32(0xffffff)).bg(LIPGLOSS[7][0])}
-                    .highlight_symbol={Line::raw("d: del  ").style(Style::new().dim())}
+            if model.emu_handle.dbg_view.emu().cpu.pc == addr {
+                line.style(Style::new().bold().c0700())
+            } else {
+                line
+            }
+        });
+        ui! {
+            <Block Width::grow() Height::grow()>
+                <Text>"Brk"</Text>
+                <Block
+                    .rounded
+                    .border_style={border_style}
                     Width::grow() Height::grow()
-                />
+                >
+                    <ListViewCompact
+                        .state={&model.dbg_page.breakpoints_list}
+                        .items={breakpoints}
+                        .highlight_style={Style::new().fg(Color::from_u32(0xffffff)).bg(LIPGLOSS[7][0])}
+                        .highlight_symbol={Line::raw("d: del  ").style(Style::new().dim())}
+                        Width::grow() Height::grow()
+                    />
+                </Block>
             </Block>
-        </Block>
+        }
+    } else {
+        let history = model.emu_pc_history.iter().copied().map(|pc| {
+            let line = Line::raw(format!("{}", hex(pc)));
+
+            if model.emu_handle.dbg_view.emu().cpu.pc == pc {
+                line.style(Style::new().bold().c0700())
+            } else {
+                line
+            }
+        });
+        ui! {
+            <Block Width::grow() Height::grow()>
+                <Text>"History"</Text>
+                <Block
+                    .rounded
+                    .border_style={border_style}
+                    Width::grow() Height::grow()
+                >
+                    <ListViewCompact
+                        .state={&model.dbg_page.history_list}
+                        .items={history}
+                        .highlight_style={Style::new().fg(Color::from_u32(0xffffff)).bg(LIPGLOSS[7][0])}
+                        Width::grow() Height::grow()
+                    />
+                </Block>
+            </Block>
+        }
     }
 }

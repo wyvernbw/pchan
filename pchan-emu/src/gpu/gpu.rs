@@ -64,7 +64,8 @@ pub struct GpuState {
     pub model:           GpuModel,
 
     #[debug(skip)]
-    pub conn: Conn<DrawCall>,
+    pub conn:          Conn<DrawCall>,
+    waiting_on_render: bool,
 }
 
 #[derive(derive_more::Debug, Clone, Default)]
@@ -99,6 +100,7 @@ impl Default for GpuState {
                 vram_out_chan:  kanal::bounded_async(1),
             },
             dp: Display::default(),
+            waiting_on_render: false,
         }
     }
 }
@@ -287,6 +289,8 @@ pub trait Gpu: Bus + Interrupts {
                 Gp0::CpRectCpuToVram(Gp0CpRect::RecvSize { dest }) => {
                     let size: VramCoord = unsafe { transmute(value) };
                     tracing::info!("cpu to vram copy size: {size:?}");
+                    assert!(size.x != 0, "found zero!");
+                    assert!(size.y != 0, "found zero!");
                     Gp0::CpRectCpuToVram(Gp0CpRect::RecvData(VramCursor::new(*dest, *dest + size)))
                 }
                 Gp0::CpRectCpuToVram(Gp0CpRect::RecvData(cursor)) => {
@@ -301,6 +305,7 @@ pub trait Gpu: Bus + Interrupts {
                     match cursor.done() {
                         true => {
                             self.gpu_mut().gpustat.set_ready_recv_cmd(true);
+
                             Gp0::WaitingForCmd
                         }
                         false => Gp0::CpRectCpuToVram(Gp0CpRect::RecvData(cursor)),
@@ -320,12 +325,7 @@ pub trait Gpu: Bus + Interrupts {
                     Gp0::CpRectVramToCpu(Gp0CpRect::RecvData(VramCursor::new(dest, dest + size)))
                 }
                 // cancel vram to cpu
-                Gp0::CpRectVramToCpu(Gp0CpRect::RecvData(_)) => {
-                    // self.gpu_mut().gpustat.set_ready_send_vram(false);
-
-                    // self.gp0reduce(cmd)
-                    self.gpu().gp0.clone()
-                }
+                Gp0::CpRectVramToCpu(Gp0CpRect::RecvData(_)) => self.gpu().gp0.clone(),
                 Gp0::DrawRectDecode(decoder) => {
                     let decoder = decoder.advance(value);
                     match decoder {
@@ -464,6 +464,7 @@ pub trait Gpu: Bus + Interrupts {
             .send(queue)
             .unwrap();
         self.gpu().conn.vram_in_chan.0.as_sync().send(vram).unwrap();
+        self.gpu_mut().waiting_on_render = true;
     }
 
     fn gpu_reconnect(&mut self, other: &impl Gpu) {
@@ -477,7 +478,8 @@ pub trait Gpu: Bus + Interrupts {
 
         if let Ok(Some(vram)) = self.gpu().conn.vram_out_chan.1.try_recv() {
             tracing::info!("received gpu result (vram)");
-            self.gpu_mut().vram = vram;
+            // self.gpu_mut().vram = vram;
+            self.gpu_mut().waiting_on_render = false;
         }
     }
 }
@@ -496,6 +498,17 @@ impl GpuState {
         )
     }
     fn vram_write(&mut self, coord: VramCoord, value: u16) {
+        if self.waiting_on_render {
+            let vram = self
+                .conn
+                .vram_out_chan
+                .1
+                .as_sync()
+                .recv()
+                .expect("channel dropped: failed to receive queued render");
+            self.vram = vram;
+            self.waiting_on_render = false;
+        }
         let coord = coord.wrap();
         let addr = coord.x as usize + coord.y as usize * kb(1);
         self.vram[addr] = value;
@@ -788,7 +801,7 @@ enum VideoMode {
 
 #[derive(Debug)]
 #[bitenum(u2, exhaustive = true)]
-enum DmaDirection {
+pub enum DmaDirection {
     Off          = 0x0,
     Unknown      = 0x1,
     CpuToGp0     = 0x2,

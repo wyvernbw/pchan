@@ -118,6 +118,8 @@ pub trait Bus {
     fn gpu_mut(&mut self) -> &mut GpuState;
     fn timers(&self) -> &TimerState;
     fn timers_mut(&mut self) -> &mut TimerState;
+    fn dma(&self) -> &DmaState;
+    fn dma_mut(&mut self) -> &mut DmaState;
 }
 
 impl Bus for Emu {
@@ -160,6 +162,14 @@ impl Bus for Emu {
     #[inline(always)]
     fn timers_mut(&mut self) -> &mut TimerState {
         &mut self.timers
+    }
+    #[inline(always)]
+    fn dma(&self) -> &DmaState {
+        &self.dma
+    }
+    #[inline(always)]
+    fn dma_mut(&mut self) -> &mut DmaState {
+        &mut self.dma
     }
 }
 
