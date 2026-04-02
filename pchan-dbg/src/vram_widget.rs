@@ -1,11 +1,19 @@
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{LazyLock, Mutex, RwLock};
+
 use arbitrary_int::prelude::*;
 use bitbybit::bitfield;
+use image::{DynamicImage, ImageBuffer, Rgb};
 use manatui::prelude::canvas::{Canvas, Rectangle};
 use manatui::prelude::*;
 use manatui::ratatui::prelude::*;
 use manatui::tea::focus::{DEFAULT_KEYMAP, Focus, VIM_KEYMAP};
 use manatui_tea_ui::common::FocusItemState;
 use pchan_emu::Bus;
+use ratatui_image::picker::Picker;
+use ratatui_image::protocol::Protocol;
+use ratatui_image::protocol::halfblocks::Halfblocks;
 
 use crate::emu_task::DebugView;
 
@@ -14,6 +22,20 @@ pub struct VramCanvasWidget {
     style:    Style,
     dbg_view: DebugView,
 }
+
+thread_local! {
+    static PICKER: Picker = Picker::from_query_stdio().unwrap();
+}
+static VRAM_HASH: AtomicU64 = AtomicU64::new(0);
+static VRAM_IMAGE: LazyLock<RwLock<Protocol>> = LazyLock::new(|| {
+    RwLock::new(Protocol::Halfblocks(
+        Halfblocks::new(
+            DynamicImage::ImageRgb8(ImageBuffer::default()),
+            Rect::default(),
+        )
+        .unwrap(),
+    ))
+});
 
 impl Widget for VramCanvasWidget {
     fn render(self, area: Rect, buf: &mut Buffer)
@@ -29,33 +51,45 @@ impl Widget for VramCanvasWidget {
             #[bits(10..=14, rw)]
             b: u5,
         }
-        let canvas = Canvas::default()
-            .x_bounds([0.0, 1024.0])
-            .y_bounds([0.0, 512.0])
-            .marker(symbols::Marker::Octant)
-            .paint(|ctx| {
-                for y in 0..512 {
-                    for x in 0..1024 {
-                        let vram = &self.dbg_view.emu().gpu().vram;
-                        let vram_addr = 1024 * y + x;
-                        let pixel = vram[vram_addr];
-                        let pixel = Pixel::new_with_raw_value(pixel);
-
-                        ctx.draw(&Rectangle {
-                            x:      x as f64,
-                            y:      y as f64,
-                            width:  1.0,
-                            height: 1.0,
-                            color:  Color::Rgb(
-                                (pixel.r().as_::<u16>() * 255 / 31) as u8,
-                                (pixel.g().as_::<u16>() * 255 / 31) as u8,
-                                (pixel.b().as_::<u16>() * 255 / 31) as u8,
-                            ),
-                        });
-                    }
+        let vram = &self.dbg_view.emu().gpu().vram;
+        let mut hasher = DefaultHasher::new();
+        vram.hash(&mut hasher);
+        let hash = hasher.finish();
+        let old_hash = VRAM_HASH.load(Ordering::Acquire);
+        if old_hash != hash {
+            VRAM_HASH.store(hash, Ordering::Release);
+            let mut output = ImageBuffer::new(1024, 512);
+            for y in 0..512 {
+                for x in 0..1024 {
+                    let vram_addr = x + y * 1024;
+                    let pixel = Pixel::new_with_raw_value(vram[vram_addr]);
+                    output.put_pixel(
+                        x as u32,
+                        y as u32,
+                        Rgb([
+                            (pixel.r().as_::<u16>() << 3) as u8,
+                            (pixel.g().as_::<u16>() << 3) as u8,
+                            (pixel.b().as_::<u16>() << 3) as u8,
+                        ]),
+                    );
                 }
-            });
-        canvas.render(area, buf);
+            }
+            let output = DynamicImage::ImageRgb8(output);
+            let img = PICKER
+                .with(|picker| {
+                    picker.new_protocol(
+                        output,
+                        area,
+                        ratatui_image::Resize::Scale(Some(ratatui_image::FilterType::Nearest)),
+                    )
+                })
+                .unwrap();
+            ratatui_image::Image::new(&img).render(area, buf);
+            *VRAM_IMAGE.write().unwrap() = img;
+        } else {
+            let img = VRAM_IMAGE.read().unwrap();
+            ratatui_image::Image::new(&img).render(area, buf);
+        }
     }
 }
 
