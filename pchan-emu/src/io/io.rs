@@ -4,7 +4,7 @@ use tracing::instrument;
 
 use crate::bootloader::Bootloader;
 use crate::cpu::exceptions::Exceptions;
-use crate::gpu::Gpu;
+use crate::gpu::{Gpu, VideoEvents};
 use crate::io::dma::Dma;
 use crate::io::irq::Interrupts;
 use crate::io::timers::Timers;
@@ -28,9 +28,9 @@ impl Emu {
 
         // gpu commands must run before dma to ensure gp0 fifo is cleared
         self.run_gpu_commands();
+        self.run_video_io(self.cpu.d_clock as u64);
 
         self.run_dma_transfers();
-        self.run_vblank();
         self.run_irq_io();
         self.run_exceptions_io();
         #[cfg(feature = "amidog-tests")]

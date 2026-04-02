@@ -7,6 +7,7 @@ use bitbybit::bitenum;
 use bitbybit::bitfield;
 use derive_more as d;
 use heapless::Deque;
+use heapless::binary_heap::Min;
 use pchan_utils::AsyncChan;
 use pchan_utils::hex;
 use tracing::instrument;
@@ -30,6 +31,7 @@ use crate::io::IOResult;
 use crate::io::UnhandledIO;
 use crate::io::irq::Interrupts;
 use crate::io::irq::Irq;
+use crate::io::vblank::VBlank;
 use crate::memory::kb;
 use crate::memory::mb;
 
@@ -51,14 +53,20 @@ pub struct GpuState {
     pub gp0cmd_queue:    Deque<u32, 20>, // 4 word legroom
     pub gp0read_queue:   Deque<u32, 32>,
     pub gp1cmd_queue:    Deque<u32, 16>,
+    pub gp1state:        Gp1,
     /// GP0(0xe2) - Texture Window setting
     pub tex_window:      Gp0TexWindowCmd,
     // TODO: remove this
     pub draw_opts_reg:   DrawOptsRegister,
     pub draw_call_queue: Vec<DrawCall>,
     pub model:           GpuModel,
+
+    /// video event queue
+    pub video_cycle:             u64,
+    pub video_cycle_in_scanline: u64,
+
     #[debug(skip)]
-    pub conn:            Conn<DrawCall>,
+    pub conn: Conn<DrawCall>,
 }
 
 #[derive(derive_more::Debug, Clone, Default)]
@@ -92,6 +100,9 @@ impl Default for GpuState {
                 vram_in_chan:   kanal::bounded_async(0),
                 vram_out_chan:  kanal::bounded_async(1),
             },
+            video_cycle: 0,
+            video_cycle_in_scanline: 0,
+            gp1state: Gp1::default(),
         }
     }
 }
@@ -657,6 +668,18 @@ pub struct GpuCmd {
     cmd:    u8,
 }
 
+#[derive(derive_more::Debug, Clone, Default)]
+pub struct Gp1 {
+    display_range_start: VramCoord,
+    display_range_end:   VramCoord,
+
+    current_scanline: u16,
+
+    /// used for storing fractional part when converting
+    /// from cpu to video cycles
+    fract_01: u64,
+}
+
 impl Gpu for Emu {}
 
 ///
@@ -1000,3 +1023,72 @@ pub struct StartOfDisplayCmd {
     #[bits(10..=18, rw)]
     scanline: u9,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VideoEventKind {
+    Hblank,
+    Vblank,
+}
+
+impl GpuState {
+    pub fn video_cycles_per_scanline(&self) -> u64 {
+        match self.gpustat.video_mode() {
+            VideoMode::Ntsc => 3413,
+            VideoMode::Pal => 3406,
+        }
+    }
+}
+
+pub trait VideoEvents: Gpu + VBlank {
+    fn cpu_cycles_to_video_cycles(&mut self, cycles: u64) -> u64 {
+        // this might be based on the actual console hardware not on the
+        // video mode you set in the gpu
+        let factor = match self.gpu().gpustat.video_mode() {
+            VideoMode::Ntsc => 715909,
+            VideoMode::Pal => 709379,
+        };
+        let cycles = cycles * factor;
+        let cycles = cycles + self.gpu().gp1state.fract_01;
+        self.gpu_mut().gp1state.fract_01 = cycles / 451584;
+
+        cycles / 451584
+    }
+
+    fn run_video_io(&mut self, by_cpu_cycles: u64) {
+        let cycles = self.cpu_cycles_to_video_cycles(by_cpu_cycles);
+        self.run_video_events(cycles);
+    }
+
+    fn run_video_events(&mut self, advance_by: u64) {
+        let cycles_per_scanline = self.gpu().video_cycles_per_scanline();
+        self.gpu_mut().video_cycle_in_scanline += advance_by;
+        if self.gpu_mut().video_cycle_in_scanline < cycles_per_scanline {
+            // TODO: Timer 1 update
+            return;
+        }
+        let scanlines_to_run = self.gpu().video_cycle_in_scanline / cycles_per_scanline;
+        self.gpu_mut().video_cycle_in_scanline =
+            self.gpu().video_cycle_in_scanline % cycles_per_scanline;
+
+        for _ in 0..scanlines_to_run {
+            let gp1 = &self.gpu().gp1state;
+            let new_vblank = gp1.current_scanline < gp1.display_range_start.y
+                || gp1.current_scanline >= gp1.display_range_end.y;
+
+            // TODO: timer 1 update
+
+            if new_vblank {
+                self.run_vblank();
+            }
+
+            self.gpu_mut().gp1state.current_scanline += 1;
+        }
+
+        // leftover vcycles
+        self.gpu_mut().video_cycle += advance_by;
+    }
+
+    fn run_video_event_io(&mut self, event: VideoEventKind) {}
+}
+
+impl VideoEvents for Emu {}
