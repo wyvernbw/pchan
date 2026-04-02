@@ -4,21 +4,39 @@ use std::ops::RangeInclusive;
 
 use crate::{
     Bus, Emu,
-    cpu::exceptions::{Exception, Exceptions},
-    io::{IO, UnhandledIO, irq::Interrupts},
+    io::{CastIOFrom, CastIOInto, IO, UnhandledIO, irq::Interrupts},
     memory::{GUEST_MEM_MAP, MEM_MAP},
 };
-use bitfield::bitfield;
 
 use super::irq::Irq;
 
+#[derive(Debug, Clone, Default)]
+pub struct TimerState {
+    pub timer_0: Timer,
+    pub timer_1: Timer,
+    pub timer_2: Timer,
+
+    timer_2_fract: u16,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct Timer {
+    value:      TimerCounterValue,
+    target:     TimerTarget,
+    mode:       TimerCounterMode,
+    irq:        Irq,
+    overflowed: bool,
+    hit_target: bool,
+}
+
 #[bitbybit::bitfield(u32, debug)]
+#[derive(Default)]
 pub struct TimerCounterValue {
     #[bits(0..=15, rw)]
     value: u16,
 }
 
-#[derive(Debug, Clone, Copy, d::Deref, d::DerefMut)]
+#[derive(Debug, Clone, Copy, d::Deref, d::DerefMut, Default)]
 pub struct TimerTarget(TimerCounterValue);
 
 ///```md
@@ -50,6 +68,7 @@ pub struct TimerTarget(TimerCounterValue);
 ///  16-31 Garbage (next opcode)
 /// ```
 #[bitbybit::bitfield(u32, debug)]
+#[derive(Default)]
 pub struct TimerCounterMode {
     #[bit(0, rw)]
     sync_on:    bool,
@@ -105,12 +124,24 @@ pub struct AdvanceTimerSummary {
 }
 
 pub trait Timers: Bus + IO + Interrupts {
+    fn init_timers(&mut self) {
+        let timers = self.timers_mut();
+        timers.timer_0.irq = Irq::Irq4Timer0;
+        timers.timer_1.irq = Irq::Irq5Timer1;
+        timers.timer_2.irq = Irq::Irq6Timer2;
+    }
     fn read_timers<T: Copy>(&self, address: u32) -> Result<T, UnhandledIO> {
         let address = address & 0x1fffffff;
         match address {
-            0x1f801100..=0x1f801108 | 0x1f801110..=0x1f801118 | 0x1f801120..=0x1f801128 => Ok(self
-                .mem()
-                .read_region(MEM_MAP.io, GUEST_MEM_MAP.io, address)),
+            0x1f801100 => Ok(self.timers().timer_0.value.io_from_u32()),
+            0x1f801104 => Ok(self.timers().timer_0.mode.io_from_u32()),
+            0x1f801108 => Ok(self.timers().timer_0.target.io_from_u32()),
+            0x1f801110 => Ok(self.timers().timer_1.value.io_from_u32()),
+            0x1f801114 => Ok(self.timers().timer_1.mode.io_from_u32()),
+            0x1f801118 => Ok(self.timers().timer_1.target.io_from_u32()),
+            0x1f801120 => Ok(self.timers().timer_2.value.io_from_u32()),
+            0x1f801124 => Ok(self.timers().timer_2.mode.io_from_u32()),
+            0x1f801128 => Ok(self.timers().timer_2.target.io_from_u32()),
             _ => Err(UnhandledIO(address)),
         }
     }
@@ -118,156 +149,126 @@ pub trait Timers: Bus + IO + Interrupts {
     fn write_timers<T: Copy>(&mut self, address: u32, value: T) -> Result<(), UnhandledIO> {
         let address = address & 0x1fffffff;
         match address {
-            0x1f801100..=0x1f801108 | 0x1f801110..=0x1f801118 | 0x1f801120..=0x1f801128 => {
-                self.mem_mut()
-                    .write_region(MEM_MAP.io, GUEST_MEM_MAP.io, address, value);
-                Ok(())
+            0x1f801100 => {
+                self.timers_mut().timer_0.value =
+                    TimerCounterValue::new_with_raw_value(value.io_into_u32());
             }
-            _ => Err(UnhandledIO(address)),
+            0x1f801104 => {
+                self.timers_mut().timer_0.mode =
+                    TimerCounterMode::new_with_raw_value(value.io_into_u32());
+            }
+            0x1f801108 => {
+                self.timers_mut().timer_0.target =
+                    TimerTarget(TimerCounterValue::new_with_raw_value(value.io_into_u32()));
+            }
+            0x1f801110 => {
+                self.timers_mut().timer_1.value =
+                    TimerCounterValue::new_with_raw_value(value.io_into_u32());
+            }
+            0x1f801114 => {
+                self.timers_mut().timer_1.mode =
+                    TimerCounterMode::new_with_raw_value(value.io_into_u32());
+            }
+            0x1f801118 => {
+                self.timers_mut().timer_1.target =
+                    TimerTarget(TimerCounterValue::new_with_raw_value(value.io_into_u32()));
+            }
+            0x1f801120 => {
+                self.timers_mut().timer_2.value =
+                    TimerCounterValue::new_with_raw_value(value.io_into_u32());
+            }
+            0x1f801124 => {
+                self.timers_mut().timer_2.mode =
+                    TimerCounterMode::new_with_raw_value(value.io_into_u32());
+            }
+            0x1f801128 => {
+                self.timers_mut().timer_2.value =
+                    TimerCounterValue::new_with_raw_value(value.io_into_u32());
+            }
+            _ => return Err(UnhandledIO(address)),
         }
+        Ok(())
     }
 
     fn run_timer_pipeline(&mut self) {
-        let adv = self.advance_timers();
-        self.trigger_timer_updates(adv);
-    }
-
-    fn timer_counter_mode(&self, timer: u8) -> TimerCounterMode {
-        debug_assert!((0..=4).contains(&timer));
-
-        let timer_address = 0x1f801104 + timer as u32 * 0x10;
-
-        self.read_timers::<TimerCounterMode>(timer_address).unwrap()
-    }
-
-    fn timer_counter_target(&self, timer: u8) -> TimerTarget {
-        debug_assert!((0..=4).contains(&timer));
-
-        let timer_address = 0x1f801108 + timer as u32 * 0x10;
-
-        self.read_timers::<TimerTarget>(timer_address).unwrap()
-    }
-
-    fn timer_counter_value(&self, timer: u8) -> TimerCounterValue {
-        debug_assert!((0..=4).contains(&timer));
-
-        let timer_address = 0x1f801100 + timer as u32 * 0x10;
-
-        self.read_timers::<TimerCounterValue>(timer_address)
-            .unwrap()
-    }
-
-    fn set_timer_counter_value(&mut self, timer: u8, value: TimerCounterValue) {
-        debug_assert!((0..=4).contains(&timer));
-        let timer_address = 0x1f801100 + timer as u32 * 0x10;
-        self.write_timers(timer_address, value).unwrap();
-    }
-
-    fn set_timer_counter_mode(&mut self, timer: u8, value: TimerCounterMode) {
-        debug_assert!((0..=4).contains(&timer));
-        let timer_address = 0x1f801104 + timer as u32 * 0x10;
-        self.write_timers(timer_address, value).unwrap();
-    }
-
-    fn advance_timers(&self) -> AdvanceTimerSummary {
-        let timer_0_address = 0x1f801100;
-        let timer_0 = self
-            .read_timers::<TimerCounterValue>(timer_0_address)
-            .unwrap();
-        let timer_0_value = timer_0.value();
-        // timer 0 is synced to system clock
-        let (new_timer_0_value, _overflowed) =
-            timer_0_value.overflowing_add(self.cpu().d_clock as _);
-
-        // TODO: timer 1 and 2
-
-        AdvanceTimerSummary {
-            timer_0_old: timer_0_value,
-            timer_0_new: new_timer_0_value,
+        let timers = self.timers_mut();
+        if timers.timer_0.mode.irq() {
+            let irq = timers.timer_0.irq;
+            self.trigger_irq(irq);
+        }
+        let timers = self.timers_mut();
+        if timers.timer_1.mode.irq() {
+            let irq = timers.timer_1.irq;
+            self.trigger_irq(irq);
+        }
+        let timers = self.timers_mut();
+        if timers.timer_2.mode.irq() {
+            let irq = timers.timer_2.irq;
+            self.trigger_irq(irq);
         }
     }
 
-    fn check_target_range(
-        mut timer_mode: TimerCounterMode,
-        mut timer_value: TimerCounterValue,
-        range: impl Into<RangeInclusive<u16>>,
-        target: u16,
-        new_value: u16,
-    ) -> (TimerCounterMode, TimerCounterValue) {
-        let range = range.into();
-        if range.contains(&target) {
-            timer_mode.set_reached_target(true);
-
-            if timer_mode.irq_on_target() {
-                timer_value.set_value(new_value);
-                // irq
-                timer_mode.set_irq(true);
-            }
-
-            if timer_mode.reset_mode() == TimerResetMode::OnTarget {
-                timer_value.set_value(0);
-            }
+    fn timers_advance_by_cpu(&mut self, cycles: u16) {
+        let timers = self.timers_mut();
+        if timers.timer_0.check_source([0x0, 0x2]) {
+            timers.timer_0.tick_by(cycles);
         }
-        (timer_mode, timer_value)
-    }
-
-    fn trigger_timer_updates(&mut self, adv: AdvanceTimerSummary) {
-        // timer 0
-        let timer_0_mode = self.timer_counter_mode(0);
-        let timer_0_target = self.timer_counter_target(0);
-        let mut new_timer_0_mode = timer_0_mode;
-        let mut new_timer_0_value = self.timer_counter_value(0);
-
-        let overflowed = adv.timer_0_new < adv.timer_0_old;
-
-        if overflowed {
-            new_timer_0_value.set_value(adv.timer_0_new);
-            new_timer_0_mode.set_reached_overflow(true);
-            if timer_0_mode.irq_on_overflow() {
-                new_timer_0_mode.set_irq(true);
-            }
+        if timers.timer_1.check_source([0x0, 0x2]) {
+            timers.timer_1.tick_by(cycles);
         }
-
-        let target_value = timer_0_target.value();
-        // if timer overflows, you have to check 2 ranges:
-        // |0 ###### now ...... then ###### u32::MAX |
-        // +----------->        |-------------------->
-        //   range a                    range b
-        let (new_timer_0_mode, new_timer_0_value) = match overflowed {
-            true => {
-                // check both ranges
-                let (mode, value) = Self::check_target_range(
-                    new_timer_0_mode,
-                    new_timer_0_value,
-                    adv.timer_0_old..=u16::MAX,
-                    target_value,
-                    adv.timer_0_new,
-                );
-                let (mode, value) = Self::check_target_range(
-                    mode,
-                    value,
-                    0..=adv.timer_0_new,
-                    target_value,
-                    adv.timer_0_new,
-                );
-                (mode, value)
-            }
-            false => Self::check_target_range(
-                new_timer_0_mode,
-                new_timer_0_value,
-                adv.timer_0_old..=adv.timer_0_new,
-                target_value,
-                adv.timer_0_new,
-            ),
-        };
-
-        self.set_timer_counter_value(0, new_timer_0_value);
-        self.set_timer_counter_mode(0, new_timer_0_mode);
-
-        if new_timer_0_mode.irq() {
-            self.trigger_irq(Irq::Irq4Timer0);
+        if timers.timer_2.check_source([0x0, 0x1]) {
+            timers.timer_2.tick_by(cycles);
+        } else {
+            timers.timer_2.tick_by(cycles / 8 + timers.timer_2_fract);
+            timers.timer_2_fract = cycles % 8;
         }
     }
 }
 
 impl Timers for Emu {}
+
+impl Timer {
+    pub fn tick_by(&mut self, d_clock: u16) {
+        let (value, overflowed) = self.value.value().overflowing_add(d_clock);
+        if overflowed && self.target.value() > self.value.value() {
+            self.hit_target = true;
+        }
+        self.value.set_value(value);
+        self.overflowed = overflowed;
+    }
+
+    pub fn trigger_updates(&mut self) {
+        if self.overflowed {
+            self.mode.set_reached_overflow(true);
+            if self.mode.irq_on_overflow() {
+                self.mode.set_irq(true);
+            }
+        }
+
+        if self.mode.irq_on_overflow() && self.overflowed {
+            self.mode.set_irq(true);
+            if self.mode.reset_mode() == TimerResetMode::OnOverflow {
+                self.value.set_value(0);
+            }
+        }
+        if self.mode.irq_on_target() && self.hit_target {
+            self.mode.set_irq(true);
+            if self.mode.reset_mode() == TimerResetMode::OnTarget {
+                self.value.set_value(0);
+            }
+        }
+    }
+
+    pub fn check_source(&self, flags: [u8; 2]) -> bool {
+        let source = self.mode.source().as_u8();
+        flags.contains(&source)
+    }
+}
+
+impl TimerState {
+    pub fn trigger_hblank(&mut self) {
+        if self.timer_1.check_source([1, 3]) {
+            self.timer_1.tick_by(1);
+        }
+    }
+}

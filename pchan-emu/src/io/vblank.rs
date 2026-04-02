@@ -8,7 +8,8 @@ pub const CPU_FREQ: u32 = 33_868_800;
 pub const NTSC_CYCLES: u32 = CPU_FREQ / 60;
 
 pub trait VBlank: Interrupts + Gpu {
-    fn run_vblank(&mut self) {
+    #[deprecated]
+    fn run_poll_vblank(&mut self) {
         let even_odd = self.gpu().gpustat.even_odd_in_vblank();
         let mut cycles = &mut self.cpu_mut().vblank_timer;
         while *cycles >= NTSC_CYCLES {
@@ -25,6 +26,17 @@ pub trait VBlank: Interrupts + Gpu {
 
             cycles = &mut self.cpu_mut().vblank_timer;
         }
+    }
+
+    fn run_vblank(&mut self) {
+        let even_odd = self.gpu().gpustat.even_odd_in_vblank();
+        self.gpu_mut()
+            .gpustat
+            .set_even_odd_in_vblank(DrawEvenOdd::EvenOrVBlank);
+        self.flush_draw_calls();
+        self.trigger_irq(Irq::Irq0Vblank);
+
+        self.gpu_mut().flip_even_odd(Some(even_odd));
     }
 }
 

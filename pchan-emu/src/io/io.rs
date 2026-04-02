@@ -4,7 +4,7 @@ use tracing::instrument;
 
 use crate::bootloader::Bootloader;
 use crate::cpu::exceptions::Exceptions;
-use crate::gpu::Gpu;
+use crate::gpu::{Gpu, VideoEvents};
 use crate::io::dma::Dma;
 use crate::io::irq::Interrupts;
 use crate::io::timers::Timers;
@@ -23,14 +23,20 @@ impl Emu {
     pub fn run_io(&mut self) {
         self.cpu_mut().vblank_timer = self.cpu().vblank_timer.wrapping_add(self.cpu().d_clock);
         self.cpu_mut().cycles = self.cpu().cycles.wrapping_add(self.cpu().d_clock as u64);
-        self.run_timer_pipeline();
-        self.run_io_kernel_functions();
 
         // gpu commands must run before dma to ensure gp0 fifo is cleared
         self.run_gpu_commands();
+        self.run_video_io(self.cpu.d_clock as u64);
+
+        let mut d_clock = self.cpu.d_clock;
+        while d_clock > 0 {
+            self.timers_advance_by_cpu(d_clock.min(u16::MAX as u32) as u16);
+            self.run_timer_pipeline();
+            d_clock = d_clock.saturating_sub(u16::MAX as u32);
+        }
+        self.run_io_kernel_functions();
 
         self.run_dma_transfers();
-        self.run_vblank();
         self.run_irq_io();
         self.run_exceptions_io();
         #[cfg(feature = "amidog-tests")]
