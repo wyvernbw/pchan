@@ -201,7 +201,7 @@ pub trait Gpu: Bus + Interrupts {
                 self.trigger_irq(Irq::Irq1Gpu);
                 Gp0::WaitingForCmd
             }
-            0xa0 => {
+            0xa0..=0xbf => {
                 tracing::info!("start cpu to vram copy");
                 self.gpu_mut().gpustat.set_ready_recv_cmd(false);
                 Gp0::CpRectCpuToVram(Gp0CpRect::RecvDest)
@@ -303,22 +303,18 @@ pub trait Gpu: Bus + Interrupts {
                 Gp0::WaitingForCmd => self.gp0reduce(cmd),
                 Gp0::CpRectCpuToVram(Gp0CpRect::RecvDest) => {
                     let dest: VramCoord = unsafe { transmute(value) };
+                    let dest = dest.copy_cmd_pos_mask();
                     tracing::info!("cpu to vram copy destination: {dest:?}");
                     Gp0::CpRectCpuToVram(Gp0CpRect::RecvSize { dest })
                 }
                 Gp0::CpRectCpuToVram(Gp0CpRect::RecvSize { dest }) => {
                     let size: VramCoord = unsafe { transmute(value) };
+                    let size = size.copy_cmd_size_mask();
                     tracing::info!("cpu to vram copy size: {size:?}");
-                    assert!(size.x != 0, "found zero!");
-                    assert!(size.y != 0, "found zero!");
                     Gp0::CpRectCpuToVram(Gp0CpRect::RecvData(VramCursor::new(*dest, *dest + size)))
                 }
                 Gp0::CpRectCpuToVram(Gp0CpRect::RecvData(cursor)) => {
                     let mut cursor = *cursor;
-                    let progress = cursor.curr.x - cursor.start.x
-                        + (cursor.curr.y - cursor.start.y) * (cursor.border.x - cursor.start.x);
-                    let done =
-                        (cursor.border.x - cursor.start.x) * (cursor.border.y - cursor.start.y);
                     for (at, halfword) in cursor.iter().take(2).zip(halfwords(value)) {
                         self.gpu_mut().vram_write(at, halfword);
                     }
@@ -334,17 +330,19 @@ pub trait Gpu: Bus + Interrupts {
 
                 Gp0::CpRectVramToCpu(Gp0CpRect::RecvDest) => {
                     let dest: VramCoord = unsafe { transmute(value) };
+                    let dest = dest.copy_cmd_pos_mask();
                     Gp0::CpRectVramToCpu(Gp0CpRect::RecvSize { dest })
                 }
 
                 Gp0::CpRectVramToCpu(Gp0CpRect::RecvSize { dest }) => {
                     let dest = *dest;
                     let size: VramCoord = unsafe { transmute(value) };
+                    let size = size.copy_cmd_size_mask();
 
                     self.gpu_mut().gpustat.set_ready_send_vram(true);
                     Gp0::CpRectVramToCpu(Gp0CpRect::RecvData(VramCursor::new(dest, dest + size)))
                 }
-                // cancel vram to cpu
+                // cancel vram to cpu?
                 Gp0::CpRectVramToCpu(Gp0CpRect::RecvData(_)) => self.gpu().gp0.clone(),
                 Gp0::DrawRectDecode(decoder) => {
                     let decoder = decoder.advance(value);
@@ -610,6 +608,24 @@ impl VramCoord {
         if self.y >= 512 {
             self.y = 0;
         }
+        self
+    }
+
+    pub fn copy_cmd_pos_mask(mut self) -> Self {
+        self.x &= 0x3ff;
+        self.y &= 0x1ff;
+        self
+    }
+
+    pub fn copy_cmd_size_mask(mut self) -> Self {
+        if self.x == 0 {
+            self.x = 0x400;
+        }
+        if self.y == 0 {
+            self.y = 0x200;
+        }
+        self.x = ((self.x - 1) & 0x3ff) + 1;
+        self.y = ((self.y - 1) & 0x1ff) + 1;
         self
     }
 }
