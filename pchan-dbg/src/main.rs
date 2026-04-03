@@ -16,6 +16,7 @@ use std::borrow::Cow;
 use std::collections::{HashSet, VecDeque};
 use std::process::Stdio;
 use std::sync::Arc;
+use std::time::Duration;
 
 use color_eyre::Result;
 use color_eyre::eyre::Context;
@@ -68,6 +69,8 @@ async fn main() -> Result<()> {
         .event_msg(Msg::Event)
         .quit_signal(|_, msg| matches!(msg, Msg::Quit))
         .enable_mouse(true)
+        // 60 fps - for vram viewer
+        .fps(Duration::from_micros(16670))
         .run()
         .await?;
 

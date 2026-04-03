@@ -1,6 +1,8 @@
 pub mod draw_call;
 
 use std::mem::transmute;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::AtomicUsize;
 use std::time::Instant;
 
 use arbitrary_int::prelude::*;
@@ -37,6 +39,8 @@ use crate::io::irq::Irq;
 use crate::io::vblank::VBlank;
 use crate::memory::kb;
 use crate::memory::mb;
+
+pub static VBLANK_COUNT: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone)]
 pub struct Conn<D> {
@@ -496,7 +500,10 @@ pub trait Gpu: Bus + Interrupts {
         self.gp0_cmd_queue_flush();
         self.gp1_cmd_queue_flush();
         self.gpu_mut().compute_dma_request();
+        self.poll_draw_result();
+    }
 
+    fn poll_draw_result(&mut self) {
         if let Ok(Some(vram)) = self.gpu().conn.vram_out_chan.1.try_recv() {
             tracing::info!("received gpu result (vram)");
             self.gpu_mut().vram = vram;
@@ -1130,9 +1137,10 @@ pub trait VideoEvents: Gpu + VBlank {
         self.gpu_mut().dp.video_cycle_in_scanline =
             self.gpu().dp.video_cycle_in_scanline % cycles_per_scanline;
 
-        for y in 0..scanlines_to_run {
+        for _ in 0..scanlines_to_run {
             let dp = &self.gpu().dp;
-            let new_vblank = !dp.in_vblank() && dp.in_vblank_with(dp.current_scanline + y);
+            let new_vblank = !dp.in_vblank() && dp.in_vblank_with(dp.current_scanline + 1);
+            tracing::trace!(?new_vblank);
 
             // DONE: timer 1 update
             self.timers_mut().trigger_hblank();
@@ -1142,12 +1150,12 @@ pub trait VideoEvents: Gpu + VBlank {
             }
 
             self.gpu_mut().dp.current_scanline += 1;
-        }
 
-        let dp = &mut self.gpu_mut().dp;
-        if dp.current_scanline >= Display::NTSC_TOTAL_LINES {
-            dp.current_scanline = 0;
-            self.gpu_mut().flip_even_odd(None);
+            let dp = &mut self.gpu_mut().dp;
+            if dp.current_scanline >= Display::NTSC_TOTAL_LINES {
+                dp.current_scanline = 0;
+                self.gpu_mut().flip_even_odd(None);
+            }
         }
     }
 }
@@ -1192,7 +1200,7 @@ impl Display {
     }
 
     fn in_vblank_with(&self, line: u64) -> bool {
-        (self.v_start()..self.v_end()).contains(&line)
+        !(self.v_start()..self.v_end()).contains(&line)
     }
 
     pub fn cycles_hblank_pending(&self) -> u64 {

@@ -12,6 +12,7 @@ use manatui::tea::HotLoop;
 use manatui::tea::focus::{DEFAULT_KEYMAP, Focus, VIM_KEYMAP};
 use manatui_tea_ui::common::FocusItemState;
 use pchan_emu::Bus;
+use pchan_emu::gpu::VBLANK_COUNT;
 use ratatui_image::picker::Picker;
 use ratatui_image::protocol::Protocol;
 use ratatui_image::protocol::halfblocks::Halfblocks;
@@ -54,6 +55,8 @@ impl Widget for VramCanvasWidget {
         }
         let vram = &self.dbg_view.emu().gpu().vram;
         let mut hasher = DefaultHasher::new();
+        format!("vblank #{}", VBLANK_COUNT.load(Ordering::Relaxed)).render(area, buf);
+        let area = area.offset(layout::Offset { x: 0, y: 1 });
         vram.hash(&mut hasher);
         let hash = hasher.finish();
         let old_hash = VRAM_HASH.load(Ordering::Acquire);
@@ -155,7 +158,7 @@ pub fn vram_canvas_view(state: &VramCanvas, dbg_view: DebugView) -> View {
             {state.focus.area_ref.clone()}
             {state.focus.hit_test.clone()}
             Width::grow() Height::grow()
-            HotLoop
+            // HotLoop
         >
             <VramCanvasWidget .debug_view={dbg_view} Width::grow() Height::grow() />
         </Block>

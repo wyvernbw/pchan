@@ -5,6 +5,7 @@ use pchan_emu::{
     bootloader::Bootloader,
     dynarec_v2::{DynarecBlock, PipelineV2, PipelineV2Stage},
     gpu::Gpu,
+    io::vblank::VBlank,
 };
 use pchan_gpu::Renderer;
 use pchan_utils::hex;
@@ -12,6 +13,7 @@ use std::{
     collections::{HashSet, VecDeque},
     path::PathBuf,
     sync::Arc,
+    time::Duration,
 };
 use tokio::{task::JoinHandle, time::Instant};
 use tracing::instrument;
@@ -165,7 +167,7 @@ impl EmuTask {
         let cycles_since_last_sample = self
             .cycles_since_last_sample(self.emu.cpu.cycles)
             .unwrap_or(u64::MAX);
-        if cycles_since_last_sample >= 8_000_000 {
+        if cycles_since_last_sample >= 8_000 {
             let sample = (self.emu.cpu().cycles, Instant::now());
             const MAX_SAMPLES: usize = 256;
             self.cycle_samples.push_back(sample);
@@ -206,6 +208,24 @@ impl EmuTask {
             }
             PipelineV2::Called { pc, .. } => {
                 self.try_send_res(EmuResponse::CalledFunc(*pc));
+
+                if self.emu.consume_vblank_signal() {
+                    let target = Duration::from_nanos(16_666_667); // 59.94hz, more precise
+                    let deadline = self.emu.gpu.last_vblank + target;
+                    let now = Instant::now();
+
+                    if let Some(remaining) = deadline.checked_duration_since(now.into_std()) {
+                        // coarse sleep
+                        let coarse = remaining.saturating_sub(Duration::from_micros(200));
+                        if !coarse.is_zero() {
+                            std::thread::sleep(coarse);
+                        }
+                        // spin tail
+                        while Instant::now() < deadline.into() {}
+                    }
+
+                    self.emu.gpu_mut().last_vblank = Instant::now().into_std();
+                }
             }
             PipelineV2::Cached { dynarec, scheduler } => {}
         };
