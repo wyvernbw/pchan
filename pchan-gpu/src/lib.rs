@@ -399,16 +399,12 @@ impl<'a> Iterator for TriangulateIter<'a> {
         let idx = self.idx;
         self.idx += 1;
 
-        if self.values.len() < 3 {
+        if idx >= (self.values.len() - 2) * 3 {
             return None;
         }
 
         let triangle = idx / 3;
         let corner = idx % 3;
-
-        if triangle > self.values.len() / 3 - 1 {
-            return None;
-        }
 
         let vertex_idx = match corner {
             0 => 0,

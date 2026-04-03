@@ -27,7 +27,7 @@ fn rgb8_split_color(value: u32) -> vec3<f32> {
     // 0xrrggbb
     // we need
     // 0xbbggrr (r is lsb)
-    return unpack4x8unorm(value).bgr;
+    return unpack4x8unorm(value).rgb;
 }
 
 @vertex

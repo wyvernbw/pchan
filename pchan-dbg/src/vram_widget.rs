@@ -8,6 +8,7 @@ use image::{DynamicImage, ImageBuffer, Rgb};
 use manatui::prelude::canvas::{Canvas, Rectangle};
 use manatui::prelude::*;
 use manatui::ratatui::prelude::*;
+use manatui::tea::HotLoop;
 use manatui::tea::focus::{DEFAULT_KEYMAP, Focus, VIM_KEYMAP};
 use manatui_tea_ui::common::FocusItemState;
 use pchan_emu::Bus;
@@ -154,6 +155,7 @@ pub fn vram_canvas_view(state: &VramCanvas, dbg_view: DebugView) -> View {
             {state.focus.area_ref.clone()}
             {state.focus.hit_test.clone()}
             Width::grow() Height::grow()
+            HotLoop
         >
             <VramCanvasWidget .debug_view={dbg_view} Width::grow() Height::grow() />
         </Block>
