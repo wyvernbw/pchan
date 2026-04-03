@@ -279,6 +279,10 @@ pub trait Gpu: Bus + Interrupts {
                 self.gpu_mut().gpustat.set_ready_recv_cmd(false);
                 Gp0::DrawRectDecode(DrawRectDecoder::new(cmd.raw_value()))
             }
+            0x80..=0x9f => {
+                self.gpu_mut().gpustat.set_ready_recv_cmd(false);
+                Gp0::CpRectVramToVram(Gp0VramCpRect::RecvSrc)
+            }
             value => todo!("gp0 command: {}", hex(value)),
         }
     }
@@ -344,6 +348,33 @@ pub trait Gpu: Bus + Interrupts {
                 }
                 // cancel vram to cpu?
                 Gp0::CpRectVramToCpu(Gp0CpRect::RecvData(_)) => self.gpu().gp0.clone(),
+
+                // vram to vram copy
+                Gp0::CpRectVramToVram(Gp0VramCpRect::RecvSrc) => {
+                    let src: VramCoord = unsafe { transmute(value) };
+                    let src = src.copy_cmd_pos_mask();
+                    Gp0::CpRectVramToVram(Gp0VramCpRect::RecvDest { src })
+                }
+                Gp0::CpRectVramToVram(Gp0VramCpRect::RecvDest { src }) => {
+                    let dest: VramCoord = unsafe { transmute(value) };
+                    let dest = dest.copy_cmd_pos_mask();
+                    Gp0::CpRectVramToVram(Gp0VramCpRect::RecvSize { src: *src, dest })
+                }
+                Gp0::CpRectVramToVram(Gp0VramCpRect::RecvSize { src, dest }) => {
+                    let size: VramCoord = unsafe { transmute(value) };
+                    let size = size.copy_cmd_size_mask();
+                    let mut src_cursor = VramCursor::new(*src, size);
+                    let mut dest_cursor = VramCursor::new(*dest, size);
+
+                    for (src, dest) in src_cursor.iter().zip(dest_cursor.iter()) {
+                        let value = self.gpu_mut().vram_read_direct(src);
+                        self.gpu_mut().vram_write(dest, value);
+                    }
+
+                    self.gpu_mut().gpustat.set_ready_recv_cmd(true);
+                    Gp0::WaitingForCmd
+                }
+
                 Gp0::DrawRectDecode(decoder) => {
                     let decoder = decoder.advance(value);
                     match decoder {
@@ -523,7 +554,8 @@ impl GpuState {
                 .unwrap_or_else(|| todo!("gpu get info {}", hex(value))),
         )
     }
-    fn vram_write(&mut self, coord: VramCoord, value: u16) {
+
+    fn vram_flush_render(&mut self) {
         if self.waiting_on_render {
             let vram = self
                 .conn
@@ -535,16 +567,26 @@ impl GpuState {
             self.vram = vram;
             self.waiting_on_render = false;
         }
+    }
+
+    fn vram_write(&mut self, coord: VramCoord, value: u16) {
+        self.vram_flush_render();
         let coord = coord.wrap();
         let addr = coord.x as usize + coord.y as usize * kb(1);
         self.vram[addr] = value;
     }
 
-    /// returns value through `self.gp0read`
-    fn vram_read(&mut self, coord: VramCoord, idx: usize) {
+    fn vram_read_direct(&mut self, coord: VramCoord) -> u16 {
+        self.vram_flush_render();
         let coord = coord.wrap();
         let addr = coord.x as usize + coord.y as usize * kb(1);
-        self.gp0read[idx] = self.vram[addr];
+        self.vram[addr]
+    }
+
+    /// returns value through `self.gp0read`
+    fn vram_read(&mut self, coord: VramCoord, idx: usize) {
+        let value = self.vram_read_direct(coord);
+        self.gp0read[idx] = value;
     }
 
     pub fn compute_dma_request(&mut self) {
@@ -582,8 +624,12 @@ pub fn halfwords(word: u32) -> [u16; 2] {
 #[derive(Debug, Clone)]
 pub enum Gp0 {
     WaitingForCmd,
+
+    // copy commands
     CpRectCpuToVram(Gp0CpRect),
     CpRectVramToCpu(Gp0CpRect),
+    CpRectVramToVram(Gp0VramCpRect),
+
     DrawPolygonDecode(DrawPolygonDecoder),
     DrawLineDecode(DrawLineDecoder),
     DrawRectDecode(DrawRectDecoder),
@@ -711,6 +757,13 @@ pub enum Gp0CpRect {
     RecvDest,
     RecvSize { dest: VramCoord },
     RecvData(VramCursor),
+}
+
+#[derive(Debug, Clone)]
+pub enum Gp0VramCpRect {
+    RecvSrc,
+    RecvDest { src: VramCoord },
+    RecvSize { src: VramCoord, dest: VramCoord },
 }
 
 #[bitfield(u32)]
@@ -1156,7 +1209,6 @@ pub trait VideoEvents: Gpu + VBlank {
         for _ in 0..scanlines_to_run {
             let dp = &self.gpu().dp;
             let new_vblank = !dp.in_vblank() && dp.in_vblank_with(dp.current_scanline + 1);
-            tracing::trace!(?new_vblank);
 
             // DONE: timer 1 update
             self.timers_mut().trigger_hblank();
