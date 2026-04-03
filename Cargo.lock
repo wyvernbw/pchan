@@ -3014,6 +3014,7 @@ dependencies = [
  "criterion",
  "flume",
  "glam",
+ "heapless",
  "kanal",
  "pchan-emu",
  "pchan-macros",

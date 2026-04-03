@@ -286,6 +286,14 @@ impl Quad {
                 .with_uv(top_left.uv.uv + u8vec2(tex_size.x, tex_size.y)),
         }
     }
+    fn vertices(self) -> [Vertex; 4] {
+        [
+            self.top_left,
+            self.top_right,
+            self.bottom_left,
+            self.bottom_right,
+        ]
+    }
     fn triangulate(self) -> [Vertex; 6] {
         [
             self.top_left,
@@ -304,7 +312,7 @@ impl Scene {
         for cmd in cmds {
             match &cmd.inner {
                 DrawCallKind::Rect(draw_rect) => {
-                    _ = scene.add_draw_rect_draw_call(draw_rect);
+                    // _ = scene.add_draw_rect_draw_call(draw_rect);
                 }
                 DrawCallKind::Polygon(draw_polygon) => {
                     _ = scene.add_draw_polygon_draw_call(draw_polygon);
@@ -340,8 +348,10 @@ impl Scene {
                 Quad::new_with_topleft_and_size(top_left, u16vec2(16, 16))
             }
         };
-        let vertices = quad.triangulate();
-        self.vertex_buf.extend_from_slice(&vertices);
+        let mut vertices = triangulate_quad(&quad.vertices());
+        ensure_vertex_order(&mut vertices, [0, 1, 2]);
+        ensure_vertex_order(&mut vertices, [3, 4, 5]);
+        self.vertex_buf.extend(vertices);
         Ok(())
     }
 
@@ -355,7 +365,7 @@ impl Scene {
             true => TextureColorMode::C15BitDirect,
             false => TextureColorMode::C24BitDirect,
         };
-        let vertices = match shading {
+        let mut vertices = match shading {
             // DONE: Goraud shading
             Shading::Flat => draw_polygon
                 .attrs
@@ -366,7 +376,7 @@ impl Scene {
                     color_mode,
                     uv: attr.uv.unwrap_or_default(),
                 })
-                .collect::<Vec<_>>(),
+                .collect::<heapless::Vec<_, 4>>(),
             Shading::Gouraud => draw_polygon
                 .attrs
                 .iter()
@@ -374,62 +384,52 @@ impl Scene {
                     pos: attr.vertex,
                     color: attr
                         .color
-                        .unwrap_or(U8Vec3::from_array(header.color().to_ne_bytes())),
+                        .unwrap_or(U8Vec3::from_array(color.to_ne_bytes())),
                     color_mode,
                     uv: attr.uv.unwrap_or_default(),
                 })
                 .collect(),
         };
+        match header.vertex_count() {
+            pchan_emu::gpu::draw_call::DrawPolygonVertexCount::Three => {
+                assert_eq!(vertices.len(), 3);
+                ensure_vertex_order(&mut vertices, [0, 1, 2]);
+                self.vertex_buf.extend(vertices);
+            }
+            pchan_emu::gpu::draw_call::DrawPolygonVertexCount::Four => {
+                assert_eq!(vertices.len(), 4);
+                let mut vertices = triangulate_quad(&vertices);
+                ensure_vertex_order(&mut vertices, [0, 1, 2]);
+                ensure_vertex_order(&mut vertices, [3, 4, 5]);
 
-        self.vertex_buf.extend(triangulate(&vertices));
+                self.vertex_buf.extend_from_slice(&vertices);
+            }
+        };
 
         Ok(())
     }
 }
 
-struct TriangulateIter<'a> {
-    values: &'a [Vertex],
-    idx: usize,
+/// PSX vertex order according to PSX SPX by Martin Korth
+///
+/// https://psx-spx.consoledev.net/graphicsprocessingunitgpu/#notes
+fn triangulate_quad(vertices: &[Vertex]) -> [Vertex; 6] {
+    let v0 = vertices[0];
+    let v1 = vertices[1];
+    let v2 = vertices[2];
+    let v3 = vertices[3];
+    [v0, v1, v2, v1, v2, v3]
 }
 
-impl<'a> Iterator for TriangulateIter<'a> {
-    type Item = &'a Vertex;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let idx = self.idx;
-        self.idx += 1;
-
-        if idx >= (self.values.len() - 2) * 3 {
-            return None;
-        }
-
-        let triangle = idx / 3;
-        let corner = idx % 3;
-
-        let vertex_idx = match corner {
-            0 => 0,
-            1 => triangle + 1,
-            2 => triangle + 2,
-            _ => unreachable!(),
-        };
-
-        Some(&self.values[vertex_idx])
-    }
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = if self.values.len() < 3 {
-            0
-        } else {
-            let total = (self.values.len() - 2) * 3;
-            total.saturating_sub(self.idx)
-        };
-        (remaining, Some(remaining))
-    }
-}
-
-fn triangulate(vertices: &[Vertex]) -> TriangulateIter<'_> {
-    TriangulateIter {
-        values: vertices,
-        idx: 0,
+/// Credits to jsgroth at https://jsgroth.dev/blog/posts/ps1-diamond/#preparing-the-scene
+fn ensure_vertex_order(vertex_buf: &mut [Vertex], indices: [usize; 3]) {
+    let [v0, v1, v2] = vertex_buf
+        .get_disjoint_mut(indices)
+        .expect("indices must be disjoint");
+    let cross_product_z = (v1.pos.x - v0.pos.x) * (v2.pos.y - v0.pos.y)
+        - (v1.pos.y - v0.pos.y) * (v2.pos.x - v0.pos.x);
+    if cross_product_z < 0 {
+        std::mem::swap(v0, v1);
     }
 }
 

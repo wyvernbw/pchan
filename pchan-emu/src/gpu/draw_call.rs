@@ -223,6 +223,25 @@ pub struct DrawPolygon {
     pub attrs:  heapless::Vec<DrawPolygonAttribute, 4>,
 }
 
+impl DrawPolygon {
+    pub fn tri_attrs(&self) -> [DrawPolygonAttribute; 3] {
+        [
+            self.attrs[0].clone(),
+            self.attrs[1].clone(),
+            self.attrs[2].clone(),
+        ]
+    }
+
+    pub fn quad_attrs(&self) -> [DrawPolygonAttribute; 4] {
+        [
+            self.attrs[0].clone(),
+            self.attrs[1].clone(),
+            self.attrs[2].clone(),
+            self.attrs[3].clone(),
+        ]
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct DrawPolygonAttribute {
     pub color:  Option<U8Vec3>,
@@ -261,7 +280,7 @@ pub struct DrawPolygonHeader {
 
 #[bitenum(u1, exhaustive = true)]
 #[derive(Debug)]
-enum DrawPolygonVertexCount {
+pub enum DrawPolygonVertexCount {
     Three = 0x0,
     Four  = 0x1,
 }
