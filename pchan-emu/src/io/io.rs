@@ -19,6 +19,7 @@ pub mod tty;
 pub mod vblank;
 
 impl Emu {
+    #[instrument("io", skip_all, fields(pc = %hex(self.cpu.pc)))]
     pub fn run_io(&mut self) {
         self.cpu_mut().vblank_timer = self.cpu().vblank_timer.wrapping_add(self.cpu().d_clock);
         self.cpu_mut().cycles = self.cpu().cycles.wrapping_add(self.cpu().d_clock as u64);
@@ -53,6 +54,17 @@ impl Emu {
             }
             _ => {}
         }
+    }
+
+    pub fn pending_event(&self) -> u64 {
+        let video_event = self.gpu().dp.pending_event().1;
+        let video_event = self.video_cycles_to_cpu_cycles_approx(video_event);
+        let dma_event = self
+            .dma()
+            .pending_event()
+            .unwrap_or(u64::MAX)
+            .saturating_sub(self.cpu.cycles);
+        video_event.min(dma_event)
     }
 }
 

@@ -49,21 +49,20 @@ impl Default for DmaState {
 /// These ports control DMA at the CPU-side. In most cases, you'll additionally
 /// need to initialize an address (and transfer direction, transfer enabled, etc.)
 /// at the remote-side (eg. at the GPU-side for DMA2).
-pub trait Dma: Bus + IO + Fastmem + Interrupts + DmaTransports {
+pub trait Dma: Bus + IO + Fastmem + Interrupts + Gpu {
     #[pchan_instrument_read("dma:r")]
     fn read<T: Copy>(&self, address: u32) -> IOResult<T> {
         let address = address & 0x1fffffff;
         match address {
             0x1f801080..=0x1f80108f => todo!("read at dma0 (MDECin)"),
             0x1f801090..=0x1f80109f => todo!("read at dma1 (MDECout)"),
-            // 0x1f8010a0..=0x1f8010af => todo!("read at dma2 (gpu)"),
 
             // dma 2
             0x1f8010a0 => Ok(self.dma().dma2.madr.addr().io_from_u32()),
             0x1f8010a4 => todo!("read at dma2bcr (gpu bcr)"),
             0x1f8010a8 => {
                 let chcr = self.dma().dma2.chcr;
-                tracing::trace!("read at dma2chcr (gpu chcr)");
+                tracing::trace!("read at dma2chcr (gpu chcr): {:?}", chcr.transfer());
                 Ok(chcr.io_from_u32())
             }
 
@@ -179,7 +178,7 @@ pub trait Dma: Bus + IO + Fastmem + Interrupts + DmaTransports {
     fn dma_schedule(&mut self, event: DmaEvent) {
         if let Some(slice) = event.slice {
             let cycles_per_step = event.init_chan.slice_cycles();
-            let mut prev_upcoming = 0;
+            let mut upcoming = event.upcoming;
 
             let start = slice.idx as u16;
             let end = event.init_chan.bcr.s1_block_count();
@@ -191,8 +190,6 @@ pub trait Dma: Bus + IO + Fastmem + Interrupts + DmaTransports {
                     idx: i as u32,
                 };
                 addr += addr_step as u32 * 0x4;
-                let upcoming = prev_upcoming + cycles_per_step;
-                prev_upcoming = upcoming;
                 self.dma_mut()
                     .queue
                     .heap
@@ -203,6 +200,7 @@ pub trait Dma: Bus + IO + Fastmem + Interrupts + DmaTransports {
                         dma_t: event.dma_t,
                     })
                     .unwrap();
+                upcoming += cycles_per_step;
             }
         } else {
             self.dma_mut().queue.heap.push(event).unwrap();
@@ -247,6 +245,167 @@ pub trait Dma: Bus + IO + Fastmem + Interrupts + DmaTransports {
             dicr.bus_error() || (dicr.master_on() && dicr.combined_irq_flags().as_u8() > 0);
         dicr.set_master_irq(new_master_irq);
     }
+
+    fn create_dma_event(&self, channel: DmaChannel, kind: DmaTransportKind) -> DmaEvent {
+        let clock = self.cpu().cycles;
+        match channel.chcr.sync_mode() {
+            SyncMode::Burst => DmaEvent {
+                upcoming:  clock + channel.burst_cycles(),
+                init_chan: channel,
+                slice:     None,
+                dma_t:     kind,
+            },
+            SyncMode::Slice => DmaEvent {
+                upcoming:  clock + channel.slice_cycles(),
+                init_chan: channel,
+                slice:     Some(SliceTransferState {
+                    addr: channel.madr.addr().as_u32(),
+                    idx:  0,
+                }),
+                dma_t:     kind,
+            },
+            SyncMode::LinkedList => DmaEvent {
+                upcoming:  clock + channel.linked_list_cycles(self),
+                init_chan: channel,
+                slice:     None,
+                dma_t:     kind,
+            },
+            SyncMode::Reserved => DmaEvent {
+                upcoming:  0,
+                init_chan: channel,
+                slice:     None,
+                dma_t:     kind,
+            },
+        }
+    }
+
+    fn dma2_write_data(&mut self, event: DmaEvent) {
+        let channel = event.init_chan;
+        let direction = channel.chcr.direction();
+        let sync_mode = channel.chcr.sync_mode();
+        match sync_mode {
+            SyncMode::Slice => match direction {
+                TransferDir::DeviceToRam => todo!(),
+                TransferDir::RamToDevice => {
+                    let slice = event
+                        .slice
+                        .expect("event with sync mode slice has no slice state. this is a bug.");
+
+                    let mut addr = slice.addr;
+                    let len = channel.bcr.s1_block_size();
+                    tracing::trace!("dma: transfering slice of {} words...", len);
+                    tracing::trace!(
+                        "dma: current gp0 fifo capacity: {}/{}",
+                        self.gpu().gp0cmd_queue.len(),
+                        self.gpu().gp0cmd_queue.capacity()
+                    );
+                    for _ in 0..len {
+                        let value = Fastmem::read(self, addr).unwrap();
+                        // flushing the queue here is not ideal, as real dma
+                        // would hang until the gpu has capacity for more
+                        // commands. but our commands do not take actual
+                        // time to execute
+                        self.gp0_cmd_queue_push_or_flush(value);
+                        addr += 0x4;
+                    }
+                    // do not mark as done until final event is reached
+                    if slice.idx == channel.bcr.s1_block_count() as u32 - 1 {
+                        self.dma_mut().dma2.set_complete();
+                    }
+                }
+            },
+            SyncMode::Burst => match direction {
+                TransferDir::DeviceToRam => todo!(),
+                TransferDir::RamToDevice => {
+                    let mut addr = channel.madr.addr().as_u32();
+                    for _ in 0..channel.bcr.s0_word_count() {
+                        let value = Fastmem::read(self, addr).unwrap();
+                        self.gp0_cmd_queue_push_or_flush(value);
+                        addr += 0x4;
+                    }
+                    self.dma_mut().dma2.set_complete();
+                }
+            },
+            SyncMode::LinkedList => {
+                let mut addr = channel.madr.addr().as_u32();
+                let mut visited = heapless::index_set::FnvIndexSet::<u32, 2048>::new();
+                let mut count = 0;
+                tracing::trace!("start gp0 linked list traversal");
+                loop {
+                    if count >= 1024 + 128 {
+                        panic!(
+                            "infinite loop detected, dma 2: {channel:#?}\ndpcr: {:#?}",
+                            self.dma().dpcr
+                        );
+                    }
+                    let header = Fastmem::read::<DmaNodeHeader>(self, addr).unwrap();
+                    tracing::info!(header.next = %hex(header.next()), header.len = header.len());
+                    let len = header.len();
+                    for idx in 0..len {
+                        let cmd =
+                            Fastmem::read::<u32>(self, addr + idx as u32 * 0x4 + 0x4).unwrap();
+                        self.gp0_cmd_queue_push_or_flush(cmd);
+                    }
+                    visited.insert(addr).expect(
+                        "bug: dma2 linked list traversal visited set capacity is too small.",
+                    );
+                    addr = header.next().as_u32();
+
+                    // // cycle detected, reschedule later
+                    // //
+                    // // rescheduling here adds a backpressure so the cpu has the chance to execute
+                    // // and break chains in the cycle
+                    // //
+                    // // we might want to allow the chain to run for a few more cycles
+                    // if visited.contains(&addr) {
+                    //     let mut channel = channel;
+                    //     channel.madr.set_addr(u24::new(addr));
+                    //     self.dma_schedule(self.create_dma_event(channel, DmaTransportKind::Gpu));
+                    //     return;
+                    // }
+
+                    count += 1;
+                    if header.is_end_marker() {
+                        break;
+                    }
+                }
+                self.dma_mut().dma2.set_complete();
+                tracing::trace!("end gp0 linked list traversal");
+            }
+            SyncMode::Reserved => todo!(),
+        }
+    }
+
+    fn dma6_write_data(&mut self, event: DmaEvent) {
+        let channel = event.init_chan;
+        let mut word_count = channel.bcr.s0_word_count() as u32;
+        tracing::trace!("dma6 start write:\n{:#?}", channel);
+
+        if word_count == 0 {
+            word_count = 0x10000;
+        }
+
+        let start = channel.madr.addr().as_u32();
+
+        let mut addr = start;
+        // end node is written separately
+        for _ in 0..(word_count - 1) {
+            let next_addr = addr - 0x4;
+            let node = DmaNodeHeader::default().with_next(next_addr.as_());
+            Fastmem::write(self, addr, node).expect("dma6 otc write must go to ram!");
+            addr = next_addr;
+        }
+
+        let end_node = DmaNodeHeader::new_with_raw_value(DmaNodeHeader::END);
+        Fastmem::write(self, addr, end_node).expect("dma6 otc write must go to ram!");
+        self.dma_mut().dma6.set_complete();
+    }
+}
+
+impl DmaState {
+    pub fn pending_event(&self) -> Option<u64> {
+        self.queue.heap.peek().map(|event| event.upcoming + 0x1)
+    }
 }
 
 impl Dma for Emu {}
@@ -269,8 +428,8 @@ impl Dma for Emu {}
 ///  27    DMA6, OTC     Master Enable (0=Disable, 1=Enable)
 ///  28-30 CPU memory access priority  (0..7; 0=Highest, 7=Lowest)
 ///  31    No effect, should be CPU memory access enable (R/W)
-#[bitfield(u32)]
-#[derive(Debug, Default)]
+#[bitfield(u32, debug)]
+#[derive(Default)]
 pub struct Dpcr {
     #[bits(0..=2, rw)]
     dma0prio: u3,
@@ -387,7 +546,7 @@ pub struct DmaMadr {
 pub struct DmaBcr {
     // s0
     #[bits(0..=15, rw)]
-    s0_block_count: u16,
+    s0_word_count: u16,
 
     // s1
     #[bits(0..=15, rw)]
@@ -575,14 +734,19 @@ impl DmaEvent {
 impl DmaChannel {
     fn linked_list_cycles(&self, emu: &(impl Fastmem + ?Sized)) -> u64 {
         let mut addr = self.madr.addr().as_u32();
+        let mut visited = heapless::index_set::FnvIndexSet::<u32, 2048>::new();
         let mut count = 0;
         loop {
-            if count > 10_000 {
-                panic!("infinite loop detected")
-            }
             let header = Fastmem::read::<DmaNodeHeader>(emu, addr).unwrap();
+            visited
+                .insert(addr)
+                .expect("bug: visited set capacity is too small. consider increasing or use heap.");
             addr = header.next().as_u32();
-            count += header.len() as u64 + 1;
+            if visited.contains(&addr) {
+                // cycle detected, return early and reschedule later
+                return count;
+            }
+            count += header.len() as u64;
             if header.is_end_marker() {
                 break;
             }
@@ -595,145 +759,13 @@ impl DmaChannel {
     }
 
     fn burst_cycles(&self) -> u64 {
-        self.bcr.s0_block_count() as u64
+        self.bcr.s0_word_count() as u64
     }
 
     fn set_complete(&mut self) {
         self.chcr.set_transfer(Transfer::StoppedCompleted);
     }
 }
-
-pub trait DmaTransports: Bus + Fastmem + Gpu {
-    fn create_dma_event(&self, channel: DmaChannel, kind: DmaTransportKind) -> DmaEvent {
-        let clock = self.cpu().cycles;
-        match channel.chcr.sync_mode() {
-            SyncMode::Burst => DmaEvent {
-                upcoming:  clock + channel.burst_cycles(),
-                init_chan: channel,
-                slice:     None,
-                dma_t:     kind,
-            },
-            SyncMode::Slice => DmaEvent {
-                upcoming:  clock + channel.slice_cycles(),
-                init_chan: channel,
-                slice:     Some(SliceTransferState {
-                    addr: channel.madr.addr().as_u32(),
-                    idx:  0,
-                }),
-                dma_t:     kind,
-            },
-            SyncMode::LinkedList => DmaEvent {
-                upcoming:  clock + channel.linked_list_cycles(self),
-                init_chan: channel,
-                slice:     None,
-                dma_t:     kind,
-            },
-            SyncMode::Reserved => DmaEvent {
-                upcoming:  0,
-                init_chan: channel,
-                slice:     None,
-                dma_t:     kind,
-            },
-        }
-    }
-
-    fn dma2_write_data(&mut self, event: DmaEvent) {
-        let channel = event.init_chan;
-        let direction = channel.chcr.direction();
-        let sync_mode = channel.chcr.sync_mode();
-        match sync_mode {
-            SyncMode::Slice => match direction {
-                TransferDir::DeviceToRam => todo!(),
-                TransferDir::RamToDevice => {
-                    let slice = event
-                        .slice
-                        .expect("event with sync mode slice has no slice state. this is a bug.");
-
-                    let mut addr = slice.addr;
-                    let len = channel.bcr.s1_block_size();
-                    tracing::trace!("dma: transfering slice of {} words...", len);
-                    tracing::trace!(
-                        "dma: current gp0 fifo capacity: {}/{}",
-                        self.gpu().gp0cmd_queue.len(),
-                        self.gpu().gp0cmd_queue.capacity()
-                    );
-                    for _ in 0..len {
-                        let value = Fastmem::read(self, addr).unwrap();
-                        // flushing the queue here is not ideal, as real dma
-                        // would hang until the gpu has capacity for more
-                        // commands. but our commands do not take actual
-                        // time to execute
-                        self.gp0_cmd_queue_push_or_flush(value);
-                        addr += 0x4;
-                    }
-                    // do not mark as done until final event is reached
-                    if slice.idx == channel.bcr.s1_block_count() as u32 - 1 {
-                        self.dma_mut().dma2.set_complete();
-                    }
-                }
-            },
-            SyncMode::Burst => match direction {
-                TransferDir::DeviceToRam => todo!(),
-                TransferDir::RamToDevice => {
-                    let mut addr = channel.madr.addr().as_u32();
-                    for _ in 0..channel.bcr.s0_block_count() {
-                        let value = Fastmem::read(self, addr).unwrap();
-                        self.gp0_cmd_queue_push_or_flush(value);
-                        addr += 0x4;
-                    }
-                    self.dma_mut().dma2.set_complete();
-                }
-            },
-            SyncMode::LinkedList => {
-                let mut addr = channel.madr.addr().as_u32();
-                let mut count = 0;
-                tracing::trace!("start gp0 linked list traversal");
-                loop {
-                    if count >= 10_000 {
-                        panic!("infinite loop detected");
-                    }
-                    let header = Fastmem::read::<DmaNodeHeader>(self, addr).unwrap();
-                    let len = header.len();
-                    for idx in 0..len {
-                        let cmd =
-                            Fastmem::read::<u32>(self, addr + idx as u32 * 0x4 + 0x4).unwrap();
-                        tracing::trace!(cmd = %hex(cmd));
-                        self.gp0_cmd_queue_push_or_flush(cmd);
-                    }
-                    addr = header.next().as_u32();
-                    count += 1;
-                    if header.is_end_marker() {
-                        break;
-                    }
-                }
-                self.dma_mut().dma2.set_complete();
-                tracing::trace!("end gp0 linked list traversal");
-            }
-            SyncMode::Reserved => todo!(),
-        }
-    }
-
-    fn dma6_write_data(&mut self, event: DmaEvent) {
-        let channel = event.init_chan;
-        let block_count = channel.bcr.s0_block_count() as u32;
-        let start = channel.madr.addr().as_u32();
-
-        let mut addr = start;
-        // end node is written separately
-        for _ in 0..(block_count - 1) {
-            let next_addr = addr - 0x4;
-            let node = DmaNodeHeader::default().with_next(next_addr.as_());
-            Fastmem::write(self, addr, node).expect("dma6 otc write must go to ram!");
-            addr = next_addr;
-        }
-
-        let end_node = DmaNodeHeader::new_with_raw_value(0x0).with_next(DmaNodeHeader::END.as_());
-        Fastmem::write(self, addr, end_node).expect("dma6 otc write must go to ram!");
-        self.dma_mut().dma6.set_complete();
-    }
-}
-
-impl DmaTransports for Emu {}
 
 #[bitfield(u32, debug)]
 #[derive(Default)]

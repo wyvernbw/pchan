@@ -1030,8 +1030,7 @@ fn fetch_and_compile_single_threaded(
     #[cfg(feature = "fetch-channel")]
     let mut ops: Vec<DecodedOp> = Vec::new();
 
-    let scheduled_event = emu.gpu().dp.pending_event().1;
-    let scheduled_event = emu.video_cycles_to_cpu_cycles_approx(scheduled_event);
+    let scheduled_event = emu.pending_event();
     while let Some((opcode, op)) = state.pop_item() {
         state.pc = initial_pc + state.op_count as u32 * 0x4;
 
