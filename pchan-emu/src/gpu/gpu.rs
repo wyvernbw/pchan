@@ -1142,6 +1142,37 @@ impl GpuState {
             VideoMode::Pal => 3406,
         }
     }
+
+    pub fn cycles_vblank_pending(&self) -> u64 {
+        let scanlines = if self.dp.current_scanline > self.dp.v_end() {
+            Display::NTSC_TOTAL_LINES - self.dp.current_scanline + self.dp.v_end()
+        } else {
+            self.dp.v_end() - self.dp.current_scanline
+        };
+        let cycles_per_scanline = self.video_cycles_per_scanline();
+        scanlines * cycles_per_scanline
+            + (Display::NTSC_TOTAL_VCYCLES_PER_LINE - self.dp.video_cycle_in_scanline)
+    }
+
+    pub fn cycles_hblank_pending(&self) -> u64 {
+        if self.dp.video_cycle_in_scanline > self.dp.h_end() {
+            Display::NTSC_TOTAL_VCYCLES_PER_LINE - self.dp.video_cycle_in_scanline + self.dp.h_end()
+        } else {
+            self.dp.h_end() - self.dp.video_cycle_in_scanline
+        }
+    }
+
+    pub fn pending_event(&self) -> (VideoEventKind, u64) {
+        let hblank = self.cycles_hblank_pending();
+        let vblank = self.cycles_vblank_pending();
+
+        // if hblank < vblank {
+        //     (VideoEventKind::Hblank, hblank)
+        // } else {
+        //     (VideoEventKind::Vblank, vblank)
+        // }
+        (VideoEventKind::Vblank, vblank)
+    }
 }
 
 #[derive(derive_more::Debug, Clone, Default)]
@@ -1269,32 +1300,5 @@ impl Display {
 
     fn in_vblank_with(&self, line: u64) -> bool {
         !(self.v_start()..self.v_end()).contains(&line)
-    }
-
-    pub fn cycles_hblank_pending(&self) -> u64 {
-        if self.video_cycle_in_scanline > self.h_end() {
-            Self::NTSC_TOTAL_VCYCLES_PER_LINE - self.video_cycle_in_scanline + self.h_end()
-        } else {
-            self.h_end() - self.video_cycle_in_scanline
-        }
-    }
-
-    pub fn cycles_vblank_pending(&self) -> u64 {
-        if self.current_scanline > self.v_end() {
-            Self::NTSC_TOTAL_LINES - self.current_scanline + self.v_end()
-        } else {
-            self.v_end() - self.current_scanline
-        }
-    }
-
-    pub fn pending_event(&self) -> (VideoEventKind, u64) {
-        let hblank = self.cycles_hblank_pending();
-        let vblank = self.cycles_vblank_pending();
-
-        if hblank < vblank {
-            (VideoEventKind::Hblank, hblank)
-        } else {
-            (VideoEventKind::Vblank, vblank)
-        }
     }
 }

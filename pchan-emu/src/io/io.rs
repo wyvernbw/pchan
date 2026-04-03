@@ -57,7 +57,7 @@ impl Emu {
     }
 
     pub fn pending_event(&self) -> u64 {
-        let video_event = self.gpu().dp.pending_event().1;
+        let video_event = self.gpu().pending_event().1;
         let video_event = self.video_cycles_to_cpu_cycles_approx(video_event);
         let dma_event = self
             .dma()
