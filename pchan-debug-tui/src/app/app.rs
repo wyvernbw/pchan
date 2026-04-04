@@ -12,7 +12,7 @@ use flume::{Receiver, Sender};
 use pchan_emu::bootloader::Bootloader;
 use pchan_emu::cpu::{Cpu, reg_str};
 use pchan_emu::dynarec_v2::emitters::DynarecOp;
-use pchan_emu::dynarec_v2::{FetchedOp, PipelineV2, PipelineV2Stage};
+use pchan_emu::dynarec_v2::{PipelineV2, PipelineV2Stage};
 use pchan_emu::io::IO;
 use pchan_emu::{Emu, dynarec_v2};
 use pchan_utils::{IgnorePoison, hex};

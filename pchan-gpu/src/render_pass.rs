@@ -80,6 +80,27 @@ impl<'a> RenderPass<'a> {
                 depth_or_array_layers: 1,
             },
         );
+        self.encoder.copy_buffer_to_texture(
+            TexelCopyBufferInfo {
+                buffer: &init_buffer,
+                layout: TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(1024 * 2),
+                    rows_per_image: Some(512),
+                },
+            },
+            TexelCopyTextureInfo {
+                texture: &self.renderer.vram_texture,
+                mip_level: 0,
+                origin: Origin3d { x: 0, y: 0, z: 0 },
+                aspect: TextureAspect::All,
+            },
+            Extent3d {
+                width: 512,
+                height: 512,
+                depth_or_array_layers: 1,
+            },
+        );
 
         let mut render_pass = self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: None,
@@ -99,6 +120,7 @@ impl<'a> RenderPass<'a> {
         });
 
         render_pass.set_pipeline(&self.renderer.render_pipeline);
+        render_pass.set_bind_group(0, &self.renderer.bind_group, &[]);
         render_pass.set_vertex_buffer(0, self.vertex_buf.slice(..));
         render_pass.draw(0..self.scene.vertex_buf.len() as u32, 0..1);
     }

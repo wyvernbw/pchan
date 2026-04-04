@@ -3,6 +3,7 @@ use std::mem::transmute;
 use crate::gpu::DrawPixels;
 use crate::gpu::GpuStatReg;
 use crate::gpu::IVramCoord;
+use crate::gpu::TexpageCmd;
 use crate::gpu::VramCoord;
 use crate::io::CastIOInto;
 use arbitrary_int::prelude::*;
@@ -12,6 +13,7 @@ use bon::Builder;
 use glam::I16Vec2;
 use glam::U8Vec2;
 use glam::U8Vec3;
+use glam::U16Vec2;
 use smallvec::SmallVec;
 use smallvec::smallvec;
 use tracing::Level;
@@ -61,14 +63,31 @@ pub struct DrawRect {
 }
 
 #[derive(Debug, Clone, Copy, Default, Builder)]
+#[repr(C)]
 pub struct Uv {
-    pub clut: U8Vec2,
-    pub uv:   U8Vec2,
+    pub uv:    U8Vec2,
+    pub extra: u16,
 }
 
 impl Uv {
     pub fn from_u32(value: u32) -> Self {
         unsafe { transmute(value) }
+    }
+
+    pub fn clut_from_u16(value: u16) -> U16Vec2 {
+        #[bitfield(u16)]
+        struct Clut {
+            #[bits(0..=5, r)]
+            x: u6,
+            #[bits(6..=14, r)]
+            y: u9,
+        }
+        let clut = Clut::new_with_raw_value(value);
+        U16Vec2::new(clut.x().as_u16(), clut.y().as_u16())
+    }
+
+    pub fn extra_as_clut(&self) -> U16Vec2 {
+        Self::clut_from_u16(self.extra)
     }
 }
 
@@ -219,8 +238,10 @@ impl DrawCallDecoder for DrawRectDecoder {
 
 #[derive(Debug, Clone)]
 pub struct DrawPolygon {
-    pub header: DrawPolygonHeader,
-    pub attrs:  heapless::Vec<DrawPolygonAttribute, 4>,
+    pub header:  DrawPolygonHeader,
+    pub attrs:   heapless::Vec<DrawPolygonAttribute, 4>,
+    pub clut:    U16Vec2,
+    pub texpage: TexpageCmd,
 }
 
 impl DrawPolygon {
@@ -330,7 +351,7 @@ impl DrawCallDecoder for DrawPolygonAttributeDecoder {
     fn advance<T: Copy>(self, value: T) -> Result<Self, Self::Output> {
         let value = value.io_into_u32();
         let vertex_value = unsafe { transmute::<u32, I16Vec2>(value) };
-        let uv_value = unsafe { transmute::<u32, Uv>(value) };
+        let uv_value = Uv::from_u32(value);
         match self {
             DrawPolygonAttributeDecoder::IdleGoraudUntextured => {
                 Ok(Self::ColorUntextured { color: value })
@@ -395,8 +416,12 @@ impl DrawCallDecoder for DrawPolygonDecoder {
                 };
                 if self.attrs.len() >= expected {
                     Err(DrawPolygon {
-                        header: self.header,
-                        attrs:  self.attrs,
+                        header:  self.header,
+                        clut:    self.attrs[0].uv.unwrap_or_default().extra_as_clut(),
+                        texpage: TexpageCmd::new_with_raw_value(
+                            self.attrs[1].uv.unwrap_or_default().extra as u32,
+                        ),
+                        attrs:   self.attrs,
                     })
                 } else {
                     Ok(Self {

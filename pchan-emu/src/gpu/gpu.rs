@@ -9,12 +9,14 @@ use arbitrary_int::prelude::*;
 use bitbybit::bitenum;
 use bitbybit::bitfield;
 use derive_more as d;
+use glam::U8Vec2;
 use glam::U64Vec2;
 use glam::u64vec2;
 use heapless::Deque;
 use heapless::binary_heap::Min;
 use pchan_utils::AsyncChan;
 use pchan_utils::hex;
+use tracing::Level;
 use tracing::instrument;
 
 use crate::Bus;
@@ -57,7 +59,7 @@ pub struct GpuState {
     pub gpustat:         GpuStatReg,
     pub gp0:             Gp0,
     pub gp0read:         [u16; 2],
-    pub gp0cmd_queue:    Deque<u32, 20>, // 4 word legroom
+    pub gp0cmd_queue:    Deque<u32, 16>,
     pub gp0read_queue:   Deque<u32, 32>,
     pub gp1cmd_queue:    Deque<u32, 16>,
     pub dp:              Display,
@@ -77,8 +79,8 @@ pub struct GpuState {
 
 #[derive(derive_more::Debug, Clone, Default)]
 pub enum GpuModel {
-    #[default]
     Gpu160Pin,
+    #[default]
     Gpu180Pin,
     Gpu208Pin,
 }
@@ -163,11 +165,19 @@ pub trait Gpu: Bus + Interrupts {
     #[cfg_attr(debug_assertions, instrument(skip(self, value), "gpu:w"))]
     fn write<T: Copy>(&mut self, address: u32, value: T) -> Result<(), UnhandledIO> {
         let address = address & 0x1fffffff;
+        if size_of::<T>() != 4 {
+            panic!(
+                "write to io gpu register is not word sized. {} has size of {}",
+                std::any::type_name::<T>(),
+                size_of::<T>()
+            )
+        }
+
         match address {
             0x1f80_1810 => {
                 self.gpu_mut()
                     .gp0cmd_queue
-                    .push_back(value.io_into_u32())
+                    .push_back(value.io_into_u32_overwrite(0x0))
                     .unwrap();
                 Ok(())
             }
@@ -292,9 +302,8 @@ pub trait Gpu: Bus + Interrupts {
     }
 
     fn gp0_cmd_queue_push_or_flush(&mut self, value: u32) {
-        if let Err(spill) = self.gp0_cmd_queue_push(value) {
+        while self.gp0_cmd_queue_push(value).is_err() {
             self.gp0_cmd_queue_flush();
-            _ = self.gp0_cmd_queue_push(spill)
         }
     }
 
@@ -433,7 +442,6 @@ pub trait Gpu: Bus + Interrupts {
                 }
                 0x01 => {
                     self.gpu_mut().gp0cmd_queue.clear();
-                    self.gpu_mut().gpustat.mock_ready();
                 }
                 0x02 => {
                     self.gpu_mut().gpustat.set_irq(false);
@@ -818,7 +826,7 @@ pub struct GpuStatReg {
     #[bits(0..=3, rw)]
     texpage_x_base:       u4,
     #[bit(4, rw)]
-    texpage_y_base:       bool,
+    texpage_y_base:       u1,
     #[bits(5..=6, rw)]
     semi_transparency:    u2,
     #[bits(7..=8, rw)]
@@ -951,7 +959,7 @@ pub struct TexpageCmd {
     #[bits(0..=3, rw)]
     texpage_x_base:    u4,
     #[bit(4, rw)]
-    texpage_y_base:    bool,
+    texpage_y_base:    u1,
     #[bits(5..=6, rw)]
     semi_transparency: u2,
     #[bits(7..=8, rw)]
@@ -966,6 +974,12 @@ pub struct TexpageCmd {
     tex_rect_x_flip:   bool,
     #[bit(13, rw)]
     tex_rect_y_flip:   bool,
+}
+
+impl TexpageCmd {
+    pub fn to_u8vec2(self) -> U8Vec2 {
+        U8Vec2::new(self.texpage_x_base().as_u8(), self.texpage_y_base().as_u8())
+    }
 }
 
 #[bitenum(u2, exhaustive = true)]
