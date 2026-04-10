@@ -14,10 +14,10 @@ use wgpu::*;
 
 #[derive(Debug, Clone)]
 pub struct Renderer {
-    instance: Instance,
-    adapter: Adapter,
-    device: Device,
-    queue: Queue,
+    pub instance: Instance,
+    pub adapter: Adapter,
+    pub device: Device,
+    pub queue: Queue,
 
     pipeline_layout: PipelineLayout,
     render_pipeline: RenderPipeline,
