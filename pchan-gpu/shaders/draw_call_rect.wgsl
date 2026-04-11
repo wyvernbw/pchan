@@ -108,7 +108,7 @@ fn fs_main(in: VertexOutput) -> @location(0) u32 {
     switch in.color_mode {
         case COLOR_MODE_4BIT: {
             if in.textured != 0 {
-                let clut_idx = read_4bit(pack_h(in.texpage_base, 4) + pack_h(in.uv, 4));
+                let clut_idx = read_4bit(pack_h(in.texpage_base, 4) + pack_h(in.uv, 1));
                 let coord = vec2(in.clut.x + f32(clut_idx), in.clut.y);
                 let clut_color = read_16bit(coord);
                 color = clut_color;
