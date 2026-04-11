@@ -706,58 +706,6 @@ impl DynarecOp for Swr {
 }
 
 #[cfg(test)]
-#[rstest]
-// swl
-#[case::swl(swl, 0xcafe_babe, 0x101, 0x0, 0x11ca_feba, 0x0)]
-#[case::swl(swl, 0xcafe_babe, 0x102, 0x0, 0x1111_cafe, 0x0)]
-#[case::swl(swl, 0xcafe_babe, 0x103, 0x0, 0x1111_11ca, 0x0)]
-#[case::swl(swl, 0xcafe_babe, 0x104, 0x0, 0x1111_1111, -0x4)] // 0x100 untouched
-#[case::swl(swl, 0xcafe_babe, 0x104, 0x0, 0xcafe_babe, 0x0)] // 0x104 gets full word
-// swr
-#[case::swr(swr, 0xcafe_babe, 0x101, 0x0, 0xbe11_1111, 0x4)]
-#[case::swr(swr, 0xcafe_babe, 0x102, 0x0, 0xbabe_1111, 0x4)]
-#[case::swr(swr, 0xcafe_babe, 0x103, 0x0, 0xfeba_be11, 0x4)]
-#[case::swr(swr, 0xcafe_babe, 0x104, 0x0, 0xcafe_babe, 0x0)] // aligned, full word
-fn test_unaligned_stores(
-    #[case] instr: impl Fn(u8, u8, i16) -> OpCode,
-    #[case] value_to_write: u32,
-    #[case] at: u32,
-    #[case] imm16: i16,
-    #[case] expected: u32,
-    #[case] offset: i32,
-) -> color_eyre::Result<()> {
-    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
-    use assert_hex::assert_eq_hex;
-    use pchan_utils::setup_tracing;
-
-    setup_tracing();
-    let mut emu = Emu::default();
-    emu.cpu.gpr[8] = value_to_write;
-    emu.cpu.gpr[9] = at;
-    emu.write(at, 0x1111_1111);
-    emu.write(at + 0x4, 0x1111_1111);
-    emu.write(at - 0x4, 0x1111_1111);
-    emu.write_many(0x0, &program([instr(8, 9, imm16), OpCode::HALT]));
-
-    PipelineV2::new(&emu).run_once(&mut emu)?;
-
-    tracing::info!("finished running");
-    tracing::info!(?emu.cpu);
-    tracing::info!(read = %hex(emu.read::<u32>(at - at % 4 - 0x4)));
-    tracing::info!(read = %hex(emu.read::<u32>(at - at % 4)));
-    tracing::info!(read = %hex(emu.read::<u32>(at - at % 4 + 0x4)));
-    tracing::info!(read = %hex(emu.read::<u32>(at - at % 4 + 0x8)));
-
-    assert_eq_hex!(emu.cpu.d_clock, 3);
-    assert_eq_hex!(emu.cpu.pc, 0x8);
-    let addr = (at - at % 4).wrapping_add_signed(offset);
-    tracing::info!("checking at {}", hex(addr));
-    assert_eq_hex!(emu.read::<u32>(addr), expected);
-
-    Ok(())
-}
-
-#[cfg(test)]
 mod test_unaligned_load_stores {
     //! Tests for the `lwl`, `lwr`, `swl` and `swr` instructions.
     //!
@@ -780,7 +728,7 @@ mod test_unaligned_load_stores {
 
     use crate::cpu::{
         SP,
-        ops::{OpCode, lwl, lwr},
+        ops::{OpCode, addiu, lui, lwl, lwr, ori, swl, swr},
         program,
     };
 
@@ -858,6 +806,63 @@ mod test_unaligned_load_stores {
         tracing::info!(?emu.cpu);
 
         assert_eq_hex!(emu.cpu.gpr[9], t1);
+
+        Ok(())
+    }
+
+    fn single_write_program(imm: i16, op: impl const Fn(u8, u8, i16) -> OpCode) -> [u32; 3] {
+        program([lui(9, 0x0302), ori(9, 9, 0x0100), op(9, SP, imm)])
+    }
+
+    fn two_writes_program(imm: i16) -> [u32; 4] {
+        program([
+            lui(9, 0x0302),
+            ori(9, 9, 0x0100),
+            swl(9, SP, imm),
+            swr(9, SP, imm),
+        ])
+    }
+
+    #[rstest]
+    #[case(single_write_program(0x0, swl), 0xffff_ff03)]
+    #[case(single_write_program(0x1, swl), 0xffff_0302)]
+    #[case(single_write_program(0x2, swl), 0xff03_0201)]
+    #[case(single_write_program(0x3, swl), 0x0302_0100)]
+    #[case(single_write_program(0x4, swl), 0xffff_ffff)]
+    #[case(single_write_program(0x0, swr), 0x0302_0100)]
+    #[case(single_write_program(0x1, swr), 0x0201_00ff)]
+    #[case(single_write_program(0x2, swr), 0x0100_ffff)]
+    #[case(single_write_program(0x3, swr), 0x00ff_ffff)]
+    #[case(single_write_program(0x4, swr), 0xffff_ffff)]
+    #[case(two_writes_program(0x0), 0x0302_0100)]
+    #[case(two_writes_program(0x1), 0x0201_0002)]
+    #[case(two_writes_program(0x2), 0x0100_0201)]
+    #[case(two_writes_program(0x3), 0x0002_0100)]
+    fn test_single_write<const N: usize>(
+        #[case] prog: [u32; N],
+        #[case] word: u32,
+    ) -> color_eyre::Result<()> {
+        use crate::io::IO;
+        use crate::{Emu, dynarec_v2::PipelineV2};
+        use assert_hex::assert_eq_hex;
+        use pchan_utils::setup_tracing;
+
+        setup_tracing();
+        let mut emu = Emu::default();
+        emu.cpu["$sp"] = 0x8000_00f0;
+        for i in 0x0..0x10 {
+            emu.write::<u8>(emu.cpu["$sp"] + i, 0xff);
+        }
+        let prog = [prog.as_slice(), [OpCode::HALT.raw_value()].as_slice()].concat();
+        emu.write_many(0x0, &prog);
+
+        PipelineV2::new(&emu).run_once(&mut emu)?;
+
+        tracing::info!("finished running");
+        tracing::info!(?emu.cpu);
+
+        let written = emu.read::<u32>(emu.cpu["$sp"]);
+        assert_eq_hex!(written, word);
 
         Ok(())
     }

@@ -96,40 +96,37 @@ pub trait IO: Bus {
     #[pchan_macros::instrument(ret, skip_all)]
     fn try_write32_unaligned_l(&mut self, address: u32, value: u32) -> IOResult<()> {
         let spill = address % size_of::<u32>() as u32;
-        if spill == 0 {
-            return self.try_write(address, value);
-        }
         let aligned_address = address - spill;
         let read_value = self.try_read::<u32>(aligned_address)?;
 
+        let spill = 4 - spill - 1;
         let spill = spill << 3; // bytes to bits
         let mask = 0xffff_ffff >> spill;
         let read_value = read_value & (!mask);
         let value = value >> spill;
         let value = value | read_value;
-        tracing::trace!(value = %hex(value), mask = %hex(mask));
+
+        #[cfg(debug_assertions)]
+        {
+            tracing::trace!(value = %hex(value), mask = %hex(mask));
+        }
 
         self.try_write(aligned_address, value)
     }
     #[pchan_macros::instrument(ret, skip_all)]
     fn try_write32_unaligned_r(&mut self, address: u32, value: u32) -> IOResult<()> {
-        let spill = address % size_of::<u32>() as u32;
-        let spill_n = size_of::<u32>() as u32 - spill;
-        if spill == 0 {
-            return self.try_write(address, value);
-        }
-        let aligned_address = address - spill;
-        let read_value = self.try_read::<u32>(aligned_address + 0x4)?;
+        let shift = (address & 3) << 3;
+        let aligned = address & !3;
+        let read_value = self.try_read::<u32>(aligned)?;
 
-        let spill = spill << 3; // bytes to bits
-        let spill_n = spill_n << 3;
-        let mask = 0xffff_ffff >> spill;
+        let spill_n = 32 - shift;
+        let mask = 0xffff_ffffu32.unbounded_shr(spill_n);
         let read_value = read_value & mask;
-        let value = value << spill_n;
+        let value = value << shift;
+        tracing::trace!(value = %hex(value), mask = %hex(mask));
         let value = value | read_value;
 
-        // tracing::trace!(value = %hex(value), mask = %hex(mask));
-        self.try_write(aligned_address + 0x4, value)
+        self.try_write(aligned, value)
     }
 
     #[pchan_macros::instrument(skip_all)]
