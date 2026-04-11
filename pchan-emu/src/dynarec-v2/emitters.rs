@@ -757,9 +757,115 @@ fn test_unaligned_stores(
     Ok(())
 }
 
+#[cfg(test)]
+mod test_unaligned_load_stores {
+    //! Tests for the `lwl`, `lwr`, `swl` and `swr` instructions.
+    //!
+    //! The tests assume the following memory setup:
+    //! - `[0x0($sp)] = 0x0`
+    //! - `[0x1($sp)] = 0x1`
+    //! - `[0x2($sp)] = 0x2`
+    //! - etc.
+    //!
+    //! # Load tests
+    //!
+    //! Load tests will be of the form:
+    //!
+    //! ```asm
+    //! lwl $t1,imm($sp)
+    //! lwr $t2,imm($sp)
+    //! ```
+
+    use rstest::rstest;
+
+    use crate::cpu::{
+        SP,
+        ops::{OpCode, lwl, lwr},
+        program,
+    };
+
+    const fn load_par_program_one_imm(imm: i16) -> [u32; 2] {
+        program([lwl(9, SP, imm), lwr(10, SP, imm)])
+    }
+
+    const fn load_seq_program_one_imm(imm: i16) -> [u32; 2] {
+        program([lwl(9, SP, imm), lwr(9, SP, imm)])
+    }
+
+    #[rstest]
+    #[case(load_par_program_one_imm(0x0), 0x0000_0000, 0x0302_0100)]
+    #[case(load_par_program_one_imm(0x1), 0x0100_0000, 0x0003_0201)]
+    #[case(load_par_program_one_imm(0x2), 0x0201_0000, 0x0000_0302)]
+    #[case(load_par_program_one_imm(0x3), 0x0302_0100, 0x0000_0003)]
+    #[case(load_par_program_one_imm(0x4), 0x0400_0000, 0x0706_0504)]
+    fn test_par_lwl_lwr<const N: usize>(
+        #[case] prog: [u32; N],
+        #[case] t1: u32,
+        #[case] t2: u32,
+    ) -> color_eyre::Result<()> {
+        use crate::io::IO;
+        use crate::{Emu, dynarec_v2::PipelineV2};
+        use assert_hex::assert_eq_hex;
+        use pchan_utils::setup_tracing;
+
+        setup_tracing();
+        let mut emu = Emu::default();
+        emu.cpu["$sp"] = 0x8000_00f0;
+        for i in 0x0..0x10 {
+            emu.write(emu.cpu["$sp"] + i, i);
+        }
+        let prog = [prog.as_slice(), [OpCode::HALT.raw_value()].as_slice()].concat();
+        emu.write_many(0x0, &prog);
+
+        PipelineV2::new(&emu).run_once(&mut emu)?;
+
+        tracing::info!("finished running");
+        tracing::info!(?emu.cpu);
+
+        assert_eq_hex!(emu.cpu.gpr[9], t1);
+        assert_eq_hex!(emu.cpu.gpr[10], t2);
+
+        Ok(())
+    }
+
+    #[rstest]
+    #[case(load_seq_program_one_imm(0x0), 0x0302_0100)]
+    #[case(load_seq_program_one_imm(0x1), 0x0103_0201)]
+    #[case(load_seq_program_one_imm(0x2), 0x0201_0302)]
+    #[case(load_seq_program_one_imm(0x3), 0x0302_0103)]
+    #[case(load_seq_program_one_imm(0x4), 0x0706_0504)]
+    fn test_seq_lwl_lwr<const N: usize>(
+        #[case] prog: [u32; N],
+        #[case] t1: u32,
+    ) -> color_eyre::Result<()> {
+        use crate::io::IO;
+        use crate::{Emu, dynarec_v2::PipelineV2};
+        use assert_hex::assert_eq_hex;
+        use pchan_utils::setup_tracing;
+
+        setup_tracing();
+        let mut emu = Emu::default();
+        emu.cpu["$sp"] = 0x8000_00f0;
+        for i in 0x0..0x10 {
+            emu.write(emu.cpu["$sp"] + i, i);
+        }
+        let prog = [prog.as_slice(), [OpCode::HALT.raw_value()].as_slice()].concat();
+        emu.write_many(0x0, &prog);
+
+        PipelineV2::new(&emu).run_once(&mut emu)?;
+
+        tracing::info!("finished running");
+        tracing::info!(?emu.cpu);
+
+        assert_eq_hex!(emu.cpu.gpr[9], t1);
+
+        Ok(())
+    }
+}
+
 #[cfg(target_arch = "aarch64")]
 #[allow(clippy::useless_conversion)]
-fn emit_load(
+fn emit_load<const ALIGNED: bool>(
     mut ctx: EmitCtx,
     rt: u8,
     rs: u8,
@@ -777,7 +883,6 @@ fn emit_load(
 
     ctx.schedule_in(1)
         .emitter(move |mut ctx| {
-            let rta = ctx.dynarec.alloc_reg(rt);
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
@@ -790,14 +895,26 @@ fn emit_load(
             );
 
             if rt != 0 {
-                dynasm!(
-                    ctx.dynarec.asm
-                    ; fmov W(*rta), S(s(8))
-                );
-                ctx.dynarec.mark_dirty(rt);
+                if ALIGNED {
+                    let rta = ctx.dynarec.alloc_reg(rt);
+                    dynasm!(
+                        ctx.dynarec.asm
+                        ; fmov W(*rta), S(s(8))
+                    );
+                    ctx.dynarec.mark_dirty(rt);
+                    rta.restore(ctx.dynarec);
+                } else {
+                    let rta = ctx.dynarec.emit_load_reg(rt);
+                    dynasm!(
+                        ctx.dynarec.asm
+                        ; fmov w1, S(s(8))
+                        ; orr W(*rta),W(*rta),w1
+                    );
+                    ctx.dynarec.mark_dirty(rt);
+                    rta.restore(ctx.dynarec);
+                }
             }
 
-            rta.restore(ctx.dynarec);
             EmitSummary::default()
         })
         .call();
@@ -807,7 +924,7 @@ fn emit_load(
 
 impl DynarecOp for Lb {
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
-        emit_load(ctx, self.rt, self.rs, self.imm16, move |ctx| {
+        emit_load::<true>(ctx, self.rt, self.rs, self.imm16, move |ctx| {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
@@ -826,7 +943,7 @@ impl DynarecOp for Lb {
 
 impl DynarecOp for Lbu {
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
-        emit_load(ctx, self.rt, self.rs, self.imm16, move |ctx| {
+        emit_load::<true>(ctx, self.rt, self.rs, self.imm16, move |ctx| {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
@@ -845,7 +962,7 @@ impl DynarecOp for Lbu {
 
 impl DynarecOp for Lh {
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
-        emit_load(ctx, self.rt, self.rs, self.imm16, move |ctx| {
+        emit_load::<true>(ctx, self.rt, self.rs, self.imm16, move |ctx| {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
@@ -864,7 +981,7 @@ impl DynarecOp for Lh {
 
 impl DynarecOp for Lhu {
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
-        emit_load(ctx, self.rt, self.rs, self.imm16, move |ctx| {
+        emit_load::<true>(ctx, self.rt, self.rs, self.imm16, move |ctx| {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
@@ -883,7 +1000,7 @@ impl DynarecOp for Lhu {
 
 impl DynarecOp for Lw {
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
-        emit_load(ctx, self.rt, self.rs, self.imm16, move |ctx| {
+        emit_load::<true>(ctx, self.rt, self.rs, self.imm16, move |ctx| {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
@@ -984,7 +1101,7 @@ fn test_weird_load_01() -> color_eyre::Result<()> {
     let mut emu = Emu::default();
     emu.cpu.gpr[10] = 0xf;
     emu.cpu.gpr[11] = 0x801ffed0;
-    emu.write::<u32>(0x801ffcd8, 0xd);
+    emu.write::<u32>(0x801ffcd8, 0x0d);
     emu.write::<u32>(0x801ffcd9, 0x0);
     emu.write::<u32>(0x801ffcda, 0x0);
     emu.write::<u32>(0x801ffcdb, 0x0);
@@ -1053,68 +1170,15 @@ fn test_load_delay(#[case] instr: impl Fn(u8, u8, i16) -> OpCode) -> color_eyre:
 
 impl DynarecOp for Lwl {
     #[allow(clippy::useless_conversion)]
-    fn emit<'a>(&self, mut ctx: EmitCtx<'a>) -> EmitSummary {
-        let Self { rt, rs, imm16 } = *self;
-
-        let s = ctx.parity();
-        ctx.dynarec.emit_load_temp_reg(rs, Reg::W(1));
-        dynasm!(
-            ctx.dynarec.asm
-            ; .arch aarch64
-            ;; ctx.dynarec.emit_add_imm16().dest(Reg::W(1)).base(Reg::W(1)).offset(imm16).call()
-            // lowest (4 - n % 4) bytes of result must go in upper bytes of register
-            ; and w2, w1, 3
-            ; and w1, w1, !3 // - w1 % 4
-            ; fmov S(s(8)), w1
-            ; fmov S(s(9)), w2
-        );
-
-        ctx.schedule_in(1)
-            .emitter(move |ctx| {
-                let rta = ctx.dynarec.emit_load_reg(rt);
-                dynasm!(
-                    ctx.dynarec.asm
-                    ; .arch aarch64
-                    ;; let saved = ctx.dynarec.emit_save_volatile_registers()
-                    ; fmov w1, S(s(8))
-                    ; fmov w2, S(s(9))
-                    ; stp w1, w2, [sp, #-16]!
-                    ; ldr x3, ->read32v2
-                    ; blr x3
-                    ; ldp wzr, w1, [sp], #16 // load stored  byte offset into w1
-                    ; lsl w1, w1, 3          // bytes -> bits
-                    ; mvn w2, wzr            // 0xffffffff mask
-                    ; lsr w2, w2, w1         // 0x0000ffff for example
-                    ; and w0, w0, w2         // mask upper
-                    ; lsl w0, w0, w1
-                    ; mvn w2, wzr
-                    ; lsl w2, w2, w1
-                    ; mvn w2, w2
-
-                    ; fmov S(s(8)), w0       // place return value in s8+
-                    ; fmov S(s(9)), w2       // place mask in s9+
-
-                    ;; ctx.dynarec.emit_restore_saved_registers(saved.into_iter())
-                );
-
-                if rt != 0 {
-                    dynasm!(
-                        ctx.dynarec.asm
-                        ; fmov w1, S(s(8))   // return value
-                        ; fmov w2, S(s(9))   // mask
-                        ; and w3, W(*rta), w2     // preserve lower bytes of original rt
-                        ; orr W(*rta), w1, w3     // merge
-                        // ; mov W(*rta), w2
-                    );
-                    ctx.dynarec.mark_dirty(rt);
-                }
-
-                rta.restore(ctx.dynarec);
-                EmitSummary::default()
-            })
-            .call();
-
-        EmitSummary::default()
+    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+        emit_load::<false>(ctx, self.rt, self.rs, self.imm16, |ctx| {
+            dynasm!(
+                ctx.dynarec.asm
+                ; .arch aarch64
+                ; ldr x3, ->ulread32
+                ; blr x3
+            )
+        })
     }
     fn cycles(&self) -> u16 {
         3
@@ -1126,67 +1190,15 @@ impl DynarecOp for Lwl {
 
 impl DynarecOp for Lwr {
     #[allow(clippy::useless_conversion)]
-    fn emit<'a>(&self, mut ctx: EmitCtx<'a>) -> EmitSummary {
-        let Self { rt, rs, imm16 } = *self;
-
-        let s = ctx.parity();
-        ctx.dynarec.emit_load_temp_reg(rs, Reg::W(1));
-        dynasm!(
-            ctx.dynarec.asm
-            ; .arch aarch64
-            ;; ctx.dynarec.emit_add_imm16().dest(Reg::W(1)).base(Reg::W(1)).offset(imm16 + 0x4).call()
-            // lowest (4 - n % 4) bytes of result must go in upper bytes of register
-            ; and w2, w1, 3
-            ; and w1, w1, !3 // - w1 % 4
-            ; fmov S(s(8)), w1
-            ; fmov S(s(9)), w2
-        );
-
-        ctx.schedule_in(1)
-            .emitter(move |ctx| {
-                let rta = ctx.dynarec.emit_load_reg(rt);
-                dynasm!(
-                    ctx.dynarec.asm
-                    ; .arch aarch64
-                    ;; let saved = ctx.dynarec.emit_save_volatile_registers()
-                    ; fmov w1, S(s(8))
-                    ; fmov w2, S(s(9))
-                    ; stp w1, w2, [sp, #-16]!
-                    ; ldr x3, ->read32v2
-                    ; blr x3
-                    ; ldp wzr, w1, [sp], #16 // load stored  byte offset into w1
-                    ; mov w2, 4
-                    ; sub w2, w2, w1
-                    ; lsl w2, w2, 3          // bytes -> bits
-                    ; lsr w0, w0, w2
-
-                    ; mvn w2, wzr            // 0xffffffff mask
-                    ; lsl w1, w1, 3
-                    ; lsl w2, w2, w1         // 0xffff0000 for example
-
-                    ; fmov S(s(8)), w0       // place return value in s8+
-                    ; fmov S(s(9)), w2       // place mask in s9+
-
-                    ;; ctx.dynarec.emit_restore_saved_registers(saved.into_iter())
-                );
-
-                if rt != 0 {
-                    dynasm!(
-                        ctx.dynarec.asm
-                        ; fmov w1, S(s(8))   // return value
-                        ; fmov w2, S(s(9))   // mask
-                        ; and w3, W(*rta), w2     // preserve upper bytes of original rt
-                        ; orr W(*rta), w1, w3     // merge
-                    );
-                    ctx.dynarec.mark_dirty(rt);
-                }
-
-                rta.restore(ctx.dynarec);
-                EmitSummary::default()
-            })
-            .call();
-
-        EmitSummary::default()
+    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+        emit_load::<false>(ctx, self.rt, self.rs, self.imm16, |ctx| {
+            dynasm!(
+                ctx.dynarec.asm
+                ; .arch aarch64
+                ; ldr x3, ->urread32
+                ; blr x3
+            )
+        })
     }
     fn cycles(&self) -> u16 {
         3
@@ -1194,132 +1206,6 @@ impl DynarecOp for Lwr {
     fn hazard(&self) -> u16 {
         2
     }
-}
-
-/// value at 0x100 is always 0xcafe_babe
-/// value at 0x104 is always 0xdead_beef
-// lwr
-#[cfg(test)]
-#[rstest]
-#[case::lwl(lwl(9, 10, 0x0), 0x101, 0xfeba_be11)]
-#[case::lwl(lwl(9, 10, 0x0), 0x102, 0xbabe_1111)]
-#[case::lwl(lwl(9, 10, 0x0), 0x103, 0xbe11_1111)]
-#[case::lwl(lwl(9, 10, 0x0), 0x104, 0xdead_beef)] // this is just an aligned read
-// same but with immediates
-#[case::lwl(lwl(9, 10, 0x1), 0x100, 0xfeba_be11)]
-#[case::lwl(lwl(9, 10, 0x2), 0x100, 0xbabe_1111)]
-#[case::lwl(lwl(9, 10, 0x3), 0x100, 0xbe11_1111)]
-#[case::lwl(lwl(9, 10, 0x4), 0x100, 0xdead_beef)]
-// lwr
-#[case::lwr(lwr(9, 10, 0x0), 0x101, 0x1111_11de)]
-#[case::lwr(lwr(9, 10, 0x0), 0x102, 0x1111_dead)]
-#[case::lwr(lwr(9, 10, 0x0), 0x103, 0x11de_adbe)]
-#[case::lwr(lwr(9, 10, 0x0), 0x104, 0x1111_1111)]
-// immediates
-#[case::lwr(lwr(9, 10, 0x1), 0x100, 0x1111_11de)]
-#[case::lwr(lwr(9, 10, 0x2), 0x100, 0x1111_dead)]
-#[case::lwr(lwr(9, 10, 0x3), 0x100, 0x11de_adbe)]
-#[case::lwr(lwr(9, 10, 0x4), 0x100, 0x1111_1111)]
-fn test_unaligned_loads(
-    #[case] instr: OpCode,
-    #[case] at: u32,
-    #[case] expected: u32,
-) -> color_eyre::Result<()> {
-    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
-    use arbitrary_int::prelude::*;
-    use assert_hex::assert_eq_hex;
-    use pchan_utils::setup_tracing;
-
-    setup_tracing();
-    let mut emu = Emu::default();
-    emu.cpu.gpr[instr.rs().as_usize()] = at;
-    emu.cpu.gpr[instr.rt().as_usize()] = 0x1111_1111;
-    emu.write(0x100, 0xcafe_babe_u32);
-    emu.write(0x104, 0xdead_beef_u32);
-    tracing::info!(read = %hex(emu.read::<u32>(at - at % 4)));
-    emu.write_many(
-        0x0,
-        &program([instr, nop(), addiu(13, instr.rt().as_(), 420), OpCode::HALT]),
-    );
-
-    PipelineV2::new(&emu).run_once(&mut emu)?;
-
-    tracing::info!("finished running");
-    tracing::info!(?emu.cpu);
-
-    assert_eq_hex!(emu.cpu.d_clock, 5);
-    assert_eq_hex!(emu.cpu.pc, 0x10);
-    assert_eq_hex!(emu.cpu.gpr[instr.rt().as_usize()], expected);
-    assert_eq_hex!(emu.cpu.gpr[13], expected + 420);
-
-    Ok(())
-}
-
-#[cfg(test)]
-#[rstest]
-fn test_combined_unaligned_loads() -> color_eyre::Result<()> {
-    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
-    use assert_hex::assert_eq_hex;
-    use pchan_utils::setup_tracing;
-
-    setup_tracing();
-    let mut emu = Emu::default();
-    emu.cpu.gpr[9] = 0x102;
-    emu.cpu.gpr[8] = 0x1111_1111;
-    emu.write(0x100, 0xcafe_babe_u32);
-    emu.write(0x104, 0xdead_beef_u32);
-    emu.write_many(
-        0x0,
-        &program([lwl(8, 9, 0x0), lwr(8, 9, 0x0), nop(), OpCode::HALT]),
-    );
-
-    PipelineV2::new(&emu).run_once(&mut emu)?;
-
-    tracing::info!("finished running");
-    tracing::info!(?emu.cpu);
-
-    assert_eq_hex!(emu.cpu.d_clock, 5);
-    assert_eq_hex!(emu.cpu.pc, 0x10);
-    assert_eq_hex!(emu.cpu.gpr[8], 0xbabe_dead);
-
-    Ok(())
-}
-
-#[cfg(test)]
-#[rstest]
-fn test_combined_unaligned_store_loads() -> color_eyre::Result<()> {
-    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
-    use assert_hex::assert_eq_hex;
-    use pchan_utils::setup_tracing;
-
-    setup_tracing();
-    let mut emu = Emu::default();
-    emu.cpu.gpr[9] = 0x102;
-    emu.cpu.gpr[8] = 0x1111_1111;
-    emu.cpu.gpr[10] = 0xcafe_babe;
-    emu.write_many(
-        0x0,
-        &program([
-            swl(10, 9, 0x0),
-            swr(10, 9, 0x0),
-            nop(),
-            lwl(8, 9, 0x0),
-            lwr(8, 9, 0x0),
-            nop(),
-            OpCode::HALT,
-        ]),
-    );
-    PipelineV2::new(&emu).run_once(&mut emu)?;
-
-    tracing::info!("finished running");
-    tracing::info!(?emu.cpu);
-
-    tracing::info!(read0x4 = %hex(emu.read::<u32>(0x100 - 4)));
-    tracing::info!(read0x0 = %hex(emu.read::<u32>(0x100)));
-    tracing::info!(read0x4 = %hex(emu.read::<u32>(0x104)));
-    assert_eq_hex!(emu.cpu.gpr[8], 0xcafe_babe);
-
-    Ok(())
 }
 
 #[derive(Debug, Clone, derive_more::Deref)]

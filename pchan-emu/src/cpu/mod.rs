@@ -1,4 +1,8 @@
-use std::{fmt::Display, mem::offset_of};
+use std::{
+    fmt::Display,
+    mem::offset_of,
+    ops::{Index, IndexMut},
+};
 
 use bitbybit::bitfield;
 use derive_more as d;
@@ -248,6 +252,29 @@ pub const fn reg_str(reg: Reg) -> &'static str {
     REG_STR[reg as usize]
 }
 
-pub fn program<const N: usize>(prog: [OpCode; N]) -> [u32; N] {
-    prog.map(|op| op.raw_value())
+pub const fn program<const N: usize>(prog: [OpCode; N]) -> [u32; N] {
+    const fn raw_value(op: OpCode) -> u32 {
+        op.raw_value()
+    }
+    prog.map(raw_value)
+}
+
+impl Index<&'static str> for Cpu {
+    type Output = u32;
+
+    fn index(&self, index: &'static str) -> &Self::Output {
+        match index {
+            "$sp" => &self.gpr[29],
+            _ => panic!("unknown register {index}"),
+        }
+    }
+}
+
+impl IndexMut<&'static str> for Cpu {
+    fn index_mut(&mut self, index: &'static str) -> &mut Self::Output {
+        match index {
+            "$sp" => &mut self.gpr[29],
+            _ => panic!("unknown register {index}"),
+        }
+    }
 }

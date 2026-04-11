@@ -19,11 +19,12 @@
 #![feature(debug_closure_helpers)]
 #![feature(iter_intersperse)]
 #![feature(generic_const_exprs)]
+#![feature(const_array)]
 #![feature(portable_simd)]
 // allow unused variables in tests to supress the setup tracing warnings
 #![cfg_attr(test, allow(unused_variables))]
 
-use std::{collections::HashMap, mem::offset_of};
+use std::mem::offset_of;
 
 use crate::{
     bootloader::BootloaderState,

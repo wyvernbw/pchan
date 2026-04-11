@@ -217,6 +217,10 @@ impl Dynarec {
                 ; .u64 Emu::readu16v2 as *const () as _
                 ; -> read32v2:
                 ; .u64 Emu::read32v2 as *const () as _
+                ; -> ulread32:
+                ; .u64 Emu::ulread32 as *const () as _
+                ; -> urread32:
+                ; .u64 Emu::urread32 as *const () as _
                 ; -> handle_syscall:
                 ; .u64 Emu::handle_syscall as *const () as _
                 ; -> handle_rfe:

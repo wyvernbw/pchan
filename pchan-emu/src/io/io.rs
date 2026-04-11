@@ -131,8 +131,45 @@ pub trait IO: Bus {
         // tracing::trace!(value = %hex(value), mask = %hex(mask));
         self.try_write(aligned_address + 0x4, value)
     }
+
+    #[pchan_macros::instrument(skip_all)]
+    fn try_read32_unaligned_l(&mut self, address: u32) -> IOResult<u32> {
+        let spill = address % size_of::<u32>() as u32;
+        let aligned_address = address - spill;
+        let read_value = self.try_read::<u32>(aligned_address)?;
+        let spill = 4 - spill - 1;
+        let spill_n = spill << 3;
+        let value = read_value << spill_n;
+
+        #[cfg(debug_assertions)]
+        {
+            tracing::info!(ret=%hex(value));
+        }
+
+        Ok(value)
+    }
+
+    #[pchan_macros::instrument(skip_all)]
+    fn try_read32_unaligned_r(&mut self, address: u32) -> IOResult<u32> {
+        let spill = address % size_of::<u32>() as u32;
+        let aligned_address = address - spill;
+        let read_value = self.try_read::<u32>(aligned_address)?;
+        let spill_n = spill << 3;
+        let value = read_value >> spill_n;
+
+        #[cfg(debug_assertions)]
+        {
+            tracing::info!(ret=%hex(value));
+        }
+
+        Ok(value)
+    }
+
     fn write32_unaligned_l(&mut self, address: u32, value: u32);
     fn write32_unaligned_r(&mut self, address: u32, value: u32);
+
+    fn read32_unaligned_l(&mut self, address: u32) -> u32;
+    fn read32_unaligned_r(&mut self, address: u32) -> u32;
 }
 
 pub type IOResult<T> = Result<T, UnhandledIO>;
@@ -268,6 +305,24 @@ impl IO for Emu {
     fn write32_unaligned_r(&mut self, address: u32, value: u32) {
         if let Err(err) = self.try_write32_unaligned_r(address, value) {
             self.panic(&format!("{}", err));
+        }
+    }
+
+    fn read32_unaligned_l(&mut self, address: u32) -> u32 {
+        match self.try_read32_unaligned_l(address) {
+            Err(err) => {
+                self.panic(&format!("{err}"));
+            }
+            Ok(value) => value,
+        }
+    }
+
+    fn read32_unaligned_r(&mut self, address: u32) -> u32 {
+        match self.try_read32_unaligned_r(address) {
+            Err(err) => {
+                self.panic(&format!("{err}"));
+            }
+            Ok(value) => value,
         }
     }
 }
