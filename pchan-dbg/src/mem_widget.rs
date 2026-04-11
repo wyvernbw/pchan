@@ -14,7 +14,7 @@ use manatui::{
 };
 use manatui_tea_ui::components::text_input::{TextInput, TextInputEvent, TextInputView};
 use pchan_emu::{dynarec_v2::emitters::DecodedOp, io::IO};
-use pchan_utils::hex;
+use pchan_utils::{hex, hex_pref};
 
 use crate::{Hseparator, border_style_focus, emu_task::DebugView, lipgloss_colors::LipglossStyle};
 
@@ -161,7 +161,7 @@ pub(crate) fn mem_view(state: &MemViewState, view: &DebugView) -> View {
                     true => base_style.black().on_c0700(),
                     false => base_style,
                 };
-                format!("{:08x}", word).set_style(style)
+                format!("{}", hex_pref::<_, false>(word.to_ne_bytes())).set_style(style)
             });
             Row::new([[addr].as_slice(), words.as_slice()].concat())
         });

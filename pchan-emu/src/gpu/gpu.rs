@@ -79,8 +79,8 @@ pub struct GpuState {
 
 #[derive(derive_more::Debug, Clone, Default)]
 pub enum GpuModel {
-    Gpu160Pin,
     #[default]
+    Gpu160Pin,
     Gpu180Pin,
     Gpu208Pin,
 }
@@ -165,13 +165,13 @@ pub trait Gpu: Bus + Interrupts {
     #[cfg_attr(debug_assertions, instrument(skip(self, value), "gpu:w"))]
     fn write<T: Copy>(&mut self, address: u32, value: T) -> Result<(), UnhandledIO> {
         let address = address & 0x1fffffff;
-        if size_of::<T>() != 4 {
-            panic!(
-                "write to io gpu register is not word sized. {} has size of {}",
-                std::any::type_name::<T>(),
-                size_of::<T>()
-            )
-        }
+        // if size_of::<T>() != 4 {
+        //     panic!(
+        //         "write to io gpu register is not word sized. {} has size of {}",
+        //         std::any::type_name::<T>(),
+        //         size_of::<T>()
+        //     )
+        // }
 
         match address {
             0x1f80_1810 => {

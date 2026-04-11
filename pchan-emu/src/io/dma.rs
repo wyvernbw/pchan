@@ -342,8 +342,9 @@ pub trait Dma: Bus + IO + Fastmem + Interrupts + Gpu {
                     tracing::info!(header.next = %hex(header.next()), header.len = header.len());
                     let len = header.len();
                     for idx in 0..len {
-                        let cmd = IO::read::<u32>(self, addr + idx as u32 * 0x4 + 0x4);
-                        tracing::trace!("dma2 push: {}", hex(cmd));
+                        let addr = addr + idx as u32 * 0x4 + 0x4;
+                        let cmd = IO::read::<u32>(self, addr);
+                        tracing::trace!(addr = %hex(addr), "dma2 push: {}", hex(cmd),);
                         self.gp0_cmd_queue_push_or_flush(cmd);
                     }
                     visited.insert(addr).expect(

@@ -68,9 +68,7 @@ impl<'a> EmitCtx<'a> {
             .expect("binary heap is at capacity. increase allocation size or decrease block size");
     }
     fn drain_schedule(&mut self) {
-        let emitters = std::iter::from_fn(|| self.dynarec.scheduler.queue.pop())
-            .collect::<SmallVec<[ScheduledEmitter; 8]>>();
-        for emitter in emitters {
+        while let Some(emitter) = self.dynarec.scheduler.queue.pop() {
             emitter.emitter.call((EmitCtx {
                 dynarec: self.dynarec,
                 cache:   self.cache,
@@ -1979,26 +1977,27 @@ macro_rules! jump_to_pc {
 
 impl DynarecOp for J {
     fn emit<'a>(&self, mut ctx: EmitCtx<'a>) -> EmitSummary {
-        let new_pc = (self.imm26 << 2) + (ctx.pc & 0xf0000000);
+        let new_pc = (self.imm26 << 2) | (ctx.pc & 0xf0000000);
         ctx.schedule_in(1)
             .emitter(move |mut ctx| {
-                ctx.dynarec.emit_write_pc(Reg::W(3), new_pc);
-                #[cfg(target_arch = "aarch64")]
-                dynasm!(
-                    ctx.dynarec.asm
-                    ; ldr x3, ->jump // defined in prelude
-                    ; str x0, [sp, #-16]!
-                    ; blr x3
-                    ; mov x3, x0
-                    ; ldr x0, [sp], #16
+                ctx.dynarec.emit_write_pc(Reg::W(1), new_pc);
+                // #[cfg(target_arch = "aarch64")]
+                // dynasm!(
+                //     ctx.dynarec.asm
+                //     ; ldr x3, ->jump // defined in prelude
+                //     ; str x0, [sp, #-16]!
+                //     ;; ctx.dynarec.emit_write_pc(Reg::W(1), new_pc)
+                //     ; blr x3
+                //     ; mov x3, x0
+                //     ; ldr x0, [sp], #16
 
-                    ; cbz x3, >miss
+                //     ; cbz x3, >miss
 
-                    ;; ctx.drain_schedule()
-                    ;; ctx.dynarec.emit_block_epilogue(ctx.d_clock, None, false)
-                    ; br x3
-                    ; miss:
-                );
+                //     ;; ctx.drain_schedule()
+                //     ;; ctx.dynarec.emit_block_epilogue(ctx.d_clock, None, false)
+                //     ; br x3
+                //     ; miss:
+                // );
                 EmitSummary::builder().pc_updated(true).build()
             })
             .call();

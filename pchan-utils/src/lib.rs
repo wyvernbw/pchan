@@ -189,9 +189,13 @@ use std::mem::size_of;
 
 #[derive(derive_more::Deref, derive_more::Display)]
 #[display("{}", self.0.as_str())]
-pub struct Hex<const N: usize>(const_hex::Buffer<N, true>);
+pub struct Hex<const N: usize, const PREFIX: bool>(const_hex::Buffer<N, PREFIX>);
 
-pub fn hex<T>(mut x: T) -> Hex<{ size_of::<T>() }> {
+pub fn hex<T>(mut x: T) -> Hex<{ size_of::<T>() }, true> {
+    hex_pref::<T, true>(x)
+}
+
+pub fn hex_pref<T, const PREFIX: bool>(mut x: T) -> Hex<{ size_of::<T>() }, PREFIX> {
     let ptr = &mut x as *mut T as *mut u8;
 
     // SAFETY: should always be valid since size_of::<T> is enforced
@@ -202,7 +206,7 @@ pub fn hex<T>(mut x: T) -> Hex<{ size_of::<T>() }> {
         bytes.reverse();
     }
 
-    Hex(const_hex::const_encode::<_, true>(bytes))
+    Hex(const_hex::const_encode::<_, PREFIX>(bytes))
 }
 
 #[cfg(test)]
