@@ -130,43 +130,47 @@ pub trait IO: Bus {
     }
 
     #[pchan_macros::instrument(skip_all)]
-    fn try_read32_unaligned_l(&mut self, address: u32) -> IOResult<u32> {
-        let spill = address % size_of::<u32>() as u32;
-        let aligned_address = address - spill;
-        let read_value = self.try_read::<u32>(aligned_address)?;
-        let spill = 4 - spill - 1;
-        let spill_n = spill << 3;
-        let value = read_value << spill_n;
+    fn try_read32_unaligned_l(&mut self, address: u32, overwrite: u32) -> IOResult<u32> {
+        let shift = (address & 3) << 3;
+        let aligned = address & !3;
+        let read_value = self.try_read::<u32>(aligned)?;
+
+        let mask = 0xffff_ffffu32.unbounded_shr(shift + 8);
+        let overwrite = overwrite & mask;
+        let shift = 24 - shift;
+        let value = read_value << shift;
 
         #[cfg(debug_assertions)]
         {
             tracing::info!(ret=%hex(value));
         }
 
-        Ok(value)
+        Ok(overwrite | value)
     }
 
     #[pchan_macros::instrument(skip_all)]
-    fn try_read32_unaligned_r(&mut self, address: u32) -> IOResult<u32> {
-        let spill = address % size_of::<u32>() as u32;
-        let aligned_address = address - spill;
-        let read_value = self.try_read::<u32>(aligned_address)?;
-        let spill_n = spill << 3;
-        let value = read_value >> spill_n;
+    fn try_read32_unaligned_r(&mut self, address: u32, overwrite: u32) -> IOResult<u32> {
+        let shift = (address & 3) << 3;
+        let aligned = address & !3;
+        let read_value = self.try_read::<u32>(aligned)?;
+
+        let mask = 0xffff_ffffu32.unbounded_shl(32 - shift);
+        let overwrite = overwrite & mask;
+        let value = read_value >> shift;
 
         #[cfg(debug_assertions)]
         {
             tracing::info!(ret=%hex(value));
         }
 
-        Ok(value)
+        Ok(overwrite | value)
     }
 
     fn write32_unaligned_l(&mut self, address: u32, value: u32);
     fn write32_unaligned_r(&mut self, address: u32, value: u32);
 
-    fn read32_unaligned_l(&mut self, address: u32) -> u32;
-    fn read32_unaligned_r(&mut self, address: u32) -> u32;
+    fn read32_unaligned_l(&mut self, address: u32, overwrite: u32) -> u32;
+    fn read32_unaligned_r(&mut self, address: u32, overwrite: u32) -> u32;
 }
 
 pub type IOResult<T> = Result<T, UnhandledIO>;
@@ -305,8 +309,8 @@ impl IO for Emu {
         }
     }
 
-    fn read32_unaligned_l(&mut self, address: u32) -> u32 {
-        match self.try_read32_unaligned_l(address) {
+    fn read32_unaligned_l(&mut self, address: u32, overwrite: u32) -> u32 {
+        match self.try_read32_unaligned_l(address, overwrite) {
             Err(err) => {
                 self.panic(&format!("{err}"));
             }
@@ -314,8 +318,8 @@ impl IO for Emu {
         }
     }
 
-    fn read32_unaligned_r(&mut self, address: u32) -> u32 {
-        match self.try_read32_unaligned_r(address) {
+    fn read32_unaligned_r(&mut self, address: u32, overwrite: u32) -> u32 {
+        match self.try_read32_unaligned_r(address, overwrite) {
             Err(err) => {
                 self.panic(&format!("{err}"));
             }

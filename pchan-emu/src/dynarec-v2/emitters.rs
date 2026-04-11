@@ -740,12 +740,16 @@ mod test_unaligned_load_stores {
         program([lwl(9, SP, imm), lwr(9, SP, imm)])
     }
 
+    const fn load_seq_two_imm(a: i16, b: i16) -> [u32; 2] {
+        program([lwl(9, SP, a), lwr(9, SP, b)])
+    }
+
     #[rstest]
-    #[case(load_par_program_one_imm(0x0), 0x0000_0000, 0x0302_0100)]
-    #[case(load_par_program_one_imm(0x1), 0x0100_0000, 0x0003_0201)]
-    #[case(load_par_program_one_imm(0x2), 0x0201_0000, 0x0000_0302)]
-    #[case(load_par_program_one_imm(0x3), 0x0302_0100, 0x0000_0003)]
-    #[case(load_par_program_one_imm(0x4), 0x0400_0000, 0x0706_0504)]
+    #[case(load_par_program_one_imm(0x0), 0x00ff_ffff, 0x0302_0100)]
+    #[case(load_par_program_one_imm(0x1), 0x0100_ffff, 0xff03_0201)]
+    #[case(load_par_program_one_imm(0x2), 0x0201_00ff, 0xffff_0302)]
+    #[case(load_par_program_one_imm(0x3), 0x0302_0100, 0xffff_ff03)]
+    #[case(load_par_program_one_imm(0x4), 0x04ff_ffff, 0x0706_0504)]
     fn test_par_lwl_lwr<const N: usize>(
         #[case] prog: [u32; N],
         #[case] t1: u32,
@@ -759,6 +763,8 @@ mod test_unaligned_load_stores {
         setup_tracing();
         let mut emu = Emu::default();
         emu.cpu["$sp"] = 0x8000_00f0;
+        emu.cpu.gpr[9] = 0xffff_ffff;
+        emu.cpu.gpr[10] = 0xffff_ffff;
         for i in 0x0..0x10 {
             emu.write(emu.cpu["$sp"] + i, i);
         }
@@ -782,6 +788,11 @@ mod test_unaligned_load_stores {
     #[case(load_seq_program_one_imm(0x2), 0x0201_0302)]
     #[case(load_seq_program_one_imm(0x3), 0x0302_0103)]
     #[case(load_seq_program_one_imm(0x4), 0x0706_0504)]
+    // ulw
+    #[case(load_seq_two_imm(0x3, 0x0), 0x0302_0100)]
+    #[case(load_seq_two_imm(0x4, 0x1), 0x0403_0201)]
+    #[case(load_seq_two_imm(0x5, 0x2), 0x0504_0302)]
+    #[case(load_seq_two_imm(0x6, 0x3), 0x0605_0403)]
     fn test_seq_lwl_lwr<const N: usize>(
         #[case] prog: [u32; N],
         #[case] t1: u32,
@@ -794,6 +805,7 @@ mod test_unaligned_load_stores {
         setup_tracing();
         let mut emu = Emu::default();
         emu.cpu["$sp"] = 0x8000_00f0;
+        emu.cpu.gpr[9] = 0xffff_ffff;
         for i in 0x0..0x10 {
             emu.write(emu.cpu["$sp"] + i, i);
         }
@@ -888,36 +900,39 @@ fn emit_load<const ALIGNED: bool>(
 
     ctx.schedule_in(1)
         .emitter(move |mut ctx| {
-            dynasm!(
-                ctx.dynarec.asm
-                ; .arch aarch64
-                // ; ldr w1, [sp], #16
-                ;; let saved = ctx.dynarec.emit_save_volatile_registers()
-                ; fmov w1, S(s(8))
-                ;; func_call(&mut ctx)
-                ; fmov S(s(8)), w0 // place return value in s8+
-                ;; ctx.dynarec.emit_restore_saved_registers(saved.into_iter())
-            );
+            if ALIGNED {
+                dynasm!(
+                    ctx.dynarec.asm
+                    ; .arch aarch64
+                    // ; ldr w1, [sp], #16
+                    ;; let saved = ctx.dynarec.emit_save_volatile_registers()
+                    ; fmov w1, S(s(8))
+                    ;; func_call(&mut ctx)
+                    ; fmov S(s(8)), w0 // place return value in s8+
+                    ;; ctx.dynarec.emit_restore_saved_registers(saved.into_iter())
+                );
+            } else {
+                let rt = ctx.dynarec.emit_load_reg(rt);
+                dynasm!(
+                    ctx.dynarec.asm
+                    ; .arch aarch64
+                    ;; let saved = ctx.dynarec.emit_save_volatile_registers()
+                    ; fmov w1, S(s(8))
+                    ; mov w2, W(*rt)
+                    ;; func_call(&mut ctx)
+                    ; fmov S(s(8)), w0 // place return value in s8+
+                    ;; ctx.dynarec.emit_restore_saved_registers(saved.into_iter())
+                );
+            }
 
             if rt != 0 {
-                if ALIGNED {
-                    let rta = ctx.dynarec.alloc_reg(rt);
-                    dynasm!(
-                        ctx.dynarec.asm
-                        ; fmov W(*rta), S(s(8))
-                    );
-                    ctx.dynarec.mark_dirty(rt);
-                    rta.restore(ctx.dynarec);
-                } else {
-                    let rta = ctx.dynarec.emit_load_reg(rt);
-                    dynasm!(
-                        ctx.dynarec.asm
-                        ; fmov w1, S(s(8))
-                        ; orr W(*rta),W(*rta),w1
-                    );
-                    ctx.dynarec.mark_dirty(rt);
-                    rta.restore(ctx.dynarec);
-                }
+                let rta = ctx.dynarec.alloc_reg(rt);
+                dynasm!(
+                    ctx.dynarec.asm
+                    ; fmov W(*rta), S(s(8))
+                );
+                ctx.dynarec.mark_dirty(rt);
+                rta.restore(ctx.dynarec);
             }
 
             EmitSummary::default()
