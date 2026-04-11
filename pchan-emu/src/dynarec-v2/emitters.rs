@@ -939,6 +939,78 @@ fn test_loads(
     Ok(())
 }
 
+/// this will always try to load 0xcafe_babe
+#[cfg(test)]
+#[rstest]
+#[case(lhu, 0x0, 0xbabe)]
+#[case(lhu, 0x2, 0xcafe)]
+fn test_partial_loads(
+    #[case] instr: impl Fn(u8, u8, i16) -> OpCode,
+    #[case] immediate: i16,
+    #[case] expected: u32,
+) -> color_eyre::Result<()> {
+    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use assert_hex::*;
+    use pchan_utils::setup_tracing;
+
+    setup_tracing();
+    let mut emu = Emu::default();
+    emu.cpu.gpr[10] = 0x0;
+    emu.cpu.gpr[11] = 0x801ffed0;
+    emu.write::<u32>(0x801ffed0, 0xcafe_babeu32);
+    emu.write_many(0x0, &program([instr(10, 11, immediate), OpCode::HALT]));
+
+    PipelineV2::new(&emu).run_once(&mut emu)?;
+
+    tracing::info!("finished running");
+    tracing::info!(?emu.cpu);
+
+    assert_eq_hex!(emu.cpu.d_clock, 3);
+    assert_eq_hex!(emu.cpu.pc, 0x8);
+    assert_eq_hex!(emu.cpu.gpr[10], expected);
+
+    tracing::info!("returning from test...");
+    Ok(())
+}
+
+#[cfg(test)]
+#[rstest]
+fn test_weird_load_01() -> color_eyre::Result<()> {
+    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use assert_hex::*;
+    use pchan_utils::setup_tracing;
+
+    setup_tracing();
+    let mut emu = Emu::default();
+    emu.cpu.gpr[10] = 0xf;
+    emu.cpu.gpr[11] = 0x801ffed0;
+    emu.write::<u32>(0x801ffcd8, 0xd);
+    emu.write::<u32>(0x801ffcd9, 0x0);
+    emu.write::<u32>(0x801ffcda, 0x0);
+    emu.write::<u32>(0x801ffcdb, 0x0);
+    // 0x801ffc78 + 0x62
+    emu.write_many(
+        0x0,
+        &program([
+            lui(11, 0x801f_u16 as i16),
+            ori(11, 11, 0xfc78_u16 as i16),
+            lh(10, 11, 0x62),
+            nop(),
+            OpCode::HALT,
+        ]),
+    );
+
+    PipelineV2::new(&emu).run_once(&mut emu)?;
+
+    tracing::info!("finished running");
+    tracing::info!(?emu.cpu);
+
+    assert_eq_hex!(emu.cpu.gpr[10], 0x0000);
+
+    tracing::info!("returning from test...");
+    Ok(())
+}
+
 #[cfg(test)]
 #[rstest]
 #[case::lb(lb)]
