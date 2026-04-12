@@ -201,44 +201,7 @@ impl Renderer {
                 buffers: &[VertexBufferLayout {
                     array_stride: size_of::<Vertex>() as u64, // 8
                     step_mode: VertexStepMode::Vertex,
-                    attributes: &[
-                        // position @location(0)
-                        VertexAttribute {
-                            format: VertexFormat::Uint16x2,
-                            offset: 0x0,
-                            shader_location: 0,
-                        },
-                        // color_and_mode @location(1)
-                        VertexAttribute {
-                            format: VertexFormat::Uint32,
-                            offset: offset_of!(Vertex, color) as _,
-                            shader_location: 1,
-                        },
-                        // clut @location(2)
-                        VertexAttribute {
-                            format: VertexFormat::Uint16x2,
-                            offset: offset_of!(Vertex, clut) as _,
-                            shader_location: 2,
-                        },
-                        // uv @location(3)
-                        VertexAttribute {
-                            format: VertexFormat::Uint8x2,
-                            offset: offset_of!(Vertex, uv) as _,
-                            shader_location: 3,
-                        },
-                        // texpage_base @location(4)
-                        VertexAttribute {
-                            format: VertexFormat::Uint8x2,
-                            offset: offset_of!(Vertex, texpage_base) as _,
-                            shader_location: 4,
-                        },
-                        // textured @location(5)
-                        VertexAttribute {
-                            format: VertexFormat::Uint8,
-                            offset: offset_of!(Vertex, textured) as _,
-                            shader_location: 5,
-                        },
-                    ],
+                    attributes: Vertex::desc(),
                 }],
             },
             primitive: PrimitiveState {
@@ -372,6 +335,7 @@ impl Renderer {
     }
 }
 
+// FIXME: pack this better
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
 struct Vertex {
@@ -387,6 +351,64 @@ struct Vertex {
     textured: bool,
     _pad: u8,
     texpage_base: U8Vec2,
+    flags: Flags,
+    _pad_03: [u8; 2],
+}
+
+impl Vertex {
+    fn desc() -> &'static [VertexAttribute] {
+        &[
+            // position @location(0)
+            VertexAttribute {
+                format: VertexFormat::Uint16x2,
+                offset: 0x0,
+                shader_location: 0,
+            },
+            // color_and_mode @location(1)
+            VertexAttribute {
+                format: VertexFormat::Uint32,
+                offset: offset_of!(Vertex, color) as _,
+                shader_location: 1,
+            },
+            // clut @location(2)
+            VertexAttribute {
+                format: VertexFormat::Uint16x2,
+                offset: offset_of!(Vertex, clut) as _,
+                shader_location: 2,
+            },
+            // uv @location(3)
+            VertexAttribute {
+                format: VertexFormat::Uint8x2,
+                offset: offset_of!(Vertex, uv) as _,
+                shader_location: 3,
+            },
+            // texpage_base @location(4)
+            VertexAttribute {
+                format: VertexFormat::Uint8x2,
+                offset: offset_of!(Vertex, texpage_base) as _,
+                shader_location: 4,
+            },
+            // textured @location(5)
+            VertexAttribute {
+                format: VertexFormat::Uint8,
+                offset: offset_of!(Vertex, textured) as _,
+                shader_location: 5,
+            },
+            // flags @location(6)
+            VertexAttribute {
+                format: VertexFormat::Uint8,
+                offset: offset_of!(Vertex, flags) as _,
+                shader_location: 6,
+            },
+        ]
+    }
+}
+
+#[bitbybit::bitfield(u8, debug)]
+#[derive(Default)]
+struct Flags {
+    #[bit(0, rw)]
+    dither: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -545,6 +567,8 @@ impl Scene {
             true => gpustat.texpage_colors(),
             false => TextureColorMode::C15BitDirect,
         };
+        let flags = Flags::default()
+            .with_dither(gpustat.dither() && (header.modulation() || header.goraud()));
         let mut vertices = match shading {
             // DONE: Goraud shading
             Shading::Flat => draw_polygon
@@ -560,6 +584,8 @@ impl Scene {
                     _pad: 0,
                     clut,
                     _pad_02: [0; 2],
+                    flags,
+                    _pad_03: [0; 2],
                 })
                 .collect::<heapless::Vec<_, 4>>(),
             Shading::Gouraud => draw_polygon
@@ -577,6 +603,8 @@ impl Scene {
                     textured: header.textured(),
                     _pad: 0,
                     _pad_02: [0; 2],
+                    flags,
+                    _pad_03: [0; 2],
                 })
                 .collect(),
         };

@@ -4,7 +4,8 @@ struct VertexInput {
     @location(2) clut: vec2<u32>,
     @location(3) uv: vec2<u32>,
     @location(4) texpage_base: vec2<u32>,
-    @location(5) textured: u32
+    @location(5) textured: u32,
+    @location(6) flags: u32,
 };
 
 struct VertexOutput {
@@ -16,6 +17,7 @@ struct VertexOutput {
     @interpolate(linear) @location(7) uv: vec2<f32>,
     @interpolate(flat) @location(8) texpage_base: vec2<f32>,
     @interpolate(flat) @location(9) textured: u32,
+    @interpolate(flat) @location(10) flags: u32,
 };
 
 @group(0) @binding(0)
@@ -52,6 +54,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     out.clip_position = vec4<f32>(f32(in.position.x) / 512.0 - 1.0, f32(512 - in.position.y) / 256.0 - 1.0, 0.0, 1.0);
     out.vram_position = vec2<f32>(vec2(in.position.x, 512 - in.position.y));
     out.color_mode = color_mode;
+    out.flags = in.flags;
 
     // https://psx-spx.consoledev.net/graphicsprocessingunitgpu/#clut-attribute-color-lookup-table-aka-palette
     out.clut = vec2<f32>(vec2(in.clut.x * 16, in.clut.y));
@@ -61,6 +64,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     out.texpage_base = vec2<f32>(vec2(in.texpage_base.x * 64, in.texpage_base.y * 256));
 
     out.color = rgb8_split_color(color);
+
     return out;
 }
 
@@ -97,8 +101,28 @@ fn pack_h(v: vec2<f32>, f: f32) -> vec2<f32> {
     return vec2<f32>(v.x * f, v.y);
 }
 
+fn get_flag(flags: u32, idx: u32) -> bool {
+    return (flags & (u32(1) << idx)) != 0;
+}
+
+fn get_dither(flags: u32) -> bool {
+    return get_flag(flags, 0);
+}
+
 fn get_color(in: VertexOutput) -> u32 {
-    var color = pack_color(in.color);
+    var in_color = in.color;
+
+    if get_dither(in.flags) {
+        in_color *= 255;
+        var dither_pos: vec2<f32>;
+        dither_pos = in.vram_position % 4;
+        var dither_value: i32 = DITHER[u32(dither_pos.y)][u32(dither_pos.x)];
+        in_color += f32(dither_value);
+        in_color = clamp(in_color, vec3(0), vec3(0xff));
+        in_color /= 255;
+    }
+
+    var color = pack_color(in_color);
     switch in.color_mode {
         case COLOR_MODE_4BIT: {
             if in.textured != 0 {
@@ -131,11 +155,19 @@ fn get_color(in: VertexOutput) -> u32 {
     }
 }
 
+const DITHER: array<array<i32, 4>, 4> = array(
+    array(-4,  0, -3,  1),
+    array( 2, -2,  3, -1),
+    array(-3,  1, -4,  0),
+    array( 3, -1,  2, -2),
+);
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) u32 {
     var color = get_color(in);
     if color == 0 {
         discard;
     }
+
     return color;
 }

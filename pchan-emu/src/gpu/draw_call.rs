@@ -285,7 +285,7 @@ pub struct DrawPolygonAttribute {
 pub struct DrawPolygonHeader {
     #[bits(0..=23, rw)]
     color: u24,
-    #[bit(24)]
+    #[bit(24, rw)]
     raw:   bool,
 
     #[bit(25, rw)]
@@ -299,6 +299,16 @@ pub struct DrawPolygonHeader {
     shading:      Shading,
 }
 
+impl DrawPolygonHeader {
+    pub fn modulation(&self) -> bool {
+        self.textured() && (!self.raw()) && (self.shading() == Shading::Gouraud)
+    }
+
+    pub fn goraud(&self) -> bool {
+        matches!(self.shading(), Shading::Gouraud)
+    }
+}
+
 #[bitenum(u1, exhaustive = true)]
 #[derive(Debug)]
 pub enum DrawPolygonVertexCount {
@@ -307,7 +317,7 @@ pub enum DrawPolygonVertexCount {
 }
 
 #[bitenum(u1, exhaustive = true)]
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum Shading {
     Flat    = 0x0,
     Gouraud = 0x1,
