@@ -42,11 +42,23 @@ fn rgb5_split_color(value: u32) -> vec3<f32> {
     return vec3(r, g, b);
 }
 
+fn srgb_to_linear(c: f32) -> f32 {
+    if c <= 0.04045 {
+        return c / 12.92;
+    } else {
+        return pow((c + 0.055) / 1.055, 2.4);
+    }
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     var uv = in.uv * vec2(1024, 512);
+    uv.y = 512 - uv.y;
     var col = read_16bit(uv);
     var out = rgb5_split_color(col);
+    out.r = srgb_to_linear(out.r);
+    out.g = srgb_to_linear(out.g);
+    out.b = srgb_to_linear(out.b);
 
     return vec4<f32>(out, 1.0);
 }

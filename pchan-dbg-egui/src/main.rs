@@ -17,7 +17,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use egui::{Ui, mutex::RwLock};
+use egui::{Ui, Vec2, mutex::RwLock};
 use egui_wgpu::{
     self, CallbackTrait, ScreenDescriptor,
     wgpu::{
@@ -244,9 +244,8 @@ impl PchanDbgEgui {
     }
 
     fn custom_painting(ui: &mut egui::Ui, pchan_rd: Arc<pchan_gpu::Renderer>) {
-        let (rect, response) =
-            ui.allocate_exact_size(egui::Vec2::splat(300.0), egui::Sense::drag());
-
+        let size = ui.available_size();
+        let (rect, _) = ui.allocate_exact_size(size, egui::Sense::drag());
         let callback = egui_wgpu::Callback::new_paint_callback(rect, RenderCallback(pchan_rd));
         ui.painter().add(callback);
     }
@@ -255,17 +254,6 @@ impl PchanDbgEgui {
 struct RenderCallback(Arc<pchan_gpu::Renderer>);
 
 impl CallbackTrait for RenderCallback {
-    // fn prepare(
-    //     &self,
-    //     _device: &eframe::wgpu::Device,
-    //     _queue: &eframe::wgpu::Queue,
-    //     _screen_descriptor: &egui_wgpu::ScreenDescriptor,
-    //     _egui_encoder: &mut eframe::wgpu::CommandEncoder,
-    //     _callback_resources: &mut egui_wgpu::CallbackResources,
-    // ) -> Vec<eframe::wgpu::CommandBuffer> {
-    //     vec![]
-    // }
-
     fn paint(
         &self,
         info: egui::PaintCallbackInfo,
@@ -320,7 +308,11 @@ impl ApplicationHandler<UserEvent> for Main {
 
         let res: Result<()> = try {
             let window = event_loop
-                .create_window(WindowAttributes::default())
+                .create_window(
+                    WindowAttributes::default()
+                        .with_title("pchan-dbg")
+                        .with_maximized(true),
+                )
                 .wrap_err("failed to create window")?;
             let pchan = PchanDbgEgui::new(window, self.proxy.clone())
                 .wrap_err("failed to create pchan app")?;
@@ -368,10 +360,18 @@ impl ApplicationHandler<UserEvent> for Main {
                     },
                     |ui| {
                         let pchan_rd = &pchan_rd;
-                        ui.label("hello from egui!");
-                        egui::Frame::canvas(ui.style()).show(ui, |ui| {
-                            PchanDbgEgui::custom_painting(ui, pchan_rd.clone());
-                        });
+                        egui::Window::new("render")
+                            .resizable(true)
+                            .default_width(1024.)
+                            .default_height(512.)
+                            .show(ui.ctx(), |ui| {
+                                ui.vertical(|ui| {
+                                    ui.heading("Framebuffer (15bit direct):");
+                                    egui::Frame::canvas(ui.style()).show(ui, |ui| {
+                                        PchanDbgEgui::custom_painting(ui, pchan_rd.clone());
+                                    });
+                                });
+                            });
                     },
                 )
                 .unwrap();
