@@ -97,14 +97,8 @@ fn pack_h(v: vec2<f32>, f: f32) -> vec2<f32> {
     return vec2<f32>(v.x * f, v.y);
 }
 
-@fragment
-fn fs_main(in: VertexOutput) -> @location(0) u32 {
-    // return pack_color(vec3<f32>((in.texpage_base + vec2(in.uv.x * 4, in.uv.y)) / vec2(1024.0, 512.0), 1.0));
-    // return pack_color(vec3<f32>(in.texpage_base / vec2(1024.0, 512.0), 0.0));
-    // return read_16bit(vec2(512, 0) + vec2(in.uv.x, in.uv.y) / 4);
-    // return read_16bit(in.texpage_base + vec2(in.uv.x, in.uv.y) / 4);
+fn get_color(in: VertexOutput) -> u32 {
     var color = pack_color(in.color);
-
     switch in.color_mode {
         case COLOR_MODE_4BIT: {
             if in.textured != 0 {
@@ -135,4 +129,13 @@ fn fs_main(in: VertexOutput) -> @location(0) u32 {
             return color;
         }
     }
+}
+
+@fragment
+fn fs_main(in: VertexOutput) -> @location(0) u32 {
+    var color = get_color(in);
+    if color == 0 {
+        discard;
+    }
+    return color;
 }
