@@ -1,8 +1,9 @@
+use pchan_utils::hex;
 use tracing::instrument;
 
 use crate::{
     Bus, Emu,
-    io::{IOResult, UnhandledIO},
+    io::{CastIOInto, IOResult, UnhandledIO},
 };
 
 pub mod fastmem;
@@ -100,7 +101,12 @@ impl MemoryState {
 }
 
 pub trait ScratchpadMem: Bus {
-    #[cfg_attr(debug_assertions, instrument(skip(self)))]
+    #[pchan_macros::instrument(
+        level = "trace",
+        skip_all,
+        fields(address = %hex(address))
+        "scratchpad:r"
+    )]
     fn read<T: Copy>(&self, address: u32) -> IOResult<T> {
         match address {
             // scratchpad is not mapped in kseg1
@@ -113,7 +119,12 @@ pub trait ScratchpadMem: Bus {
             _ => Err(UnhandledIO(address)),
         }
     }
-    #[cfg_attr(debug_assertions, instrument(skip(self, value)))]
+    #[pchan_macros::instrument(
+        level = "trace",
+        skip_all,
+        fields(address = %hex(address), value = %hex(value.io_into_u32()))
+        "scratchpad:w"
+    )]
     fn write<T: Copy>(&mut self, address: u32, value: T) -> IOResult<()> {
         match address {
             // scratchpad is not mapped in kseg1

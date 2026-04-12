@@ -2,6 +2,7 @@ use arbitrary_int::prelude::*;
 use bitbybit::{bitenum, bitfield};
 use derive_more as d;
 use pchan_macros::{pchan_instrument_read, pchan_instrument_write};
+use pchan_utils::hex;
 
 use crate::{
     Bus, Emu,
@@ -73,7 +74,11 @@ pub trait Interrupts: Bus + IO + Exceptions {
             );
         }
     }
-    #[pchan_instrument_read("irq:r")]
+    #[pchan_macros::instrument(
+        level = "trace", "irq:r",
+        skip_all,
+        fields(address=%hex(address))
+    )]
     fn read<T: Copy>(&self, address: u32) -> IOResult<T> {
         match address {
             0x1f801070 => Ok(self.irq().i_stat.io_from_u32()),
@@ -81,7 +86,12 @@ pub trait Interrupts: Bus + IO + Exceptions {
             _ => Err(UnhandledIO(address)),
         }
     }
-    #[pchan_instrument_write("irq:w")]
+    #[pchan_macros::instrument(
+        level = "trace",
+        "irq:w",
+        skip_all,
+        fields(address=%hex(address), value=%hex(value.io_into_u32()))
+    )]
     fn write<T: Copy>(&mut self, address: u32, value: T) -> IOResult<()> {
         match address {
             0x1f801070 => {

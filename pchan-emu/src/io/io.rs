@@ -19,7 +19,7 @@ pub mod tty;
 pub mod vblank;
 
 impl Emu {
-    #[instrument("io", skip_all, fields(pc = %hex(self.cpu.pc)))]
+    #[instrument(level = "trace", "io", skip_all, fields(pc = %hex(self.cpu.pc)))]
     pub fn run_io(&mut self) {
         self.cpu_mut().vblank_timer = self.cpu().vblank_timer.wrapping_add(self.cpu().d_clock);
         self.cpu_mut().cycles = self.cpu().cycles.wrapping_add(self.cpu().d_clock as u64);
@@ -93,7 +93,7 @@ pub trait IO: Bus {
         let value = Extend::<E>::ext(value);
         self.write(address, value);
     }
-    #[pchan_macros::instrument(ret, skip_all)]
+    #[pchan_macros::instrument(level = "trace", ret, skip_all)]
     fn try_write32_unaligned_l(&mut self, address: u32, value: u32) -> IOResult<()> {
         let spill = address % size_of::<u32>() as u32;
         let aligned_address = address - spill;
@@ -113,7 +113,7 @@ pub trait IO: Bus {
 
         self.try_write(aligned_address, value)
     }
-    #[pchan_macros::instrument(ret, skip_all)]
+    #[pchan_macros::instrument(level = "trace", ret, skip_all)]
     fn try_write32_unaligned_r(&mut self, address: u32, value: u32) -> IOResult<()> {
         let shift = (address & 3) << 3;
         let aligned = address & !3;
@@ -129,7 +129,7 @@ pub trait IO: Bus {
         self.try_write(aligned, value)
     }
 
-    #[pchan_macros::instrument(skip_all)]
+    #[pchan_macros::instrument(level = "trace", skip_all)]
     fn try_read32_unaligned_l(&mut self, address: u32, overwrite: u32) -> IOResult<u32> {
         let shift = (address & 3) << 3;
         let aligned = address & !3;
@@ -148,7 +148,7 @@ pub trait IO: Bus {
         Ok(overwrite | value)
     }
 
-    #[pchan_macros::instrument(skip_all)]
+    #[pchan_macros::instrument(level = "trace", skip_all)]
     fn try_read32_unaligned_r(&mut self, address: u32, overwrite: u32) -> IOResult<u32> {
         let shift = (address & 3) << 3;
         let aligned = address & !3;
@@ -176,7 +176,12 @@ pub trait IO: Bus {
 pub type IOResult<T> = Result<T, UnhandledIO>;
 
 trait GenericIOFallback: Bus {
-    #[cfg_attr(debug_assertions, instrument(skip(self), "r"))]
+    #[pchan_macros::instrument(
+        level = "trace",
+        skip_all,
+        fields(address = %hex(address))
+        "generic:r"
+    )]
     fn read<T: Copy>(&self, address: u32) -> IOResult<T> {
         let address = address & 0x1fffffff;
         match address {
@@ -188,7 +193,12 @@ trait GenericIOFallback: Bus {
             _ => Err(UnhandledIO(address)),
         }
     }
-    #[cfg_attr(debug_assertions, instrument(skip(self, value), "w"))]
+    #[pchan_macros::instrument(
+        level = "trace",
+        skip_all,
+        fields(address = %hex(address), value = %hex(value.io_into_u32()))
+        "generic:w"
+    )]
     fn write<T: Copy>(&mut self, address: u32, value: T) -> Result<(), UnhandledIO> {
         let address = address & 0x1fffffff;
         match address {
@@ -205,7 +215,12 @@ trait GenericIOFallback: Bus {
 impl GenericIOFallback for Emu {}
 
 trait CacheControl: Bus {
-    #[cfg_attr(debug_assertions, instrument(skip(self)))]
+    #[pchan_macros::instrument(
+        level = "trace",
+        skip_all,
+        fields(address = %hex(address))
+        "cache_ctrl:r"
+    )]
     fn read<T: Copy>(&self, address: u32) -> IOResult<T> {
         match address {
             0xfffe0130 => Ok(self.mem().read_region(
@@ -216,6 +231,12 @@ trait CacheControl: Bus {
             _ => Err(UnhandledIO(address)),
         }
     }
+    #[pchan_macros::instrument(
+        level = "trace",
+        skip_all,
+        fields(address = %hex(address), value = %hex(value.io_into_u32()))
+        "cache_ctrl:w"
+    )]
     fn write<T: Copy>(&mut self, address: u32, value: T) -> IOResult<()> {
         match address {
             0xfffe0130 => {

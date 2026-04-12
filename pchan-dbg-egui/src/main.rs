@@ -335,10 +335,7 @@ impl ApplicationHandler<UserEvent> for Main {
             return;
         };
         match event {
-            UserEvent::RenderFinished => {
-                tracing::info!("pushing rasterized frame");
-                app.window.request_redraw()
-            }
+            UserEvent::RenderFinished => app.window.request_redraw(),
         }
     }
 

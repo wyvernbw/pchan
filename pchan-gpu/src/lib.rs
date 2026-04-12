@@ -343,16 +343,16 @@ impl Renderer {
                     tracing::trace!("waiting for draw calls...");
                     match self.conn.draw_call_chan.1.recv().await {
                         Ok(draw_calls) => {
-                            tracing::info!(
+                            tracing::trace!(
                                 "received {} draw_calls: {:#?}",
                                 draw_calls.len(),
                                 draw_calls
                             );
-                            tracing::info!("waiting on vram...");
+                            tracing::trace!("waiting on vram...");
                             let Ok(mut vram) = self.conn.vram_in_chan.1.recv().await else {
                                 continue;
                             };
-                            tracing::info!("received vram");
+                            tracing::debug!("received vram");
                             let scene = Scene::new_from_draw_calls(&draw_calls);
                             let mut pass = self.create_render_pass(scene).await;
                             pass.draw(&vram);

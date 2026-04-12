@@ -121,7 +121,7 @@ pub fn create_vram() -> Box<[u16]> {
 }
 
 pub trait Gpu: Bus + Interrupts {
-    #[cfg_attr(debug_assertions, instrument(skip(self), "gpu:r"))]
+    #[pchan_macros::instrument(level = "trace", skip(self), "gpu:r")]
     fn read<T: Copy>(&mut self, address: u32) -> IOResult<T> {
         let address = address & 0x1fffffff;
         match address {
@@ -162,7 +162,7 @@ pub trait Gpu: Bus + Interrupts {
             _ => Err(UnhandledIO(address)),
         }
     }
-    #[cfg_attr(debug_assertions, instrument(skip(self, value), "gpu:w"))]
+    #[pchan_macros::instrument(level = "trace", skip(self, value), "gpu:w")]
     fn write<T: Copy>(&mut self, address: u32, value: T) -> Result<(), UnhandledIO> {
         let address = address & 0x1fffffff;
         // if size_of::<T>() != 4 {
@@ -307,7 +307,7 @@ pub trait Gpu: Bus + Interrupts {
         }
     }
 
-    #[cfg_attr(debug_assertions, instrument(skip_all))]
+    #[pchan_macros::instrument(level = "trace", skip_all)]
     fn gp0_cmd_queue_flush(&mut self) {
         while let Some(value) = self.gpu_mut().gp0cmd_queue.pop_front() {
             tracing::trace!(gp0cmd = %hex(value));
@@ -515,7 +515,7 @@ pub trait Gpu: Bus + Interrupts {
             return;
         }
 
-        tracing::info!("flushing {} draw calls", self.gpu().draw_call_queue.len());
+        tracing::debug!("flushing {} draw calls", self.gpu().draw_call_queue.len());
         let queue = std::mem::take(&mut self.gpu_mut().draw_call_queue);
         let vram = self.gpu().vram.clone();
         self.gpu()
@@ -542,7 +542,7 @@ pub trait Gpu: Bus + Interrupts {
 
     fn poll_draw_result(&mut self) {
         if let Ok(Some(vram)) = self.gpu().conn.vram_out_chan.1.try_recv() {
-            tracing::info!("received gpu result (vram)");
+            tracing::trace!("received gpu result (vram)");
             self.gpu_mut().vram = vram;
             self.gpu_mut().waiting_on_render = false;
         }
