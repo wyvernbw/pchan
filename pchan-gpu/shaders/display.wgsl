@@ -9,6 +9,16 @@ var render_t: texture_2d<u32>;
 @group(0) @binding(1)
 var render_s: sampler;
 
+struct DisplayUniforms {
+    display_area_pos: vec2<u32>,
+    resolution: vec2<u32>,
+    screen_rect: vec2<u32>,
+    debug_display: u32
+}
+
+@group(0) @binding(2)
+var<uniform> display: DisplayUniforms;
+
 @vertex
 fn vs_main(
     @builtin(vertex_index) in_vertex_index: u32,
@@ -23,10 +33,29 @@ fn vs_main(
         vec2(1, 1),
         vec2(1, -1)
     );
+
+    var res: vec2<f32>;
+
+    if display.debug_display != 0 {
+        res = vec2(1024, 512);
+    } else {
+        res = vec2<f32>(display.resolution);
+    }
+
+    let tex_aspect  = res.x / res.y;
+    let screen_aspect = f32(display.screen_rect.x) / f32(display.screen_rect.y);
+    var scale: vec2f;
+    if tex_aspect > screen_aspect {
+        scale = vec2f(1.0, screen_aspect / tex_aspect);
+    } else {
+        scale = vec2f(tex_aspect / screen_aspect, 1.0);
+    }
+
     pos = vertices[in_vertex_index];
+    out.uv = (pos + vec2(1)) * vec2(0.5);
+    pos *= scale;
     out.clip_position = vec4<f32>(pos.x, pos.y, 0.0, 1.0);
     out.vert_pos = out.clip_position.xyz;
-    out.uv = (out.clip_position.xy + vec2(1)) * vec2(0.5);
     return out;
 }
 
@@ -52,8 +81,16 @@ fn srgb_to_linear(c: f32) -> f32 {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    var uv = in.uv * vec2(1024, 512);
-    uv.y = 512 - uv.y;
+    var uv: vec2<f32>;
+
+    if display.debug_display != 0 {
+        uv = in.uv * vec2<f32>(1024, 512);
+        uv.y = 512 - uv.y;
+    } else {
+        uv = in.uv * vec2<f32>(display.resolution - display.display_area_pos) + vec2<f32>(display.display_area_pos);
+        uv.y = f32(display.resolution.y) - uv.y;
+    }
+
     var col = read_16bit(uv);
     var out = rgb5_split_color(col);
     out.r = srgb_to_linear(out.r);

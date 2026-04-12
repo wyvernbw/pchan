@@ -11,13 +11,14 @@ use egui_winit::winit::{
     event_loop::{ControlFlow, EventLoop, EventLoopProxy},
     window::WindowAttributes,
 };
+use spin_sleep::SpinSleeper;
 use std::{
     path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
 };
 
-use egui::{Ui, Vec2, mutex::RwLock};
+use egui::{Align, Ui, Vec2, mutex::RwLock};
 use egui_wgpu::{
     self, CallbackTrait, ScreenDescriptor,
     wgpu::{
@@ -88,13 +89,9 @@ impl PchanDbgEgui {
                         let now = Instant::now();
 
                         if let Some(remaining) = deadline.checked_duration_since(now) {
-                            // coarse sleep
-                            // let coarse = remaining.saturating_sub(Duration::from_micros(200));
-                            // if !coarse.is_zero() {
-                            //     std::thread::sleep(coarse);
-                            // }
-                            // spin tail
-                            while Instant::now() < deadline {}
+                            SpinSleeper::new(2_000_000)
+                                .with_spin_strategy(spin_sleep::SpinStrategy::YieldThread)
+                                .sleep(remaining);
                         }
 
                         pchan_emu.write().gpu.last_vblank = Instant::now();
@@ -265,22 +262,23 @@ impl CallbackTrait for RenderCallback {
         render_pass: &mut egui_wgpu::wgpu::RenderPass<'static>,
         callback_resources: &egui_wgpu::CallbackResources,
     ) {
-        let vertex_buf = &[0, 0, 0, 0, 0, 0];
-        let vertex_buffer = self.0.device.create_buffer_init(&BufferInitDescriptor {
-            label:    None,
-            usage:    BufferUsages::VERTEX,
-            contents: vertex_buf,
-        });
-        render_pass.set_pipeline(&self.0.display_pipeline);
-        render_pass.set_bind_group(0, &self.0.display_bind_group, &[]);
-        render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-        render_pass.draw(0..6, 0..1);
+        let rect = info.clip_rect_in_pixels();
+        {
+            self.0.display_uniforms.lock().unwrap().screen_rect =
+                glam::U16Vec2::new(rect.width_px as u16, rect.height_px as u16);
+        }
+        self.0.draw_display(render_pass);
     }
 }
 
 struct Main {
     app:   Option<PchanDbgEgui>,
     proxy: EventLoopProxy<UserEvent>,
+    state: AppState,
+}
+
+struct AppState {
+    vram_display: bool,
 }
 
 impl Main {
@@ -291,7 +289,13 @@ impl Main {
             .wrap_err("failed to create winit::EventLoop")?;
         event_loop.set_control_flow(ControlFlow::Wait);
         let proxy = event_loop.create_proxy();
-        let mut main_app = Self { app: None, proxy };
+        let mut main_app = Self {
+            app: None,
+            proxy,
+            state: AppState {
+                vram_display: false,
+            },
+        };
         event_loop
             .run_app(&mut main_app)
             .wrap_err("error encountered while running pchan debugger")?;
@@ -379,11 +383,22 @@ impl ApplicationHandler<UserEvent> for Main {
                         let pchan_rd = &pchan_rd;
                         egui::Window::new("render")
                             .resizable(true)
-                            .default_width(1024.)
-                            .default_height(512.)
+                            .default_size(ui.available_size() * Vec2::splat(0.9))
                             .show(ui.ctx(), |ui| {
                                 ui.vertical(|ui| {
                                     ui.heading("Framebuffer (15bit direct):");
+                                    if ui
+                                        .radio_value(&mut self.state.vram_display, false, "Display")
+                                        .clicked()
+                                    {
+                                        pchan_rd.display_uniforms.lock().unwrap().dp_debug = false;
+                                    }
+                                    if ui
+                                        .radio_value(&mut self.state.vram_display, true, "VRAM")
+                                        .clicked()
+                                    {
+                                        pchan_rd.display_uniforms.lock().unwrap().dp_debug = true;
+                                    }
                                     ui.label(&frame_label);
                                     egui::Frame::canvas(ui.style()).show(ui, |ui| {
                                         PchanDbgEgui::custom_painting(ui, pchan_rd.clone());

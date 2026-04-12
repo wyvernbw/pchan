@@ -8,8 +8,10 @@ color-eyre.workspace = true
 egui = "0.34.1"
 egui-wgpu = "0.34.1"
 egui-winit = { version = "0.34.1", features = ["accesskit"] }
+glam = "0.32.1"
 pchan-emu.workspace = true
 pchan-gpu.workspace = true
 pchan-utils.workspace = true
 smol = "2.0.2"
+spin_sleep = "1.3.3"
 tracing = { workspace = true, features = ["async-await"] }

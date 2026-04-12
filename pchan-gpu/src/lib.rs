@@ -1,19 +1,19 @@
 pub(crate) mod render_pass;
 
-use std::mem::{offset_of, transmute};
-use std::sync::Arc;
+use std::mem::offset_of;
+use std::sync::{Arc, Mutex};
 
-use arbitrary_int::prelude::*;
 use color_eyre::eyre::bail;
-use glam::{I16Vec2, U8Vec2, U8Vec3, U8Vec4, U16Vec2, UVec2, i16vec2, u8vec2, u16vec2};
+use glam::{I16Vec2, U8Vec2, U8Vec3, U16Vec2, UVec2, i16vec2, u8vec2, u16vec2};
 use pchan_emu::gpu::draw_call::{
-    DrawCall, DrawCallKind, DrawPolygon, DrawRect, DrawRectColor, RectSize, Shading, Uv,
+    DrawCallCollection, DrawCallKind, DrawPolygon, DrawRect, RectSize, Shading,
 };
-use pchan_emu::gpu::{Conn, GpuStatReg, TextureColorMode, VramCoord, create_vram};
+use pchan_emu::gpu::{Conn, GpuStatReg, TextureColorMode, VramCoord};
 use pchan_emu::{Bus, Emu};
+use pchan_utils::Chan;
 use wgpu::*;
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Renderer {
     pub instance: Instance,
     pub adapter: Adapter,
@@ -28,8 +28,23 @@ pub struct Renderer {
     vram_texture: Texture,
     bind_group: BindGroup,
     pub display_bind_group: BindGroup,
+    pub display_uniform_buffer: Buffer,
+    pub display_uniforms: Mutex<DisplayUniforms>,
 
-    conn: Conn<DrawCall>,
+    conn: Conn,
+}
+
+#[derive(Debug, Clone)]
+pub enum UpdateUniforms {
+    Display(DisplayUniforms),
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DisplayUniforms {
+    pub dp_start: U16Vec2,
+    pub dp_res: U16Vec2,
+    pub screen_rect: U16Vec2,
+    pub dp_debug: bool,
 }
 
 impl Renderer {
@@ -165,9 +180,25 @@ impl Renderer {
                         ty: BindingType::Sampler(SamplerBindingType::NonFiltering),
                         count: None,
                     },
+                    BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: ShaderStages::VERTEX_FRAGMENT,
+                        ty: BindingType::Buffer {
+                            ty: BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
                 ],
             });
 
+        let display_uniform_buffer = device.create_buffer(&BufferDescriptor {
+            label: Some("pchan_gpu::display::uniforms"),
+            size: DisplayUniforms::DATASIZE as _,
+            usage: BufferUsages::COPY_DST | BufferUsages::UNIFORM,
+            mapped_at_creation: false,
+        });
         let display_bind_group = device.create_bind_group(&BindGroupDescriptor {
             label: Some("pchan_gpu::rasterizer_bind_group"),
             layout: &display_bind_group_layout,
@@ -179,6 +210,10 @@ impl Renderer {
                 BindGroupEntry {
                     binding: 1,
                     resource: BindingResource::Sampler(&render_sampler),
+                },
+                BindGroupEntry {
+                    binding: 2,
+                    resource: display_uniform_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -287,6 +322,8 @@ impl Renderer {
             },
             display_pipeline,
             display_bind_group,
+            display_uniform_buffer,
+            display_uniforms: Mutex::new(DisplayUniforms::default()),
         })
     }
 
@@ -308,7 +345,7 @@ impl Renderer {
                         Ok(draw_calls) => {
                             tracing::trace!(
                                 "received {} draw_calls: {:#?}",
-                                draw_calls.len(),
+                                draw_calls.draw_calls.len(),
                                 draw_calls
                             );
                             tracing::trace!("waiting on vram...");
@@ -316,6 +353,7 @@ impl Renderer {
                                 continue;
                             };
                             tracing::debug!("received vram");
+
                             let scene = Scene::new_from_draw_calls(&draw_calls);
                             let mut pass = self.create_render_pass(scene).await;
                             pass.draw(&vram);
@@ -414,6 +452,8 @@ struct Flags {
 #[derive(Debug, Clone, Default)]
 pub struct Scene {
     vertex_buf: Vec<Vertex>,
+    dp_start: U16Vec2,
+    dp_res: U16Vec2,
 }
 
 impl From<VramCoord> for Vertex {
@@ -498,9 +538,16 @@ impl Quad {
 }
 
 impl Scene {
-    pub fn new_from_draw_calls(cmds: &[DrawCall]) -> Scene {
-        let mut scene = Scene::default();
-        for cmd in cmds {
+    pub fn new_from_draw_calls(cmds: &DrawCallCollection) -> Scene {
+        let Some(gpustat) = cmds.draw_calls.last().map(|draw| draw.gpustat) else {
+            return Scene::default();
+        };
+        let mut scene = Scene {
+            dp_res: gpustat.resolution(),
+            dp_start: cmds.display.display_vram_start,
+            ..Default::default()
+        };
+        for cmd in &cmds.draw_calls {
             match &cmd.inner {
                 DrawCallKind::Rect(draw_rect) => {
                     // _ = scene.add_draw_rect_draw_call(draw_rect);
@@ -651,152 +698,22 @@ fn ensure_vertex_order(vertex_buf: &mut [Vertex], indices: [usize; 3]) {
     }
 }
 
-pub async fn test_gpu(emu: &mut Emu) -> color_eyre::Result<()> {
-    color_eyre::install()?;
+pub type DisplayUniformData = (UVec2, UVec2, UVec2, u64);
 
-    let renderer = Renderer::try_new().await?;
-    let scene = Scene::new_from_draw_calls(&[
-        // Solid color rect — top-left area
-        DrawCall {
-            gpustat: GpuStatReg::default(),
-            inner: DrawCallKind::Rect(DrawRect {
-                color: DrawRectColor::default().with_rgb(u24::new(0xff0000)),
-                vertex1: VramCoord::new(0, 0),
-                uv: None,
-                var_size: Some(VramCoord { x: 64, y: 64 }),
-            }),
-        },
-        // Tall narrow rect — stresses vertical spans
-        DrawCall {
-            gpustat: GpuStatReg::default(),
-            inner: DrawCallKind::Rect(DrawRect {
-                color: DrawRectColor::default().with_rgb(u24::new(0xFF00FF)),
-                vertex1: VramCoord::new(300, 0),
-                uv: None,
-                var_size: Some(VramCoord { x: 8, y: 256 }),
-            }),
-        },
-    ]);
-    let mut pass = renderer.create_render_pass(scene).await;
-    pass.draw(&emu.gpu.vram);
-    pass.finish(&mut emu.gpu.vram).await?;
-
-    let scene = Scene::new_from_draw_calls(&[
-        // Solid color rect — different hue, overlapping slightly
-        DrawCall {
-            gpustat: GpuStatReg::default(),
-            inner: DrawCallKind::Rect(DrawRect {
-                color: DrawRectColor::default().with_rgb(u24::new(0x00ff00)),
-                vertex1: VramCoord::new(48, 48),
-                uv: None,
-                var_size: Some(VramCoord { x: 64, y: 64 }),
-            }),
-        },
-        // Wide short rect — stresses horizontal spans
-        DrawCall {
-            gpustat: GpuStatReg::default(),
-            inner: DrawCallKind::Rect(DrawRect {
-                color: DrawRectColor::default().with_rgb(u24::new(0x0000FF)),
-                vertex1: VramCoord::new(0, 200),
-                uv: None,
-                var_size: Some(VramCoord { x: 512, y: 8 }),
-            }),
-        },
-    ]);
-    let mut pass = renderer.create_render_pass(scene).await;
-    pass.draw(&emu.gpu.vram);
-    pass.finish(&mut emu.gpu.vram).await?;
-
-    Ok(())
-}
-
-#[cfg(test)]
-mod test {
-    use arbitrary_int::prelude::*;
-    use bitbybit::bitfield;
-    use pchan_emu::Emu;
-    use pchan_utils::init_tracing;
-    use ratatui::{
-        crossterm,
-        prelude::*,
-        widgets::canvas::{Canvas, Rectangle},
-    };
-    use smol::Executor;
-
-    use crate::test_gpu;
-
-    #[test]
-    fn run_gpu_test() -> color_eyre::Result<()> {
-        init_tracing().call();
-        let exec = Executor::new();
-        let mut emu = Emu::default();
-        smol::block_on(exec.run(test_gpu(&mut emu)))?;
-
-        ratatui::run(|term| {
-            loop {
-                term.draw(|frame| {
-                    let v = VramCanvasWidget {
-                        vram: &emu.gpu.vram,
-                        ..Default::default()
-                    };
-
-                    v.render(frame.area(), frame.buffer_mut());
-                });
-
-                if crossterm::event::read()?.is_key_press() {
-                    break Ok(());
-                }
-            }
-        })
-    }
-
-    #[derive(Debug, Default, Clone)]
-    pub struct VramCanvasWidget<'a> {
-        style: Style,
-        vram: &'a [u16],
-    }
-
-    impl<'a> Widget for VramCanvasWidget<'a> {
-        fn render(self, area: Rect, buf: &mut Buffer)
-        where
-            Self: Sized,
-        {
-            #[bitfield(u16)]
-            struct Pixel {
-                #[bits(0..=4, rw)]
-                r: u5,
-                #[bits(5..=9, rw)]
-                g: u5,
-                #[bits(10..=14, rw)]
-                b: u5,
-            }
-            let canvas = Canvas::default()
-                .x_bounds([0.0, 1024.0])
-                .y_bounds([0.0, 512.0])
-                .marker(symbols::Marker::Octant)
-                .paint(|ctx| {
-                    for y in 0..512 {
-                        for x in 0..1024 {
-                            let vram = &self.vram;
-                            let vram_addr = 1024 * y + x;
-                            let pixel = vram[vram_addr];
-                            let pixel = Pixel::new_with_raw_value(pixel);
-
-                            ctx.draw(&Rectangle {
-                                x: x as f64,
-                                y: y as f64,
-                                width: 1.0,
-                                height: 1.0,
-                                color: Color::Rgb(
-                                    (pixel.r().as_::<u16>() * 255 / 31) as u8,
-                                    (pixel.g().as_::<u16>() * 255 / 31) as u8,
-                                    (pixel.b().as_::<u16>() * 255 / 31) as u8,
-                                ),
-                            });
-                        }
-                    }
-                });
-            canvas.render(area, buf);
-        }
+impl DisplayUniforms {
+    pub const DATASIZE: usize = size_of::<DisplayUniformData>();
+    fn to_data(&self) -> DisplayUniformData {
+        let DisplayUniforms {
+            dp_start,
+            dp_res,
+            screen_rect,
+            dp_debug,
+        } = self;
+        (
+            dp_start.as_uvec2(),
+            dp_res.as_uvec2(),
+            screen_rect.as_uvec2(),
+            *dp_debug as u64,
+        )
     }
 }

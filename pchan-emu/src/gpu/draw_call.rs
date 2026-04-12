@@ -19,6 +19,12 @@ use smallvec::smallvec;
 use tracing::Level;
 
 #[derive(Debug, Clone)]
+pub struct DrawCallCollection {
+    pub draw_calls: Vec<DrawCall>,
+    pub display:    crate::gpu::Display,
+}
+
+#[derive(Debug, Clone)]
 pub struct DrawCall {
     pub gpustat: GpuStatReg,
     pub inner:   DrawCallKind,

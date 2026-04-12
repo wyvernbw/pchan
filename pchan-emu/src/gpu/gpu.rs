@@ -10,6 +10,7 @@ use bitbybit::bitenum;
 use bitbybit::bitfield;
 use derive_more as d;
 use glam::U8Vec2;
+use glam::U16Vec2;
 use glam::U64Vec2;
 use glam::u64vec2;
 use heapless::Deque;
@@ -22,6 +23,7 @@ use tracing::instrument;
 use crate::Bus;
 use crate::Emu;
 use crate::gpu::draw_call::DrawCall;
+use crate::gpu::draw_call::DrawCallCollection;
 use crate::gpu::draw_call::DrawCallDecoder;
 use crate::gpu::draw_call::DrawCallKind;
 use crate::gpu::draw_call::DrawLineDecoder;
@@ -45,8 +47,8 @@ use crate::memory::mb;
 pub static VBLANK_COUNT: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone)]
-pub struct Conn<D> {
-    pub draw_call_chan: AsyncChan<Vec<D>>,
+pub struct Conn {
+    pub draw_call_chan: AsyncChan<DrawCallCollection>,
     pub vram_in_chan:   AsyncChan<Box<[u16]>>,
     pub vram_out_chan:  AsyncChan<Box<[u16]>>,
 }
@@ -71,7 +73,7 @@ pub struct GpuState {
     pub model:           GpuModel,
 
     #[debug(skip)]
-    pub conn:          Conn<DrawCall>,
+    pub conn:          Conn,
     waiting_on_render: bool,
     pub last_vblank:   Instant,
     pub vblank_signal: bool,
@@ -456,8 +458,10 @@ pub trait Gpu: Bus + Interrupts {
                     self.gpu_mut().gpustat.set_dma_direction(dir);
                     self.gpu_mut().compute_dma_request();
                 }
+                // GP1(05h) - Start of Display area (in VRAM)
                 0x05 => {
-                    // TODO
+                    let cmd = Gp1StartOfDisplayArea::new_with_raw_value(value.raw_value());
+                    self.gpu_mut().dp.display_vram_start = cmd.to_u16vec2();
                     tracing::debug!("set framebuffer coords");
                 }
                 0x06 => {
@@ -518,12 +522,16 @@ pub trait Gpu: Bus + Interrupts {
         tracing::debug!("flushing {} draw calls", self.gpu().draw_call_queue.len());
         let queue = std::mem::take(&mut self.gpu_mut().draw_call_queue);
         let vram = self.gpu().vram.clone();
+        let display = self.gpu().dp.clone();
         self.gpu()
             .conn
             .draw_call_chan
             .0
             .as_sync()
-            .send(queue)
+            .send(DrawCallCollection {
+                draw_calls: queue,
+                display,
+            })
             .unwrap();
         self.gpu().conn.vram_in_chan.0.as_sync().send(vram).unwrap();
         self.gpu_mut().waiting_on_render = true;
@@ -881,6 +889,23 @@ impl GpuStatReg {
         self.set_ready_recv_dma_block(true);
         self.set_ready_send_vram(false);
     }
+
+    pub fn resolution(self) -> U16Vec2 {
+        let vertical = match (self.v_resolution(), self.v_interlace()) {
+            (VRes::Res480, true) => 480,
+            _ => 240,
+        };
+        let horizontal = match self.h_resolution_2() {
+            HRes2::Standard => match self.h_resolution_1() {
+                HRes1::Res256 => 256,
+                HRes1::Res320 => 320,
+                HRes1::Res512 => 512,
+                HRes1::Res640 => 640,
+            },
+            HRes2::Res368 => 368,
+        };
+        U16Vec2::new(horizontal, vertical)
+    }
 }
 
 #[derive(Debug)]
@@ -1003,6 +1028,28 @@ pub enum TextureColorMode {
 pub struct Gp1DisplayEnableCmd {
     #[bit(0, rw)]
     on_off: bool,
+}
+
+/// # GP1(05h) - Start of Display area (in VRAM)
+/// ```md
+///   0-9   X (0-1023)    (halfword address in VRAM)  (relative to begin of VRAM)
+///   10-18 Y (0-511)     (scanline number in VRAM)   (relative to begin of VRAM)
+///   19-23 Not used (zero)
+/// ```
+/// Upper/left Display source address in VRAM. The size and target position on screen is set via Display Range registers; target=X1,Y2; size=(X2-X1/cycles_per_pix), (Y2-Y1).
+/// Unknown if using Y values in 512-1023 range is supported (with 2 MB VRAM).
+#[bitfield(u32)]
+struct Gp1StartOfDisplayArea {
+    #[bits(0..=9, rw)]
+    x: u10,
+    #[bits(10..=18, rw)]
+    y: u9,
+}
+
+impl Gp1StartOfDisplayArea {
+    fn to_u16vec2(self) -> U16Vec2 {
+        U16Vec2::new(self.x().as_u16(), self.y().as_u16())
+    }
 }
 
 /// # GP1(10h) - Get GPU Info
@@ -1203,6 +1250,10 @@ pub struct Display {
     /// used for storing fractional part when converting
     /// from cpu to video cycles
     fract_01: u64,
+
+    pub display_vram_start: U16Vec2,
+    /// unused
+    pub display_vram_size:  U16Vec2,
 }
 
 /// The functionality in this trait largely deals with video cycles (or video clock units).

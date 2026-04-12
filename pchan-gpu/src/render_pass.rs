@@ -28,6 +28,32 @@ impl Renderer {
             vertex_buf: vertex_buffer,
         }
     }
+
+    pub fn draw_display(&self, render_pass: &mut wgpu::RenderPass<'_>) {
+        let vertex_buf = &[0, 0, 0, 0, 0, 0];
+        let vertex_buffer = self.device.create_buffer_init(&BufferInitDescriptor {
+            label: None,
+            usage: BufferUsages::VERTEX,
+            contents: vertex_buf,
+        });
+
+        {
+            let display = self.display_uniforms.lock().unwrap();
+            let display_uniforms = display.to_data();
+            let display_uniforms_slice = unsafe {
+                let len = size_of_val(&display_uniforms);
+                let ptr = (&display_uniforms) as *const _ as *const u8;
+                std::slice::from_raw_parts(ptr, len)
+            };
+            self.queue
+                .write_buffer(&self.display_uniform_buffer, 0, display_uniforms_slice);
+        }
+
+        render_pass.set_pipeline(&self.display_pipeline);
+        render_pass.set_bind_group(0, &self.display_bind_group, &[]);
+        render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+        render_pass.draw(0..6, 0..1);
+    }
 }
 #[derive(Debug)]
 pub struct RenderPass<'a> {
@@ -45,6 +71,12 @@ impl<'a> RenderPass<'a> {
         let vram_buf = unsafe {
             std::slice::from_raw_parts(vram.as_ptr() as *const u8, std::mem::size_of_val(vram))
         };
+
+        {
+            let mut dp = self.renderer.display_uniforms.lock().unwrap();
+            dp.dp_start = self.scene.dp_start;
+            dp.dp_res = self.scene.dp_res;
+        }
 
         let init_buffer = self
             .renderer
