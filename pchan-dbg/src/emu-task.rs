@@ -73,6 +73,7 @@ impl EmuTask {
         let mut renderer = Renderer::try_new().await?;
         let tty_chan = emu.tty.set_channeled();
         renderer.connect_emu(emu);
+        let renderer = Arc::new(renderer);
         renderer.start();
         let handle = EmuTaskHandle {
             req_chan,

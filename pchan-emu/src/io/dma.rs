@@ -339,7 +339,7 @@ pub trait Dma: Bus + IO + Fastmem + Interrupts + Gpu {
                         );
                     }
                     let header = IO::read::<DmaNodeHeader>(self, addr);
-                    tracing::info!(header.next = %hex(header.next()), header.len = header.len());
+                    tracing::trace!(header.next = %hex(header.next()), header.len = header.len());
                     let len = header.len();
                     for idx in 0..len {
                         let addr = addr + idx as u32 * 0x4 + 0x4;

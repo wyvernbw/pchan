@@ -212,7 +212,7 @@ pub trait Gpu: Bus + Interrupts {
                 Gp0::WaitingForCmd
             }
             0xa0..=0xbf => {
-                tracing::info!("start cpu to vram copy");
+                tracing::debug!("start cpu to vram copy");
                 self.gpu_mut().gpustat.set_ready_recv_cmd(false);
                 Gp0::CpRectCpuToVram(Gp0CpRect::RecvDest)
             }
@@ -310,20 +310,20 @@ pub trait Gpu: Bus + Interrupts {
     #[cfg_attr(debug_assertions, instrument(skip_all))]
     fn gp0_cmd_queue_flush(&mut self) {
         while let Some(value) = self.gpu_mut().gp0cmd_queue.pop_front() {
-            tracing::info!(gp0cmd = %hex(value));
+            tracing::trace!(gp0cmd = %hex(value));
             let cmd = GpuCmd::new_with_raw_value(value);
             let gp0 = match &mut self.gpu_mut().gp0 {
                 Gp0::WaitingForCmd => self.gp0reduce(cmd),
                 Gp0::CpRectCpuToVram(Gp0CpRect::RecvDest) => {
                     let dest: VramCoord = unsafe { transmute(value) };
                     let dest = dest.copy_cmd_pos_mask();
-                    tracing::info!("cpu to vram copy destination: {dest:?}");
+                    tracing::debug!("cpu to vram copy destination: {dest:?}");
                     Gp0::CpRectCpuToVram(Gp0CpRect::RecvSize { dest })
                 }
                 Gp0::CpRectCpuToVram(Gp0CpRect::RecvSize { dest }) => {
                     let size: VramCoord = unsafe { transmute(value) };
                     let size = size.copy_cmd_size_mask();
-                    tracing::info!("cpu to vram copy size: {size:?}");
+                    tracing::debug!("cpu to vram copy size: {size:?}");
                     Gp0::CpRectCpuToVram(Gp0CpRect::RecvData(VramCursor::new(*dest, *dest + size)))
                 }
                 Gp0::CpRectCpuToVram(Gp0CpRect::RecvData(cursor)) => {
@@ -389,7 +389,7 @@ pub trait Gpu: Bus + Interrupts {
                     match decoder {
                         Ok(decoder) => Gp0::DrawRectDecode(decoder),
                         Err(draw_call) => {
-                            tracing::info!(?draw_call, "decoded");
+                            tracing::trace!(?draw_call, "decoded");
                             self.gpu_mut().gpustat.set_ready_recv_cmd(true);
                             self.issue_draw_call(DrawCallKind::Rect(draw_call));
                             Gp0::WaitingForCmd
@@ -404,7 +404,7 @@ pub trait Gpu: Bus + Interrupts {
                     match decoder {
                         Ok(decoder) => Gp0::DrawPolygonDecode(decoder),
                         Err(draw_call) => {
-                            tracing::info!(?draw_call, "decoded");
+                            tracing::trace!(?draw_call, "decoded");
                             self.gpu_mut().gpustat.set_ready_recv_cmd(true);
                             self.issue_draw_call(DrawCallKind::Polygon(draw_call));
                             Gp0::WaitingForCmd
@@ -417,7 +417,7 @@ pub trait Gpu: Bus + Interrupts {
                     match decoder {
                         Ok(decoder) => Gp0::DrawLineDecode(decoder),
                         Err(draw_call) => {
-                            tracing::info!(?draw_call, "decoded");
+                            tracing::trace!(?draw_call, "decoded");
                             self.gpu_mut().gpustat.set_ready_recv_cmd(true);
                             self.issue_draw_call(DrawCallKind::Line(draw_call));
                             Gp0::WaitingForCmd
@@ -433,7 +433,7 @@ pub trait Gpu: Bus + Interrupts {
     fn gp1_cmd_queue_flush(&mut self) {
         while let Some(value) = self.gpu_mut().gp1cmd_queue.pop_front() {
             let value = GpuCmd::new_with_raw_value(value.io_into_u32());
-            tracing::info!(cmd = ?value.cmd());
+            tracing::trace!(cmd = ?value.cmd());
             match value.cmd() {
                 0x00 => {
                     self.gpu_mut().gp0cmd_queue.clear();
@@ -458,15 +458,15 @@ pub trait Gpu: Bus + Interrupts {
                 }
                 0x05 => {
                     // TODO
-                    tracing::info!("set framebuffer coords");
+                    tracing::debug!("set framebuffer coords");
                 }
                 0x06 => {
                     // TODO
-                    tracing::info!("set h framebuffer range");
+                    tracing::debug!("set h framebuffer range");
                 }
                 0x07 => {
                     // TODO
-                    tracing::info!("set v framebuffer range");
+                    tracing::debug!("set v framebuffer range");
                 }
                 0x08 => {
                     let cmd = DisplayModeCmd::new_with_raw_value(value.raw_value);

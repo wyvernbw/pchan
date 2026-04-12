@@ -21,7 +21,7 @@ members = [
     "pchan-utils",
     "pchan-debug-tui",
     "pchan-gpu",
-    "pchan-dbg",
+    "pchan-dbg", "pchan-dbg-egui",
 ]
 
 [workspace.dependencies]

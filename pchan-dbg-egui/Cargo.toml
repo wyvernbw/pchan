@@ -1,0 +1,15 @@
+[package]
+name = "pchan-dbg-egui"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+color-eyre.workspace = true
+egui = "0.34.1"
+egui-wgpu = "0.34.1"
+egui-winit = { version = "0.34.1", features = ["accesskit"] }
+pchan-emu.workspace = true
+pchan-gpu.workspace = true
+pchan-utils.workspace = true
+smol = "2.0.2"
+tracing = { workspace = true, features = ["async-await"] }
