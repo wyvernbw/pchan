@@ -1,6 +1,7 @@
 pub(crate) mod render_pass;
 
 use std::mem::{offset_of, transmute};
+use std::sync::Arc;
 
 use arbitrary_int::prelude::*;
 use color_eyre::eyre::bail;
@@ -21,10 +22,12 @@ pub struct Renderer {
 
     pipeline_layout: PipelineLayout,
     render_pipeline: RenderPipeline,
-    render_texture: Texture,
-    render_view: TextureView,
+    pub display_pipeline: RenderPipeline,
+    pub render_texture: Texture,
+    pub render_view: TextureView,
     vram_texture: Texture,
     bind_group: BindGroup,
+    pub display_bind_group: BindGroup,
 
     conn: Conn<DrawCall>,
 }
@@ -74,10 +77,25 @@ impl Renderer {
             format: TextureFormat::R16Uint,
             usage: TextureUsages::RENDER_ATTACHMENT
                 | TextureUsages::COPY_SRC
-                | TextureUsages::COPY_DST,
+                | TextureUsages::COPY_DST
+                | TextureUsages::TEXTURE_BINDING,
             view_formats: &[TextureFormat::R16Uint],
         });
         let render_view = render_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let render_sampler = device.create_sampler(&SamplerDescriptor {
+            label: Some("pchan_gpu::render_sampler"),
+            address_mode_u: AddressMode::ClampToEdge,
+            address_mode_v: AddressMode::ClampToEdge,
+            address_mode_w: AddressMode::ClampToEdge,
+            mag_filter: FilterMode::Nearest,
+            min_filter: FilterMode::Nearest,
+            mipmap_filter: MipmapFilterMode::Nearest,
+            lod_min_clamp: 0.0,
+            lod_max_clamp: 0.0,
+            compare: None,
+            anisotropy_clamp: 1,
+            border_color: None,
+        });
 
         // uniform vram texture
         let vram_texture = device.create_texture(&TextureDescriptor {
@@ -124,6 +142,50 @@ impl Renderer {
         let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: None,
             bind_group_layouts: &[Some(&bind_group_layout)],
+            immediate_size: 0,
+        });
+
+        let display_bind_group_layout =
+            device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+                label: Some("pchan_gpu::display_bind_group_layout"),
+                entries: &[
+                    BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: ShaderStages::VERTEX_FRAGMENT,
+                        ty: BindingType::Texture {
+                            sample_type: TextureSampleType::Uint,
+                            view_dimension: TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: ShaderStages::VERTEX_FRAGMENT,
+                        ty: BindingType::Sampler(SamplerBindingType::NonFiltering),
+                        count: None,
+                    },
+                ],
+            });
+
+        let display_bind_group = device.create_bind_group(&BindGroupDescriptor {
+            label: Some("pchan_gpu::rasterizer_bind_group"),
+            layout: &display_bind_group_layout,
+            entries: &[
+                BindGroupEntry {
+                    binding: 0,
+                    resource: BindingResource::TextureView(&render_view),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    resource: BindingResource::Sampler(&render_sampler),
+                },
+            ],
+        });
+
+        let display_pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
+            label: None,
+            bind_group_layouts: &[Some(&display_bind_group_layout)],
             immediate_size: 0,
         });
 
@@ -205,6 +267,45 @@ impl Renderer {
             cache: None,
         });
 
+        let display_shader = device.create_shader_module(include_wgsl!("../shaders/display.wgsl"));
+        let display_pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
+            label: Some("pchan_gpu::display_pipeline"),
+            layout: Some(&display_pipeline_layout),
+            vertex: VertexState {
+                module: &display_shader,
+                entry_point: None,
+                compilation_options: PipelineCompilationOptions::default(),
+                buffers: &[VertexBufferLayout {
+                    array_stride: 0,
+                    step_mode: VertexStepMode::Vertex,
+                    attributes: &[],
+                }],
+            },
+            primitive: PrimitiveState {
+                topology: PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: FrontFace::Ccw,
+                cull_mode: None,
+                unclipped_depth: false,
+                polygon_mode: PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: MultisampleState::default(),
+            fragment: Some(FragmentState {
+                module: &display_shader,
+                entry_point: None,
+                compilation_options: PipelineCompilationOptions::default(),
+                targets: &[Some(ColorTargetState {
+                    format: TextureFormat::Bgra8UnormSrgb,
+                    blend: None,
+                    write_mask: ColorWrites::all(),
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+
         Ok(Self {
             instance,
             adapter,
@@ -221,6 +322,8 @@ impl Renderer {
                 vram_in_chan: kanal::bounded_async(0),
                 vram_out_chan: kanal::bounded_async(1),
             },
+            display_pipeline,
+            display_bind_group,
         })
     }
 
@@ -232,7 +335,7 @@ impl Renderer {
         emu.gpu_mut().conn = self.conn.clone();
     }
 
-    pub fn start(self) {
+    pub fn start(self: Arc<Self>) {
         std::thread::spawn(move || {
             smol::block_on(async {
                 tracing::info!("started gpu renderer task");
@@ -240,16 +343,16 @@ impl Renderer {
                     tracing::trace!("waiting for draw calls...");
                     match self.conn.draw_call_chan.1.recv().await {
                         Ok(draw_calls) => {
-                            tracing::info!(
+                            tracing::trace!(
                                 "received {} draw_calls: {:#?}",
                                 draw_calls.len(),
                                 draw_calls
                             );
-                            tracing::info!("waiting on vram...");
+                            tracing::trace!("waiting on vram...");
                             let Ok(mut vram) = self.conn.vram_in_chan.1.recv().await else {
                                 continue;
                             };
-                            tracing::info!("received vram");
+                            tracing::debug!("received vram");
                             let scene = Scene::new_from_draw_calls(&draw_calls);
                             let mut pass = self.create_render_pass(scene).await;
                             pass.draw(&vram);

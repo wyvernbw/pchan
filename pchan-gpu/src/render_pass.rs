@@ -16,11 +16,6 @@ impl Renderer {
             usage: BufferUsages::VERTEX,
             contents: vertex_buf,
         });
-        tracing::info!(
-            "vertex buffer size: {} bytes (expected {})",
-            vertex_buffer.size(),
-            size_of::<Vertex>() * 6
-        );
 
         let encoder = self
             .device
