@@ -49,6 +49,9 @@ struct PchanDbgEgui {
     egui_rd:    egui_wgpu::Renderer,
     window:     Arc<winit::window::Window>,
     surface:    Surface<'static>,
+
+    last_render: Instant,
+    frame_time:  Duration,
 }
 
 impl PchanDbgEgui {
@@ -86,10 +89,10 @@ impl PchanDbgEgui {
 
                         if let Some(remaining) = deadline.checked_duration_since(now) {
                             // coarse sleep
-                            let coarse = remaining.saturating_sub(Duration::from_micros(200));
-                            if !coarse.is_zero() {
-                                std::thread::sleep(coarse);
-                            }
+                            // let coarse = remaining.saturating_sub(Duration::from_micros(200));
+                            // if !coarse.is_zero() {
+                            //     std::thread::sleep(coarse);
+                            // }
                             // spin tail
                             while Instant::now() < deadline {}
                         }
@@ -125,6 +128,8 @@ impl PchanDbgEgui {
             egui_state,
             window,
             egui_rd,
+            last_render: Instant::now(),
+            frame_time: Duration::default(),
         };
         pchan_dbg_egui.configure_surface();
         Ok(pchan_dbg_egui)
@@ -327,7 +332,12 @@ impl ApplicationHandler<UserEvent> for Main {
             return;
         };
         match event {
-            UserEvent::RenderFinished => app.window.request_redraw(),
+            UserEvent::RenderFinished => {
+                let now = Instant::now();
+                app.frame_time = now.duration_since(app.last_render);
+                app.last_render = now;
+                app.window.request_redraw();
+            }
         }
     }
 
@@ -350,6 +360,13 @@ impl ApplicationHandler<UserEvent> for Main {
             }
             WindowEvent::RedrawRequested => {
                 let pchan_rd = app.pchan_rd.clone();
+                let frame_label = format!(
+                    "fps: {}, frame time: {}ms",
+                    1000u128
+                        .checked_div(app.frame_time.as_millis())
+                        .unwrap_or(0),
+                    app.frame_time.as_millis()
+                );
                 app.draw(
                     ScreenDescriptor {
                         size_in_pixels:   [
@@ -367,6 +384,7 @@ impl ApplicationHandler<UserEvent> for Main {
                             .show(ui.ctx(), |ui| {
                                 ui.vertical(|ui| {
                                     ui.heading("Framebuffer (15bit direct):");
+                                    ui.label(&frame_label);
                                     egui::Frame::canvas(ui.style()).show(ui, |ui| {
                                         PchanDbgEgui::custom_painting(ui, pchan_rd.clone());
                                     });
