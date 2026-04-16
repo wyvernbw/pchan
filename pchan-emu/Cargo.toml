@@ -34,6 +34,8 @@ bstr = "1.12.1"
 bitfield = "0.19.4"
 glam = "0.32.1"
 kanal.workspace = true
+rayon = "1.12.0"
+pchan-bind.workspace = true
 
 [dev-dependencies]
 pretty_assertions = {version = "1.4.1", features = ["unstable"]}

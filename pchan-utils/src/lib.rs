@@ -275,3 +275,9 @@ impl<'a, T> IgnorePoison<'a> for smol::lock::RwLock<T> {
 pub fn default<T: Default>() -> T {
     T::default()
 }
+
+#[repr(align(64))] // 64-byte cache line
+#[derive(
+    Debug, Clone, Copy, Default, derive_more::Deref, derive_more::DerefMut, derive_more::From,
+)]
+pub struct CacheAligned<T>(pub T);

@@ -33,6 +33,7 @@ use crate::{
     gpu::GpuState,
     io::{dma::DmaState, irq::IrqState, timers::TimerState, tty::Tty},
     memory::MemoryState,
+    spu::SpuState,
 };
 
 pub mod bindings;
@@ -47,6 +48,8 @@ pub mod gpu;
 #[path = "./io/io.rs"]
 pub mod io;
 pub mod memory;
+#[path = "./spu/spu.rs"]
+pub mod spu;
 
 pub const fn max_simd_width_bytes() -> usize {
     if cfg!(target_feature = "avx512f") {
@@ -86,6 +89,7 @@ pub struct Emu {
     pub gpu:           GpuState,
     pub dma:           DmaState,
     pub timers:        TimerState,
+    pub spu:           SpuState,
 }
 
 impl Emu {
@@ -121,6 +125,8 @@ pub trait Bus {
     fn timers_mut(&mut self) -> &mut TimerState;
     fn dma(&self) -> &DmaState;
     fn dma_mut(&mut self) -> &mut DmaState;
+    fn spu(&self) -> &SpuState;
+    fn spu_mut(&mut self) -> &mut SpuState;
 }
 
 impl Bus for Emu {
@@ -171,6 +177,15 @@ impl Bus for Emu {
     #[inline(always)]
     fn dma_mut(&mut self) -> &mut DmaState {
         &mut self.dma
+    }
+
+    #[inline(always)]
+    fn spu(&self) -> &SpuState {
+        &self.spu
+    }
+
+    fn spu_mut(&mut self) -> &mut SpuState {
+        &mut self.spu
     }
 }
 
