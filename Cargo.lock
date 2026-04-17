@@ -721,6 +721,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "btparse"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "387e80962b798815a2b5c4bcfdb6bf626fa922ffe9f74e373103b858738e9f31"
+
+[[package]]
 name = "bumpalo"
 version = "3.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2948,6 +2954,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "miette-panic"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "10244fe9230883bf1fee30d060d8ce1d868cf90b7a9543b812b0d1aa43165dca"
+dependencies = [
+ "btparse",
+ "miette",
+ "owo-colors",
+]
+
+[[package]]
 name = "minimal-lexical"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3703,6 +3720,7 @@ dependencies = [
  "egui-winit",
  "glam",
  "miette",
+ "miette-panic",
  "pchan-audio",
  "pchan-bind",
  "pchan-emu",
@@ -5308,7 +5326,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "230a1b821ccbd75b185820a1f1ff7b14d21da1e442e22c0863ea5f08771a8874"
 dependencies = [
  "rustix 1.1.4",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

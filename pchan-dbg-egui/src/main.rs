@@ -28,6 +28,7 @@ fn main() -> Result<()> {
         .panic_hook(false)
         .indicatif(false)
         .call();
+    miette_panic::install(miette_panic::PanicHookArgs { url: None });
     Main::run()?;
     Ok(())
 }

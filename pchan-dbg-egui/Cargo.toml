@@ -9,6 +9,7 @@ egui-wgpu = "0.34.1"
 egui-winit = { version = "0.34.1", features = ["accesskit"] }
 glam = "0.32.1"
 miette = { version = "7.6.0", features = ["fancy"] }
+miette-panic = "0.1.0"
 pchan-audio = { version = "0.1.0", path = "../pchan-audio" }
 pchan-bind.workspace = true
 pchan-emu.workspace = true
