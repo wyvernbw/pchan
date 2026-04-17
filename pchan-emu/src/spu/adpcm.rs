@@ -3,7 +3,6 @@ use std::mem::transmute;
 use arbitrary_int::prelude::*;
 use bitbybit::bitfield;
 
-use crate::memory::ext;
 use derive_more as d;
 
 /// mapped to `1F801C06h+N*10h`
@@ -22,8 +21,8 @@ pub struct ADPCMSampleRate(pub u16);
 pub struct ADPCMShiftFilter {
     #[bits(0..=3, rw)]
     shift:  u4,
-    #[bits(4..=5, rw)]
-    filter: u2,
+    #[bits(4..=6, rw)]
+    filter: u3,
 }
 
 #[bitfield(u8)]
@@ -36,6 +35,7 @@ pub struct ADPCMFlags {
     loop_start:  bool,
 }
 
+#[repr(C)]
 pub struct ADPCMHeader {
     pub shift_filter: ADPCMShiftFilter,
     pub flags:        ADPCMFlags,
@@ -61,13 +61,13 @@ pub fn decode_adpcm(from: &[u16; 8], to: &mut [i16], s1: &mut i16, s2: &mut i16)
     const NEG_ADPCM_TABLE: [i32; 5] = [0, 0, -52, -55, -60];
 
     let header = from[0];
-    let header = ADPCMHeader::from_u16(header);
+    let header = ADPCMHeader::from_u16(header.to_le());
     let samples = &from[1..];
     let shift = header.shift_filter.shift().as_u8();
     let shift = if shift > 12 { 9 } else { shift };
     let shift = 12 - shift;
 
-    let filter = header.shift_filter.filter().as_u8() & 0x4;
+    let filter = header.shift_filter.filter().as_u8().min(4);
 
     // SAFETY: filter is between 0x0 and 0x4
     let (f0, f1) = unsafe {
@@ -90,8 +90,8 @@ pub fn decode_adpcm(from: &[u16; 8], to: &mut [i16], s1: &mut i16, s2: &mut i16)
 
     for (idx, dest) in to.iter_mut().take(28).enumerate() {
         let sample = samples[idx / 2];
-        let sample = sample >> (4 * (idx % 2)) & 0x0F;
-        let sample = ext::sign(sample);
+        let sample = (sample >> (4 * (idx % 2))) & 0x0F;
+        let sample = ((sample as i8) << 4 >> 4) as i32; // sign extend from bit 3
 
         {
             let s1 = *s1 as i32;
@@ -103,6 +103,36 @@ pub fn decode_adpcm(from: &[u16; 8], to: &mut [i16], s1: &mut i16, s2: &mut i16)
         }
 
         *s2 = *s1;
-        *s1 = sample as i16;
+        *s1 = *dest;
     }
+}
+
+#[cfg(test)]
+#[test]
+fn test_adpcm_decode() {
+    use assert_hex::assert_eq_hex;
+
+    pchan_utils::setup_tracing();
+    let values: [u8; 16] = [
+        0x48, 0x00, 0xd2, 0x4d, 0xef, 0xf0, 0xe3, 0x3c, 0x1f, 0xed, 0xf4, 0x2f, 0x2e, 0xef, 0xe3,
+        0x13,
+    ];
+
+    let values = unsafe {
+        (std::ptr::slice_from_raw_parts(values.as_ptr(), std::mem::size_of_val(&values))
+            as *const [u16; 8])
+            .as_ref_unchecked()
+    };
+
+    let mut decode_buf = [0i16; 28];
+    let mut s1 = 392;
+    let mut s2 = 465;
+    decode_adpcm(values, &mut decode_buf, &mut s1, &mut s2);
+    assert_eq_hex!(
+        decode_buf,
+        [
+            343, 238, 84, 2, -90, -204, -304, -403, -434, -481, -573, -592, -606, -583, -590, -609,
+            -543, -479, -419, -317, -242, -131, -38, 18, 118, 176, 273, 371
+        ]
+    );
 }

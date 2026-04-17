@@ -1,5 +1,5 @@
 use cpal::{
-    Device, Stream, SupportedStreamConfig,
+    Device, SampleFormat, Stream, SupportedStreamConfig,
     traits::{DeviceTrait, HostTrait, StreamTrait},
 };
 use miette::{Context, IntoDiagnostic, Result, bail};
@@ -21,9 +21,17 @@ impl AudioTask {
             .default_output_device()
             .wrap_err("failed to create audio output device")?;
         let config = device
-            .default_output_config()
+            .supported_output_configs()
             .into_diagnostic()
-            .wrap_err("failed to create default audio output config")?;
+            .wrap_err("failed to create default audio output config")?
+            .find_map(|config_range| {
+                if config_range.sample_format() == SampleFormat::F32 {
+                    Some(config_range.with_sample_rate(44100))
+                } else {
+                    None
+                }
+            })
+            .wrap_err("device cannot play f32 audio samples")?;
         Ok(AudioTask {
             device,
             config,

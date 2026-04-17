@@ -1,7 +1,6 @@
 pub mod adpcm;
 
-use std::array::from_fn;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use bitbybit::bitfield;
 use pchan_bind::ringbuf::traits::*;
@@ -72,6 +71,7 @@ struct Voice {
     repeat:     ADPCMRepeat,
     rate:       ADPCMSampleRate,
     decode_buf: [i16; 28],
+    keyed_on:   bool,
 
     /// old sample. used in adpcm decoding
     s1: i16,
@@ -85,12 +85,13 @@ struct Voice {
 
 #[derive(Default, derive_more::Debug, Clone)]
 struct VoiceFlags {
-    key_on: [KeyOn; 2],
+    key_on:  [Key; 2],
+    key_off: [Key; 2],
 }
 
 #[bitfield(u16, debug)]
 #[derive(Default)]
-struct KeyOn {
+struct Key {
     #[bit(0, rw)]
     on: [bool; 16],
 }
@@ -153,27 +154,24 @@ pub trait Spu: IO {
                 let key_idx = (address - 0x1f801d88) >> 1;
                 let key_idx = key_idx as usize;
                 let spu = self.spu_mut();
-                spu.voice_flags.key_on[key_idx] = KeyOn::new_with_raw_value(value);
 
-                let voice_offset = key_idx * 16;
-                let len = if key_idx == 0 { 16 } else { 8 };
+                spu.set_keys::<true>(key_idx, value);
 
-                tracing::info!(
+                tracing::debug!(
                     "key_on.{} = {}",
                     key_idx,
                     hex(spu.voice_flags.key_on[key_idx])
                 );
-                // TODO benchmark vs sequential iterator.
-                spu.voices
-                    .iter_mut()
-                    .skip(voice_offset)
-                    .take(len)
-                    .enumerate()
-                    .filter(|(idx, _)| spu.voice_flags.key_on[key_idx].on(*idx))
-                    .for_each(|(idx, voice)| {
-                        tracing::info!("keyed on: {}", idx + voice_offset);
-                        voice.key_on(&spu.mem);
-                    });
+                Ok(())
+            }
+            // voices - key off
+            0x1f801d8c | 0x1f801d8e => {
+                let key_idx = (address - 0x1f801d8c) >> 1;
+                let key_idx = key_idx as usize;
+                let spu = self.spu_mut();
+
+                spu.set_keys::<false>(key_idx, value);
+
                 Ok(())
             }
             _ => Err(UnhandledIO(address)),
@@ -182,18 +180,6 @@ pub trait Spu: IO {
 
     fn run_spu(&mut self, mut dclock: u64) {
         dclock += self.spu().clock;
-        {
-            let count: u32 = self
-                .spu()
-                .voice_flags
-                .key_on
-                .map(|k| k.raw_value().count_ones())
-                .iter()
-                .sum();
-            if count == 0 {
-                return;
-            }
-        }
         self.spu_mut().clock = 0;
         while dclock >= SpuState::CLOCK_CYCLES {
             dclock -= SpuState::CLOCK_CYCLES;
@@ -208,12 +194,8 @@ pub trait Spu: IO {
         // TODO benchmark vs sequential iterator.
         spu.voices
             .iter_mut()
-            .enumerate()
-            .filter(|(idx, _)| {
-                let key_idx = idx / 16;
-                spu.voice_flags.key_on[key_idx].on(*idx % 16)
-            })
-            .for_each(|(idx, voice)| {
+            .filter(|voice| voice.keyed_on)
+            .for_each(|voice| {
                 voice.clock(&spu.mem);
             });
 
@@ -221,6 +203,7 @@ pub trait Spu: IO {
             .voices
             .iter()
             // TODO implement volume
+            .filter(|voice| voice.keyed_on)
             .map(|voice| voice.current_sample as i32 / 4)
             .sum();
 
@@ -243,10 +226,11 @@ impl Voice {
             self.current_idx += 1;
             if self.current_idx == 28 {
                 self.current_idx = 0;
-                tracing::info!("|> current {}", hex(self.current));
                 self.advance_decode(spu_ram);
-                tracing::info!("|> current {}", hex(self.current));
             }
+        }
+        if self.pitch_counter != 0 {
+            todo!("gaussian interpolation")
         }
 
         self.current_sample = self.decode_buf[self.current_idx as usize];
@@ -256,14 +240,18 @@ impl Voice {
         self.current = ADPCMCurrent(self.start.0);
         self.current_idx = 0;
         self.pitch_counter = 0x0;
-        // self.advance_decode(spu_ram);
+        self.keyed_on = true;
+        self.advance_decode(spu_ram);
+    }
+
+    fn key_off(&mut self) {
+        self.keyed_on = false;
     }
 
     fn advance_decode(&mut self, spu_ram: &[u16]) {
         // address needs to be shifted right by 3 and we divide by 2 to get
-        // offset in [u16] buffer.
+        // offset in [u16] buffer, so the shift by 3 becomes a shift by 2.
         let address = (self.current.0 as u32) << 2;
-        tracing::info!("decode at {}", hex(address));
 
         // a block is 16 bytes: 2 bytes header and 14 bytes samples, for 28
         // samples in total
@@ -285,7 +273,7 @@ impl Voice {
         if header.flags.loop_end() {
             self.current = ADPCMCurrent(self.repeat.0);
             if !header.flags.loop_repeat() {
-                // TODO: mute the voice
+                self.key_off();
             }
         } else {
             // current holds the address shifted right by 3, so we add 2 to advance
@@ -298,5 +286,36 @@ impl Voice {
 impl BindAudioProducer for Emu {
     fn bind_producer(&mut self, prod: AudioProducer) {
         self.spu.prod = Some(prod.into());
+    }
+}
+
+impl SpuState {
+    #[inline(always)]
+    fn set_keys<const ON: bool>(&mut self, key_idx: usize, value: u16) {
+        let keys = match ON {
+            true => &mut self.voice_flags.key_on,
+            false => &mut self.voice_flags.key_off,
+        };
+
+        let new_key = Key::new_with_raw_value(value);
+        keys[key_idx] = new_key;
+
+        let voice_offset = key_idx * 16;
+        let len = if key_idx == 0 { 16 } else { 8 };
+
+        // TODO benchmark vs parallel iterator.
+        self.voices
+            .iter_mut()
+            .skip(voice_offset)
+            .take(len)
+            .enumerate()
+            .filter(|(idx, _)| new_key.on(*idx))
+            .for_each(|(_, voice)| {
+                if ON {
+                    voice.key_on(&self.mem);
+                } else {
+                    voice.key_off();
+                }
+            });
     }
 }
