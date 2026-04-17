@@ -1,9 +1,5 @@
 #![feature(try_blocks)]
 
-use color_eyre::{
-    Result,
-    eyre::{Context, bail},
-};
 use egui_winit::winit::{
     self,
     application::ApplicationHandler,
@@ -11,6 +7,8 @@ use egui_winit::winit::{
     event_loop::{ControlFlow, EventLoop, EventLoopProxy},
     window::WindowAttributes,
 };
+use miette::{Context, IntoDiagnostic, Result, bail};
+use pchan_audio::{AudioStream, AudioTask};
 use spin_sleep::SpinSleeper;
 use std::{
     path::PathBuf,
@@ -18,38 +16,32 @@ use std::{
     time::{Duration, Instant},
 };
 
-use egui::{Align, Ui, Vec2, mutex::RwLock};
+use egui::{Ui, Vec2, mutex::RwLock};
 use egui_wgpu::{
     self, CallbackTrait, ScreenDescriptor,
-    wgpu::{
-        self, Surface, TextureUsages, TextureView, TextureViewDescriptor,
-        wgt::CommandEncoderDescriptor,
-    },
+    wgpu::{self, Surface, TextureUsages, TextureViewDescriptor, wgt::CommandEncoderDescriptor},
 };
 use pchan_emu::{Emu, bootloader::Bootloader, dynarec_v2::PipelineV2, io::vblank::VBlank};
-use wgpu::{
-    BufferUsages,
-    util::{BufferInitDescriptor, DeviceExt},
-};
 
 fn main() -> Result<()> {
-    color_eyre::install()?;
     pchan_utils::init_tracing()
         .panic_hook(false)
         .indicatif(false)
         .call();
+    miette_panic::install(miette_panic::PanicHookArgs { url: None });
     Main::run()?;
     Ok(())
 }
 
 struct PchanDbgEgui {
-    pchan_rd:   Arc<pchan_gpu::Renderer>,
-    pchan_emu:  Arc<RwLock<Emu>>,
-    egui_state: egui_winit::State,
-    egui_ctx:   egui::Context,
-    egui_rd:    egui_wgpu::Renderer,
-    window:     Arc<winit::window::Window>,
-    surface:    Surface<'static>,
+    pchan_rd:     Arc<pchan_gpu::Renderer>,
+    pchan_emu:    Arc<RwLock<Emu>>,
+    audio_stream: AudioStream,
+    egui_state:   egui_winit::State,
+    egui_ctx:     egui::Context,
+    egui_rd:      egui_wgpu::Renderer,
+    window:       Arc<winit::window::Window>,
+    surface:      Surface<'static>,
 
     last_render: Instant,
     frame_time:  Duration,
@@ -61,13 +53,17 @@ impl PchanDbgEgui {
         let size = window.inner_size();
         let mut pchan_emu = Emu::default();
         let bios_path = std::env::var("PCHAN_BIOS")
+            .into_diagnostic()
             .wrap_err("PCHAN_BIOS env var not set.")?
             .parse::<PathBuf>()
             .wrap_err("PCHAN_BIOS var contains invalid path.")?;
         pchan_emu.set_bios_path(bios_path);
-        pchan_emu.load_bios()?;
+        pchan_emu.load_bios().into_diagnostic()?;
         pchan_emu.cpu.jump_to_bios();
         pchan_emu.tty.set_tracing();
+        let mut audio_task = AudioTask::new()?;
+        pchan_bind::bind_audio(&mut audio_task, &mut pchan_emu);
+        let audio_stream = audio_task.start()?;
 
         let mut pchan_rd = smol::block_on(pchan_gpu::Renderer::new());
         pchan_rd.connect_emu(&mut pchan_emu);
@@ -100,7 +96,10 @@ impl PchanDbgEgui {
             });
         }
 
-        let surface = pchan_rd.instance.create_surface(window.clone())?;
+        let surface = pchan_rd
+            .instance
+            .create_surface(window.clone())
+            .into_diagnostic()?;
 
         let egui_ctx = egui::Context::default();
         let id = egui_ctx.viewport_id();
@@ -127,6 +126,7 @@ impl PchanDbgEgui {
             egui_rd,
             last_render: Instant::now(),
             frame_time: Duration::default(),
+            audio_stream,
         };
         pchan_dbg_egui.configure_surface();
         Ok(pchan_dbg_egui)
@@ -286,6 +286,7 @@ impl Main {
     fn run() -> Result<()> {
         let event_loop = EventLoop::<UserEvent>::with_user_event()
             .build()
+            .into_diagnostic()
             .wrap_err("failed to create winit::EventLoop")?;
         event_loop.set_control_flow(ControlFlow::Wait);
         let proxy = event_loop.create_proxy();
@@ -298,6 +299,7 @@ impl Main {
         };
         event_loop
             .run_app(&mut main_app)
+            .into_diagnostic()
             .wrap_err("error encountered while running pchan debugger")?;
         Ok(())
     }
@@ -322,6 +324,7 @@ impl ApplicationHandler<UserEvent> for Main {
                         .with_title("pchan-dbg")
                         .with_maximized(true),
                 )
+                .into_diagnostic()
                 .wrap_err("failed to create window")?;
             let pchan = PchanDbgEgui::new(window, self.proxy.clone())
                 .wrap_err("failed to create pchan app")?;

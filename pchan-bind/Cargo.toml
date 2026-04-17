@@ -1,0 +1,7 @@
+[package]
+name = "pchan-bind"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ringbuf = "0.4.8"

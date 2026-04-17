@@ -9,6 +9,7 @@ use crate::io::dma::Dma;
 use crate::io::irq::Interrupts;
 use crate::io::timers::Timers;
 use crate::memory::{Extend, GUEST_MEM_MAP, MEM_MAP, ScratchpadMem};
+use crate::spu::Spu;
 use crate::{Bus, Emu, io::cdrom::CDRom, memory::fastmem::Fastmem};
 
 pub mod cdrom;
@@ -27,6 +28,7 @@ impl Emu {
         // gpu commands must run before dma to ensure gp0 fifo is cleared
         self.run_gpu_commands();
         self.run_video_io(self.cpu.d_clock as u64);
+        self.run_spu(self.cpu.d_clock as u64);
 
         let mut d_clock = self.cpu.d_clock;
         while d_clock > 0 {
@@ -285,6 +287,7 @@ impl IO for Emu {
             .or_else(|_| ScratchpadMem::read(self, address))
             .or_else(|_| Interrupts::read(self, address))
             .or_else(|_| Gpu::read(self, address))
+            .or_else(|_| Spu::read(self, address))
             .or_else(|_| Dma::read(self, address))
             .or_else(|_| Timers::read_timers(self, address))
             .or_else(|_| CDRom::read::<T>(self, address))
@@ -297,6 +300,7 @@ impl IO for Emu {
             .or_else(|_| ScratchpadMem::read(self, address))
             .or_else(|_| Interrupts::read(self, address))
             .or_else(|_| Gpu::read_pure(self, address))
+            // TODO: Spu::read_pure
             .or_else(|_| Dma::read(self, address))
             .or_else(|_| Timers::read_timers(self, address))
             .or_else(|_| CDRom::read::<T>(self, address))
@@ -310,6 +314,7 @@ impl IO for Emu {
             .or_else(|_| Timers::write_timers(self, address, value))
             .or_else(|_| Interrupts::write(self, address, value))
             .or_else(|_| Gpu::write(self, address, value))
+            .or_else(|_| Spu::write(self, address, value))
             .or_else(|_| Dma::write(self, address, value))
             .or_else(|_| CDRom::write::<T>(self, address, value))
             .or_else(|_| GenericIOFallback::write::<T>(self, address, value))
