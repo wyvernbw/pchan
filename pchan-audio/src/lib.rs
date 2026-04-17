@@ -61,12 +61,16 @@ impl AudioTask {
         let stream = self.device.build_output_stream(
             &self.config.config(),
             move |data: &mut [f32], _| {
-                for ch in data.chunks_mut(config.channels() as usize) {
-                    let sample = cons.cons.try_pop().unwrap_or(0);
-                    let sample = (sample as f32) / (i16::MAX as f32 + 1.0);
-                    for s in ch {
-                        *s = sample;
-                    }
+                if config.channels() > 2 {
+                    panic!("unsupported audio config: device has more than 2 channels");
+                }
+                for s in data.chunks_mut(2) {
+                    let left = cons.cons.try_pop().unwrap_or(0);
+                    let right = cons.cons.try_pop().unwrap_or(0);
+                    let left = (left as f32) / (i16::MAX as f32 + 1.0);
+                    let right = (right as f32) / (i16::MAX as f32 + 1.0);
+                    s[0] = left;
+                    s[1] = right;
                 }
             },
             |err| tracing::error!("{err}"),

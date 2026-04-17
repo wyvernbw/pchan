@@ -1,5 +1,6 @@
-pub mod adpcm;
-pub mod gauss_interp;
+mod adpcm;
+pub mod adsr;
+mod gauss_interp;
 
 use std::sync::Mutex;
 
@@ -13,10 +14,12 @@ use crate::Emu;
 use crate::io::{CastIOInto, IO, IOResult, UnhandledIO};
 use crate::memory::kb;
 use crate::spu::adpcm::{ADPCMCurrent, ADPCMHeader, ADPCMRepeat, ADPCMSampleRate, ADPCMStart};
+use crate::spu::adsr::{ADSRState, EnvelopePhase, apply_volume};
 
 #[derive(derive_more::Debug)]
 pub struct SpuState {
     voices:      Box<[CacheAligned<Voice>; 24]>,
+    adsr:        ADSRState,
     voice_flags: VoiceFlags,
     mem:         Box<[u16]>,
 
@@ -38,6 +41,7 @@ impl Default for SpuState {
             ram_current: Default::default(),
             clock:       Default::default(),
             prod:        Default::default(),
+            adsr:        ADSRState::default(),
         }
     }
 }
@@ -52,6 +56,7 @@ impl Clone for SpuState {
             ram_current: self.ram_current,
             clock:       self.clock,
             prod:        None,
+            adsr:        self.adsr.clone(),
         }
     }
 }
@@ -87,6 +92,8 @@ struct Voice {
     current_sample: i16,
     pitch_counter:  u16,
     current_idx:    u8,
+
+    adsr: ADSRState,
 }
 
 #[derive(Default, derive_more::Debug, Clone)]
@@ -180,6 +187,30 @@ pub trait Spu: IO {
 
                 Ok(())
             }
+            // adsr - voice volume left
+            addr @ 0x1f801c00..=0x1f801d70 if let Some(n) = voice_idx(addr, 0x1f801c00, 0x10) => {
+                let spu = self.spu_mut();
+                spu.adsr.voice_left.set_register(n, value);
+                Ok(())
+            }
+            // adsr - voice volume right
+            addr @ 0x1f801c02..=0x1f801d72 if let Some(n) = voice_idx(addr, 0x1f801c02, 0x10) => {
+                let spu = self.spu_mut();
+                spu.adsr.voice_right.set_register(n, value);
+                Ok(())
+            }
+            // adsr - envelope n lower bits
+            addr @ 0x1f801c08..=0x1f801d78 if let Some(n) = voice_idx(addr, 0x1f801c08, 0x10) => {
+                let spu = self.spu_mut();
+                spu.adsr.set_register(n, 0, value);
+                Ok(())
+            }
+            // adsr - envelope n upper bits
+            addr @ 0x1f801c0a..=0x1f801d7a if let Some(n) = voice_idx(addr, 0x1f801c0a, 0x10) => {
+                let spu = self.spu_mut();
+                spu.adsr.set_register(n, 1, value);
+                Ok(())
+            }
             _ => Err(UnhandledIO(address)),
         }
     }
@@ -197,30 +228,47 @@ pub trait Spu: IO {
     fn clock(&mut self) {
         let spu = self.spu_mut();
 
+        spu.adsr.clock();
         // TODO benchmark vs sequential iterator.
-        spu.voices
-            .iter_mut()
-            .filter(|voice| voice.keyed_on)
-            .for_each(|voice| {
-                voice.clock(&spu.mem);
-            });
+        spu.voices.iter_mut().for_each(|voice| {
+            voice.clock(&spu.mem);
+        });
 
-        let keyed_count = spu.voices.iter().filter(|voice| voice.keyed_on).count();
-        let mixed: i32 = spu
-            .voices
-            .iter()
-            // TODO implement volume
-            .filter(|voice| voice.keyed_on)
-            .map(|voice| voice.current_sample as i32 / keyed_count as i32)
-            .sum();
+        let mut mixed_l = 0i32;
+        let mut mixed_r = 0i32;
+        for i in 0..24 {
+            let voice = &spu.voices[i];
+            let adsr = &spu.adsr;
+            let sample = apply_volume(voice.current_sample, adsr.envelopes.level[i]);
+            let left = apply_volume(sample, adsr.voice_left.internal[i]);
+            let right = apply_volume(sample, adsr.voice_right.internal[i]);
+            mixed_l += left as i32;
+            mixed_r += right as i32;
+        }
+
+        let mixed_l = mixed_l.clamp(-0x8000, 0x7fff);
+        let mixed_r = mixed_r.clamp(-0x8000, 0x7fff);
 
         if let Some(prod) = &mut spu.prod {
-            _ = prod.get_mut().unwrap().prod.try_push(mixed as i16);
+            _ = prod.get_mut().unwrap().prod.try_push(mixed_l as i16);
+            _ = prod.get_mut().unwrap().prod.try_push(mixed_r as i16);
         }
     }
 }
 
 impl Spu for Emu {}
+
+impl SpuState {
+    fn key_on(&mut self, idx: usize) {
+        self.voices[idx].key_on(&self.mem);
+        self.adsr.envelopes.level[idx] = 0;
+        self.adsr.envelopes.phase[idx] = EnvelopePhase::Attack;
+    }
+
+    fn key_off(&mut self, idx: usize) {
+        self.adsr.envelopes.phase[idx] = EnvelopePhase::Release;
+    }
+}
 
 impl Voice {
     fn clock(&mut self, spu_ram: &[u16]) {
@@ -260,13 +308,10 @@ impl Voice {
         self.current = ADPCMCurrent(self.start.0);
         self.current_idx = 0;
         self.pitch_counter = 0x0;
-        self.keyed_on = true;
         self.advance_decode(spu_ram);
     }
 
-    fn key_off(&mut self) {
-        self.keyed_on = false;
-    }
+    fn key_off(&mut self) {}
 
     fn advance_decode(&mut self, spu_ram: &[u16]) {
         // address needs to be shifted right by 3 and we divide by 2 to get
@@ -329,18 +374,20 @@ impl SpuState {
         let voice_offset = key_idx * 16;
         let len = if key_idx == 0 { 16 } else { 8 };
 
-        // TODO benchmark vs parallel iterator.
+        let adsr = &mut self.adsr;
         self.voices
             .iter_mut()
             .skip(voice_offset)
             .take(len)
             .enumerate()
             .filter(|(idx, _)| new_key.on(*idx))
-            .for_each(|(_, voice)| {
+            .for_each(|(idx, voice)| {
                 if ON {
                     voice.key_on(&self.mem);
+                    adsr.key_on(idx);
                 } else {
                     voice.key_off();
+                    adsr.key_off(idx);
                 }
             });
     }
