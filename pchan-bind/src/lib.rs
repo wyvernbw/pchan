@@ -29,7 +29,7 @@ impl Debug for AudioProducer {
 }
 
 pub fn create_audio() -> (AudioConsumer, AudioProducer) {
-    let rb = SharedRb::<Heap<i16>>::new(128);
+    let rb = SharedRb::<Heap<i16>>::new(4096 * 2); // 8kb audio ringbuffer
     let (prod, cons) = rb.split();
     (AudioConsumer { cons }, AudioProducer { prod })
 }

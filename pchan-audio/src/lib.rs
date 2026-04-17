@@ -57,16 +57,16 @@ impl AudioTask {
         let Some(mut cons) = self.cons else {
             bail!("audio task not bound");
         };
+        let config = self.config.clone();
         let stream = self.device.build_output_stream(
             &self.config.config(),
             move |data: &mut [f32], _| {
-                for s in data.iter_mut() {
+                for ch in data.chunks_mut(config.channels() as usize) {
                     let sample = cons.cons.try_pop().unwrap_or(0);
                     let sample = (sample as f32) / (i16::MAX as f32 + 1.0);
-                    if sample != 0. {
-                        tracing::info!("got sample {sample}");
+                    for s in ch {
+                        *s = sample;
                     }
-                    *s = sample;
                 }
             },
             |err| tracing::error!("{err}"),
