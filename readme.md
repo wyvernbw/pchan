@@ -77,3 +77,16 @@ P-chan quite cycle-inaccurate. So far however, (barring the seemingly endless
 pile of bugs) the dynarec is both fast enough in the uncached scenario where
 an interpreter would be needed, and its accurate enough. The reason behind this
 decision is that, I really cannot be assed to code an interpreter.
+
+## On AI Code
+
+**No llm generated code** exists in **any** of the `pchan-*` crates (so all
+crates in this repo). I do not condone the creation of machine generated slop.
+Such workflows might work for uninspired react copy and paste dashboards,
+but emulators require a holistic knowledge of hardware and implementation.
+Some dependencies might include llm generated code (trust me I wish I could
+go full schizo and remove them, but that isn't really practical sadly). Such
+dependencies are usually limited to non core crates (so things outside of
+`pchan-emu`, `pchan-gpu`, `pchan-audio` etc.).
+
+As such, any hallucinated code came straight from my human, tired brain :)
