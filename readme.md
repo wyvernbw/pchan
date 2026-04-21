@@ -48,28 +48,18 @@ cargo run -p pchan-dbg-egui
 - [x] shell
 - [ ] in-game
 
-### Dynarec
-
-After I make the emulator work in 80% of cases with `dynarec-v2`, i ideally
-want to implement a `dynarec-v3` that will use the old one as its base and
-is as accurate as BeetlePSX's lightrec (when it's not falling back to the
-interpreter) or at least as accurate as DuckStation. i dont want to compromise
-on performance.
-
 ### Time frame
 
 about 10 years 
 
 ## Performance
 
-The dynarec cpu can run at around 30 times faster than the psx cpu on my macbook
-air m2. The slow part is the IO, which i haven't optimized yet, but the emulator
-remains fast enough that it can easily keep 60fps when compiled *in debug mode*.
-Sampling profilers show that around 70% of the time spent is just sleeping, so I
-would say it is pretty efficient so far.
-
-The implementation is missing a very large chunk of things that will inevitably
-have an effect on performance when added.
+Initially this section contained a lot more useless speculation, so I chose to
+remove it. Instead, here's some actual meaningful metrics: pchan runs a bios
+shell frame in 3ms. This would be more than fast enough for gameplay, but the
+goal is ~0.1ms (Duckstation runs it in ~0.16ms). There is a long way to go,
+but I already know which parts are stupid slow and how to fix them. However, my
+initial focus for now is on features and correctness.
 
 A goal of this project is to make a very accurate and fast dynarec, such that
 an interpreter is not needed. This might be impossible and/or it might make
