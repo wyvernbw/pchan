@@ -11,7 +11,7 @@ use pchan_utils::{CacheAligned, hex};
 use rayon::iter::{IndexedParallelIterator, IntoParallelRefMutIterator, ParallelIterator};
 
 use crate::Emu;
-use crate::io::{CastIOInto, IO, IOResult, UnhandledIO};
+use crate::io::{CastIOFrom, CastIOInto, IO, IOResult, UnhandledIO};
 use crate::memory::kb;
 use crate::spu::adpcm::{ADPCMCurrent, ADPCMHeader, ADPCMRepeat, ADPCMSampleRate, ADPCMStart};
 use crate::spu::adsr::{ADSRState, EnvelopePhase, apply_volume};
@@ -72,12 +72,13 @@ fn create_spu_mem() -> Box<[u16]> {
 
 #[derive(Default, derive_more::Debug, Clone)]
 struct Voice {
-    start:      ADPCMStart,
-    current:    ADPCMCurrent,
-    repeat:     ADPCMRepeat,
-    rate:       ADPCMSampleRate,
-    decode_buf: [i16; 28],
-    keyed_on:   bool,
+    start:       ADPCMStart,
+    current:     ADPCMCurrent,
+    repeat:      ADPCMRepeat,
+    rate:        ADPCMSampleRate,
+    decode_buf:  [i16; 28],
+    keyed_on:    bool,
+    reached_end: bool,
 
     /// old sample. used in adpcm decoding
     s1: i16,
@@ -100,6 +101,7 @@ struct Voice {
 struct VoiceFlags {
     key_on:  [Key; 2],
     key_off: [Key; 2],
+    endx:    Endx,
 }
 
 #[bitfield(u16, debug)]
@@ -109,22 +111,67 @@ struct Key {
     on: [bool; 16],
 }
 
+#[bitfield(u32, debug, default = 0xffffffff)]
+struct Endx {
+    #[bit(0, rw)]
+    on: [bool; 24],
+}
+
+fn voice_idx(addr: u32, base: u32, stride: u32) -> Option<usize> {
+    let addr = addr - base;
+    if (addr).is_multiple_of(stride) {
+        Some((addr / stride) as usize)
+    } else {
+        None
+    }
+}
+
 pub trait Spu: IO {
     #[pchan_macros::instrument(level = "trace", skip(self), "spu:r")]
     fn read<T: Copy>(&mut self, address: u32) -> IOResult<T> {
         let address = address & 0x1fffffff;
         // TODO add reads
-        Err(crate::io::UnhandledIO(address))
+        match address {
+            // Sound RAM Data Transfer Address
+            0x1f801da6 => Ok((self.spu().ram_start as u32).io_from_u32()),
+            // adpcm sample rate
+            addr @ 0x1f801c04..=0x1f801d7f if let Some(n) = voice_idx(addr, 0x1f801c04, 0x10) => {
+                Ok((self.spu().voices[n].rate.0 as u32).io_from_u32())
+            }
+            // adpcm start
+            addr @ 0x1f801c06..=0x1f801d7f if let Some(n) = voice_idx(addr, 0x1f801c06, 0x10) => {
+                Ok((self.spu().voices[n].start.0 as u32).io_from_u32())
+            }
+            // adpcm repeat
+            addr @ 0x1f801c0e..=0x1f801d7f if let Some(n) = voice_idx(addr, 0x1f801c0e, 0x10) => {
+                Ok((self.spu().voices[n].repeat.0 as u32).io_from_u32())
+            }
+            addr @ 0x1f801c00..=0x1f801d70 if let Some(n) = voice_idx(addr, 0x1f801c00, 0x10) => {
+                Ok((self.spu().adsr.voice_left.registers[n]).io_from_u32())
+            }
+            addr @ 0x1f801c02..=0x1f801d72 if let Some(n) = voice_idx(addr, 0x1f801c02, 0x10) => {
+                Ok((self.spu().adsr.voice_right.registers[n]).io_from_u32())
+            }
+            // Voice 0..23 ON/OFF (status) (ENDX) (R)
+            0x1f801d9c => {
+                let endx = self.spu().voice_flags.endx.raw_value();
+                tracing::info!(endx = %hex(endx));
+                Ok(endx.io_from_u32())
+            }
+            _ => Err(crate::io::UnhandledIO(address)),
+        }
     }
     #[pchan_macros::instrument(level = "trace", skip(self, value), "spu:w")]
     fn write<T: Copy>(&mut self, address: u32, value: T) -> IOResult<()> {
-        fn voice_idx(addr: u32, base: u32, stride: u32) -> Option<usize> {
-            let addr = addr - base;
-            if (addr).is_multiple_of(stride) {
-                Some((addr / stride) as usize)
-            } else {
-                None
-            }
+        if size_of::<T>() == 4 {
+            let value = value.io_into_u32().to_le_bytes();
+            let value = [
+                u16::from_le_bytes([value[0], value[1]]),
+                u16::from_le_bytes([value[2], value[3]]),
+            ];
+            Spu::write(self, address, value[0])?;
+            Spu::write(self, address + 0x2, value[1])?;
+            return Ok(());
         }
 
         let address = address & 0x1fffffff;
@@ -153,6 +200,9 @@ pub trait Spu: IO {
             // voices - adpcm start
             addr @ 0x1f801c06..=0x1f801d7f if let Some(n) = voice_idx(addr, 0x1f801c06, 0x10) => {
                 let spu = self.spu_mut();
+                if n == 0 {
+                    tracing::info!("write to start for 0")
+                }
                 spu.voices[n].start = ADPCMStart(value);
                 Ok(())
             }
@@ -230,21 +280,34 @@ pub trait Spu: IO {
 
         spu.adsr.clock();
         // TODO benchmark vs sequential iterator.
+        let adsr = &mut spu.adsr;
+        let flags = &mut spu.voice_flags;
+        let mut idx = 0;
         spu.voices.iter_mut().for_each(|voice| {
+            let old_on = voice.keyed_on;
             voice.clock(&spu.mem);
+            if old_on && !voice.keyed_on {
+                adsr.key_off(idx);
+            }
+            if voice.reached_end {
+                voice.reached_end = false;
+                flags.endx.set_on(idx, true);
+            }
+            idx += 1;
         });
 
         let mut mixed_l = 0i32;
         let mut mixed_r = 0i32;
-        for i in 0..24 {
-            let voice = &spu.voices[i];
-            let adsr = &spu.adsr;
-            let sample = apply_volume(voice.current_sample, adsr.envelopes.level[i]);
-            let left = apply_volume(sample, adsr.voice_left.internal[i]);
-            let right = apply_volume(sample, adsr.voice_right.internal[i]);
-            mixed_l += left as i32;
-            mixed_r += right as i32;
-        }
+        let i = 0;
+        // for i in 0..24 {
+        let voice = &spu.voices[i];
+        let adsr = &spu.adsr;
+        let sample = apply_volume(voice.current_sample, adsr.envelopes.level[i]);
+        let left = apply_volume(sample, adsr.voice_left.internal[i]);
+        let right = apply_volume(sample, adsr.voice_right.internal[i]);
+        mixed_l += left as i32;
+        mixed_r += right as i32;
+        // }
 
         let mixed_l = mixed_l.clamp(-0x8000, 0x7fff);
         let mixed_r = mixed_r.clamp(-0x8000, 0x7fff);
@@ -308,10 +371,13 @@ impl Voice {
         self.current = ADPCMCurrent(self.start.0);
         self.current_idx = 0;
         self.pitch_counter = 0x0;
+        self.keyed_on = true;
         self.advance_decode(spu_ram);
     }
 
-    fn key_off(&mut self) {}
+    fn key_off(&mut self) {
+        self.keyed_on = false;
+    }
 
     fn advance_decode(&mut self, spu_ram: &[u16]) {
         // address needs to be shifted right by 3 and we divide by 2 to get
@@ -341,15 +407,15 @@ impl Voice {
             self.repeat = ADPCMRepeat(self.current.0);
         }
 
+        // current holds the address shifted right by 3, so we add 2 to advance
+        // by 16 bytes.
+        self.current.0 = self.current.0.wrapping_add(2);
         if header.flags.loop_end() {
+            self.reached_end = true;
             self.current = ADPCMCurrent(self.repeat.0);
             if !header.flags.loop_repeat() {
                 self.key_off();
             }
-        } else {
-            // current holds the address shifted right by 3, so we add 2 to advance
-            // by 16 bytes.
-            self.current.0 += 2;
         }
     }
 }
@@ -375,6 +441,7 @@ impl SpuState {
         let len = if key_idx == 0 { 16 } else { 8 };
 
         let adsr = &mut self.adsr;
+        let flags = &mut self.voice_flags;
         self.voices
             .iter_mut()
             .skip(voice_offset)
@@ -382,12 +449,20 @@ impl SpuState {
             .enumerate()
             .filter(|(idx, _)| new_key.on(*idx))
             .for_each(|(idx, voice)| {
+                let abs_idx = voice_offset + idx;
                 if ON {
+                    if idx == 0 {
+                        tracing::info!("keyed on 0");
+                    }
                     voice.key_on(&self.mem);
-                    adsr.key_on(idx);
+                    adsr.key_on(abs_idx);
+                    flags.endx.set_on(abs_idx, false);
                 } else {
+                    if idx == 0 {
+                        tracing::info!("keyed off 0");
+                    }
                     voice.key_off();
-                    adsr.key_off(idx);
+                    adsr.key_off(abs_idx);
                 }
             });
     }

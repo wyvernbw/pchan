@@ -119,8 +119,11 @@ type DynarecBlockArgs<'a> = (&'a mut Emu, bool);
 
 impl DynarecBlock {
     pub fn call_block(&self, (emu, instrument): DynarecBlockArgs) {
-        BLOCKS_EXECUTED.fetch_add(1, Ordering::Relaxed);
-        INSTR_EXECUTED.fetch_add(self.op_count as u64, Ordering::Relaxed);
+        #[cfg(debug_assertions)]
+        {
+            BLOCKS_EXECUTED.fetch_add(1, Ordering::Relaxed);
+            INSTR_EXECUTED.fetch_add(self.op_count as u64, Ordering::Relaxed);
+        }
 
         // reset delta clock before running
         emu.cpu.d_clock = 0;
@@ -135,7 +138,7 @@ impl DynarecBlock {
 
         emu.run_io();
 
-        assert_eq!(emu.cpu.gpr[0], 0);
+        debug_assert_eq!(emu.cpu.gpr[0], 0);
     }
 
     pub fn buffer(&self) -> &ExecutableBuffer {
@@ -809,13 +812,18 @@ pub fn run_step(emu: &mut Emu, dynarec: Box<Dynarec>) -> Box<Dynarec> {
     let (block, scheduler, dynarec) = match emu.dynarec_cache.remove(pc) {
         None => {
             let (func, scheduler) = fetch_and_compile_single_threaded(emu, dynarec).unwrap();
-            INSTR_COMPILED.fetch_add(func.op_count as u64, Ordering::Relaxed);
-            BLOCKS_COMPILED.fetch_add(1, Ordering::Relaxed);
-            CACHE_MISSES.fetch_add(1, Ordering::Relaxed);
+            #[cfg(debug_assertions)]
+            {
+                INSTR_COMPILED.fetch_add(func.op_count as u64, Ordering::Relaxed);
+                BLOCKS_COMPILED.fetch_add(1, Ordering::Relaxed);
+                CACHE_MISSES.fetch_add(1, Ordering::Relaxed);
+            }
             (func, Some(scheduler), None)
         }
         Some(func) => {
+            #[cfg(debug_assertions)]
             CACHE_HITS.fetch_add(1, Ordering::Relaxed);
+
             (func, None, Some(dynarec))
         }
     };

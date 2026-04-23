@@ -20,7 +20,7 @@ pub mod tty;
 pub mod vblank;
 
 impl Emu {
-    #[instrument(level = "trace", "io", skip_all, fields(pc = %hex(self.cpu.pc)))]
+    #[pchan_macros::instrument(level = "trace", "io", skip_all, fields(pc = %hex(self.cpu.pc)))]
     pub fn run_io(&mut self) {
         self.cpu_mut().vblank_timer = self.cpu().vblank_timer.wrapping_add(self.cpu().d_clock);
         self.cpu_mut().cycles = self.cpu().cycles.wrapping_add(self.cpu().d_clock as u64);
