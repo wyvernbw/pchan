@@ -55,29 +55,27 @@ struct AppState {
 }
 
 struct TuiState {
-    theme: Theme,
-    loop_mode: LoopMode,
+    theme:         Theme,
+    loop_mode:     LoopMode,
     current_frame: Option<DynamicImage>,
-    framebuffer: ImageState,
-    quit: bool,
-    fullscreen: bool,
-    frame_time: Duration,
-    reg_list: TableState,
-    focused: Focused,
-    // probably the worst possible way to store this but it is convenient
-    mips_decoded_ops: HashMap<u32, DecodedOp>,
-    mips_cursor: u32,
+    framebuffer:   ImageState,
+    quit:          bool,
+    fullscreen:    bool,
+    frame_time:    Duration,
+    reg_list:      TableState,
+    focused:       Focused,
+    mips_cursor:   u32,
 }
 
 struct Theme {
-    fg: Color,
+    fg:      Color,
     primary: Color,
 }
 
 impl Default for Theme {
     fn default() -> Self {
         Self {
-            fg: Color::from_u32(0xffffff),
+            fg:      Color::from_u32(0xffffff),
             primary: LIPGLOSS[0][0],
         }
     }
@@ -122,17 +120,16 @@ async fn run_app(env: &EnvVars) -> Result<()> {
         gpu: gpu.into(),
     };
     let mut tui_state = TuiState {
-        loop_mode: LoopMode::Poll,
+        loop_mode:     LoopMode::Poll,
         current_frame: None,
-        framebuffer: ImageState::new(),
-        quit: false,
-        fullscreen: false,
-        frame_time: Duration::ZERO,
-        reg_list: TableState::new(),
-        theme: Theme::default(),
-        focused: Focused::Preview,
-        mips_decoded_ops: HashMap::new(),
-        mips_cursor: 0x0,
+        framebuffer:   ImageState::new(),
+        quit:          false,
+        fullscreen:    false,
+        frame_time:    Duration::ZERO,
+        reg_list:      TableState::new(),
+        theme:         Theme::default(),
+        focused:       Focused::Preview,
+        mips_cursor:   0x0,
     };
     tui_state.reg_list.select_first();
     state.gpu.clone().start();
@@ -357,18 +354,13 @@ fn draw_mips_assembly(area: Rect, frame: &mut Frame, tui_state: &mut TuiState, s
     let items = (state.emu.cpu.pc..=state.emu.cpu.pc + to_grab * 4)
         .step_by(0x4)
         .map(|addr| {
-            let value = tui_state
-                .mips_decoded_ops
-                .entry(addr)
-                .or_insert_with(move || {
-                    IO::try_read_pure::<u32>(&state.emu, addr)
-                        .ok()
-                        .and_then(|value| {
-                            std::panic::catch_unwind(|| DecodedOp::decode([value])[0]).ok()
-                        })
-                        .unwrap_or(DecodedOp::illegal())
-                });
-            (addr, *value)
+            let value = IO::try_read_pure::<u32>(&state.emu, addr)
+                .ok()
+                .and_then(|value| std::panic::catch_unwind(|| DecodedOp::decode([value])[0]).ok());
+            (
+                addr,
+                value.unwrap_or(DecodedOp::Illegal(pchan_emu::dynarec_v2::emitters::Illegal)),
+            )
         })
         .map(|(addr, op)| Row::new([hex(addr).to_string(), op.to_string()]));
     let list = Table::new(items, [Constraint::Length(10), Constraint::Fill(1)])

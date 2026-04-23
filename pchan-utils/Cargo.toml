@@ -13,7 +13,6 @@ tracing = { workspace = true }
 tracing-panic = "0.1.2"
 const-hex.workspace = true
 heapless = "0.9.2"
-tracing-indicatif = "0.3.14"
 smol = "2.0.2"
 bon = "3.9.1"
 tracing-error = "0.2.1"

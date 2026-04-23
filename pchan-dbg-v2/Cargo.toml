@@ -9,23 +9,15 @@ ratatui = "0.30.0"
 image = { version = "0.25.10", default-features = false, features = ["bmp"] }
 miette = { version = "7.6.0", features = ["fancy"] }
 miette-panic = "0.1.0"
-pchan-audio = { version = "0.1.0", path = "../../pchan/pchan-audio" }
-pchan-bind = { version = "0.1.0", path = "../../pchan/pchan-bind" }
-pchan-emu = { version = "0.1.0", path = "../../pchan/pchan-emu" }
-pchan-gpu = { version = "0.1.0", path = "../../pchan/pchan-gpu" }
-pchan-utils = { version = "0.1.0", path = "../../pchan/pchan-utils" }
+pchan-audio.workspace = true
+pchan-bind.workspace = true
+pchan-emu.workspace = true
+pchan-gpu.workspace = true
+pchan-utils.workspace = true
 spin_sleep = "1.3.3"
 tracing = "0.1.44"
 wgpu = "29.0.1"
 crossterm = { version = "0.29.0", features = ["event-stream"] }
 smol = "2.0.2"
-ringbuf = "0.4.8"
-rat-imaginary = { version = "0.1.0", path = "../rat-imaginary" }
+rat-imaginary = { version = "0.1.0", path = "./rat-imaginary" }
 rat-widget = "3.2.1"
-
-[profile.dev.package."*"]
-opt-level = 3
-
-[profile.dev]
-opt-level = 1
-panic = "unwind"

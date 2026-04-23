@@ -11,7 +11,6 @@ use std::{
 use kanal::{AsyncReceiver, AsyncSender, Receiver, Sender};
 use rstest::*;
 use tracing_error::ErrorLayer;
-use tracing_indicatif::IndicatifLayer;
 use tracing_subscriber::{
     EnvFilter, Layer,
     fmt::{self, MakeWriter, format::FmtSpan, writer::BoxMakeWriter},
@@ -47,7 +46,6 @@ pub type AsyncChan<T> = (AsyncSender<T>, AsyncReceiver<T>);
 
 #[fixture]
 pub fn setup_tracing() {
-    let indicatif_layer = IndicatifLayer::new();
     _ = tracing_subscriber::registry()
         .with(
             fmt::layer()
@@ -55,7 +53,6 @@ pub fn setup_tracing() {
                 .with_file(false)
                 .without_time()
                 .with_test_writer()
-                .with_writer(indicatif_layer.get_stdout_writer())
                 .with_line_number(false), // .with_span_events(FmtSpan::CLOSE),
         )
         .with(
@@ -66,7 +63,6 @@ pub fn setup_tracing() {
                 .with_writer(std::fs::File::create("pchan.log").unwrap())
                 .with_line_number(false), // .with_span_events(FmtSpan::CLOSE),
         )
-        .with(indicatif_layer)
         .with(
             fmt::layer()
                 .with_ansi(true)
@@ -107,23 +103,14 @@ pub fn setup_tracing() {
 pub fn init_tracing(
     #[builder(default = true)] stdout: bool,
     #[builder(default = true)] file: bool,
-    #[builder(default = true)] indicatif: bool,
     #[builder(default = true)] panic_hook: bool,
 ) {
-    let indicatif_layer_opt = indicatif.then(IndicatifLayer::new);
-
     let stdout_layer = stdout.then(|| {
-        let writer: BoxMakeWriter = match &indicatif_layer_opt {
-            Some(l) => BoxMakeWriter::new(l.get_stdout_writer()),
-            None => BoxMakeWriter::new(std::io::stdout),
-        };
-
         fmt::layer()
             .with_ansi(true)
             .with_file(false)
             .without_time()
             .with_test_writer()
-            .with_writer(writer)
             .with_line_number(false)
     });
 
@@ -152,7 +139,6 @@ pub fn init_tracing(
     _ = tracing_subscriber::registry()
         .with(stdout_layer)
         .with(file_layer)
-        .with(indicatif_layer_opt)
         .with(span_layer)
         .with(env_filter)
         .with(ErrorLayer::default())
