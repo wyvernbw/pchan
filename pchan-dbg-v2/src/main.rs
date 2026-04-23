@@ -57,6 +57,7 @@ struct AppState {
 struct TuiState {
     theme:         Theme,
     loop_mode:     LoopMode,
+    emu_running:   bool,
     current_frame: Option<DynamicImage>,
     framebuffer:   ImageState,
     quit:          bool,
@@ -120,7 +121,7 @@ async fn run_app(env: &EnvVars) -> Result<()> {
         gpu: gpu.into(),
     };
     let mut tui_state = TuiState {
-        loop_mode:     LoopMode::Poll,
+        loop_mode:     LoopMode::Event,
         current_frame: None,
         framebuffer:   ImageState::new(),
         quit:          false,
@@ -130,6 +131,7 @@ async fn run_app(env: &EnvVars) -> Result<()> {
         theme:         Theme::default(),
         focused:       Focused::Preview,
         mips_cursor:   0x0,
+        emu_running:   false,
     };
     tui_state.reg_list.select_first();
     state.gpu.clone().start();
@@ -140,12 +142,17 @@ async fn run_app(env: &EnvVars) -> Result<()> {
         let mut frame_time_samples = VecDeque::with_capacity(32);
         let mut frame_time_sum = 0u128;
         let mut dynarec = Box::new(Dynarec::default());
+        _ = term.draw(|frame| {
+            draw_app(frame, &mut tui_state, &state);
+        });
         loop {
             if tui_state.quit {
                 break;
             }
 
-            dynarec = run_step(&mut state.emu, dynarec);
+            if tui_state.emu_running {
+                dynarec = run_step(&mut state.emu, dynarec);
+            }
             // pipe = pipe.run_once(&mut state.emu).unwrap();
             if state.emu.consume_vblank_signal() {
                 let last_vblank = state.emu.gpu.last_vblank;
@@ -239,6 +246,7 @@ impl TuiState {
         if let Some((size, img)) = img {
             let img =
                 RgbaImage::from_vec(size.width, size.height, img).map(DynamicImage::ImageRgba8);
+            self.framebuffer.clear_frontbuffer();
             self.framebuffer.write_image(img.clone().unwrap()).unwrap();
             self.current_frame = img;
         }
@@ -249,6 +257,13 @@ fn handle_event(tui_state: &mut TuiState, ev: &event::Event) {
     match ev.simple().as_str() {
         "ctrl+c" | "q" => tui_state.quit = true,
         "f" => tui_state.fullscreen = !tui_state.fullscreen,
+        " " => {
+            tui_state.emu_running = !tui_state.emu_running;
+            match tui_state.loop_mode {
+                LoopMode::Poll => tui_state.loop_mode = LoopMode::Event,
+                LoopMode::Event => tui_state.loop_mode = LoopMode::Poll,
+            }
+        }
         event => match (tui_state.focused, event) {
             (Focused::Preview, "tab" | "j") => tui_state.focused = Focused::Registers,
             (Focused::Preview, "l") => tui_state.focused = Focused::Mips,
