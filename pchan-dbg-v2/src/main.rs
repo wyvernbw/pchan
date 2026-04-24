@@ -2,14 +2,16 @@
 
 use std::{
     collections::{HashMap, VecDeque},
+    io::stdout,
+    ops::{Range, RangeInclusive},
     sync::Arc,
     time::{Duration, Instant},
 };
 
-use crossterm::event;
+use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture};
 use crossterm_simple_event::CrosstermSimpleEvent;
 use image::{DynamicImage, RgbaImage};
-use miette::{IntoDiagnostic, Result};
+use miette::{IntoDiagnostic, Result, miette};
 use pchan_emu::{
     Emu,
     bootloader::Bootloader,
@@ -21,11 +23,13 @@ use pchan_gpu::Renderer;
 use pchan_utils::hex;
 use rat_imaginary::{ImageState, ImageWidget};
 use rat_widget::{
+    button::{Button, ButtonState},
+    event::{HandleEvent, MouseOnly},
     list::{List, ListState, selection::RowSelection},
     scrolled::Scroll,
 };
 use ratatui::{
-    Frame, crossterm,
+    DefaultTerminal, Frame, Terminal, crossterm,
     layout::{Constraint, Layout, Rect},
     style::{Color, Style, Styled},
     widgets::{Block, BorderType, Row, Table, TableState, Widget},
@@ -66,6 +70,9 @@ struct TuiState {
     reg_list:      TableState,
     focused:       Focused,
     mips_cursor:   u32,
+    mips_range:    RangeInclusive<u32>,
+
+    mips_jump_to_pc_button: ButtonState,
 }
 
 struct Theme {
@@ -132,11 +139,14 @@ async fn run_app(env: &EnvVars) -> Result<()> {
         focused:       Focused::Preview,
         mips_cursor:   0x0,
         emu_running:   false,
+        mips_range:    0x0..=0x0,
+
+        mips_jump_to_pc_button: ButtonState::new(),
     };
     tui_state.reg_list.select_first();
     state.gpu.clone().start();
 
-    ratatui::run(|term| {
+    run(|term| {
         let mut pipe = PipelineV2::new(&state.emu);
         let mut frame_time_sample_time = Duration::ZERO;
         let mut frame_time_samples = VecDeque::with_capacity(32);
@@ -152,6 +162,7 @@ async fn run_app(env: &EnvVars) -> Result<()> {
 
             if tui_state.emu_running {
                 dynarec = run_step(&mut state.emu, dynarec);
+                tui_state.mips_cursor = state.emu.cpu.pc;
             }
             // pipe = pipe.run_once(&mut state.emu).unwrap();
             if state.emu.consume_vblank_signal() {
@@ -189,7 +200,7 @@ async fn run_app(env: &EnvVars) -> Result<()> {
                     let sleep_for = sleep_for.saturating_sub(spin_for);
                     if let Ok(true) = crossterm::event::poll(sleep_for) {
                         let ev = crossterm::event::read().unwrap();
-                        handle_event(&mut tui_state, &ev);
+                        handle_event(&state, &mut tui_state, &ev);
                         term.draw(|frame| {
                             draw_app(frame, &mut tui_state, &state);
                         })
@@ -200,7 +211,7 @@ async fn run_app(env: &EnvVars) -> Result<()> {
                 while now.elapsed() < spin_for {
                     if let Ok(true) = crossterm::event::poll(Duration::ZERO) {
                         let ev = crossterm::event::read().unwrap();
-                        handle_event(&mut tui_state, &ev);
+                        handle_event(&state, &mut tui_state, &ev);
                         term.draw(|frame| {
                             draw_app(frame, &mut tui_state, &state);
                         })
@@ -215,7 +226,7 @@ async fn run_app(env: &EnvVars) -> Result<()> {
                 LoopMode::Poll => {}
                 LoopMode::Event => {
                     if let Ok(ev) = crossterm::event::read() {
-                        handle_event(&mut tui_state, &ev);
+                        handle_event(&state, &mut tui_state, &ev);
                         term.draw(|frame| {
                             draw_app(frame, &mut tui_state, &state);
                         })
@@ -231,6 +242,24 @@ async fn run_app(env: &EnvVars) -> Result<()> {
     });
 
     Ok(())
+}
+
+fn run(callback: impl FnOnce(&mut DefaultTerminal)) -> Result<()> {
+    let mut term = ratatui::init();
+    _ = crossterm::execute!(stdout(), EnableMouseCapture);
+    let callback = std::panic::AssertUnwindSafe(callback);
+    let result = std::panic::catch_unwind(move || {
+        let callback = callback;
+        let callback = callback.0;
+        callback(&mut term);
+    })
+    .map_err(|err| {
+        let err = format!("{:?}", err.downcast::<Box<dyn std::fmt::Debug>>());
+        miette!(err)
+    });
+    ratatui::restore();
+    _ = crossterm::execute!(stdout(), DisableMouseCapture);
+    result
 }
 
 impl Drop for TuiState {
@@ -253,7 +282,7 @@ impl TuiState {
     }
 }
 
-fn handle_event(tui_state: &mut TuiState, ev: &event::Event) {
+fn handle_event(state: &AppState, tui_state: &mut TuiState, ev: &event::Event) {
     match ev.simple().as_str() {
         "ctrl+c" | "q" => tui_state.quit = true,
         "f" => tui_state.fullscreen = !tui_state.fullscreen,
@@ -264,16 +293,32 @@ fn handle_event(tui_state: &mut TuiState, ev: &event::Event) {
                 LoopMode::Event => tui_state.loop_mode = LoopMode::Poll,
             }
         }
-        event => match (tui_state.focused, event) {
-            (Focused::Preview, "tab" | "j") => tui_state.focused = Focused::Registers,
-            (Focused::Preview, "l") => tui_state.focused = Focused::Mips,
-            (Focused::Registers, "backtab" | "k") => tui_state.focused = Focused::Preview,
-            (Focused::Registers, "l") => tui_state.focused = Focused::Mips,
-            (Focused::Registers, "ctrl+k" | "up") => tui_state.reg_list.select_previous(),
-            (Focused::Registers, "ctrl+j" | "down") => tui_state.reg_list.select_next(),
-            (Focused::Mips, "h") => tui_state.focused = Focused::Registers,
-            _ => {}
-        },
+        event => {
+            match tui_state.mips_jump_to_pc_button.handle(ev, MouseOnly) {
+                rat_widget::event::ButtonOutcome::Continue => {}
+                rat_widget::event::ButtonOutcome::Unchanged => {}
+                rat_widget::event::ButtonOutcome::Changed => {}
+                rat_widget::event::ButtonOutcome::Pressed => {
+                    tui_state.mips_cursor = state.emu.cpu.pc;
+                }
+            };
+            match (tui_state.focused, event) {
+                (Focused::Preview, "tab" | "j") => tui_state.focused = Focused::Registers,
+                (Focused::Preview, "l") => tui_state.focused = Focused::Mips,
+                (Focused::Registers, "backtab" | "k") => tui_state.focused = Focused::Preview,
+                (Focused::Registers, "l") => tui_state.focused = Focused::Mips,
+                (Focused::Registers, "ctrl+k" | "up") => tui_state.reg_list.select_previous(),
+                (Focused::Registers, "ctrl+j" | "down") => tui_state.reg_list.select_next(),
+                (Focused::Mips, "h") => tui_state.focused = Focused::Registers,
+                (Focused::Mips, "ctrl+j") => {
+                    tui_state.mips_cursor = tui_state.mips_cursor.saturating_add(4);
+                }
+                (Focused::Mips, "ctrl+k") => {
+                    tui_state.mips_cursor = tui_state.mips_cursor.saturating_sub(4);
+                }
+                _ => {}
+            }
+        }
         _ => {}
     }
 }
@@ -359,14 +404,50 @@ fn draw_mips_assembly(area: Rect, frame: &mut Frame, tui_state: &mut TuiState, s
         let block = Block::bordered()
             .border_type(BorderType::Rounded)
             .title("+ mips +")
+            .title_top(format!(
+                "+ {} in {}..{} +",
+                hex(tui_state.mips_cursor),
+                hex(*tui_state.mips_range.start()),
+                hex(*tui_state.mips_range.end())
+            ))
             .theme(&tui_state.theme)
             .focus_style(tui_state, Focused::Mips);
         let a = block.inner(area);
         frame.render_widget(block, area);
         a
     };
-    let to_grab = area.height as u32;
-    let items = (state.emu.cpu.pc..=state.emu.cpu.pc + to_grab * 4)
+    let [button_area, list_area] =
+        Layout::vertical([Constraint::Length(3), Constraint::Fill(1)]).areas(area);
+
+    {
+        let button = Button::new("jump to pc")
+            .block(Block::bordered().border_type(BorderType::Rounded))
+            .armed_style(tui_state.theme.primary);
+        frame.render_stateful_widget(button, button_area, &mut tui_state.mips_jump_to_pc_button);
+    }
+
+    let to_grab = list_area.height as u32;
+    let mut table_state = TableState::new();
+    if !tui_state.mips_range.contains(&tui_state.mips_cursor) {
+        let start = *tui_state.mips_range.start();
+        let end = *tui_state.mips_range.end();
+        if tui_state.mips_cursor >= end {
+            let offset = tui_state.mips_cursor.saturating_sub(end);
+            let end = end.saturating_add(offset);
+            tui_state.mips_range = (end.saturating_sub(to_grab * 4))..=end;
+        } else if tui_state.mips_cursor <= start {
+            let offset = start.saturating_sub(tui_state.mips_cursor);
+            let start = start.saturating_sub(offset);
+            tui_state.mips_range = start..=(start.saturating_add(to_grab * 4));
+        }
+    };
+    let offset = tui_state
+        .mips_cursor
+        .saturating_sub(*tui_state.mips_range.start());
+    table_state = table_state.with_selected(offset as usize >> 2);
+    let items = tui_state
+        .mips_range
+        .clone()
         .step_by(0x4)
         .map(|addr| {
             let value = IO::try_read_pure::<u32>(&state.emu, addr)
@@ -381,7 +462,7 @@ fn draw_mips_assembly(area: Rect, frame: &mut Frame, tui_state: &mut TuiState, s
     let list = Table::new(items, [Constraint::Length(10), Constraint::Fill(1)])
         .theme(&tui_state.theme)
         .row_highlight_style(Style::new().bg(tui_state.theme.primary).bold());
-    frame.render_widget(list, area);
+    frame.render_stateful_widget(list, list_area, &mut table_state);
 }
 
 trait Themed: Styled + Sized {
