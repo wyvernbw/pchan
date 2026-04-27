@@ -136,6 +136,13 @@ impl DynarecBlock {
             (self.function.func)(emu)
         };
 
+        #[cfg(feature = "debugger-ext")]
+        {
+            use crate::debug::BreakpointKind;
+
+            emu.dbg.break_on(emu.cpu.pc, BreakpointKind::EXECUTE);
+        }
+
         emu.run_io();
 
         debug_assert_eq!(emu.cpu.gpr[0], 0);

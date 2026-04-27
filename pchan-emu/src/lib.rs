@@ -26,6 +26,9 @@
 
 use std::mem::offset_of;
 
+#[cfg(feature = "debugger-ext")]
+use crate::debug::DebuggerState;
+
 use crate::{
     bootloader::BootloaderState,
     cpu::Cpu,
@@ -41,6 +44,8 @@ pub mod bootloader;
 pub mod cpu;
 // #[path = "./dynarec/dynarec.rs"]
 // pub mod dynarec;
+#[cfg(feature = "debugger-ext")]
+pub mod debug;
 #[path = "./dynarec-v2/dynarec-v2.rs"]
 pub mod dynarec_v2;
 #[path = "./gpu/gpu.rs"]
@@ -90,6 +95,8 @@ pub struct Emu {
     pub dma:           DmaState,
     pub timers:        TimerState,
     pub spu:           SpuState,
+    #[cfg(feature = "debugger-ext")]
+    pub dbg:           DebuggerState,
 }
 
 impl Emu {

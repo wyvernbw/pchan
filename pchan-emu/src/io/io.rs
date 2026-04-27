@@ -283,6 +283,13 @@ impl IO for Emu {
     }
 
     fn try_read<T: Copy>(&mut self, address: u32) -> IOResult<T> {
+        #[cfg(feature = "debugger-ext")]
+        {
+            use crate::debug::BreakpointKind;
+
+            self.dbg.break_on(address, BreakpointKind::READ);
+        }
+
         Fastmem::read::<T>(self, address)
             .or_else(|_| ScratchpadMem::read(self, address))
             .or_else(|_| Interrupts::read(self, address))
@@ -309,6 +316,13 @@ impl IO for Emu {
     }
 
     fn try_write<T: Copy>(&mut self, address: u32, value: T) -> IOResult<()> {
+        #[cfg(feature = "debugger-ext")]
+        {
+            use crate::debug::BreakpointKind;
+
+            self.dbg.break_on(address, BreakpointKind::WRITE);
+        }
+
         Fastmem::write::<T>(self, address, value)
             .or_else(|_| ScratchpadMem::write(self, address, value))
             .or_else(|_| Timers::write_timers(self, address, value))

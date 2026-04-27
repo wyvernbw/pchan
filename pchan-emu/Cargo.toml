@@ -6,6 +6,7 @@ edition = "2024"
 [features]
 fetch-channel = []
 amidog-tests = []
+debugger-ext = []
 
 [dependencies]
 tracing = { workspace = true }
