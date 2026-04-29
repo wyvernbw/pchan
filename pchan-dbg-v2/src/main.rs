@@ -1,10 +1,11 @@
+#![allow(clippy::collapsible_if)]
 #![feature(iter_array_chunks)]
 #![feature(duration_millis_float)]
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::VecDeque,
     io::stdout,
-    ops::{Range, RangeInclusive},
+    ops::RangeInclusive,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -21,20 +22,17 @@ use pchan_emu::{
     io::{IO, vblank::VBlank},
 };
 use pchan_gpu::Renderer;
-use pchan_utils::{Hex, hex, hex_pref};
+use pchan_utils::{hex, hex_pref};
 use rat_imaginary::{ImageState, ImageWidget};
 use rat_widget::{
     button::{Button, ButtonState},
     event::{HandleEvent, MouseOnly},
-    list::{List, ListState, selection::RowSelection},
-    menu::Separator,
-    scrolled::Scroll,
 };
 use ratatui::{
-    DefaultTerminal, Frame, Terminal, crossterm,
+    DefaultTerminal, Frame, crossterm,
     layout::{Constraint, Layout, Rect},
     style::{Color, Style, Styled},
-    widgets::{Block, BorderType, Borders, ListItem, Row, Table, TableState, Widget},
+    widgets::{Block, BorderType, Borders, Row, Table, TableState, Widget},
 };
 use wgpu::Extent3d;
 
@@ -58,25 +56,6 @@ fn main() -> Result<()> {
 struct AppState {
     emu: Emu,
     gpu: Arc<Renderer>,
-}
-
-struct TuiState {
-    theme:         Theme,
-    loop_mode:     LoopMode,
-    emu_running:   bool,
-    current_frame: Option<DynamicImage>,
-    framebuffer:   ImageState,
-    quit:          bool,
-    fullscreen:    bool,
-    frame_time:    Duration,
-    reg_list:      TableState,
-    focused:       Focused,
-    mips_cursor:   u32,
-    mips_range:    RangeInclusive<u32>,
-    mem_cursor:    u32,
-    mem_range:     RangeInclusive<u32>,
-
-    mips_jump_to_pc_button: ButtonState,
 }
 
 struct Theme {
@@ -132,29 +111,12 @@ async fn run_app(env: &EnvVars) -> Result<()> {
         emu,
         gpu: gpu.into(),
     };
-    let mut tui_state = TuiState {
-        loop_mode:     LoopMode::Event,
-        current_frame: None,
-        framebuffer:   ImageState::new(),
-        quit:          false,
-        fullscreen:    false,
-        frame_time:    Duration::ZERO,
-        reg_list:      TableState::new(),
-        theme:         Theme::default(),
-        focused:       Focused::Preview,
-        mips_cursor:   0x0,
-        emu_running:   false,
-        mips_range:    0x0..=0x0,
-        mem_cursor:    0xbfc0_0000,
-        mem_range:     0xbfc0_0000..=0xbfc0_0000,
-
-        mips_jump_to_pc_button: ButtonState::new(),
-    };
+    let mut tui_state = TuiState::new();
     tui_state.reg_list.select_first();
     state.gpu.clone().start();
 
     run(|term| {
-        let mut pipe = PipelineV2::new(&state.emu);
+        let pipe = PipelineV2::new(&state.emu);
         let mut frame_time_sample_time = Duration::ZERO;
         let mut frame_time_samples = VecDeque::with_capacity(32);
         let mut frame_time_sum = 0u128;
@@ -338,7 +300,47 @@ fn handle_event(state: &AppState, tui_state: &mut TuiState, ev: &event::Event) {
     }
 }
 
+struct TuiState {
+    theme:         Theme,
+    loop_mode:     LoopMode,
+    emu_running:   bool,
+    current_frame: Option<DynamicImage>,
+    framebuffer:   ImageState,
+    quit:          bool,
+    fullscreen:    bool,
+    frame_time:    Duration,
+    reg_list:      TableState,
+    focused:       Focused,
+    mips_cursor:   u32,
+    mips_range:    RangeInclusive<u32>,
+    mem_cursor:    u32,
+    mem_range:     RangeInclusive<u32>,
+
+    mips_jump_to_pc_button: ButtonState,
+}
+
 impl TuiState {
+    fn new() -> Self {
+        TuiState {
+            loop_mode:     LoopMode::Event,
+            current_frame: None,
+            framebuffer:   ImageState::new(),
+            quit:          false,
+            fullscreen:    false,
+            frame_time:    Duration::ZERO,
+            reg_list:      TableState::new(),
+            theme:         Theme::default(),
+            focused:       Focused::Preview,
+            mips_cursor:   0x0,
+            emu_running:   false,
+            mips_range:    0x0..=0x0,
+            mem_cursor:    0xbfc0_0000,
+            mem_range:     0xbfc0_0000..=0xbfc0_0000,
+
+            mips_jump_to_pc_button: ButtonState::new(),
+        }
+    }
+
     fn focus_style(&self, value: Focused) -> Style {
         if self.focused == value {
             Style::new().fg(self.theme.primary)
@@ -493,7 +495,7 @@ fn draw_mips_assembly(area: Rect, frame: &mut Frame, tui_state: &mut TuiState, s
         false,
     );
     let mut table_state = TableState::new();
-    table_state = table_state.with_selected(offset as usize >> 2);
+    table_state = table_state.with_selected(offset >> 2);
     let items = tui_state
         .mips_range
         .clone()
