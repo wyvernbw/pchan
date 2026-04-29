@@ -1157,12 +1157,24 @@ pub struct DynarecCache {
     buf: Box<[CachePage]>,
 }
 
-#[derive(derive_more::Debug, Clone, derive_more::Index, derive_more::IndexMut)]
+#[derive(derive_more::Debug, Clone)]
 struct CachePage {
-    #[index]
-    #[index_mut]
     page:    [Option<DynarecBlock>; PAGE_LEN],
     cleared: bool,
+}
+
+impl std::ops::Index<usize> for CachePage {
+    type Output = Option<DynarecBlock>;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        &self.page[index]
+    }
+}
+
+impl std::ops::IndexMut<usize> for CachePage {
+    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
+        &mut self.page[index]
+    }
 }
 
 impl Default for CachePage {

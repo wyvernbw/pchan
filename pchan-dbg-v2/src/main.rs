@@ -12,12 +12,14 @@ use std::{
 
 use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture};
 use crossterm_simple_event::CrosstermSimpleEvent;
+use edtui::{EditorEventHandler, EditorState, EditorStatusLine, EditorView};
 use image::{DynamicImage, RgbaImage};
-use miette::{IntoDiagnostic, Result, miette};
+use miette::{Context, IntoDiagnostic, Result, miette};
 use pchan_emu::{
     Emu,
     bootloader::Bootloader,
     cpu::reg_str,
+    debug::{Breakpoint, BreakpointKind},
     dynarec_v2::{Dynarec, PipelineV2, emitters::DecodedOp, run_step},
     io::{IO, vblank::VBlank},
 };
@@ -26,7 +28,9 @@ use pchan_utils::{hex, hex_pref};
 use rat_imaginary::{ImageState, ImageWidget};
 use rat_widget::{
     button::{Button, ButtonState},
-    event::{HandleEvent, MouseOnly},
+    event::{HandleEvent, MouseOnly, Regular},
+    focus::FocusBuilder,
+    text_input::{TextInput, TextInputState},
 };
 use ratatui::{
     DefaultTerminal, Frame, crossterm,
@@ -40,12 +44,15 @@ use crate::{
     display::{DisplayState, draw_display},
     init::EnvVars,
     lipgloss_colors::LIPGLOSS,
+    widgets::checkbox::{Checkbox, CheckboxState},
 };
 
 pub mod display;
 pub mod init;
 #[path = "./lipgloss-colors.rs"]
 pub mod lipgloss_colors;
+#[path = "./widgets/widgets.rs"]
+pub mod widgets;
 
 fn main() -> Result<()> {
     miette_panic::install(miette_panic::PanicHookArgs::default());
@@ -84,6 +91,7 @@ enum Focused {
     Registers,
     Mips,
     Mem,
+    Breakpoints,
 }
 
 async fn run_app(env: &EnvVars) -> Result<()> {
@@ -169,7 +177,7 @@ async fn run_app(env: &EnvVars) -> Result<()> {
                     let sleep_for = sleep_for.saturating_sub(spin_for);
                     if let Ok(true) = crossterm::event::poll(sleep_for) {
                         let ev = crossterm::event::read().unwrap();
-                        handle_event(&state, &mut tui_state, &ev);
+                        handle_event(&mut state, &mut tui_state, &ev);
                         term.draw(|frame| {
                             draw_app(frame, &mut tui_state, &state);
                         })
@@ -180,7 +188,7 @@ async fn run_app(env: &EnvVars) -> Result<()> {
                 while now.elapsed() < spin_for {
                     if let Ok(true) = crossterm::event::poll(Duration::ZERO) {
                         let ev = crossterm::event::read().unwrap();
-                        handle_event(&state, &mut tui_state, &ev);
+                        handle_event(&mut state, &mut tui_state, &ev);
                         term.draw(|frame| {
                             draw_app(frame, &mut tui_state, &state);
                         })
@@ -195,7 +203,7 @@ async fn run_app(env: &EnvVars) -> Result<()> {
                 LoopMode::Poll => {}
                 LoopMode::Event => {
                     if let Ok(ev) = crossterm::event::read() {
-                        handle_event(&state, &mut tui_state, &ev);
+                        handle_event(&mut state, &mut tui_state, &ev);
                         term.draw(|frame| {
                             draw_app(frame, &mut tui_state, &state);
                         })
@@ -249,17 +257,9 @@ impl TuiState {
     }
 }
 
-fn handle_event(state: &AppState, tui_state: &mut TuiState, ev: &event::Event) {
+fn handle_event(state: &mut AppState, tui_state: &mut TuiState, ev: &event::Event) {
     match ev.simple().as_str() {
         "ctrl+c" | "q" => tui_state.quit = true,
-        "f" => tui_state.fullscreen = !tui_state.fullscreen,
-        " " => {
-            tui_state.emu_running = !tui_state.emu_running;
-            match tui_state.loop_mode {
-                LoopMode::Poll => tui_state.loop_mode = LoopMode::Event,
-                LoopMode::Event => tui_state.loop_mode = LoopMode::Poll,
-            }
-        }
         event => {
             match tui_state.mips_jump_to_pc_button.handle(ev, MouseOnly) {
                 rat_widget::event::ButtonOutcome::Continue => {}
@@ -272,6 +272,14 @@ fn handle_event(state: &AppState, tui_state: &mut TuiState, ev: &event::Event) {
             match (tui_state.focused, event) {
                 (Focused::Preview, "tab" | "j") => tui_state.focused = Focused::Registers,
                 (Focused::Preview, "l") => tui_state.focused = Focused::Mips,
+                (Focused::Preview, "f") => tui_state.fullscreen = !tui_state.fullscreen,
+                (Focused::Preview, " ") => {
+                    tui_state.emu_running = !tui_state.emu_running;
+                    match tui_state.loop_mode {
+                        LoopMode::Poll => tui_state.loop_mode = LoopMode::Event,
+                        LoopMode::Event => tui_state.loop_mode = LoopMode::Poll,
+                    }
+                }
                 (Focused::Registers, "backtab" | "k") => tui_state.focused = Focused::Preview,
                 (Focused::Registers, "l") => tui_state.focused = Focused::Mips,
                 (Focused::Registers, "ctrl+k" | "up") => tui_state.reg_list.select_previous(),
@@ -285,6 +293,7 @@ fn handle_event(state: &AppState, tui_state: &mut TuiState, ev: &event::Event) {
                 }
                 (Focused::Mips, "l" | "tab") => tui_state.focused = Focused::Mem,
                 (Focused::Mem, "h" | "backtab") => tui_state.focused = Focused::Mips,
+                (Focused::Mem, "j" | "tab") => tui_state.focused = Focused::Breakpoints,
                 (Focused::Mem, mem_key) => match mem_key {
                     "ctrl+h" => tui_state.mem_cursor = tui_state.mem_cursor.saturating_sub(1),
                     "ctrl+j" => tui_state.mem_cursor = tui_state.mem_cursor.saturating_add(16),
@@ -292,12 +301,110 @@ fn handle_event(state: &AppState, tui_state: &mut TuiState, ev: &event::Event) {
                     "ctrl+l" => tui_state.mem_cursor = tui_state.mem_cursor.saturating_add(1),
                     _ => {}
                 },
+                (Focused::Breakpoints, key) => match tui_state.add_breakpoint_pane.open {
+                    true => match (tui_state.add_breakpoint_pane.focus, key) {
+                        (Some(_), "esc") => {
+                            tui_state.add_breakpoint_pane.focus = None;
+                        }
+                        (None, "esc") => {
+                            tui_state.add_breakpoint_pane.open = false;
+                        }
+                        (None, _) => {
+                            tui_state.add_breakpoint_pane.focus = Some(0);
+                        }
+                        (Some(0), "enter") => tui_state.add_breakpoint_pane.focus = Some(1),
+                        (Some(0), _) => {
+                            tui_state
+                                .add_breakpoint_pane
+                                .address_input_handler
+                                .on_event(
+                                    ev.clone(),
+                                    &mut tui_state.add_breakpoint_pane.address_input,
+                                );
+
+                            if tui_state.add_breakpoint_pane.address_input.lines.is_empty() {
+                                tui_state.add_breakpoint_pane.error = None;
+                            }
+                        }
+                        (Some(4), "enter") => {
+                            let r = tui_state.add_breakpoint_pane.checkboxes[0].value();
+                            let w = tui_state.add_breakpoint_pane.checkboxes[1].value();
+                            let x = tui_state.add_breakpoint_pane.checkboxes[2].value();
+                            let mut kind = BreakpointKind::NONE;
+                            if r {
+                                kind |= BreakpointKind::READ;
+                            }
+                            if w {
+                                kind |= BreakpointKind::WRITE;
+                            }
+                            if x {
+                                kind |= BreakpointKind::EXECUTE;
+                            }
+                            let line = &tui_state.add_breakpoint_pane.address_input.lines;
+                            let line = line.iter_row().flatten().collect::<String>();
+                            match create_breakpoint(&line, kind) {
+                                Ok(breakpoint) => {
+                                    tui_state.add_breakpoint_pane.error = None;
+                                    tui_state.add_breakpoint_pane.open = false;
+                                    state
+                                        .emu
+                                        .dbg
+                                        .breakpoints
+                                        .insert(breakpoint.address, breakpoint);
+                                }
+                                Err(err) => {
+                                    tui_state.add_breakpoint_pane.error = Some(err);
+                                }
+                            }
+                        }
+                        (Some(ref mut idx @ 1..=4), "j") => {
+                            *idx += 1;
+                            *idx %= 5;
+                            tui_state.add_breakpoint_pane.focus = Some(*idx);
+                        }
+                        (Some(ref mut idx @ 1..=4), "k") => {
+                            *idx -= 1;
+                            tui_state.add_breakpoint_pane.focus = Some(*idx);
+                        }
+                        (Some(ref mut idx @ 1..=3), _) => {
+                            match tui_state.add_breakpoint_pane.checkboxes[*idx - 1]
+                                .handle_event(ev)
+                            {
+                                widgets::EventResponse::Next => {
+                                    *idx += 1;
+                                    *idx %= 5;
+                                }
+                                widgets::EventResponse::None => {}
+                                widgets::EventResponse::GrabFocus => {}
+                            }
+                            tui_state.add_breakpoint_pane.focus = Some(*idx);
+                        }
+                        _ => {}
+                    },
+                    false => match key {
+                        "k" | "backtab" => tui_state.focused = Focused::Mem,
+                        "h" => tui_state.focused = Focused::Mips,
+                        "a" => {
+                            tui_state.add_breakpoint_pane.open = true;
+                            tui_state.add_breakpoint_pane.focus = Some(0);
+                        }
+                        _ => {}
+                    },
+                },
 
                 _ => {}
             }
         }
         _ => {}
     }
+}
+
+fn create_breakpoint(address: &str, kind: BreakpointKind) -> Result<Breakpoint> {
+    let address = address.trim_start_matches("0x");
+    let address: u32 = u32::from_str_radix(address, 16)
+        .into_diagnostic()
+        .wrap_err("invalid breakpoint")?;
+    Ok(Breakpoint { address, kind })
 }
 
 struct TuiState {
@@ -317,6 +424,18 @@ struct TuiState {
     mem_range:     RangeInclusive<u32>,
 
     mips_jump_to_pc_button: ButtonState,
+    add_breakpoint_pane:    AddBreakpointPane,
+}
+
+#[derive(Default)]
+struct AddBreakpointPane {
+    open:  bool,
+    focus: Option<usize>,
+    error: Option<miette::Report>,
+
+    address_input:         EditorState,
+    address_input_handler: EditorEventHandler,
+    checkboxes:            [CheckboxState; 3],
 }
 
 impl TuiState {
@@ -338,6 +457,7 @@ impl TuiState {
             mem_range:     0xbfc0_0000..=0xbfc0_0000,
 
             mips_jump_to_pc_button: ButtonState::new(),
+            add_breakpoint_pane:    AddBreakpointPane::default(),
         }
     }
 
@@ -364,40 +484,45 @@ fn draw_app(frame: &mut Frame, tui_state: &mut TuiState, state: &AppState) {
     ])
     .areas(area);
 
-    let rest = if let Some(img) = &tui_state.current_frame {
-        let ar = img.height() * 100 / img.width();
-        let h1_w = h1.width;
-        let img_h = h1_w * ar as u16 / 100;
-        let img_h = (img_h * 2) / 3;
-        let [img_area, rest] =
-            Layout::vertical([Constraint::Length(img_h), Constraint::Fill(1)]).areas(h1);
-        let frame_time = tui_state.frame_time.as_millis_f32();
-        let fps = 1000.0 / frame_time;
-        let img_block = Block::bordered()
-            .border_type(BorderType::Rounded)
-            .title_bottom(format!(
-                "+ {}x{} {:01.2}ms {:.0}fps +",
-                img.width(),
-                img.height(),
-                frame_time,
-                fps
-            ))
-            .theme(&tui_state.theme)
-            .focus_style(tui_state, Focused::Preview);
-        let inner_img_area = img_block.inner(img_area);
-        img_block.render(img_area, frame.buffer_mut());
-        ImageWidget.render(inner_img_area, frame, &mut tui_state.framebuffer);
-        rest
-    } else {
-        h1
+    let (width, height) = match &tui_state.current_frame {
+        Some(img) => (img.width(), img.height()),
+        None => (640, 480),
     };
+    let ar = height * 100 / width;
+    let h1_w = h1.width;
+    let img_h = h1_w * ar as u16 / 100;
+    let img_h = (img_h * 2) / 3;
+    let [img_area, rest] =
+        Layout::vertical([Constraint::Length(img_h), Constraint::Fill(1)]).areas(h1);
+    let frame_time = tui_state.frame_time.as_millis_f32();
+    let fps = 1000.0 / frame_time;
+
+    let img_block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .title_bottom(format!(
+            "+ {}x{} {:01.2}ms {:.0}fps +",
+            width, height, frame_time, fps
+        ))
+        .theme(&tui_state.theme)
+        .focus_style(tui_state, Focused::Preview);
+    let inner_img_area = img_block.inner(img_area);
+    img_block.render(img_area, frame.buffer_mut());
+
+    if tui_state.current_frame.is_some() {
+        ImageWidget.render(inner_img_area, frame, &mut tui_state.framebuffer);
+    } else {
+        let area = inner_img_area.centered(Constraint::Length(10), Constraint::Length(1));
+        frame.render_widget("何もない".set_style(Style::new().dim()), area);
+    }
 
     draw_register_viewer(rest, frame, tui_state, state);
     draw_mips_assembly(h2, frame, tui_state, state);
 
     {
-        let [mem_area] = Layout::vertical([Constraint::Percentage(50)]).areas(h3);
+        let [mem_area, breakpoints_area] =
+            Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(h3);
         draw_mem(mem_area, frame, tui_state, state);
+        draw_breakpoints(breakpoints_area, frame, tui_state, state);
     }
 }
 
@@ -528,7 +653,7 @@ fn draw_mem(area: Rect, frame: &mut Frame, tui_state: &mut TuiState, state: &App
         let block = Block::bordered()
             .border_type(BorderType::Rounded)
             .title("+ mem +")
-            .title_top(format!(
+            .title_bottom(format!(
                 "+ {} in {}..{} +",
                 hex(tui_state.mem_cursor),
                 hex(*tui_state.mem_range.start()),
@@ -622,6 +747,120 @@ fn draw_mem(area: Rect, frame: &mut Frame, tui_state: &mut TuiState, state: &App
     }
 }
 
+fn draw_breakpoints(area: Rect, frame: &mut Frame, tui_state: &mut TuiState, state: &AppState) {
+    let area = {
+        let block = Block::bordered()
+            .border_type(BorderType::Rounded)
+            .title("+ breakpoints +")
+            .border_style(
+                Style::new()
+                    .with_theme(&tui_state.theme)
+                    .with_focus(tui_state, Focused::Breakpoints),
+            );
+        let a = block.inner(area);
+        frame.render_widget(block, area);
+        a
+    };
+
+    {
+        let breakpoints = state.emu.dbg.breakpoints.iter().map(|(addr, brk)| {
+            let mut flags = String::with_capacity(4);
+            if brk.kind.contains(BreakpointKind::READ) {
+                flags.push('r');
+            }
+            if brk.kind.contains(BreakpointKind::WRITE) {
+                flags.push('w');
+            }
+            if brk.kind.contains(BreakpointKind::EXECUTE) {
+                flags.push('x');
+            }
+            Row::new([hex(*addr).to_string(), flags])
+        });
+        frame.render_widget(
+            Table::new(breakpoints, [Constraint::Length(10), Constraint::Length(3)])
+                .flex(ratatui::layout::Flex::SpaceBetween)
+                .theme(&tui_state.theme),
+            area,
+        );
+    }
+
+    if tui_state.add_breakpoint_pane.open {
+        let area = match &tui_state.add_breakpoint_pane.error {
+            None => Layout::vertical([Constraint::Max(8)]).areas::<1>(area)[0],
+            Some(_) => Layout::vertical([Constraint::Fill(1)]).areas::<1>(area)[0],
+        };
+        let area = {
+            let block = Block::bordered()
+                .border_type(BorderType::Rounded)
+                .border_style(Style::new().dim())
+                .title_top("+ add breakpoint +");
+            let inner = block.inner(area);
+            frame.render_widget(block, area);
+            inner
+        };
+
+        let [normal_area, err_area] =
+            Layout::vertical([Constraint::Max(8), Constraint::Fill(1)]).areas(area);
+        let [addr_input, read_area, write_area, exec_area, done_area] = Layout::vertical([
+            Constraint::Length(2),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .areas(normal_area);
+        {
+            let mut theme = edtui::EditorTheme::default()
+                .hide_status_line()
+                .block(Block::new().title_top(format!(
+                    "{:?} address: ",
+                    tui_state.add_breakpoint_pane.address_input.mode
+                )))
+                .cursor_style(Style::new().bg(tui_state.theme.primary));
+            if tui_state.add_breakpoint_pane.focus != Some(0) {
+                theme = theme.hide_cursor();
+            }
+            let input = EditorView::new(&mut tui_state.add_breakpoint_pane.address_input)
+                .single_line(true)
+                .theme(theme);
+            frame.render_widget(input, addr_input);
+        }
+
+        {
+            let focused = tui_state.add_breakpoint_pane.focus;
+            frame.render_stateful_widget(
+                Checkbox::new("read").focus_style_if(&tui_state.theme, focused == Some(1)),
+                read_area,
+                &mut tui_state.add_breakpoint_pane.checkboxes[0],
+            );
+            frame.render_stateful_widget(
+                Checkbox::new("write").focus_style_if(&tui_state.theme, focused == Some(2)),
+                write_area,
+                &mut tui_state.add_breakpoint_pane.checkboxes[1],
+            );
+            frame.render_stateful_widget(
+                Checkbox::new("exec").focus_style_if(&tui_state.theme, focused == Some(3)),
+                exec_area,
+                &mut tui_state.add_breakpoint_pane.checkboxes[2],
+            );
+            frame.render_widget(
+                " Done ".focus_style_if(&tui_state.theme, focused == Some(4)),
+                done_area,
+            );
+        }
+
+        if let Some(err) = &tui_state.add_breakpoint_pane.error {
+            use ansi_to_tui::IntoText as _;
+            let err = format!("{err:?}");
+            let Ok(err) = err.into_text() else {
+                frame.render_widget("invalid error.", err_area);
+                return;
+            };
+            frame.render_widget(err, err_area);
+        }
+    }
+}
+
 trait Themed: Styled + Sized {
     fn theme(self, theme: &Theme) -> Self::Item {
         self.set_style(Style::new().with_theme(theme))
@@ -630,23 +869,29 @@ trait Themed: Styled + Sized {
         let style = self.style();
         self.set_style(style.with_focus(tui_state, value))
     }
+    fn focus_style_if(self, theme: &Theme, cond: bool) -> Self::Item {
+        let style = self.style();
+        self.set_style(style.with_focus_if(theme, cond))
+    }
 }
 
-trait StyleExt {
+trait StyleExt: Sized {
     fn with_theme(self, theme: &Theme) -> Self;
-    fn with_focus(self, tui_state: &TuiState, value: Focused) -> Self;
+    fn with_focus(self, tui_state: &TuiState, value: Focused) -> Self {
+        self.with_focus_if(&tui_state.theme, tui_state.focused == value)
+    }
+    fn with_focus_if(self, theme: &Theme, cond: bool) -> Self;
 }
 
 impl StyleExt for Style {
     fn with_theme(self, theme: &Theme) -> Self {
         self.fg(theme.fg)
     }
-
-    fn with_focus(self, tui_state: &TuiState, value: Focused) -> Self {
-        if tui_state.focused == value {
-            self.fg(tui_state.theme.primary)
+    fn with_focus_if(self, theme: &Theme, cond: bool) -> Self {
+        if cond {
+            self.fg(theme.primary)
         } else {
-            self.with_theme(&tui_state.theme)
+            self.with_theme(theme)
         }
     }
 }
