@@ -27,7 +27,11 @@ use pchan_emu::{
     bootloader::Bootloader,
     cpu::reg_str,
     debug::{Breakpoint, BreakpointKind},
-    dynarec_v2::{Dynarec, emitters::DecodedOp, run_step},
+    dynarec_v2::{
+        Dynarec,
+        emitters::{DecodedOp, DynarecOp},
+        run_step,
+    },
     io::{IO, vblank::VBlank},
 };
 use pchan_gpu::Renderer;
@@ -136,8 +140,14 @@ async fn run_app(env: &EnvVars) -> Result<()> {
 
             if tui_state.emu_running {
                 dynarec = run_step(&mut state.emu, dynarec);
+                if state.emu.dbg.stopped_on.is_some() {
+                    tui_state.emu_running = false;
+                    tui_state.loop_mode = LoopMode::Event;
+                    state.emu.dbg.stopped_on = None;
+                }
                 tui_state.mips_cursor = state.emu.cpu.pc;
             }
+
             // pipe = pipe.run_once(&mut state.emu).unwrap();
             if state.emu.consume_vblank_signal() {
                 let last_vblank = state.emu.gpu.last_vblank;
@@ -397,7 +407,11 @@ fn create_breakpoint(address: &str, kind: BreakpointKind) -> Result<Breakpoint> 
     let address: u32 = u32::from_str_radix(address, 16)
         .into_diagnostic()
         .wrap_err("invalid breakpoint")?;
-    Ok(Breakpoint { address, kind })
+    Ok(Breakpoint {
+        address,
+        kind,
+        enabled: true,
+    })
 }
 
 struct TuiState {
@@ -466,7 +480,7 @@ impl TuiState {
 fn draw_app(frame: &mut Frame, tui_state: &mut TuiState, state: &AppState) {
     let main_block = Block::bordered()
         .border_type(BorderType::Rounded)
-        .title("+ 🐷🎗️ P-ちゃん dbg (v2) +");
+        .title("+ 🐷🎗️ P-ちゃん dbg (v2) +".set_style(tui_state.theme.primary));
     let area = main_block.inner(frame.area());
     main_block.render(frame.area(), frame.buffer_mut());
 
@@ -634,12 +648,15 @@ fn draw_mips_assembly(area: Rect, frame: &mut Frame, tui_state: &mut TuiState, s
             let value = IO::try_read_pure::<u32>(&state.emu, addr)
                 .ok()
                 .and_then(|value| std::panic::catch_unwind(|| DecodedOp::decode([value])[0]).ok());
-            (
-                addr,
-                value.unwrap_or(DecodedOp::Illegal(pchan_emu::dynarec_v2::emitters::Illegal)),
-            )
+            let decoded_op =
+                value.unwrap_or(DecodedOp::Illegal(pchan_emu::dynarec_v2::emitters::Illegal));
+            (addr, decoded_op)
         })
         .map(|(addr, op)| {
+            let style = match op.is_boundary() {
+                false => tui_state.theme.fg,
+                true => tui_state.theme.primary,
+            };
             let mut decoded_op = op.to_string();
             let idx = addr >> 2;
             if addr == state.emu.cpu.pc {
@@ -647,9 +664,9 @@ fn draw_mips_assembly(area: Rect, frame: &mut Frame, tui_state: &mut TuiState, s
                 _ = write!(decoded_op, " <-");
             };
             let style = if idx % 2 == 0 {
-                tui_state.theme.fg.darken(0.25)
+                style.darken(0.25)
             } else {
-                tui_state.theme.fg
+                style
             };
             Row::new([hex(addr).to_string().dim(), decoded_op.into()]).style(style)
         });
@@ -802,19 +819,36 @@ fn draw_breakpoints(area: Rect, frame: &mut Frame, tui_state: &mut TuiState, sta
             let mut flags = String::with_capacity(4);
             if brk.kind.contains(BreakpointKind::READ) {
                 flags.push('r');
+            } else {
+                flags.push('-');
             }
             if brk.kind.contains(BreakpointKind::WRITE) {
                 flags.push('w');
+            } else {
+                flags.push('-');
             }
             if brk.kind.contains(BreakpointKind::EXECUTE) {
                 flags.push('x');
+            } else {
+                flags.push('-');
             }
-            Row::new([hex(*addr).to_string(), flags])
+            let style = Style::from(tui_state.theme.fg);
+            let (onoff, style) = match brk.enabled {
+                true => (" on", style),
+                false => ("off", style.dim()),
+            };
+            Row::new([hex(*addr).to_string(), onoff.to_owned(), flags]).style(style)
         });
         frame.render_widget(
-            Table::new(breakpoints, [Constraint::Length(10), Constraint::Length(3)])
-                .flex(ratatui::layout::Flex::SpaceBetween)
-                .theme(&tui_state.theme),
+            Table::new(
+                breakpoints,
+                [
+                    Constraint::Length(10),
+                    Constraint::Length(4),
+                    Constraint::Length(3),
+                ],
+            )
+            .theme(&tui_state.theme),
             area,
         );
     }

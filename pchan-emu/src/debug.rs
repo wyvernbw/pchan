@@ -11,6 +11,7 @@ pub struct DebuggerState {
 pub struct Breakpoint {
     pub address: u32,
     pub kind:    BreakpointKind,
+    pub enabled: bool,
 }
 
 #[derive(
@@ -42,6 +43,10 @@ impl BreakpointKind {
 impl DebuggerState {
     pub fn break_on(&mut self, addr: u32, kind: BreakpointKind) {
         if let Some(brk) = self.breakpoints.get(&addr) {
+            if !brk.enabled {
+                return;
+            }
+
             if brk.kind.contains(kind) {
                 self.stopped_on = Some(*brk);
             }
