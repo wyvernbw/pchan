@@ -2,6 +2,13 @@
 #![feature(iter_array_chunks)]
 #![feature(duration_millis_float)]
 
+pub mod display;
+pub mod init;
+#[path = "./lipgloss-colors.rs"]
+pub mod lipgloss_colors;
+#[path = "./widgets/widgets.rs"]
+pub mod widgets;
+
 use std::{
     collections::VecDeque,
     io::stdout,
@@ -12,7 +19,7 @@ use std::{
 
 use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture};
 use crossterm_simple_event::CrosstermSimpleEvent;
-use edtui::{EditorEventHandler, EditorState, EditorStatusLine, EditorView};
+use edtui::{EditorEventHandler, EditorState, EditorView};
 use image::{DynamicImage, RgbaImage};
 use miette::{Context, IntoDiagnostic, Result, miette};
 use pchan_emu::{
@@ -20,18 +27,12 @@ use pchan_emu::{
     bootloader::Bootloader,
     cpu::reg_str,
     debug::{Breakpoint, BreakpointKind},
-    dynarec_v2::{Dynarec, PipelineV2, emitters::DecodedOp, run_step},
+    dynarec_v2::{Dynarec, emitters::DecodedOp, run_step},
     io::{IO, vblank::VBlank},
 };
 use pchan_gpu::Renderer;
 use pchan_utils::{hex, hex_pref};
 use rat_imaginary::{ImageState, ImageWidget};
-use rat_widget::{
-    button::{Button, ButtonState},
-    event::{HandleEvent, MouseOnly, Regular},
-    focus::FocusBuilder,
-    text_input::{TextInput, TextInputState},
-};
 use ratatui::{
     DefaultTerminal, Frame, crossterm,
     layout::{Constraint, Layout, Rect},
@@ -44,15 +45,11 @@ use crate::{
     display::{DisplayState, draw_display},
     init::EnvVars,
     lipgloss_colors::LIPGLOSS,
-    widgets::checkbox::{Checkbox, CheckboxState},
+    widgets::{
+        button::{Button, ButtonResponse, ButtonState, ButtonStyles},
+        checkbox::{Checkbox, CheckboxState},
+    },
 };
-
-pub mod display;
-pub mod init;
-#[path = "./lipgloss-colors.rs"]
-pub mod lipgloss_colors;
-#[path = "./widgets/widgets.rs"]
-pub mod widgets;
 
 fn main() -> Result<()> {
     miette_panic::install(miette_panic::PanicHookArgs::default());
@@ -124,7 +121,7 @@ async fn run_app(env: &EnvVars) -> Result<()> {
     state.gpu.clone().start();
 
     run(|term| {
-        let pipe = PipelineV2::new(&state.emu);
+        // let pipe = PipelineV2::new(&state.emu);
         let mut frame_time_sample_time = Duration::ZERO;
         let mut frame_time_samples = VecDeque::with_capacity(32);
         let mut frame_time_sum = 0u128;
@@ -261,13 +258,8 @@ fn handle_event(state: &mut AppState, tui_state: &mut TuiState, ev: &event::Even
     match ev.simple().as_str() {
         "ctrl+c" | "q" => tui_state.quit = true,
         event => {
-            match tui_state.mips_jump_to_pc_button.handle(ev, MouseOnly) {
-                rat_widget::event::ButtonOutcome::Continue => {}
-                rat_widget::event::ButtonOutcome::Unchanged => {}
-                rat_widget::event::ButtonOutcome::Changed => {}
-                rat_widget::event::ButtonOutcome::Pressed => {
-                    tui_state.mips_cursor = state.emu.cpu.pc;
-                }
+            if let ButtonResponse::Clicked = tui_state.mips_jump_to_pc_button.handle_event(ev) {
+                tui_state.mips_cursor = state.emu.cpu.pc;
             };
             match (tui_state.focused, event) {
                 (Focused::Preview, "tab" | "j") => tui_state.focused = Focused::Registers,
@@ -395,7 +387,6 @@ fn handle_event(state: &mut AppState, tui_state: &mut TuiState, ev: &event::Even
                 _ => {}
             }
         }
-        _ => {}
     }
 }
 
@@ -606,9 +597,10 @@ fn draw_mips_assembly(area: Rect, frame: &mut Frame, tui_state: &mut TuiState, s
     {
         let [button_area] =
             Layout::horizontal([Constraint::Max("jump to pc".len() as u16 + 4)]).areas(button_area);
-        let button = Button::new("jump to pc")
-            .block(Block::bordered().border_type(BorderType::Rounded))
-            .armed_style(tui_state.theme.primary);
+        let button = Button::new("jump to pc").set_styles(ButtonStyles {
+            pressed: tui_state.theme.primary.into(),
+            normal:  tui_state.theme.fg.into(),
+        });
         frame.render_stateful_widget(button, button_area, &mut tui_state.mips_jump_to_pc_button);
     }
 
