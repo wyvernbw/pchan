@@ -36,7 +36,7 @@ use rat_imaginary::{ImageState, ImageWidget};
 use ratatui::{
     DefaultTerminal, Frame, crossterm,
     layout::{Constraint, Layout, Rect},
-    style::{Color, Style, Styled},
+    style::{Color, Style, Styled, Stylize},
     widgets::{Block, BorderType, Borders, Row, Table, TableState, Widget},
 };
 use wgpu::Extent3d;
@@ -52,7 +52,7 @@ use crate::{
 };
 
 fn main() -> Result<()> {
-    miette_panic::install(miette_panic::PanicHookArgs::default());
+    // miette_panic::install(miette_panic::PanicHookArgs::default());
     let env = EnvVars::new()?;
     smol::block_on(run_app(&env))
 }
@@ -304,7 +304,9 @@ fn handle_event(state: &mut AppState, tui_state: &mut TuiState, ev: &event::Even
                         (None, _) => {
                             tui_state.add_breakpoint_pane.focus = Some(0);
                         }
-                        (Some(0), "enter") => tui_state.add_breakpoint_pane.focus = Some(1),
+                        (Some(0), "enter" | "tab" | "ctrl+j") => {
+                            tui_state.add_breakpoint_pane.focus = Some(1)
+                        }
                         (Some(0), _) => {
                             tui_state
                                 .add_breakpoint_pane
@@ -349,12 +351,12 @@ fn handle_event(state: &mut AppState, tui_state: &mut TuiState, ev: &event::Even
                                 }
                             }
                         }
-                        (Some(ref mut idx @ 1..=4), "j") => {
+                        (Some(ref mut idx @ 1..=4), "j" | "ctrl+j") => {
                             *idx += 1;
                             *idx %= 5;
                             tui_state.add_breakpoint_pane.focus = Some(*idx);
                         }
-                        (Some(ref mut idx @ 1..=4), "k") => {
+                        (Some(ref mut idx @ 1..=4), "k" | "ctrl+k") => {
                             *idx -= 1;
                             tui_state.add_breakpoint_pane.focus = Some(*idx);
                         }
@@ -494,6 +496,7 @@ fn draw_app(frame: &mut Frame, tui_state: &mut TuiState, state: &AppState) {
             "+ {}x{} {:01.2}ms {:.0}fps +",
             width, height, frame_time, fps
         ))
+        .title_top(" <spc> run • <f> fullscreen ".dim())
         .theme(&tui_state.theme)
         .focus_style(tui_state, Focused::Preview);
     let inner_img_area = img_block.inner(img_area);
@@ -522,6 +525,7 @@ fn draw_register_viewer(area: Rect, frame: &mut Frame, tui_state: &mut TuiState,
         let block = Block::bordered()
             .border_type(BorderType::Rounded)
             .title_top("+ registers +")
+            .title_bottom(" <C-j>/<C-k> down/up ".dim())
             .theme(&tui_state.theme)
             .focus_style(tui_state, Focused::Registers);
         let a = block.inner(area);
@@ -532,9 +536,17 @@ fn draw_register_viewer(area: Rect, frame: &mut Frame, tui_state: &mut TuiState,
     let pc_hex = hex(state.emu.cpu.pc);
     let rows = [Row::new(["pc", pc_hex.as_str()])];
     let regs_hex = state.emu.cpu.gpr.map(hex);
-    let rows = rows
-        .into_iter()
-        .chain((0..32).map(|r| Row::new([reg_str(r), regs_hex[r as usize].as_str()])));
+    let rows = rows.into_iter().chain((0..32).map(|r| {
+        let mut style = if state.emu.cpu.gpr[r] == 0 {
+            Style::from(tui_state.theme.fg).dim()
+        } else {
+            tui_state.theme.fg.into()
+        };
+        if r % 2 == 0 {
+            style.fg = style.fg.darken(0.1);
+        }
+        Row::new([reg_str(r as u8), regs_hex[r].as_str()]).style(style)
+    }));
     let table = Table::new(rows, [Constraint::Length(3), Constraint::Length(10)])
         .row_highlight_style(Style::new().bg(tui_state.theme.primary).bold().italic())
         .theme(&tui_state.theme);
@@ -582,6 +594,7 @@ fn draw_mips_assembly(area: Rect, frame: &mut Frame, tui_state: &mut TuiState, s
                 hex(*tui_state.mips_range.start()),
                 hex(*tui_state.mips_range.end())
             ))
+            .title_bottom(" <C-j>/<C-k> down/up ".dim())
             .border_style(
                 Style::new()
                     .with_theme(&tui_state.theme)
@@ -628,15 +641,27 @@ fn draw_mips_assembly(area: Rect, frame: &mut Frame, tui_state: &mut TuiState, s
         })
         .map(|(addr, op)| {
             let mut decoded_op = op.to_string();
+            let idx = addr >> 2;
             if addr == state.emu.cpu.pc {
                 use std::fmt::Write;
                 _ = write!(decoded_op, " <-");
             };
-            Row::new([hex(addr).to_string(), decoded_op])
+            let style = if idx % 2 == 0 {
+                tui_state.theme.fg.darken(0.25)
+            } else {
+                tui_state.theme.fg
+            };
+            Row::new([hex(addr).to_string().dim(), decoded_op.into()]).style(style)
         });
     let list = Table::new(items, [Constraint::Length(10), Constraint::Fill(1)])
         .theme(&tui_state.theme)
-        .row_highlight_style(Style::new().bg(tui_state.theme.primary).bold().italic());
+        .row_highlight_style(
+            Style::new()
+                .bg(tui_state.theme.primary)
+                .bold()
+                .italic()
+                .fg(tui_state.theme.fg),
+        );
     frame.render_stateful_widget(list, list_area, &mut table_state);
 }
 
@@ -645,6 +670,7 @@ fn draw_mem(area: Rect, frame: &mut Frame, tui_state: &mut TuiState, state: &App
         let block = Block::bordered()
             .border_type(BorderType::Rounded)
             .title("+ mem +")
+            .title_top(" <C-hjkl> navigate ".dim())
             .title_bottom(format!(
                 "+ {} in {}..{} +",
                 hex(tui_state.mem_cursor),
@@ -673,18 +699,34 @@ fn draw_mem(area: Rect, frame: &mut Frame, tui_state: &mut TuiState, state: &App
     );
 
     let mut table_state = TableState::new();
+    let mut row_idx = 0;
     let hexdump = tui_state
         .mem_range
         .clone()
         .step_by(0x4)
         .array_chunks::<4>()
         .map(|addr| {
+            row_idx = (row_idx + 1) % 2;
+            let start = addr[0];
             let values = addr.map(|addr| {
                 let value = IO::try_read_pure::<u32>(&state.emu, addr).unwrap_or(0x0);
+                let idx = (addr - start) >> 2;
+                let style = if (idx + row_idx) % 2 == 0 {
+                    tui_state.theme.fg.darken(0.25)
+                } else {
+                    tui_state.theme.fg
+                };
 
-                value
-                    .to_le_bytes()
-                    .map(|byte| hex_pref::<_, false>(byte).to_string())
+                value.to_le_bytes().map(|byte| {
+                    let style = {
+                        let mut style = Style::from(style);
+                        if byte == 0 {
+                            style = style.dim();
+                        }
+                        style
+                    };
+                    hex_pref::<_, false>(byte).to_string().set_style(style)
+                })
             });
             Row::new(values.into_iter().flatten())
         });
@@ -744,6 +786,7 @@ fn draw_breakpoints(area: Rect, frame: &mut Frame, tui_state: &mut TuiState, sta
         let block = Block::bordered()
             .border_type(BorderType::Rounded)
             .title("+ breakpoints +")
+            .title_bottom(" <C-jk> navigate • <d> del • <a> add ".dim())
             .border_style(
                 Style::new()
                     .with_theme(&tui_state.theme)
@@ -785,6 +828,7 @@ fn draw_breakpoints(area: Rect, frame: &mut Frame, tui_state: &mut TuiState, sta
             let block = Block::bordered()
                 .border_type(BorderType::Rounded)
                 .border_style(Style::new().dim())
+                .title_bottom(" <jk/tab> navigate • <ret> confirm • <esc> cancel ".dim())
                 .title_top("+ add breakpoint +");
             let inner = block.inner(area);
             frame.render_widget(block, area);
@@ -889,3 +933,49 @@ impl StyleExt for Style {
 }
 
 impl<T: Styled> Themed for T {}
+
+trait ColorExt: Sized {
+    const BLACK: Self;
+    const WHITE: Self;
+
+    fn lerp(self, other: Self, t: f32) -> Self;
+    fn darken(self, t: f32) -> Self {
+        self.lerp(Self::BLACK, t)
+    }
+}
+
+impl ColorExt for u8 {
+    const BLACK: Self = 0;
+    const WHITE: Self = 255;
+
+    fn lerp(self, other: Self, t: f32) -> Self {
+        ((self as f32 * (1.0 - t)) + other as f32 * t) as u8
+    }
+}
+
+impl ColorExt for Color {
+    const BLACK: Self = Self::Rgb(0, 0, 0);
+
+    const WHITE: Self = Self::Rgb(255, 255, 255);
+
+    fn lerp(self, other: Self, t: f32) -> Self {
+        if let (Self::Rgb(r0, g0, b0), Self::Rgb(r1, g1, b1)) = (self, other) {
+            Self::Rgb(r0.lerp(r1, t), g0.lerp(g1, t), b0.lerp(b1, t))
+        } else {
+            self
+        }
+    }
+}
+
+impl ColorExt for Option<Color> {
+    const BLACK: Self = Some(Color::BLACK);
+    const WHITE: Self = Some(Color::WHITE);
+
+    fn lerp(self, other: Self, t: f32) -> Self {
+        if let (Some(a), Some(b)) = (self, other) {
+            Some(a.lerp(b, t))
+        } else {
+            self
+        }
+    }
+}
