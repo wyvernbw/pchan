@@ -1,4 +1,4 @@
-use crate::{Renderer, Scene, Vertex};
+use crate::{Renderer, Scene};
 use pchan_emu::memory::mb;
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
 use wgpu::*;
@@ -152,8 +152,7 @@ impl<'a> RenderPass<'a> {
         render_pass.draw(0..self.scene.vertex_buf.len() as u32, 0..1);
     }
 
-    #[pchan_macros::instrument(err)]
-    pub async fn finish(mut self, vram: &mut [u16]) -> color_eyre::Result<()> {
+    pub async fn finish(mut self, vram: &mut [u16]) {
         let output_buffer = self.renderer.device.create_buffer(&BufferDescriptor {
             label: Some("output"),
             size: mb(1) as u64,
@@ -202,7 +201,5 @@ impl<'a> RenderPass<'a> {
                 vram[vram_addr] = pixel;
             }
         }
-
-        Ok(())
     }
 }

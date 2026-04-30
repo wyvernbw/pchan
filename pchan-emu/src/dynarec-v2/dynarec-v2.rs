@@ -1,13 +1,10 @@
 use bon::Builder;
-use color_eyre::eyre::bail;
 use derive_more as d;
 use dynasm::dynasm;
 use dynasmrt::Assembler;
 use dynasmrt::DynasmApi;
 use dynasmrt::DynasmLabelApi;
 use dynasmrt::ExecutableBuffer;
-use flume::Receiver;
-use flume::Sender;
 use heapless::Deque;
 use heapless::binary_heap::Min;
 use pchan_utils::hex;
@@ -21,6 +18,7 @@ use std::sync::Arc;
 use std::sync::LazyLock;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
+use thiserror::Error;
 use tracing::Instrument;
 use tracing::Level;
 use tracing::enabled;
@@ -172,13 +170,21 @@ impl Fn<DynarecBlockArgs<'_>> for DynarecBlock {
     }
 }
 
+#[derive(Error, Debug)]
+enum FinalizeError {
+    #[error("failed to assemble")]
+    AssembleError,
+    #[error("dynarec: io error {0}")]
+    IoError(#[from] std::io::Error),
+}
+
 impl Dynarec {
-    fn finalize(mut self) -> color_eyre::Result<(DynarecFunction, Box<Scheduler>)> {
+    fn finalize(mut self) -> Result<(DynarecFunction, Box<Scheduler>), FinalizeError> {
         let exec = match self.asm.finalize() {
             Ok(exec) => exec,
             Err(asm) => {
                 self.asm = asm;
-                bail!("failed to assemble function");
+                return Err(FinalizeError::AssembleError);
             }
         };
 
@@ -902,7 +908,7 @@ impl PipelineV2 {
     pub fn stage(&self) -> PipelineV2Stage {
         self.into()
     }
-    pub fn run_once(mut self, emu: &mut Emu) -> color_eyre::Result<Self> {
+    pub fn run_once(mut self, emu: &mut Emu) -> Result<Self, PipelineCompileError> {
         for _ in 0..3 {
             self = self.step(emu)?;
         }

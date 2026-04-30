@@ -7,19 +7,18 @@ edition = "2024"
 crossterm-simple-event = "0.1.0"
 ratatui = "0.30.0"
 image = { version = "0.25.10", default-features = false, features = ["bmp"] }
-miette = { version = "7.6.0", features = ["fancy"] }
+miette = { version = "7.6.0", default-features = false }
 miette-panic = "0.1.0"
 pchan-audio.workspace = true
 pchan-bind.workspace = true
 pchan-emu = { workspace = true, features = ["debugger-ext"] }
 pchan-gpu.workspace = true
 pchan-utils.workspace = true
+smol.workspace = true
 spin_sleep = "1.3.3"
 tracing = "0.1.44"
 wgpu = "29.0.1"
 crossterm = { version = "0.29.0", features = ["event-stream"] }
-smol = "2.0.2"
 rat-imaginary = { version = "0.1.0", path = "./rat-imaginary" }
-rat-widget = "3.2.1"
-edtui = { version = "0.11.2", default-features = false, features = ["arbitrary", "arboard", "mouse-support"] }
+edtui = { version = "0.11.3", default-features = false }
 ansi-to-tui = "8.0.1"

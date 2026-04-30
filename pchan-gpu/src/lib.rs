@@ -3,7 +3,6 @@ pub(crate) mod render_pass;
 use std::mem::offset_of;
 use std::sync::{Arc, Mutex};
 
-use color_eyre::eyre::bail;
 use glam::{I16Vec2, U8Vec2, U8Vec3, U16Vec2, UVec2, i16vec2, u8vec2, u16vec2};
 use pchan_emu::gpu::draw_call::{
     DrawCallCollection, DrawCallKind, DrawPolygon, DrawRect, RectSize, Shading,
@@ -11,6 +10,7 @@ use pchan_emu::gpu::draw_call::{
 use pchan_emu::gpu::{Conn, GpuStatReg, TextureColorMode, VramCoord};
 use pchan_emu::{Bus, Emu};
 use pchan_utils::Chan;
+use thiserror::Error;
 use wgpu::*;
 
 #[derive(Debug)]
@@ -47,8 +47,16 @@ pub struct DisplayUniforms {
     pub dp_debug: bool,
 }
 
+#[derive(Debug, Error)]
+enum InitError {
+    #[error(transparent)]
+    RequestAdapter(#[from] RequestAdapterError),
+    #[error(transparent)]
+    RequestDevice(#[from] RequestDeviceError),
+}
+
 impl Renderer {
-    pub async fn try_new() -> color_eyre::Result<Self> {
+    pub async fn try_new() -> Result<Self, InitError> {
         let instance = Instance::new(InstanceDescriptor {
             backends: Backends::PRIMARY,
             flags: InstanceFlags::from_env_or_default(),
@@ -357,9 +365,8 @@ impl Renderer {
                             let scene = Scene::new_from_draw_calls(&draw_calls);
                             let mut pass = self.create_render_pass(scene).await;
                             pass.draw(&vram);
-                            if pass.finish(&mut vram).await.is_ok() {
-                                _ = self.conn.vram_out_chan.0.send(vram).await;
-                            }
+                            pass.finish(&mut vram).await;
+                            _ = self.conn.vram_out_chan.0.send(vram).await;
                             tracing::info!("finished render");
                         }
                         Err(err) => {
@@ -537,6 +544,12 @@ impl Quad {
     }
 }
 
+#[derive(Error, Debug)]
+enum DrawRectError {
+    #[error("draw rect: malformed call, missing draw size")]
+    MissingVarSize,
+}
+
 impl Scene {
     pub fn new_from_draw_calls(cmds: &DrawCallCollection) -> Scene {
         let Some(gpustat) = cmds.draw_calls.last().map(|draw| draw.gpustat) else {
@@ -563,7 +576,7 @@ impl Scene {
     }
 
     #[pchan_macros::instrument(skip_all, err)]
-    fn add_draw_rect_draw_call(&mut self, draw_rect: &DrawRect) -> color_eyre::Result<()> {
+    fn add_draw_rect_draw_call(&mut self, draw_rect: &DrawRect) -> Result<(), DrawRectError> {
         let top_left: Vertex = draw_rect.vertex1.into();
         let rgb = draw_rect.color.rgb().to_ne_bytes();
         let color_mode = match draw_rect.color.textured() {
@@ -576,7 +589,7 @@ impl Scene {
             .with_color_mode(color_mode);
 
         let quad: Quad = match (draw_rect.color.size(), draw_rect.var_size) {
-            (RectSize::VarSize, None) => bail!("malformed draw call: missing var size"),
+            (RectSize::VarSize, None) => return Err(DrawRectError::MissingVarSize),
             (RectSize::VarSize, Some(size)) => {
                 Quad::new_with_topleft_and_size(top_left, u16vec2(size.x, size.y))
             }
@@ -593,12 +606,8 @@ impl Scene {
         Ok(())
     }
 
-    #[pchan_macros::instrument(skip_all, err)]
-    fn add_draw_polygon_draw_call(
-        &mut self,
-        draw_polygon: &DrawPolygon,
-        gpustat: GpuStatReg,
-    ) -> color_eyre::Result<()> {
+    #[pchan_macros::instrument(skip_all)]
+    fn add_draw_polygon_draw_call(&mut self, draw_polygon: &DrawPolygon, gpustat: GpuStatReg) {
         let header = draw_polygon.header;
         let clut = draw_polygon.clut;
         let texpage = draw_polygon.texpage;
@@ -663,15 +672,11 @@ impl Scene {
             }
             pchan_emu::gpu::draw_call::DrawPolygonVertexCount::Four => {
                 assert_eq!(vertices.len(), 4);
-                let mut vertices = triangulate_quad(&vertices);
-                // ensure_vertex_order(&mut vertices, [0, 1, 2]);
-                // ensure_vertex_order(&mut vertices, [3, 4, 5]);
+                let vertices = triangulate_quad(&vertices);
 
                 self.vertex_buf.extend_from_slice(&vertices);
             }
         };
-
-        Ok(())
     }
 }
 
