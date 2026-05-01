@@ -41,7 +41,7 @@ use ratatui::{
     DefaultTerminal, Frame, crossterm,
     layout::{Constraint, Layout, Rect},
     style::{Color, Style, Styled, Stylize},
-    widgets::{Block, BorderType, Borders, Row, Table, TableState, Widget},
+    widgets::{Block, BorderType, Borders, Clear, ListState, Row, Table, TableState, Widget},
 };
 use wgpu::Extent3d;
 
@@ -68,6 +68,7 @@ struct AppState {
 
 struct Theme {
     fg:      Color,
+    bg:      Color,
     primary: Color,
 }
 
@@ -75,6 +76,7 @@ impl Default for Theme {
     fn default() -> Self {
         Self {
             fg:      Color::from_u32(0xffffff),
+            bg:      Color::Rgb(0, 0, 0),
             primary: LIPGLOSS[0][0],
         }
     }
@@ -286,6 +288,8 @@ fn handle_event(state: &mut AppState, tui_state: &mut TuiState, ev: &event::Even
                 (Focused::Registers, "l") => tui_state.focused = Focused::Mips,
                 (Focused::Registers, "ctrl+k" | "up") => tui_state.reg_list.select_previous(),
                 (Focused::Registers, "ctrl+j" | "down") => tui_state.reg_list.select_next(),
+                (Focused::Registers, "g") => tui_state.reg_list.select_first(),
+                (Focused::Registers, "shift+g") => tui_state.reg_list.select_last(),
                 (Focused::Mips, "h") => tui_state.focused = Focused::Registers,
                 (Focused::Mips, "ctrl+j") => {
                     tui_state.mips_cursor = tui_state.mips_cursor.saturating_add(4);
@@ -295,7 +299,9 @@ fn handle_event(state: &mut AppState, tui_state: &mut TuiState, ev: &event::Even
                 }
                 (Focused::Mips, "l" | "tab") => tui_state.focused = Focused::Mem,
                 (Focused::Mem, "h" | "backtab") => tui_state.focused = Focused::Mips,
-                (Focused::Mem, "j" | "tab") => tui_state.focused = Focused::Breakpoints,
+                (Focused::Mem, "j" | "tab") => {
+                    tui_state.focused = Focused::Breakpoints;
+                }
                 (Focused::Mem, mem_key) => match mem_key {
                     "ctrl+h" => tui_state.mem_cursor = tui_state.mem_cursor.saturating_sub(1),
                     "ctrl+j" => tui_state.mem_cursor = tui_state.mem_cursor.saturating_add(16),
@@ -304,6 +310,31 @@ fn handle_event(state: &mut AppState, tui_state: &mut TuiState, ev: &event::Even
                     _ => {}
                 },
                 (Focused::Breakpoints, key) => match tui_state.add_breakpoint_pane.open {
+                    false => match key {
+                        "k" | "backtab" => tui_state.focused = Focused::Mem,
+                        "h" => tui_state.focused = Focused::Mips,
+                        "a" => {
+                            tui_state.add_breakpoint_pane.open = true;
+                            tui_state.add_breakpoint_pane.focus = Some(0);
+                        }
+                        "d" if let Some(selected) = tui_state.breakpoints_table.selected() => {
+                            let key = state
+                                .emu
+                                .dbg
+                                .breakpoints
+                                .iter()
+                                .enumerate()
+                                .find_map(|(idx, (k, _))| (idx == selected).then_some(*k));
+                            if let Some(key) = key {
+                                state.emu.dbg.breakpoints.remove(&key);
+                            }
+                        }
+                        "ctrl+j" => tui_state.breakpoints_table.select_next(),
+                        "ctrl+k" => tui_state.breakpoints_table.select_previous(),
+                        "g" => tui_state.breakpoints_table.select_first(),
+                        "shift+g" => tui_state.breakpoints_table.select_last(),
+                        _ => {}
+                    },
                     true => match (tui_state.add_breakpoint_pane.focus, key) {
                         (Some(_), "esc") => {
                             tui_state.add_breakpoint_pane.focus = None;
@@ -385,15 +416,6 @@ fn handle_event(state: &mut AppState, tui_state: &mut TuiState, ev: &event::Even
                         }
                         _ => {}
                     },
-                    false => match key {
-                        "k" | "backtab" => tui_state.focused = Focused::Mem,
-                        "h" => tui_state.focused = Focused::Mips,
-                        "a" => {
-                            tui_state.add_breakpoint_pane.open = true;
-                            tui_state.add_breakpoint_pane.focus = Some(0);
-                        }
-                        _ => {}
-                    },
                 },
 
                 _ => {}
@@ -403,7 +425,7 @@ fn handle_event(state: &mut AppState, tui_state: &mut TuiState, ev: &event::Even
 }
 
 fn create_breakpoint(address: &str, kind: BreakpointKind) -> Result<Breakpoint> {
-    let address = address.trim_start_matches("0x");
+    let address = address.trim_start().trim_start_matches("0x").trim_end();
     let address: u32 = u32::from_str_radix(address, 16)
         .into_diagnostic()
         .wrap_err("invalid breakpoint")?;
@@ -432,6 +454,7 @@ struct TuiState {
 
     mips_jump_to_pc_button: ButtonState,
     add_breakpoint_pane:    AddBreakpointPane,
+    breakpoints_table:      TableState,
 }
 
 #[derive(Default)]
@@ -465,6 +488,7 @@ impl TuiState {
 
             mips_jump_to_pc_button: ButtonState::new(),
             add_breakpoint_pane:    AddBreakpointPane::default(),
+            breakpoints_table:      TableState::default().with_selected(Some(0)),
         }
     }
 
@@ -535,6 +559,12 @@ fn draw_app(frame: &mut Frame, tui_state: &mut TuiState, state: &AppState) {
 }
 
 fn draw_register_viewer(area: Rect, frame: &mut Frame, tui_state: &mut TuiState, state: &AppState) {
+    if tui_state.focused != Focused::Registers {
+        tui_state.reg_list.select(None);
+    } else if tui_state.reg_list.selected().is_none() {
+        tui_state.reg_list.select_first();
+    }
+
     let area = {
         let block = Block::bordered()
             .border_type(BorderType::Rounded)
@@ -799,6 +829,12 @@ fn draw_mem(area: Rect, frame: &mut Frame, tui_state: &mut TuiState, state: &App
 }
 
 fn draw_breakpoints(area: Rect, frame: &mut Frame, tui_state: &mut TuiState, state: &AppState) {
+    if tui_state.focused != Focused::Breakpoints {
+        tui_state.breakpoints_table.select(None);
+    } else if tui_state.breakpoints_table.selected().is_none() {
+        tui_state.breakpoints_table.select_first();
+    }
+
     let area = {
         let block = Block::bordered()
             .border_type(BorderType::Rounded)
@@ -815,41 +851,60 @@ fn draw_breakpoints(area: Rect, frame: &mut Frame, tui_state: &mut TuiState, sta
     };
 
     {
-        let breakpoints = state.emu.dbg.breakpoints.iter().map(|(addr, brk)| {
-            let mut flags = String::with_capacity(4);
-            if brk.kind.contains(BreakpointKind::READ) {
-                flags.push('r');
-            } else {
-                flags.push('-');
-            }
-            if brk.kind.contains(BreakpointKind::WRITE) {
-                flags.push('w');
-            } else {
-                flags.push('-');
-            }
-            if brk.kind.contains(BreakpointKind::EXECUTE) {
-                flags.push('x');
-            } else {
-                flags.push('-');
-            }
-            let style = Style::from(tui_state.theme.fg);
-            let (onoff, style) = match brk.enabled {
-                true => (" on", style),
-                false => ("off", style.dim()),
-            };
-            Row::new([hex(*addr).to_string(), onoff.to_owned(), flags]).style(style)
-        });
-        frame.render_widget(
+        let breakpoints = state
+            .emu
+            .dbg
+            .breakpoints
+            .iter()
+            .enumerate()
+            .map(|(idx, (addr, brk))| {
+                let mut flags = String::with_capacity(4);
+                if brk.kind.contains(BreakpointKind::READ) {
+                    flags.push('r');
+                } else {
+                    flags.push('-');
+                }
+                if brk.kind.contains(BreakpointKind::WRITE) {
+                    flags.push('w');
+                } else {
+                    flags.push('-');
+                }
+                if brk.kind.contains(BreakpointKind::EXECUTE) {
+                    flags.push('x');
+                } else {
+                    flags.push('-');
+                }
+                let style = Style::from(tui_state.theme.fg);
+                let (onoff, style) = match brk.enabled {
+                    true => (" on", style),
+                    false => ("off", style.dim()),
+                };
+                let tooltip = match Some(idx) == tui_state.breakpoints_table.selected() {
+                    true => "d: del".set_style(Style::new().fg(tui_state.theme.bg)),
+                    false => "".into(),
+                };
+                Row::new([
+                    hex(*addr).to_string().into(),
+                    onoff.to_owned().into(),
+                    flags.into(),
+                    tooltip,
+                ])
+                .style(style)
+            });
+        frame.render_stateful_widget(
             Table::new(
                 breakpoints,
                 [
                     Constraint::Length(10),
                     Constraint::Length(4),
                     Constraint::Length(3),
+                    Constraint::Fill(1),
                 ],
             )
+            .row_highlight_style(Style::new().bg(tui_state.theme.primary).bold().italic())
             .theme(&tui_state.theme),
             area,
+            &mut tui_state.breakpoints_table,
         );
     }
 
@@ -859,11 +914,13 @@ fn draw_breakpoints(area: Rect, frame: &mut Frame, tui_state: &mut TuiState, sta
             Some(_) => Layout::vertical([Constraint::Fill(1)]).areas::<1>(area)[0],
         };
         let area = {
+            frame.render_widget(Clear, area);
             let block = Block::bordered()
                 .border_type(BorderType::Rounded)
                 .border_style(Style::new().dim())
                 .title_bottom(" <jk/tab> navigate • <ret> confirm • <esc> cancel ".dim())
                 .title_top("+ add breakpoint +");
+
             let inner = block.inner(area);
             frame.render_widget(block, area);
             inner
