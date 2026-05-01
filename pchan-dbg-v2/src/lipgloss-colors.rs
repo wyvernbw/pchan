@@ -1,4 +1,5 @@
-use manatui::prelude::{Color, Style};
+use ratatui::style::Color;
+use ratatui::style::Style;
 
 pub const LIPGLOSS: [[Color; 14]; 8] = [
     [

@@ -6,7 +6,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-bstr = "1.12.1"
 const-hex = { workspace = true, features = ["alloc"] }
 pchan-macros = { workspace = true }
 pchan-utils = { workspace = true }
@@ -19,16 +18,16 @@ members = [
     "pchan-emu",
     "pchan-macros",
     "pchan-utils",
-    "pchan-debug-tui",
     "pchan-gpu",
-    "pchan-dbg", "pchan-dbg-egui", "pchan-bind", "pchan-audio",
+    "pchan-bind",
+    "pchan-audio",
+    "pchan-dbg-egui",
+    "pchan-dbg-v2"
 ]
 
 [workspace.dependencies]
 arbitrary-int = "2.1.1"
 bitbybit = "2.0.0"
-color-eyre = "0.6.5"
-slab = "0.4.12"
 tracing = "0.1.44"
 const-hex = { version = "1.18.1", features = ["nightly", "portable-simd"] }
 pchan-emu = { path = "./pchan-emu" }
@@ -36,12 +35,17 @@ pchan-gpu = { path = "./pchan-gpu" }
 pchan-macros = { path = "./pchan-macros" }
 pchan-utils = { path = "./pchan-utils" }
 pchan-bind = { path = "./pchan-bind" }
+pchan-audio = { path = "./pchan-audio" }
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 kanal = "0.1.1"
 
-# Enable a large amount of optimization in the dev profile for dependencies.
+[workspace.dependencies.smol]
+git = "https://github.com/wyvernbw/smol.git"
+version = "2.0.2"
+branch = "wyvernbw-feature-gates" 
+
 [profile.dev.package."*"]
-opt-level = 3
+opt-level = 1
 
 [profile.dev]
 opt-level = 1

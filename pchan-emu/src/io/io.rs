@@ -20,7 +20,7 @@ pub mod tty;
 pub mod vblank;
 
 impl Emu {
-    #[instrument(level = "trace", "io", skip_all, fields(pc = %hex(self.cpu.pc)))]
+    #[pchan_macros::instrument(level = "trace", "io", skip_all, fields(pc = %hex(self.cpu.pc)))]
     pub fn run_io(&mut self) {
         self.cpu_mut().vblank_timer = self.cpu().vblank_timer.wrapping_add(self.cpu().d_clock);
         self.cpu_mut().cycles = self.cpu().cycles.wrapping_add(self.cpu().d_clock as u64);
@@ -283,6 +283,13 @@ impl IO for Emu {
     }
 
     fn try_read<T: Copy>(&mut self, address: u32) -> IOResult<T> {
+        #[cfg(feature = "debugger-ext")]
+        {
+            use crate::debug::BreakpointKind;
+
+            self.dbg.break_on(address, BreakpointKind::READ);
+        }
+
         Fastmem::read::<T>(self, address)
             .or_else(|_| ScratchpadMem::read(self, address))
             .or_else(|_| Interrupts::read(self, address))
@@ -309,6 +316,13 @@ impl IO for Emu {
     }
 
     fn try_write<T: Copy>(&mut self, address: u32, value: T) -> IOResult<()> {
+        #[cfg(feature = "debugger-ext")]
+        {
+            use crate::debug::BreakpointKind;
+
+            self.dbg.break_on(address, BreakpointKind::WRITE);
+        }
+
         Fastmem::write::<T>(self, address, value)
             .or_else(|_| ScratchpadMem::write(self, address, value))
             .or_else(|_| Timers::write_timers(self, address, value))

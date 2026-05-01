@@ -233,7 +233,8 @@ impl DecodedOp {
                 (0x0, _, _, 0xA) => Self::illegal(),
                 (0x0, _, _, 0xB) => Self::illegal(),
                 (0x0, _, _, 0xC) => Self::Syscall(Syscall),
-                (0x0, _, _, 0xD) => todo!("brk"),
+                // (0x0, _, _, 0xD) => todo!("brk"),
+                (0x0, _, _, 0xD) => Self::illegal(), // TODO: brk
                 (0x0, _, _, 0xE) => Self::illegal(),
                 (0x0, _, _, 0xF) => Self::illegal(),
                 (0x0, _, _, 0x10) => Self::Mfhi(Mfhi::new(rd)),

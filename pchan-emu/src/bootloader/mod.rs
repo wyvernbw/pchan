@@ -143,7 +143,7 @@ impl Bootloader for Emu {}
 #[derive(derive_more::Debug, Clone)]
 #[repr(C)]
 pub struct ExeHeader {
-    #[debug("{}", bstr::BStr::new(&self.ascii_id))]
+    #[debug("{}", ascii_str(&self.ascii_id))]
     ascii_id:     [u8; 8],
     #[debug("{}", hex(self.initial_pc))]
     initial_pc:   u32,
@@ -165,6 +165,11 @@ pub struct ExeHeader {
     #[debug("{}", hex(self.sp_fp_offset))]
     sp_fp_offset: u32,
     ascii_marker: String,
+}
+
+fn ascii_str(buf: &[u8]) -> &str {
+    debug_assert!(buf.is_ascii());
+    std::str::from_utf8(buf).unwrap_or("invalid utf8")
 }
 
 #[derive(Debug, Error)]

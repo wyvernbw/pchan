@@ -1,4 +1,6 @@
-use std::sync::Arc;
+use std::{str::Utf8Error, sync::Arc};
+
+use thiserror::Error;
 
 use crate::memory::kb;
 
@@ -16,7 +18,7 @@ pub struct Tty {
 pub enum TtyMode {
     Stdout,
     Tracing,
-    Channeled(flume::Sender<Arc<str>>),
+    Channeled(kanal::Sender<Arc<str>>),
     Silent,
 }
 
@@ -28,6 +30,14 @@ impl Default for Tty {
             mode: TtyMode::Stdout,
         }
     }
+}
+
+#[derive(Error, Debug)]
+enum TtyFlushError {
+    #[error("tty: invalid utf8: {0}")]
+    Utf8Err(#[from] Utf8Error),
+    #[error("tty: channel closed")]
+    SendErr(#[from] kanal::SendError),
 }
 
 impl Tty {
@@ -43,7 +53,7 @@ impl Tty {
         }
     }
 
-    pub fn flush(&mut self) -> color_eyre::Result<()> {
+    pub fn flush(&mut self) -> Result<(), TtyFlushError> {
         let string = str::from_utf8(&self.buf.as_ref()[..self.end])?;
         match &mut self.mode {
             TtyMode::Stdout => {
@@ -61,13 +71,13 @@ impl Tty {
         Ok(())
     }
 
-    pub fn set_channeled(&mut self) -> (flume::Sender<Arc<str>>, flume::Receiver<Arc<str>>) {
-        let (tx, rx) = flume::bounded(1024);
+    pub fn set_channeled(&mut self) -> (kanal::Sender<Arc<str>>, kanal::Receiver<Arc<str>>) {
+        let (tx, rx) = kanal::bounded(1024);
         self.mode = TtyMode::Channeled(tx.clone());
         (tx, rx)
     }
 
-    pub fn set_channeled_with(&mut self, sender: flume::Sender<Arc<str>>) {
+    pub fn set_channeled_with(&mut self, sender: kanal::Sender<Arc<str>>) {
         self.mode = TtyMode::Channeled(sender);
     }
 

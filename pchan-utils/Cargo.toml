@@ -4,19 +4,12 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-rstest = "*"
-slab = { workspace = true }
 tracing-subscriber = { workspace = true }
 derive_more = { version = "2.1.1", features = ["full"] }
-color-eyre = { workspace = true }
 tracing = { workspace = true }
-tracing-panic = "0.1.2"
 const-hex.workspace = true
 heapless = "0.9.2"
-tracing-indicatif = "0.3.14"
-smol = "2.0.2"
 bon = "3.9.1"
-tracing-error = "0.2.1"
 kanal.workspace = true
 
 [dev-dependencies]

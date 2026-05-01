@@ -4,21 +4,14 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-smol = "2.0.2"
 wgpu = "29.0.1"
-flume = "0.12.0"
-color-eyre = "*"
-slab.workspace = true
 thiserror = "2.0.18"
 pchan-emu = {workspace = true}
 pchan-macros = { workspace = true }
 pchan-utils = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
-winit = "0.30.13"
-bon = { version = "3.9.1", features = ["experimental-getter", "experimental-overwritable"] }
 glam = "0.32.1"
-arbitrary-int.workspace = true
+smol.workspace = true
 kanal.workspace = true
 heapless = "0.9.2"
 bitbybit.workspace = true

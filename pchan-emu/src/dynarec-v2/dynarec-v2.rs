@@ -1,13 +1,10 @@
 use bon::Builder;
-use color_eyre::eyre::bail;
 use derive_more as d;
 use dynasm::dynasm;
 use dynasmrt::Assembler;
 use dynasmrt::DynasmApi;
 use dynasmrt::DynasmLabelApi;
 use dynasmrt::ExecutableBuffer;
-use flume::Receiver;
-use flume::Sender;
 use heapless::Deque;
 use heapless::binary_heap::Min;
 use pchan_utils::hex;
@@ -21,6 +18,7 @@ use std::sync::Arc;
 use std::sync::LazyLock;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
+use thiserror::Error;
 use tracing::Instrument;
 use tracing::Level;
 use tracing::enabled;
@@ -119,8 +117,11 @@ type DynarecBlockArgs<'a> = (&'a mut Emu, bool);
 
 impl DynarecBlock {
     pub fn call_block(&self, (emu, instrument): DynarecBlockArgs) {
-        BLOCKS_EXECUTED.fetch_add(1, Ordering::Relaxed);
-        INSTR_EXECUTED.fetch_add(self.op_count as u64, Ordering::Relaxed);
+        #[cfg(debug_assertions)]
+        {
+            BLOCKS_EXECUTED.fetch_add(1, Ordering::Relaxed);
+            INSTR_EXECUTED.fetch_add(self.op_count as u64, Ordering::Relaxed);
+        }
 
         // reset delta clock before running
         emu.cpu.d_clock = 0;
@@ -133,9 +134,16 @@ impl DynarecBlock {
             (self.function.func)(emu)
         };
 
+        #[cfg(feature = "debugger-ext")]
+        {
+            use crate::debug::BreakpointKind;
+
+            emu.dbg.break_on(emu.cpu.pc, BreakpointKind::EXECUTE);
+        }
+
         emu.run_io();
 
-        assert_eq!(emu.cpu.gpr[0], 0);
+        debug_assert_eq!(emu.cpu.gpr[0], 0);
     }
 
     pub fn buffer(&self) -> &ExecutableBuffer {
@@ -162,13 +170,21 @@ impl Fn<DynarecBlockArgs<'_>> for DynarecBlock {
     }
 }
 
+#[derive(Error, Debug)]
+enum FinalizeError {
+    #[error("failed to assemble")]
+    AssembleError,
+    #[error("dynarec: io error {0}")]
+    IoError(#[from] std::io::Error),
+}
+
 impl Dynarec {
-    fn finalize(mut self) -> color_eyre::Result<(DynarecFunction, Box<Scheduler>)> {
+    fn finalize(mut self) -> Result<(DynarecFunction, Box<Scheduler>), FinalizeError> {
         let exec = match self.asm.finalize() {
             Ok(exec) => exec,
             Err(asm) => {
                 self.asm = asm;
-                bail!("failed to assemble function");
+                return Err(FinalizeError::AssembleError);
             }
         };
 
@@ -809,13 +825,18 @@ pub fn run_step(emu: &mut Emu, dynarec: Box<Dynarec>) -> Box<Dynarec> {
     let (block, scheduler, dynarec) = match emu.dynarec_cache.remove(pc) {
         None => {
             let (func, scheduler) = fetch_and_compile_single_threaded(emu, dynarec).unwrap();
-            INSTR_COMPILED.fetch_add(func.op_count as u64, Ordering::Relaxed);
-            BLOCKS_COMPILED.fetch_add(1, Ordering::Relaxed);
-            CACHE_MISSES.fetch_add(1, Ordering::Relaxed);
+            #[cfg(debug_assertions)]
+            {
+                INSTR_COMPILED.fetch_add(func.op_count as u64, Ordering::Relaxed);
+                BLOCKS_COMPILED.fetch_add(1, Ordering::Relaxed);
+                CACHE_MISSES.fetch_add(1, Ordering::Relaxed);
+            }
             (func, Some(scheduler), None)
         }
         Some(func) => {
+            #[cfg(debug_assertions)]
             CACHE_HITS.fetch_add(1, Ordering::Relaxed);
+
             (func, None, Some(dynarec))
         }
     };
@@ -887,7 +908,7 @@ impl PipelineV2 {
     pub fn stage(&self) -> PipelineV2Stage {
         self.into()
     }
-    pub fn run_once(mut self, emu: &mut Emu) -> color_eyre::Result<Self> {
+    pub fn run_once(mut self, emu: &mut Emu) -> Result<Self, PipelineCompileError> {
         for _ in 0..3 {
             self = self.step(emu)?;
         }
@@ -1142,12 +1163,24 @@ pub struct DynarecCache {
     buf: Box<[CachePage]>,
 }
 
-#[derive(derive_more::Debug, Clone, derive_more::Index, derive_more::IndexMut)]
+#[derive(derive_more::Debug, Clone)]
 struct CachePage {
-    #[index]
-    #[index_mut]
     page:    [Option<DynarecBlock>; PAGE_LEN],
     cleared: bool,
+}
+
+impl std::ops::Index<usize> for CachePage {
+    type Output = Option<DynarecBlock>;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        &self.page[index]
+    }
+}
+
+impl std::ops::IndexMut<usize> for CachePage {
+    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
+        &mut self.page[index]
+    }
 }
 
 impl Default for CachePage {

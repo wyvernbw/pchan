@@ -9,9 +9,6 @@ use std::{
 };
 
 use kanal::{AsyncReceiver, AsyncSender, Receiver, Sender};
-use rstest::*;
-use tracing_error::ErrorLayer;
-use tracing_indicatif::IndicatifLayer;
 use tracing_subscriber::{
     EnvFilter, Layer,
     fmt::{self, MakeWriter, format::FmtSpan, writer::BoxMakeWriter},
@@ -45,9 +42,8 @@ pub const MAX_SIMD_WIDTH: usize = max_simd_width_bytes();
 pub type Chan<T> = (Sender<T>, Receiver<T>);
 pub type AsyncChan<T> = (AsyncSender<T>, AsyncReceiver<T>);
 
-#[fixture]
+#[cfg_attr(test, rstest::fixture)]
 pub fn setup_tracing() {
-    let indicatif_layer = IndicatifLayer::new();
     _ = tracing_subscriber::registry()
         .with(
             fmt::layer()
@@ -55,7 +51,6 @@ pub fn setup_tracing() {
                 .with_file(false)
                 .without_time()
                 .with_test_writer()
-                .with_writer(indicatif_layer.get_stdout_writer())
                 .with_line_number(false), // .with_span_events(FmtSpan::CLOSE),
         )
         .with(
@@ -66,7 +61,6 @@ pub fn setup_tracing() {
                 .with_writer(std::fs::File::create("pchan.log").unwrap())
                 .with_line_number(false), // .with_span_events(FmtSpan::CLOSE),
         )
-        .with(indicatif_layer)
         .with(
             fmt::layer()
                 .with_ansi(true)
@@ -84,7 +78,6 @@ pub fn setup_tracing() {
                 .from_env_lossy()
                 .add_directive("cranelift_jit::backend=off".parse().unwrap()),
         )
-        .with(ErrorLayer::default())
         .try_init();
 
     std::panic::set_hook(Box::new(|info| {
@@ -107,23 +100,14 @@ pub fn setup_tracing() {
 pub fn init_tracing(
     #[builder(default = true)] stdout: bool,
     #[builder(default = true)] file: bool,
-    #[builder(default = true)] indicatif: bool,
     #[builder(default = true)] panic_hook: bool,
 ) {
-    let indicatif_layer_opt = indicatif.then(IndicatifLayer::new);
-
     let stdout_layer = stdout.then(|| {
-        let writer: BoxMakeWriter = match &indicatif_layer_opt {
-            Some(l) => BoxMakeWriter::new(l.get_stdout_writer()),
-            None => BoxMakeWriter::new(std::io::stdout),
-        };
-
         fmt::layer()
             .with_ansi(true)
             .with_file(false)
             .without_time()
             .with_test_writer()
-            .with_writer(writer)
             .with_line_number(false)
     });
 
@@ -152,10 +136,8 @@ pub fn init_tracing(
     _ = tracing_subscriber::registry()
         .with(stdout_layer)
         .with(file_layer)
-        .with(indicatif_layer_opt)
         .with(span_layer)
         .with(env_filter)
-        .with(ErrorLayer::default())
         .try_init();
 
     if panic_hook {
@@ -191,7 +173,7 @@ use std::mem::size_of;
 #[display("{}", self.0.as_str())]
 pub struct Hex<const N: usize, const PREFIX: bool>(const_hex::Buffer<N, PREFIX>);
 
-pub fn hex<T>(mut x: T) -> Hex<{ size_of::<T>() }, true> {
+pub fn hex<T>(x: T) -> Hex<{ size_of::<T>() }, true> {
     hex_pref::<T, true>(x)
 }
 
@@ -255,20 +237,6 @@ where
 
     fn get_mut(&'a self) -> Self::OutputMut {
         self.write().unwrap()
-    }
-}
-
-impl<'a, T> IgnorePoison<'a> for smol::lock::RwLock<T> {
-    type Output = impl Future<Output = smol::lock::RwLockReadGuard<'a, T>>;
-
-    type OutputMut = impl Future<Output = smol::lock::RwLockWriteGuard<'a, T>>;
-
-    fn get(&'a self) -> Self::Output {
-        self.read()
-    }
-
-    fn get_mut(&'a self) -> Self::OutputMut {
-        self.write()
     }
 }
 
