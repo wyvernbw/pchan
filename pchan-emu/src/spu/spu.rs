@@ -64,6 +64,13 @@ impl Clone for SpuState {
 impl SpuState {
     const MEM_SIZE: usize = kb(512);
     const CLOCK_CYCLES: u64 = 768;
+
+    pub fn take_prod(&mut self) -> Option<Mutex<AudioProducer>> {
+        self.prod.take()
+    }
+    pub fn put_prod(&mut self, prod: Option<Mutex<AudioProducer>>) {
+        self.prod = prod;
+    }
 }
 
 fn create_spu_mem() -> Box<[u16]> {

@@ -97,6 +97,26 @@ enum Focused {
     Breakpoints,
 }
 
+fn reinit_emu(emu: &mut Emu) -> Result<()> {
+    let audio = emu.spu.take_prod();
+    let gpu = emu.gpu.conn.clone();
+
+    *emu = Emu::default();
+    emu.spu.put_prod(audio);
+    emu.gpu.conn = gpu;
+
+    emu.load_bios().into_diagnostic()?;
+    emu.cpu.jump_to_bios();
+    emu.tty.set_tracing();
+    Ok(())
+}
+
+impl AppState {
+    pub fn reinit(&mut self) {
+        reinit_emu(&mut self.emu).unwrap();
+    }
+}
+
 async fn run_app(env: &EnvVars) -> Result<()> {
     let mut emu = Emu::default();
     let mut gpu = Renderer::new().await;
@@ -283,6 +303,9 @@ fn handle_event(state: &mut AppState, tui_state: &mut TuiState, ev: &event::Even
                         LoopMode::Poll => tui_state.loop_mode = LoopMode::Event,
                         LoopMode::Event => tui_state.loop_mode = LoopMode::Poll,
                     }
+                }
+                (Focused::Preview, "r") => {
+                    state.reinit();
                 }
                 (Focused::Registers, "backtab" | "k") => tui_state.focused = Focused::Preview,
                 (Focused::Registers, "l") => tui_state.focused = Focused::Mips,
@@ -534,6 +557,7 @@ fn draw_app(frame: &mut Frame, tui_state: &mut TuiState, state: &AppState) {
             "+ {}x{} {:01.2}ms {:.0}fps +",
             width, height, frame_time, fps
         ))
+        .title_top(" 📺 ")
         .title_top(" <spc> run • <f> fullscreen ".dim())
         .theme(&tui_state.theme)
         .focus_style(tui_state, Focused::Preview);
