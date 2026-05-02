@@ -1,3 +1,4 @@
+#![cfg(test)]
 #![feature(portable_simd)]
 #![allow(unused_variables)]
 
@@ -7,9 +8,14 @@ use pchan_emu::dynarec_v2::PipelineV2;
 use pchan_emu::memory::fastmem::LUT;
 use pchan_emu::memory::{MEM_MAP, ext};
 use pchan_emu::{Emu, memory};
-use pchan_utils::setup_tracing;
+use pchan_utils::setup_tracing as st;
 use pretty_assertions::assert_eq;
 use rstest::rstest;
+
+#[rstest::fixture]
+fn setup_tracing() {
+    st()
+}
 
 #[rstest]
 // ram

@@ -1647,6 +1647,29 @@ impl DynarecOp for Sll {
     }
 }
 
+#[rstest]
+#[cfg(test)]
+fn test_sll_case0() -> color_eyre::Result<()> {
+    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use assert_hex::*;
+    use pchan_utils::setup_tracing;
+
+    setup_tracing();
+    let mut emu = Emu::default();
+    emu.cpu.pc = 0x0;
+    emu.write_many(
+        0x0,
+        &program([addiu(8, 0, 0x4), sll(9, 8, 0x10), OpCode::HALT]),
+    );
+    PipelineV2::new(&emu).run_once(&mut emu)?;
+    tracing::info!(?emu.cpu);
+    assert_eq_hex!(emu.cpu.gpr[8], 0x4);
+    assert_eq_hex!(emu.cpu.gpr[9], 0x4 << 0x10);
+    assert_eq_hex!(emu.cpu.gpr[9], emu.cpu.gpr[8] << 0x10);
+
+    Ok(())
+}
+
 impl DynarecOp for Srl {
     #[allow(clippy::useless_conversion)]
     fn emit<'a>(&self, mut ctx: EmitCtx<'a>) -> EmitSummary {
@@ -2140,6 +2163,38 @@ fn test_jr(#[case] initial_pc: u32, #[case] rs: (Guest, u32)) -> color_eyre::Res
     assert_eq!(emu.cpu.d_clock, 3);
     assert_eq!(emu.cpu.pc, rs.1);
 
+    Ok(())
+}
+
+#[cfg(test)]
+#[rstest]
+fn test_jr_delay_slot() -> color_eyre::Result<()> {
+    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use assert_hex::*;
+    use pchan_utils::setup_tracing;
+
+    setup_tracing();
+    let mut emu = Emu::default();
+    emu.cpu.pc = 0x0;
+    emu.write_many(
+        0x0,
+        &program([
+            addiu(8, 0, 0x20),
+            nop(),
+            jr(8),
+            addu(9, 0, 8),
+            nop(),
+            OpCode::HALT,
+            nop(),
+            nop(),
+            OpCode::HALT,
+        ]),
+    );
+    PipelineV2::new(&emu).run_once(&mut emu)?;
+    tracing::info!(?emu.cpu);
+    assert_eq_hex!(emu.cpu.gpr[8], 0x20);
+    assert_eq_hex!(emu.cpu.gpr[9], 0x20);
+    assert_eq_hex!(emu.cpu.gpr[9], emu.cpu.gpr[8]);
     Ok(())
 }
 

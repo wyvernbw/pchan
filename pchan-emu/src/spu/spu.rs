@@ -150,7 +150,7 @@ pub trait Spu: IO {
                 Ok((self.spu().voices[n].start.0 as u32).io_from_u32())
             }
             // adpcm repeat
-            addr @ 0x1f801c0e..=0x1f801d7f if let Some(n) = voice_idx(addr, 0x1f801c0e, 0x10) => {
+            addr @ 0x1f801c0e..=0x1f801d7e if let Some(n) = voice_idx(addr, 0x1f801c0e, 0x10) => {
                 Ok((self.spu().voices[n].repeat.0 as u32).io_from_u32())
             }
             addr @ 0x1f801c00..=0x1f801d70 if let Some(n) = voice_idx(addr, 0x1f801c00, 0x10) => {
@@ -205,16 +205,16 @@ pub trait Spu: IO {
                 Ok(())
             }
             // voices - adpcm start
-            addr @ 0x1f801c06..=0x1f801d7f if let Some(n) = voice_idx(addr, 0x1f801c06, 0x10) => {
+            addr @ 0x1f801c06..=0x1f801d76 if let Some(n) = voice_idx(addr, 0x1f801c06, 0x10) => {
                 let spu = self.spu_mut();
                 if n == 0 {
-                    tracing::info!("write to start for 0")
+                    tracing::info!("write to start for 0: {}", hex(value))
                 }
                 spu.voices[n].start = ADPCMStart(value);
                 Ok(())
             }
             // voices - adpcm repeat
-            addr @ 0x1f801c0e..=0x1f801d7f if let Some(n) = voice_idx(addr, 0x1f801c0e, 0x10) => {
+            addr @ 0x1f801c0e..=0x1f801d7e if let Some(n) = voice_idx(addr, 0x1f801c0e, 0x10) => {
                 let spu = self.spu_mut();
                 spu.voices[n].repeat = ADPCMRepeat(value);
                 Ok(())
@@ -286,19 +286,23 @@ pub trait Spu: IO {
         let spu = self.spu_mut();
 
         spu.adsr.clock();
-        // TODO benchmark vs sequential iterator.
+        // TODO benchmark vs parallel iterator.
         let adsr = &mut spu.adsr;
         let flags = &mut spu.voice_flags;
         let mut idx = 0;
         spu.voices.iter_mut().for_each(|voice| {
-            let old_on = voice.keyed_on;
-            voice.clock(&spu.mem);
-            if old_on && !voice.keyed_on {
-                adsr.key_off(idx);
-            }
-            if voice.reached_end {
-                voice.reached_end = false;
-                flags.endx.set_on(idx, true);
+            // TODO: remove
+            if idx == 0 {
+                let old_on = voice.keyed_on;
+                voice.clock(&spu.mem);
+                if old_on && !voice.keyed_on {
+                    adsr.key_off(idx);
+                    adsr.envelopes.level[idx] = 0;
+                }
+                if voice.reached_end {
+                    voice.reached_end = false;
+                    flags.endx.set_on(idx, true);
+                }
             }
             idx += 1;
         });
@@ -417,7 +421,14 @@ impl Voice {
         // current holds the address shifted right by 3, so we add 2 to advance
         // by 16 bytes.
         self.current.0 = self.current.0.wrapping_add(2);
+        tracing::info!(voice_0_start = self.start.0 << 3);
+        tracing::info!(voice_0_current = self.current.0 << 3);
         if header.flags.loop_end() {
+            tracing::info!(
+                "loop end: {} -> {}",
+                hex(self.current.0 << 3),
+                hex(self.repeat.0 << 3)
+            );
             self.reached_end = true;
             self.current = ADPCMCurrent(self.repeat.0);
             if !header.flags.loop_repeat() {

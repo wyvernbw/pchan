@@ -19,7 +19,9 @@ use std::{
 
 use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture};
 use crossterm_simple_event::CrosstermSimpleEvent;
-use edtui::{EditorEventHandler, EditorState, EditorView};
+use edtui::{
+    EditorEventHandler, EditorMode, EditorState, EditorStatusLine, EditorTheme, EditorView,
+};
 use image::{DynamicImage, RgbaImage};
 use miette::{Context, IntoDiagnostic, Result, miette};
 use pchan_emu::{
@@ -39,9 +41,9 @@ use pchan_utils::{hex, hex_pref};
 use rat_imaginary::{ImageState, ImageWidget};
 use ratatui::{
     DefaultTerminal, Frame, crossterm,
-    layout::{Constraint, Layout, Rect},
+    layout::{Constraint, Layout, Margin, Rect},
     style::{Color, Style, Styled, Stylize},
-    widgets::{Block, BorderType, Borders, Clear, ListState, Row, Table, TableState, Widget},
+    widgets::{Block, BorderType, Borders, Clear, List, ListState, Row, Table, TableState, Widget},
 };
 use wgpu::Extent3d;
 
@@ -57,6 +59,11 @@ use crate::{
 
 fn main() -> Result<()> {
     // miette_panic::install(miette_panic::PanicHookArgs::default());
+    pchan_utils::init_tracing()
+        .file(true)
+        .panic_hook(false)
+        .stdout(false)
+        .call();
     let env = EnvVars::new()?;
     smol::block_on(run_app(&env))
 }
@@ -100,10 +107,12 @@ enum Focused {
 fn reinit_emu(emu: &mut Emu) -> Result<()> {
     let audio = emu.spu.take_prod();
     let gpu = emu.gpu.conn.clone();
+    let dbg = std::mem::take(&mut emu.dbg);
 
     *emu = Emu::default();
     emu.spu.put_prod(audio);
     emu.gpu.conn = gpu;
+    emu.dbg = dbg;
 
     emu.load_bios().into_diagnostic()?;
     emu.cpu.jump_to_bios();
@@ -162,12 +171,20 @@ async fn run_app(env: &EnvVars) -> Result<()> {
 
             if tui_state.emu_running {
                 dynarec = run_step(&mut state.emu, dynarec);
+                tui_state.mips_cursor = state.emu.cpu.pc;
+                tui_state.exec_history.push_back(state.emu.cpu.pc);
+                if tui_state.exec_history.len() > 100 {
+                    tui_state.exec_history.pop_front();
+                }
                 if state.emu.dbg.stopped_on.is_some() {
                     tui_state.emu_running = false;
                     tui_state.loop_mode = LoopMode::Event;
                     state.emu.dbg.stopped_on = None;
+                    term.draw(|frame| {
+                        draw_app(frame, &mut tui_state, &state);
+                    })
+                    .unwrap();
                 }
-                tui_state.mips_cursor = state.emu.cpu.pc;
             }
 
             // pipe = pipe.run_once(&mut state.emu).unwrap();
@@ -321,16 +338,52 @@ fn handle_event(state: &mut AppState, tui_state: &mut TuiState, ev: &event::Even
                     tui_state.mips_cursor = tui_state.mips_cursor.saturating_sub(4);
                 }
                 (Focused::Mips, "l" | "tab") => tui_state.focused = Focused::Mem,
-                (Focused::Mem, "h" | "backtab") => tui_state.focused = Focused::Mips,
-                (Focused::Mem, "j" | "tab") => {
-                    tui_state.focused = Focused::Breakpoints;
-                }
-                (Focused::Mem, mem_key) => match mem_key {
-                    "ctrl+h" => tui_state.mem_cursor = tui_state.mem_cursor.saturating_sub(1),
-                    "ctrl+j" => tui_state.mem_cursor = tui_state.mem_cursor.saturating_add(16),
-                    "ctrl+k" => tui_state.mem_cursor = tui_state.mem_cursor.saturating_sub(16),
-                    "ctrl+l" => tui_state.mem_cursor = tui_state.mem_cursor.saturating_add(1),
-                    _ => {}
+                (Focused::Mem, mem_key) => match tui_state.jump_to_mem_address_pane.open {
+                    false => match mem_key {
+                        "ctrl+h" => tui_state.mem_cursor = tui_state.mem_cursor.saturating_sub(1),
+                        "ctrl+j" => tui_state.mem_cursor = tui_state.mem_cursor.saturating_add(16),
+                        "ctrl+k" => tui_state.mem_cursor = tui_state.mem_cursor.saturating_sub(16),
+                        "ctrl+l" => tui_state.mem_cursor = tui_state.mem_cursor.saturating_add(1),
+                        "g" => {
+                            tui_state.jump_to_mem_address_pane.open = true;
+                        }
+                        "h" | "backtab" => tui_state.focused = Focused::Mips,
+                        "j" | "tab" => {
+                            tui_state.focused = Focused::Breakpoints;
+                        }
+                        _ => {}
+                    },
+                    true => match mem_key {
+                        "enter" => {
+                            let address = parse_hex_address(
+                                &tui_state
+                                    .jump_to_mem_address_pane
+                                    .input
+                                    .lines
+                                    .iter_row()
+                                    .flatten()
+                                    .collect::<String>(),
+                            );
+                            // TODO: report error
+                            if let Ok(address) = address {
+                                tui_state.mem_cursor = address;
+                                tui_state.mem_range = address..=address;
+                                tui_state.jump_to_mem_address_pane.open = false;
+                            }
+                        }
+                        _ => {
+                            if mem_key == "esc"
+                                && tui_state.jump_to_mem_address_pane.input.mode
+                                    == EditorMode::Normal
+                            {
+                                tui_state.jump_to_mem_address_pane.open = false;
+                            }
+                            EditorEventHandler::vim_mode().on_event(
+                                ev.clone(),
+                                &mut tui_state.jump_to_mem_address_pane.input,
+                            );
+                        }
+                    },
                 },
                 (Focused::Breakpoints, key) => match tui_state.add_breakpoint_pane.open {
                     false => match key {
@@ -447,11 +500,16 @@ fn handle_event(state: &mut AppState, tui_state: &mut TuiState, ev: &event::Even
     }
 }
 
-fn create_breakpoint(address: &str, kind: BreakpointKind) -> Result<Breakpoint> {
+fn parse_hex_address(address: &str) -> Result<u32> {
     let address = address.trim_start().trim_start_matches("0x").trim_end();
     let address: u32 = u32::from_str_radix(address, 16)
         .into_diagnostic()
         .wrap_err("invalid breakpoint")?;
+    Ok(address)
+}
+
+fn create_breakpoint(address: &str, kind: BreakpointKind) -> Result<Breakpoint> {
+    let address = parse_hex_address(address)?;
     Ok(Breakpoint {
         address,
         kind,
@@ -474,10 +532,12 @@ struct TuiState {
     mips_range:    RangeInclusive<u32>,
     mem_cursor:    u32,
     mem_range:     RangeInclusive<u32>,
+    exec_history:  VecDeque<u32>,
 
-    mips_jump_to_pc_button: ButtonState,
-    add_breakpoint_pane:    AddBreakpointPane,
-    breakpoints_table:      TableState,
+    mips_jump_to_pc_button:   ButtonState,
+    add_breakpoint_pane:      AddBreakpointPane,
+    jump_to_mem_address_pane: JumpToMemAddressPane,
+    breakpoints_table:        TableState,
 }
 
 #[derive(Default)]
@@ -489,6 +549,12 @@ struct AddBreakpointPane {
     address_input:         EditorState,
     address_input_handler: EditorEventHandler,
     checkboxes:            [CheckboxState; 3],
+}
+
+#[derive(Default)]
+struct JumpToMemAddressPane {
+    open:  bool,
+    input: EditorState,
 }
 
 impl TuiState {
@@ -508,10 +574,12 @@ impl TuiState {
             mips_range:    0x0..=0x0,
             mem_cursor:    0xbfc0_0000,
             mem_range:     0xbfc0_0000..=0xbfc0_0000,
+            exec_history:  VecDeque::new(),
 
-            mips_jump_to_pc_button: ButtonState::new(),
-            add_breakpoint_pane:    AddBreakpointPane::default(),
-            breakpoints_table:      TableState::default().with_selected(Some(0)),
+            mips_jump_to_pc_button:   ButtonState::new(),
+            add_breakpoint_pane:      AddBreakpointPane::default(),
+            breakpoints_table:        TableState::default().with_selected(Some(0)),
+            jump_to_mem_address_pane: JumpToMemAddressPane::default(),
         }
     }
 
@@ -850,6 +918,27 @@ fn draw_mem(area: Rect, frame: &mut Frame, tui_state: &mut TuiState, state: &App
             inspect_area,
         );
     }
+
+    if tui_state.jump_to_mem_address_pane.open {
+        let [area] = Layout::vertical([Constraint::Length(4)]).areas(area);
+        frame.render_widget(Clear, area);
+        frame.render_widget(
+            EditorView::new(&mut tui_state.jump_to_mem_address_pane.input)
+                .theme(
+                    EditorTheme::default()
+                        .block(Block::bordered().border_type(BorderType::Rounded))
+                        .status_line(
+                            EditorStatusLine::default().style_mode(
+                                Style::new()
+                                    .bg(tui_state.theme.primary)
+                                    .fg(tui_state.theme.bg),
+                            ),
+                        ),
+                )
+                .single_line(true),
+            area,
+        );
+    }
 }
 
 fn draw_breakpoints(area: Rect, frame: &mut Frame, tui_state: &mut TuiState, state: &AppState) {
@@ -873,6 +962,9 @@ fn draw_breakpoints(area: Rect, frame: &mut Frame, tui_state: &mut TuiState, sta
         frame.render_widget(block, area);
         a
     };
+
+    let [breakpoints_area, history_area] =
+        Layout::vertical([Constraint::Percentage(60), Constraint::Percentage(40)]).areas(area);
 
     {
         let breakpoints = state
@@ -927,8 +1019,36 @@ fn draw_breakpoints(area: Rect, frame: &mut Frame, tui_state: &mut TuiState, sta
             )
             .row_highlight_style(Style::new().bg(tui_state.theme.primary).bold().italic())
             .theme(&tui_state.theme),
-            area,
+            breakpoints_area,
             &mut tui_state.breakpoints_table,
+        );
+    }
+
+    {
+        let history = tui_state
+            .exec_history
+            .iter()
+            .rev()
+            .take(
+                history_area
+                    .inner(Margin {
+                        horizontal: 1,
+                        vertical:   1,
+                    })
+                    .height as usize,
+            )
+            .rev()
+            .map(|addr| hex(*addr).to_string());
+        frame.render_widget(
+            List::new(history)
+                .block(
+                    Block::bordered()
+                        .border_type(BorderType::HeavyDoubleDashed)
+                        .border_style(Style::new().dim())
+                        .title("+ history +"),
+                )
+                .theme(&tui_state.theme),
+            history_area,
         );
     }
 
