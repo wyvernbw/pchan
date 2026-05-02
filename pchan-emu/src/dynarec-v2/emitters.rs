@@ -35,10 +35,11 @@ use super::ScheduledEmitter;
 
 #[derive(Debug, Builder)]
 pub struct EmitCtx<'a> {
-    pub dynarec: &'a mut Dynarec,
-    pub cache:   &'a DynarecCache,
-    pub pc:      u32,
-    pub d_clock: u32,
+    pub dynarec:    &'a mut Dynarec,
+    pub cache:      &'a DynarecCache,
+    pub pc:         u32,
+    pub d_clock:    u32,
+    pub delay_slot: bool,
 }
 
 const MAX_SCRATCH_REG: u8 = 3;
@@ -70,10 +71,11 @@ impl<'a> EmitCtx<'a> {
     fn drain_schedule(&mut self) {
         while let Some(emitter) = self.dynarec.scheduler.queue.pop() {
             emitter.emitter.call((EmitCtx {
-                dynarec: self.dynarec,
-                cache:   self.cache,
-                pc:      emitter.schedule,
-                d_clock: self.d_clock,
+                dynarec:    self.dynarec,
+                cache:      self.cache,
+                pc:         emitter.schedule,
+                d_clock:    self.d_clock,
+                delay_slot: self.delay_slot,
             },));
         }
     }
@@ -3286,6 +3288,7 @@ impl DynarecOp for Syscall {
         dynasm!(
             ctx.dynarec.asm
             ;; let saved = ctx.dynarec.emit_save_volatile_registers()
+            ; mov w1, ctx.delay_slot as u32
             ; ldr x3, ->handle_syscall
             ; blr x3
             ;; ctx.dynarec.emit_restore_saved_registers(saved.into_iter())

@@ -4,16 +4,6 @@ use tracing::instrument;
 
 use crate::{Bus, Emu};
 
-// bitfield! {
-//     #[derive(Clone, Copy)]
-//     pub struct CauseRegister(u32);
-
-//     excode, set_excode: 6, 2;
-//     interrupt_pending, set_interrupt_pending: 15, 8;
-//     cop_number, set_cop_number: 29, 28;
-//     branch_delay, set_branch_delay: 31;
-// }
-
 #[bitfield(u32, debug)]
 pub struct CauseRegister {
     #[bits(2..=6, rw)]
@@ -27,8 +17,8 @@ pub struct CauseRegister {
     #[bits(28..=29, rw)]
     cop_number: u2,
 
-    #[bit(31)]
-    bd: u1,
+    #[bit(31, rw)]
+    bd: bool,
 }
 
 /// # Exception
@@ -68,7 +58,7 @@ pub trait Exceptions: Bus {
     fn handle_exception(&mut self, exception: Exception);
     extern "C" fn handle_rfe(&mut self);
     extern "C" fn handle_break(&mut self);
-    extern "C" fn handle_syscall(&mut self);
+    extern "C" fn handle_syscall(&mut self, bd: bool);
     fn run_exceptions_io(&mut self);
     fn raise_exception(&mut self, exception: Exception);
     fn clear_exception(&mut self);
@@ -81,7 +71,11 @@ impl Exceptions for Emu {
         cause.set_excode(exception.raw_value());
         self.cpu_mut().cop0.reg[13] = cause.raw_value();
 
-        self.cpu_mut().cop0.reg[14] = self.cpu().pc;
+        let epc = match cause.bd() {
+            false => self.cpu().pc,
+            true => self.cpu().pc - 4,
+        };
+        self.cpu_mut().cop0.reg[14] = epc;
 
         let sr = self.cpu().cop0.reg[12];
         let new_sr = (sr & !0x3F) | ((sr & 0xF) << 2);
@@ -106,8 +100,16 @@ impl Exceptions for Emu {
     }
 
     #[unsafe(no_mangle)]
-    extern "C" fn handle_syscall(&mut self) {
-        tracing::trace!("syscall");
+    extern "C" fn handle_syscall(&mut self, bd: bool) {
+        tracing::info!("syscall");
+        if bd {
+            let cause = self.cpu().cop0.reg[13];
+            let cause = CauseRegister::new_with_raw_value(cause);
+            let cause = cause.with_bd(true);
+            self.cpu_mut().cop0.reg[13] = cause.raw_value();
+
+            panic!("found bd!")
+        }
         self.handle_exception(Exception::Syscall);
     }
 

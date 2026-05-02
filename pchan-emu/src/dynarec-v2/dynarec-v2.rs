@@ -1088,18 +1088,20 @@ fn fetch_and_compile_single_threaded(
         let delayed = dynarec.pop_scheduled_at(state.pc);
 
         state.apply(op.emit(EmitCtx {
-            dynarec: &mut dynarec,
-            cache:   &emu.dynarec_cache,
-            pc:      state.pc,
-            d_clock: state.cycles,
+            dynarec:    &mut dynarec,
+            cache:      &emu.dynarec_cache,
+            pc:         state.pc,
+            d_clock:    state.cycles,
+            delay_slot: false,
         }));
 
         if let Some(emitter) = delayed {
             state.apply(emitter.emitter.call((EmitCtx {
-                dynarec: &mut dynarec,
-                cache:   &emu.dynarec_cache,
-                pc:      emitter.pc,
-                d_clock: state.cycles,
+                dynarec:    &mut dynarec,
+                cache:      &emu.dynarec_cache,
+                pc:         emitter.pc,
+                d_clock:    state.cycles,
+                delay_slot: false,
             },)));
         }
 
@@ -1122,7 +1124,7 @@ fn fetch_and_compile_single_threaded(
     //     }));
     // }
 
-    // FIXME: rescheduling needs top happen
+    // FIXME: rescheduling needs to happen
     // scheduler must pass remaining events to the next block somehow
     while let Some(emitter) = dynarec.scheduler.queue.pop() {
         tracing::trace!("draining {:?}", emitter);
@@ -1131,6 +1133,9 @@ fn fetch_and_compile_single_threaded(
             cache:   &emu.dynarec_cache,
             pc:      emitter.pc,
             d_clock: state.cycles,
+
+            // this happens in the delay slot basically
+            delay_slot: true,
         },)));
     }
 
