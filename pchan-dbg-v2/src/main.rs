@@ -22,7 +22,6 @@ use crossterm_simple_event::CrosstermSimpleEvent;
 use edtui::{
     EditorEventHandler, EditorMode, EditorState, EditorStatusLine, EditorTheme, EditorView,
 };
-use image::{DynamicImage, RgbaImage};
 use miette::{Context, IntoDiagnostic, Result, miette};
 use pchan_emu::{
     Emu,
@@ -38,7 +37,7 @@ use pchan_emu::{
 };
 use pchan_gpu::Renderer;
 use pchan_utils::{InitTracingArgs, hex, hex_pref};
-use rat_imaginary::{ImageState, ImageWidget};
+use rat_imaginary::{ImageDimensions, ImageState, ImageWidget, PixelFormat};
 use ratatui::{
     DefaultTerminal, Frame, crossterm,
     layout::{Constraint, Layout, Margin, Rect},
@@ -294,11 +293,18 @@ impl Drop for TuiState {
 impl TuiState {
     fn update_current_frame(&mut self, img: Option<(Extent3d, Vec<u8>)>) {
         if let Some((size, img)) = img {
-            let img =
-                RgbaImage::from_vec(size.width, size.height, img).map(DynamicImage::ImageRgba8);
             self.framebuffer.clear_frontbuffer();
-            self.framebuffer.write_image(img.clone().unwrap()).unwrap();
-            self.current_frame = img;
+            let rgba32 = PixelFormat::Rgba32(
+                ImageDimensions {
+                    width:  size.width,
+                    height: size.height,
+                },
+                None,
+            );
+            self.framebuffer
+                .write_image((rgba32.clone(), img.clone()))
+                .unwrap();
+            self.current_frame = Some((rgba32, img));
         }
     }
 }
@@ -521,7 +527,7 @@ struct TuiState {
     theme:         Theme,
     loop_mode:     LoopMode,
     emu_running:   bool,
-    current_frame: Option<DynamicImage>,
+    current_frame: Option<(PixelFormat, Vec<u8>)>,
     framebuffer:   ImageState,
     quit:          bool,
     fullscreen:    bool,
@@ -607,8 +613,8 @@ fn draw_app(frame: &mut Frame, tui_state: &mut TuiState, state: &AppState) {
     .areas(area);
 
     let (width, height) = match &tui_state.current_frame {
-        Some(img) => (img.width(), img.height()),
-        None => (640, 480),
+        Some((PixelFormat::Rgba32(img, _), _)) => (img.width, img.height),
+        _ => (640, 480),
     };
     let ar = height * 100 / width;
     let h1_w = h1.width;

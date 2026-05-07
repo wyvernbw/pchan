@@ -6,7 +6,6 @@ edition = "2024"
 [dependencies]
 crossterm-simple-event = "0.1.0"
 ratatui = "0.30.0"
-image = { version = "0.25.10", default-features = false, features = ["bmp"] }
 miette = { version = "7.6.0", default-features = false }
 miette-panic = "0.1.0"
 pchan-audio.workspace = true
