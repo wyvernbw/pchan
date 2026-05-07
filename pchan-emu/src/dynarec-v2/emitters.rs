@@ -471,6 +471,43 @@ fn test_addiu(#[case] a: u32, #[case] b: u32, #[case] expected: u32) -> color_ey
     Ok(())
 }
 
+/// rough idea taken from bios spu related code
+#[cfg(test)]
+#[rstest]
+fn test_addiu_andi_loop() -> color_eyre::Result<()> {
+    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use assert_hex::*;
+    use pchan_utils::setup_tracing;
+
+    setup_tracing();
+    let mut emu = Emu::default();
+    emu.cpu.pc = 0x0;
+    emu.write_many(
+        0x0,
+        &program([
+            addiu(7, 0, 16),
+            addiu(8, 8, 1),
+            andi(8, 8, 0x00ff),
+            sltu(1, 8, 7),
+            bne(1, 0, -4),
+            nop(),
+            addiu(10, 0, 1),
+            OpCode::HALT,
+        ]),
+    );
+    while emu.cpu.gpr[10] != 1 {
+        tracing::info!(
+            r7 = emu.cpu.gpr[7],
+            r8 = emu.cpu.gpr[8],
+            r10 = emu.cpu.gpr[10]
+        );
+        PipelineV2::new(&emu).run_once(&mut emu)?;
+    }
+    assert_eq_hex!(emu.cpu.gpr[8], 16);
+    assert_eq_hex!(emu.cpu.gpr[7], 16);
+    Ok(())
+}
+
 impl DynarecOp for HaltBlock {
     fn emit<'a>(&self, _: EmitCtx<'a>) -> EmitSummary {
         EmitSummary::default()

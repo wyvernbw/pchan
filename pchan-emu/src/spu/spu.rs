@@ -21,6 +21,7 @@ pub struct SpuState {
     voices:      Box<[CacheAligned<Voice>; 24]>,
     adsr:        ADSRState,
     voice_flags: VoiceFlags,
+    #[debug(skip)]
     mem:         Box<[u16]>,
 
     ram_start:   u16,
@@ -159,6 +160,11 @@ pub trait Spu: IO {
             addr @ 0x1f801c02..=0x1f801d72 if let Some(n) = voice_idx(addr, 0x1f801c02, 0x10) => {
                 Ok((self.spu().adsr.voice_right.registers[n]).io_from_u32())
             }
+            // ADSR volume
+            // TODO: write
+            addr @ 0x1f801c0c..=0x1f801d7c if let Some(n) = voice_idx(addr, 0x1f801c0c, 0x10) => {
+                Ok((self.spu().adsr.envelopes.level[n]).io_from_u32())
+            }
             // Voice 0..23 ON/OFF (status) (ENDX) (R)
             0x1f801d9c => {
                 let endx = self.spu().voice_flags.endx.raw_value();
@@ -207,9 +213,6 @@ pub trait Spu: IO {
             // voices - adpcm start
             addr @ 0x1f801c06..=0x1f801d76 if let Some(n) = voice_idx(addr, 0x1f801c06, 0x10) => {
                 let spu = self.spu_mut();
-                if n == 0 {
-                    tracing::info!("write to start for 0: {}", hex(value))
-                }
                 spu.voices[n].start = ADPCMStart(value);
                 Ok(())
             }
@@ -291,34 +294,30 @@ pub trait Spu: IO {
         let flags = &mut spu.voice_flags;
         let mut idx = 0;
         spu.voices.iter_mut().for_each(|voice| {
-            // TODO: remove
-            if idx == 0 {
-                let old_on = voice.keyed_on;
-                voice.clock(&spu.mem);
-                if old_on && !voice.keyed_on {
-                    adsr.key_off(idx);
-                    adsr.envelopes.level[idx] = 0;
-                }
-                if voice.reached_end {
-                    voice.reached_end = false;
-                    flags.endx.set_on(idx, true);
-                }
+            let old_on = voice.keyed_on;
+            voice.clock(&spu.mem);
+            if old_on && !voice.keyed_on {
+                adsr.key_off(idx);
+                adsr.envelopes.level[idx] = 0;
+            }
+            if voice.reached_end {
+                voice.reached_end = false;
+                flags.endx.set_on(idx, true);
             }
             idx += 1;
         });
 
         let mut mixed_l = 0i32;
         let mut mixed_r = 0i32;
-        let i = 0;
-        // for i in 0..24 {
-        let voice = &spu.voices[i];
-        let adsr = &spu.adsr;
-        let sample = apply_volume(voice.current_sample, adsr.envelopes.level[i]);
-        let left = apply_volume(sample, adsr.voice_left.internal[i]);
-        let right = apply_volume(sample, adsr.voice_right.internal[i]);
-        mixed_l += left as i32;
-        mixed_r += right as i32;
-        // }
+        for i in 0..24 {
+            let voice = &spu.voices[i];
+            let adsr = &spu.adsr;
+            let sample = apply_volume(voice.current_sample, adsr.envelopes.level[i]);
+            let left = apply_volume(sample, adsr.voice_left.internal[i]);
+            let right = apply_volume(sample, adsr.voice_right.internal[i]);
+            mixed_l += left as i32;
+            mixed_r += right as i32;
+        }
 
         let mixed_l = mixed_l.clamp(-0x8000, 0x7fff);
         let mixed_r = mixed_r.clamp(-0x8000, 0x7fff);
@@ -469,16 +468,10 @@ impl SpuState {
             .for_each(|(idx, voice)| {
                 let abs_idx = voice_offset + idx;
                 if ON {
-                    if idx == 0 {
-                        tracing::info!("keyed on 0");
-                    }
                     voice.key_on(&self.mem);
                     adsr.key_on(abs_idx);
                     flags.endx.set_on(abs_idx, false);
                 } else {
-                    if idx == 0 {
-                        tracing::info!("keyed off 0");
-                    }
                     voice.key_off();
                     adsr.key_off(abs_idx);
                 }

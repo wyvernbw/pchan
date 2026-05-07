@@ -82,8 +82,15 @@ impl Default for Theme {
         Self {
             fg:      Color::from_u32(0xffffff),
             bg:      Color::Rgb(0, 0, 0),
-            primary: LIPGLOSS[0][0],
+            // primary: LIPGLOSS[0][0],
+            primary: Color::Green,
         }
+    }
+}
+
+impl Theme {
+    fn highlight(&self) -> Style {
+        Style::new().bg(self.primary).fg(self.bg).bold()
     }
 }
 
@@ -689,7 +696,7 @@ fn draw_register_viewer(area: Rect, frame: &mut Frame, tui_state: &mut TuiState,
         Row::new([reg_str(r as u8), regs_hex[r].as_str()]).style(style)
     }));
     let table = Table::new(rows, [Constraint::Length(3), Constraint::Length(10)])
-        .row_highlight_style(Style::new().bg(tui_state.theme.primary).bold().italic())
+        .row_highlight_style(tui_state.theme.highlight())
         .theme(&tui_state.theme);
     frame.render_stateful_widget(table, area, &mut tui_state.reg_list);
 }
@@ -799,13 +806,7 @@ fn draw_mips_assembly(area: Rect, frame: &mut Frame, tui_state: &mut TuiState, s
         });
     let list = Table::new(items, [Constraint::Length(10), Constraint::Fill(1)])
         .theme(&tui_state.theme)
-        .row_highlight_style(
-            Style::new()
-                .bg(tui_state.theme.primary)
-                .bold()
-                .italic()
-                .fg(tui_state.theme.fg),
-        );
+        .row_highlight_style(tui_state.theme.highlight());
     frame.render_stateful_widget(list, list_area, &mut table_state);
 }
 
@@ -887,7 +888,7 @@ fn draw_mem(area: Rect, frame: &mut Frame, tui_state: &mut TuiState, state: &App
         .repeat(4),
     )
     .theme(&tui_state.theme)
-    .cell_highlight_style(Style::new().bg(tui_state.theme.primary).bold().italic())
+    .cell_highlight_style(tui_state.theme.highlight())
     .column_spacing(0);
     let [hexdump_area, sep_area, inspect_area] = Layout::horizontal([
         Constraint::Length(hexdump_width),
@@ -1022,7 +1023,7 @@ fn draw_breakpoints(area: Rect, frame: &mut Frame, tui_state: &mut TuiState, sta
                     Constraint::Fill(1),
                 ],
             )
-            .row_highlight_style(Style::new().bg(tui_state.theme.primary).bold().italic())
+            .row_highlight_style(tui_state.theme.highlight())
             .theme(&tui_state.theme),
             breakpoints_area,
             &mut tui_state.breakpoints_table,

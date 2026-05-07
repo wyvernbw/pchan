@@ -94,6 +94,7 @@ pub struct Emu {
     pub gpu:           GpuState,
     pub dma:           DmaState,
     pub timers:        TimerState,
+    #[debug(skip)]
     pub spu:           SpuState,
     #[cfg(feature = "debugger-ext")]
     pub dbg:           DebuggerState,
