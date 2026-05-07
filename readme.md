@@ -67,12 +67,11 @@ goal is ~0.1ms (Duckstation runs it in ~0.16ms). There is a long way to go,
 but I already know which parts are stupid slow and how to fix them. However, my
 initial focus for now is on features and correctness.
 
-A goal of this project is to make a very accurate and fast dynarec, such that
-an interpreter is not needed. This might be impossible and/or it might make
-P-chan quite cycle-inaccurate. So far however, (barring the seemingly endless
-pile of bugs) the dynarec is both fast enough in the uncached scenario where
-an interpreter would be needed, and its accurate enough. The reason behind this
-decision is that, I really cannot be assed to code an interpreter.
+A goal of this project is to make a very accurate and fast dynarec, such that an
+interpreter is not needed. This might be impossible and/or it might make P-chan
+quite cycle-inaccurate. The reason behind this decision is that, I really cannot
+be assed to code an interpreter. No interpreter makes debugging difficult, as
+such, much <3 to the devs of PCSX-Redux, which I am using for cross comparison.
 
 ## On AI Code
 
