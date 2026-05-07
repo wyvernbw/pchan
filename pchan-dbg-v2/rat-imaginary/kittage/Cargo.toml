@@ -20,11 +20,11 @@ targets = [ "x86_64-unknown-linux-gnu", "aarch64-apple-darwin", "x86_64-pc-windo
 base64-simd = "0.8"
 thiserror = "2.0"
 crossterm = { version = "0.29", default-features = false, features = ["event-stream", "bracketed-paste"], optional = true }
-futures-core = { version = "0.3.31", optional = true }
+futures-core = { version = "0.3.32", optional = true }
 tokio = { version = "1", default-features = false, features = ["time"], optional = true }
 image = { version = "0.25", default-features = false, optional = true }
-memchr = "2.7.5"
-log = { version = "0.4.27", optional = true }
+memchr = "2.8.0"
+log = { version = "0.4.29", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 psx-shm = "0.2"

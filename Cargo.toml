@@ -29,7 +29,7 @@ members = [
 arbitrary-int = "2.1.1"
 bitbybit = "2.0.0"
 tracing = "0.1.44"
-const-hex = { version = "1.18.1", features = ["nightly", "portable-simd"] }
+const-hex = { version = "1.19.0", features = ["nightly", "portable-simd"] }
 pchan-emu = { path = "./pchan-emu" }
 pchan-gpu = { path = "./pchan-gpu" }
 pchan-macros = { path = "./pchan-macros" }

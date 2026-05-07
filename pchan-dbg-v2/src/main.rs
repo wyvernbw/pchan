@@ -57,7 +57,6 @@ use crate::{
 };
 
 fn main() -> Result<()> {
-    // miette_panic::install(miette_panic::PanicHookArgs::default());
     pchan_utils::init_tracing(InitTracingArgs {
         panic_hook: false,
         file:       true,

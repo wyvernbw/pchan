@@ -8,7 +8,7 @@ tracing-subscriber = { workspace = true }
 derive_more = { version = "2.1.1", features = ["full"] }
 tracing = { workspace = true }
 const-hex.workspace = true
-heapless = "0.9.2"
+heapless = "0.9.3"
 kanal.workspace = true
 
 [dev-dependencies]

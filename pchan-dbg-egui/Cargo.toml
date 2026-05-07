@@ -4,9 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-egui = "0.34.1"
-egui-wgpu = "0.34.1"
-egui-winit = { version = "0.34.1", features = ["accesskit"] }
+egui = "0.34.2"
+egui-wgpu = "0.34.2"
+egui-winit = { version = "0.34.2", features = ["accesskit"] }
 glam = "0.32.1"
 miette = { version = "7.6.0", features = ["fancy"] }
 miette-panic = "0.1.0"
