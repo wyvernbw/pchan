@@ -14,8 +14,16 @@ not complete yet, they are enough to render the bios splash screen accurately.
   - [x] aarch64
   - [ ] x86_64 (later)
   - [ ] risc-v (later)
-- [x] gpu 
-- [x] wgpu renderer
+- [ ] gpu
+  - [x] guest emulation
+    - [x] basic functionality (vram, dma, gpu commands, etc)
+    - [x] timing
+    - [x] draw calls
+  - [ ] `WIP` hardware (wgpu) renderer
+    - [x] polygons (tris and quads)
+    - [ ] rects (sprites)
+    - [ ] lines
+  - [ ] software renderer (not started)
 - [ ] cdrom
 - [ ] spu
   - [x] basic spu & gauss interpolation
