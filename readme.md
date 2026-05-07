@@ -17,7 +17,13 @@ not complete yet, they are enough to render the bios splash screen accurately.
 - [x] gpu 
 - [x] wgpu renderer
 - [ ] cdrom
-- [ ] spu << we are here
+- [ ] spu
+  - [x] basic spu & gauss interpolation
+  - [x] audio thread 
+  - [x] volume
+  - [x] adsr envelope
+  - [ ] reverb
+  - [ ] noise generator
 - [ ] input
 
 ## Build
