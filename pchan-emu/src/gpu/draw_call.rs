@@ -9,13 +9,11 @@ use crate::io::CastIOInto;
 use arbitrary_int::prelude::*;
 use bitbybit::bitenum;
 use bitbybit::bitfield;
-use bon::Builder;
 use glam::I16Vec2;
 use glam::U8Vec2;
 use glam::U8Vec3;
 use glam::U16Vec2;
 use smallvec::SmallVec;
-use smallvec::smallvec;
 use tracing::Level;
 
 #[derive(Debug, Clone)]
@@ -59,7 +57,7 @@ pub enum DrawRectDecoder {
     },
 }
 
-#[derive(Debug, Clone, Builder)]
+#[derive(Debug, Clone)]
 #[derive_const(Default)]
 pub struct DrawRect {
     pub color:    DrawRectColor,
@@ -68,7 +66,7 @@ pub struct DrawRect {
     pub var_size: Option<VramCoord>,
 }
 
-#[derive(Debug, Clone, Copy, Default, Builder)]
+#[derive(Debug, Clone, Copy, Default)]
 #[repr(C)]
 pub struct Uv {
     pub uv:    U8Vec2,

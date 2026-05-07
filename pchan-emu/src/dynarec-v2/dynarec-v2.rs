@@ -1,4 +1,3 @@
-use bon::Builder;
 use derive_more as d;
 use dynasm::dynasm;
 use dynasmrt::Assembler;
@@ -7,6 +6,7 @@ use dynasmrt::DynasmLabelApi;
 use dynasmrt::ExecutableBuffer;
 use heapless::Deque;
 use heapless::binary_heap::Min;
+use pchan_utils::default;
 use pchan_utils::hex;
 use smallbox::SmallBox;
 use smallvec::SmallVec;
@@ -76,14 +76,19 @@ type Reloc = dynasmrt::x64::X64Relocation;
 
 type DynEmitter = SmallBox<dyn Fn(EmitCtx) -> EmitSummary, [usize; 1]>;
 
-#[derive(derive_more::Debug, Builder)]
+#[derive(derive_more::Debug)]
 pub struct Dynarec {
-    #[builder(default)]
     reg_alloc: RegAlloc,
-    #[builder(default)]
     scheduler: Box<Scheduler>,
     #[debug(skip)]
     asm:       Assembler<Reloc>,
+}
+
+#[derive(Default)]
+pub struct CreateDynarecParams {
+    reg_alloc: Option<RegAlloc>,
+    scheduler: Option<Box<Scheduler>>,
+    asm:       Option<Assembler<Reloc>>,
 }
 
 unsafe impl Send for Dynarec {}
@@ -96,6 +101,27 @@ impl Default for Dynarec {
         Self {
             scheduler: Box::new(Scheduler::default()),
             reg_alloc: Default::default(),
+            asm,
+        }
+    }
+}
+
+impl Dynarec {
+    pub fn new(
+        CreateDynarecParams {
+            reg_alloc,
+            scheduler,
+            asm,
+        }: CreateDynarecParams,
+    ) -> Self {
+        let reg_alloc = reg_alloc.unwrap_or_default();
+        let scheduler = scheduler.unwrap_or_default();
+        let asm = asm.unwrap_or_else(|| {
+            Assembler::new_with_capacity(8 * 50).expect("fatal: failed to allocate assembler")
+        });
+        Self {
+            reg_alloc,
+            scheduler,
             asm,
         }
     }
@@ -847,16 +873,10 @@ pub fn run_step(emu: &mut Emu, dynarec: Box<Dynarec>) -> Box<Dynarec> {
     emu.dynarec_cache.insert(pc, block);
 
     dynarec.unwrap_or_else(|| {
-        Box::new(
-            Dynarec::builder()
-                .maybe_scheduler(scheduler)
-                .reg_alloc(RegAlloc::default())
-                .asm(
-                    Assembler::new_with_capacity(8 * 50)
-                        .expect("fatal: failed to allocate assembler"),
-                )
-                .build(),
-        )
+        Box::new(Dynarec::new(CreateDynarecParams {
+            scheduler,
+            ..default()
+        }))
     })
 }
 
@@ -973,16 +993,10 @@ impl PipelineV2 {
             PipelineV2::Cached { dynarec, scheduler } => Ok(PipelineV2::Init {
                 pc:      emu.cpu.pc,
                 dynarec: dynarec.unwrap_or_else(|| {
-                    Box::new(
-                        Dynarec::builder()
-                            .maybe_scheduler(scheduler)
-                            .reg_alloc(RegAlloc::default())
-                            .asm(
-                                Assembler::new_with_capacity(8 * 50)
-                                    .expect("fatal: failed to allocate assembler"),
-                            )
-                            .build(),
-                    )
+                    Box::new(Dynarec::new(CreateDynarecParams {
+                        scheduler,
+                        ..default()
+                    }))
                 }),
             }),
             PipelineV2::Uninit => Ok(PipelineV2::Uninit),

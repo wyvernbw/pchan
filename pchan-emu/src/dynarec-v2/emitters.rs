@@ -8,11 +8,9 @@ use crate::dynarec_v2::regalloc::AllocResult;
 use crate::io::IO;
 use std::num::NonZeroU8;
 
-use bon::Builder;
-use bon::bon;
-use bon::builder;
 use enum_dispatch::enum_dispatch;
 
+use pchan_utils::default;
 use pchan_utils::hex;
 #[cfg(test)]
 use rstest::rstest;
@@ -33,7 +31,7 @@ use dynasmrt::DynasmLabelApi;
 
 use super::ScheduledEmitter;
 
-#[derive(Debug, Builder)]
+#[derive(Debug)]
 pub struct EmitCtx<'a> {
     pub dynarec:    &'a mut Dynarec,
     pub cache:      &'a DynarecCache,
@@ -44,18 +42,12 @@ pub struct EmitCtx<'a> {
 
 const MAX_SCRATCH_REG: u8 = 3;
 
-#[bon]
 impl<'a> EmitCtx<'a> {
     fn parity(&self) -> impl Fn(u8) -> u8 + 'static {
         let m = (self.pc >> 2) % 2;
         move |reg| reg + m as u8 * MAX_SCRATCH_REG
     }
-    #[builder]
-    fn schedule_in(
-        &mut self,
-        #[builder(start_fn)] ops: u32,
-        emitter: impl Fn(EmitCtx) -> EmitSummary + 'static,
-    ) {
+    fn schedule_in(&mut self, ops: u32, emitter: impl Fn(EmitCtx) -> EmitSummary + 'static) {
         let emitter = SmallBox::new(emitter) as DynEmitter;
         let at = self.pc + ops * 4;
         self.dynarec
@@ -89,9 +81,15 @@ pub enum Boundary {
     Hard,
 }
 
-#[derive(Debug, Default, Builder)]
+#[derive(Debug, Default)]
 pub struct EmitSummary {
     pub pc_updated: bool,
+}
+
+impl EmitSummary {
+    pub fn pc_updated() -> Self {
+        Self { pc_updated: true }
+    }
 }
 
 #[enum_dispatch(DecodedOp)]
@@ -317,10 +315,24 @@ impl DecodedOp {
     }
 }
 
-#[bon]
+#[non_exhaustive]
+struct EmitAddImm16Args {
+    dest:   Reg,
+    base:   Reg,
+    offset: i16,
+    temp:   Option<Reg>,
+}
+
 impl Dynarec {
-    #[builder]
-    pub fn emit_add_imm16(&mut self, dest: Reg, base: Reg, offset: i16, temp: Option<Reg>) {
+    pub fn emit_add_imm16(
+        &mut self,
+        EmitAddImm16Args {
+            dest,
+            base,
+            offset,
+            temp,
+        }: EmitAddImm16Args,
+    ) {
         let temp = temp.unwrap_or(Reg::W(3));
         #[cfg(target_arch = "aarch64")]
         {
@@ -421,12 +433,12 @@ impl DynarecOp for Addiu {
         let rs = ctx.dynarec.emit_load_reg(self.rs);
         let rt = ctx.dynarec.alloc_reg(self.rt);
 
-        ctx.dynarec
-            .emit_add_imm16()
-            .dest(rt.reg())
-            .base(rs.reg())
-            .offset(self.imm16)
-            .call();
+        ctx.dynarec.emit_add_imm16(EmitAddImm16Args {
+            dest:   rt.reg(),
+            base:   rs.reg(),
+            offset: self.imm16,
+            temp:   None,
+        });
 
         ctx.dynarec.mark_dirty(self.rt);
 
@@ -523,30 +535,28 @@ fn emit_store(
     dynasm!(
         ctx.dynarec.asm
         ; .arch aarch64
-        ;; ctx.dynarec.emit_add_imm16().dest(Reg::W(1)).base(Reg::W(1)).offset(imm).call()
+        ;; ctx.dynarec.emit_add_imm16(EmitAddImm16Args { dest: Reg::W(1), base: Reg::W(1), offset: imm, temp: None })
         // ; stp w1, w2, [sp, #-16]!
         ; fmov S(s(9)), w1
         ; fmov S(s(10)), w2
     );
 
-    ctx.schedule_in(1)
-        .emitter(move |mut ctx| {
-            dynasm!(
-                ctx.dynarec.asm
-                ; .arch aarch64
-                // need to track caller saved registers in regalloc
-                // we have to store x0 since the function call will clobber it
-                // call to function
-                ;; let saved = ctx.dynarec.emit_save_volatile_registers()
-                ; fmov w1, S(s(9))
-                ; fmov w2, S(s(10))
-                ;; func_call(&mut ctx)
-                ;; ctx.dynarec.emit_restore_saved_registers(saved.into_iter())
+    ctx.schedule_in(1, move |mut ctx| {
+        dynasm!(
+            ctx.dynarec.asm
+            ; .arch aarch64
+            // need to track caller saved registers in regalloc
+            // we have to store x0 since the function call will clobber it
+            // call to function
+            ;; let saved = ctx.dynarec.emit_save_volatile_registers()
+            ; fmov w1, S(s(9))
+            ; fmov w2, S(s(10))
+            ;; func_call(&mut ctx)
+            ;; ctx.dynarec.emit_restore_saved_registers(saved.into_iter())
 
-            );
-            EmitSummary::default()
-        })
-        .call();
+        );
+        EmitSummary::default()
+    });
 
     EmitSummary::default()
 }
@@ -897,50 +907,48 @@ fn emit_load<const ALIGNED: bool>(
     dynasm!(
         ctx.dynarec.asm
         ; .arch aarch64
-        ;; ctx.dynarec.emit_add_imm16().dest(Reg::W(1)).base(Reg::W(1)).offset(imm).call()
+        ;; ctx.dynarec.emit_add_imm16(EmitAddImm16Args { dest: Reg::W(1), base: Reg::W(1), offset: imm, temp: None })
         ; fmov S(s(8)), w1
     );
 
-    ctx.schedule_in(1)
-        .emitter(move |mut ctx| {
-            if ALIGNED {
-                dynasm!(
-                    ctx.dynarec.asm
-                    ; .arch aarch64
-                    // ; ldr w1, [sp], #16
-                    ;; let saved = ctx.dynarec.emit_save_volatile_registers()
-                    ; fmov w1, S(s(8))
-                    ;; func_call(&mut ctx)
-                    ; fmov S(s(8)), w0 // place return value in s8+
-                    ;; ctx.dynarec.emit_restore_saved_registers(saved.into_iter())
-                );
-            } else {
-                let rt = ctx.dynarec.emit_load_reg(rt);
-                dynasm!(
-                    ctx.dynarec.asm
-                    ; .arch aarch64
-                    ;; let saved = ctx.dynarec.emit_save_volatile_registers()
-                    ; fmov w1, S(s(8))
-                    ; mov w2, W(*rt)
-                    ;; func_call(&mut ctx)
-                    ; fmov S(s(8)), w0 // place return value in s8+
-                    ;; ctx.dynarec.emit_restore_saved_registers(saved.into_iter())
-                );
-            }
+    ctx.schedule_in(1, move |mut ctx| {
+        if ALIGNED {
+            dynasm!(
+                ctx.dynarec.asm
+                ; .arch aarch64
+                // ; ldr w1, [sp], #16
+                ;; let saved = ctx.dynarec.emit_save_volatile_registers()
+                ; fmov w1, S(s(8))
+                ;; func_call(&mut ctx)
+                ; fmov S(s(8)), w0 // place return value in s8+
+                ;; ctx.dynarec.emit_restore_saved_registers(saved.into_iter())
+            );
+        } else {
+            let rt = ctx.dynarec.emit_load_reg(rt);
+            dynasm!(
+                ctx.dynarec.asm
+                ; .arch aarch64
+                ;; let saved = ctx.dynarec.emit_save_volatile_registers()
+                ; fmov w1, S(s(8))
+                ; mov w2, W(*rt)
+                ;; func_call(&mut ctx)
+                ; fmov S(s(8)), w0 // place return value in s8+
+                ;; ctx.dynarec.emit_restore_saved_registers(saved.into_iter())
+            );
+        }
 
-            if rt != 0 {
-                let rta = ctx.dynarec.alloc_reg(rt);
-                dynasm!(
-                    ctx.dynarec.asm
-                    ; fmov W(*rta), S(s(8))
-                );
-                ctx.dynarec.mark_dirty(rt);
-                rta.restore(ctx.dynarec);
-            }
+        if rt != 0 {
+            let rta = ctx.dynarec.alloc_reg(rt);
+            dynasm!(
+                ctx.dynarec.asm
+                ; fmov W(*rta), S(s(8))
+            );
+            ctx.dynarec.mark_dirty(rt);
+            rta.restore(ctx.dynarec);
+        }
 
-            EmitSummary::default()
-        })
-        .call();
+        EmitSummary::default()
+    });
 
     EmitSummary::default()
 }
@@ -1982,29 +1990,27 @@ macro_rules! jump_to_pc {
 impl DynarecOp for J {
     fn emit<'a>(&self, mut ctx: EmitCtx<'a>) -> EmitSummary {
         let new_pc = (self.imm26 << 2) | (ctx.pc & 0xf0000000);
-        ctx.schedule_in(1)
-            .emitter(move |mut ctx| {
-                ctx.dynarec.emit_write_pc(Reg::W(1), new_pc);
-                // #[cfg(target_arch = "aarch64")]
-                // dynasm!(
-                //     ctx.dynarec.asm
-                //     ; ldr x3, ->jump // defined in prelude
-                //     ; str x0, [sp, #-16]!
-                //     ;; ctx.dynarec.emit_write_pc(Reg::W(1), new_pc)
-                //     ; blr x3
-                //     ; mov x3, x0
-                //     ; ldr x0, [sp], #16
+        ctx.schedule_in(1, move |mut ctx| {
+            ctx.dynarec.emit_write_pc(Reg::W(1), new_pc);
+            // #[cfg(target_arch = "aarch64")]
+            // dynasm!(
+            //     ctx.dynarec.asm
+            //     ; ldr x3, ->jump // defined in prelude
+            //     ; str x0, [sp, #-16]!
+            //     ;; ctx.dynarec.emit_write_pc(Reg::W(1), new_pc)
+            //     ; blr x3
+            //     ; mov x3, x0
+            //     ; ldr x0, [sp], #16
 
-                //     ; cbz x3, >miss
+            //     ; cbz x3, >miss
 
-                //     ;; ctx.drain_schedule()
-                //     ;; ctx.dynarec.emit_block_epilogue(ctx.d_clock, None, false)
-                //     ; br x3
-                //     ; miss:
-                // );
-                EmitSummary::builder().pc_updated(true).build()
-            })
-            .call();
+            //     ;; ctx.drain_schedule()
+            //     ;; ctx.dynarec.emit_block_epilogue(ctx.d_clock, None, false)
+            //     ; br x3
+            //     ; miss:
+            // );
+            EmitSummary::pc_updated()
+        });
         EmitSummary::default()
     }
 
@@ -2063,14 +2069,12 @@ impl DynarecOp for Jal {
     fn emit<'a>(&self, mut ctx: EmitCtx<'a>) -> EmitSummary {
         let new_pc = (self.imm26 << 2) + (ctx.pc & 0xf0000000);
         let return_address = ctx.pc + 0x8;
-        ctx.schedule_in(1)
-            .emitter(move |ctx| {
-                ctx.dynarec.emit_write_pc(Reg::W(3), new_pc);
-                ctx.dynarec.emit_immediate_large(cpu::RA, return_address);
+        ctx.schedule_in(1, move |ctx| {
+            ctx.dynarec.emit_write_pc(Reg::W(3), new_pc);
+            ctx.dynarec.emit_immediate_large(cpu::RA, return_address);
 
-                EmitSummary::builder().pc_updated(true).build()
-            })
-            .call();
+            EmitSummary::pc_updated()
+        });
         EmitSummary::default()
     }
 }
@@ -2128,18 +2132,16 @@ impl DynarecOp for Jr {
             ; fmov S(s(8)), W(*dest)
         );
 
-        ctx.schedule_in(1)
-            .emitter(move |ctx| {
-                #[cfg(target_arch = "aarch64")]
-                dynasm!(
-                    ctx.dynarec.asm
-                    ; .arch aarch64
-                    ; str S(s(8)), [x0, Emu::PC_OFFSET as _]
-                );
+        ctx.schedule_in(1, move |ctx| {
+            #[cfg(target_arch = "aarch64")]
+            dynasm!(
+                ctx.dynarec.asm
+                ; .arch aarch64
+                ; str S(s(8)), [x0, Emu::PC_OFFSET as _]
+            );
 
-                EmitSummary::builder().pc_updated(true).build()
-            })
-            .call();
+            EmitSummary::pc_updated()
+        });
         EmitSummary::default()
     }
 }
@@ -2225,24 +2227,22 @@ impl DynarecOp for Jalr {
 
         let rd = self.rd;
         // we know the delay slots runs at old pc + 4
-        ctx.schedule_in(1)
-            .emitter(move |ctx| {
-                #[cfg(target_arch = "aarch64")]
-                dynasm!(
-                    ctx.dynarec.asm
-                    ; .arch aarch64
-                    // ; ldr w3, [sp], #16
-                    ; str S(s(8)), [x0, Emu::PC_OFFSET as _]
-                );
+        ctx.schedule_in(1, move |ctx| {
+            #[cfg(target_arch = "aarch64")]
+            dynasm!(
+                ctx.dynarec.asm
+                ; .arch aarch64
+                // ; ldr w3, [sp], #16
+                ; str S(s(8)), [x0, Emu::PC_OFFSET as _]
+            );
 
-                let ret_address = ctx.pc + 0x8;
-                if rd != 0 {
-                    ctx.dynarec.emit_immediate_large(rd, ret_address);
-                }
+            let ret_address = ctx.pc + 0x8;
+            if rd != 0 {
+                ctx.dynarec.emit_immediate_large(rd, ret_address);
+            }
 
-                EmitSummary::builder().pc_updated(true).build()
-            })
-            .call();
+            EmitSummary::pc_updated()
+        });
         EmitSummary::default()
     }
 }
@@ -2311,27 +2311,25 @@ fn emit_branch(
     );
 
     let branch_dest = (ctx.pc + 0x4).wrapping_add_signed(ext::sign(imm) << 2);
-    ctx.schedule_in(1)
-        .emitter(move |mut ctx| {
-            dynasm!(
-                ctx.dynarec.asm
-                ; .arch aarch64
-                // ; ldp w2, w3, [sp], #16
-                ; fmov w2, S(s(9))
-                ; fmov w3, S(s(10))
-                ; cmp w2, w3
+    ctx.schedule_in(1, move |mut ctx| {
+        dynasm!(
+            ctx.dynarec.asm
+            ; .arch aarch64
+            // ; ldp w2, w3, [sp], #16
+            ; fmov w2, S(s(9))
+            ; fmov w3, S(s(10))
+            ; cmp w2, w3
 
-                ; movz w2, (ctx.pc + 0x8) >> 16, lsl #16
-                ; movk w2, (ctx.pc + 0x8) & 0x0000_ffff
-                ; movz w3, branch_dest >> 16, lsl #16
-                ; movk w3, branch_dest & 0x0000_ffff
-                ;; selector(&mut ctx)
-                ; str w2, [x0, Emu::PC_OFFSET as _]
-            );
+            ; movz w2, (ctx.pc + 0x8) >> 16, lsl #16
+            ; movk w2, (ctx.pc + 0x8) & 0x0000_ffff
+            ; movz w3, branch_dest >> 16, lsl #16
+            ; movk w3, branch_dest & 0x0000_ffff
+            ;; selector(&mut ctx)
+            ; str w2, [x0, Emu::PC_OFFSET as _]
+        );
 
-            EmitSummary::builder().pc_updated(true).build()
-        })
-        .call();
+        EmitSummary::pc_updated()
+    });
 
     rt.restore(ctx.dynarec);
     rs.restore(ctx.dynarec);
@@ -2487,6 +2485,7 @@ fn test_branch(
 
     Ok(())
 }
+
 /// `selector` must look something like
 /// ```
 /// dynasm!(
@@ -2514,26 +2513,24 @@ fn emit_branch_zero(
     );
 
     let branch_dest = (ctx.pc + 0x4).wrapping_add_signed(ext::sign(imm) << 2);
-    ctx.schedule_in(1)
-        .emitter(move |mut ctx| {
-            dynasm!(
-                ctx.dynarec.asm
-                ; .arch aarch64
-                // ; ldr w2, [sp], #16
-                ; fmov w2, S(s(8))
-                ; cmp w2, #0
+    ctx.schedule_in(1, move |mut ctx| {
+        dynasm!(
+            ctx.dynarec.asm
+            ; .arch aarch64
+            // ; ldr w2, [sp], #16
+            ; fmov w2, S(s(8))
+            ; cmp w2, #0
 
-                ; movz w2, (ctx.pc + 0x8) >> 16, lsl #16
-                ; movk w2, (ctx.pc + 0x8) & 0x0000_ffff
-                ; movz w3, branch_dest >> 16, lsl #16
-                ; movk w3, branch_dest & 0x0000_ffff
-                ;; selector(&mut ctx)
-                ; str w2, [x0, Emu::PC_OFFSET as _]
-            );
+            ; movz w2, (ctx.pc + 0x8) >> 16, lsl #16
+            ; movk w2, (ctx.pc + 0x8) & 0x0000_ffff
+            ; movz w3, branch_dest >> 16, lsl #16
+            ; movk w3, branch_dest & 0x0000_ffff
+            ;; selector(&mut ctx)
+            ; str w2, [x0, Emu::PC_OFFSET as _]
+        );
 
-            EmitSummary::builder().pc_updated(true).build()
-        })
-        .call();
+        EmitSummary::pc_updated()
+    });
 
     rs.restore(ctx.dynarec);
 
@@ -3294,7 +3291,7 @@ impl DynarecOp for Syscall {
             ;; ctx.dynarec.emit_restore_saved_registers(saved.into_iter())
         );
 
-        EmitSummary::builder().pc_updated(true).build()
+        EmitSummary::pc_updated()
     }
 }
 
@@ -3308,7 +3305,7 @@ impl DynarecOp for Rfe {
                 ; blr x3
             )
         });
-        EmitSummary::builder().pc_updated(true).build()
+        EmitSummary::pc_updated()
     }
 }
 
@@ -3342,18 +3339,16 @@ fn emit_mthilo<'a>(rs: u8, mut ctx: EmitCtx<'a>, hilo: Hilo) -> EmitSummary {
     let rs = ctx.dynarec.emit_load_reg_stackless(rs);
     ctx.dynarec.lock_register(&rs);
 
-    ctx.schedule_in(2)
-        .emitter(move |ctx| {
-            #[cfg(target_arch = "aarch64")]
-            dynasm!(
-                ctx.dynarec.asm
-                ; .arch aarch64
-                ; str W(*rs), [x0, offset as _]
-            );
-            ctx.dynarec.unlock_register(&rs);
-            EmitSummary::default()
-        })
-        .call();
+    ctx.schedule_in(2, move |ctx| {
+        #[cfg(target_arch = "aarch64")]
+        dynasm!(
+            ctx.dynarec.asm
+            ; .arch aarch64
+            ; str W(*rs), [x0, offset as _]
+        );
+        ctx.dynarec.unlock_register(&rs);
+        EmitSummary::default()
+    });
     EmitSummary::default()
 }
 

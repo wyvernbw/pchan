@@ -9,6 +9,7 @@ use egui_winit::winit::{
 };
 use miette::{Context, IntoDiagnostic, Result, bail};
 use pchan_audio::{AudioStream, AudioTask};
+use pchan_utils::{InitTracingArgs, default};
 use spin_sleep::SpinSleeper;
 use std::{
     path::PathBuf,
@@ -24,10 +25,10 @@ use egui_wgpu::{
 use pchan_emu::{Emu, bootloader::Bootloader, dynarec_v2::PipelineV2, io::vblank::VBlank};
 
 fn main() -> Result<()> {
-    pchan_utils::init_tracing()
-        .panic_hook(false)
-        .indicatif(false)
-        .call();
+    pchan_utils::init_tracing(InitTracingArgs {
+        panic_hook: false,
+        ..default()
+    });
     miette_panic::install(miette_panic::PanicHookArgs { url: None });
     Main::run()?;
     Ok(())

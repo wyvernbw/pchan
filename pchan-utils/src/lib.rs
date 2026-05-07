@@ -1,7 +1,5 @@
 #![feature(generic_const_exprs)]
 #![allow(incomplete_features)]
-#![feature(impl_trait_in_assoc_type)]
-#![feature(ptr_as_ref_unchecked)]
 
 use std::{
     backtrace::Backtrace,
@@ -16,6 +14,10 @@ use tracing_subscriber::{
 };
 
 use tracing_subscriber::layer::SubscriberExt;
+
+pub fn default_const<T: Default>() -> T {
+    T::default()
+}
 
 pub const fn max_simd_width_bytes() -> usize {
     if cfg!(target_feature = "avx512f") {
@@ -96,11 +98,28 @@ pub fn setup_tracing() {
     }));
 }
 
-#[bon::builder]
+pub struct InitTracingArgs {
+    pub stdout:     bool,
+    pub file:       bool,
+    pub panic_hook: bool,
+}
+
+impl Default for InitTracingArgs {
+    fn default() -> Self {
+        Self {
+            stdout:     true,
+            file:       true,
+            panic_hook: true,
+        }
+    }
+}
+
 pub fn init_tracing(
-    #[builder(default = true)] stdout: bool,
-    #[builder(default = true)] file: bool,
-    #[builder(default = true)] panic_hook: bool,
+    InitTracingArgs {
+        stdout,
+        file,
+        panic_hook,
+    }: InitTracingArgs,
 ) {
     let stdout_layer = stdout.then(|| {
         fmt::layer()

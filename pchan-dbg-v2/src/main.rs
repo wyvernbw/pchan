@@ -37,7 +37,7 @@ use pchan_emu::{
     io::{IO, vblank::VBlank},
 };
 use pchan_gpu::Renderer;
-use pchan_utils::{hex, hex_pref};
+use pchan_utils::{InitTracingArgs, hex, hex_pref};
 use rat_imaginary::{ImageState, ImageWidget};
 use ratatui::{
     DefaultTerminal, Frame, crossterm,
@@ -59,11 +59,11 @@ use crate::{
 
 fn main() -> Result<()> {
     // miette_panic::install(miette_panic::PanicHookArgs::default());
-    pchan_utils::init_tracing()
-        .file(true)
-        .panic_hook(false)
-        .stdout(false)
-        .call();
+    pchan_utils::init_tracing(InitTracingArgs {
+        panic_hook: false,
+        file:       true,
+        stdout:     false,
+    });
     let env = EnvVars::new()?;
     smol::block_on(run_app(&env))
 }
