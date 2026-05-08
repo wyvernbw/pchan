@@ -8,6 +8,7 @@ use crate::dynarec_v2::regalloc::AllocResult;
 use crate::io::IO;
 use std::num::NonZeroU8;
 
+use arbitrary_int::traits::Integer;
 use enum_dispatch::enum_dispatch;
 
 use pchan_utils::default;
@@ -172,6 +173,7 @@ pub enum DecodedOp {
     Rfe(Rfe),
     Mfcn(Mfcn),
     Mtcn(Mtcn),
+    Ctcn(Ctcn),
     Lb(Lb),
     Lbu(Lbu),
     Lh(Lh),
@@ -285,7 +287,10 @@ impl DecodedOp {
                 }
                 (0x10..=0x13, 0x8, 0, _) => todo!("bcnf"),
                 (0x10..=0x13, 0x8, 1, _) => todo!("bcnt"),
-                (0x10..=0x13, 0x6, _, 0x0) => todo!("ctcn"),
+                (0x10..=0x13, 0x6, _, 0x0) => match fields.cop().as_u8() {
+                    2 => Self::Ctcn(Ctcn::new(2, rt, rd)),
+                    n => unimplemented!("ctc{n}"),
+                },
                 (0x10..=0x13, 0x10..=0x1F, _, _) => {
                     todo!("cop{} imm25 {}", fields.cop(), hex(fields.imm26().value()))
                 }
@@ -324,7 +329,7 @@ struct EmitAddImm16Args {
 }
 
 impl Dynarec {
-    pub fn emit_add_imm16(
+    fn emit_add_imm16(
         &mut self,
         EmitAddImm16Args {
             dest,
@@ -2780,6 +2785,31 @@ impl DynarecOp for Mtcn {
     }
 }
 
+impl DynarecOp for Ctcn {
+    fn cycles(&self) -> u16 {
+        match self.cop {
+            0 => 1,
+            1 => 1,
+            2 => 3,
+            3 => 1,
+            _ => unreachable!(),
+        }
+    }
+    #[allow(clippy::useless_conversion)]
+    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+        let rt = ctx.dynarec.emit_load_reg(self.rt);
+
+        #[cfg(target_arch = "aarch64")]
+        dynasm!(
+            ctx.dynarec.asm
+            ; .arch aarch64
+            ; str W(*rt), [x0, Cpu::cop_reg_offset(self.cop, self.rd + 32) as _]
+        );
+
+        rt.restore(ctx.dynarec);
+        EmitSummary::default()
+    }
+}
 #[cfg(test)]
 #[rstest]
 #[case(0, 5, 10)]
@@ -2800,6 +2830,30 @@ fn test_mtcn(#[case] cop: u8, #[case] rd: u8, #[case] rt: u8) -> color_eyre::Res
     match cop {
         0 => assert_eq!(emu.cpu.cop0.reg[rd as usize], 69),
         2 => assert_eq!(emu.cpu.cop2.reg[rd as usize], 69),
+        _ => panic!("get out"),
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+#[rstest]
+#[case(2, 5, 10)]
+#[case(2, 31, 10)]
+fn test_ctcn(#[case] cop: u8, #[case] rd: u8, #[case] rt: u8) -> color_eyre::Result<()> {
+    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use pchan_utils::setup_tracing;
+
+    setup_tracing();
+    let mut emu = Emu::default();
+    emu.cpu.gpr[rt as usize] = 69;
+
+    emu.write_many(0x0, &program([ctcn(cop, rt, rd), OpCode::HALT]));
+
+    PipelineV2::new(&emu).run_once(&mut emu)?;
+    tracing::info!(?emu.cpu);
+    match cop {
+        2 => assert_eq!(emu.cpu.cop2.reg[rd as usize + 32], 69),
         _ => panic!("get out"),
     }
 

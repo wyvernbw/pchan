@@ -342,6 +342,15 @@ pub struct Mtcn {
 }
 
 #[derive(Encode, Debug, Clone, Copy, Hash, PartialEq, Eq, d::Display)]
+#[encode(opcode = 0x10, rs = 0x06, funct = 0x00, cop = self.cop)]
+#[display("Ctc{} ${}, $r{}", self.cop, reg_str(self.rt), self.rd)]
+pub struct Ctcn {
+    pub cop: u8,
+    pub rt:  u8,
+    pub rd:  u8,
+}
+
+#[derive(Encode, Debug, Clone, Copy, Hash, PartialEq, Eq, d::Display)]
 #[encode(opcode = 0x00, funct = 0x11)]
 #[display("mthi ${}", reg_str(self.rs))]
 pub struct Mthi {

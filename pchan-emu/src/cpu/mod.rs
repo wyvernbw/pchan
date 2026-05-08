@@ -18,7 +18,7 @@ pub mod ops;
 #[derive(Default, derive_more::Debug, Clone, Hash)]
 #[repr(C)]
 pub struct Cpu {
-    pub gpr:          Regs<32>,
+    pub gpr:          Regs<32, true>,
     #[debug("{}", hex(self.pc))]
     pub pc:           u32, // store pc and d_clock together so one write can target both
     pub d_clock:      u32,
@@ -35,16 +35,16 @@ pub struct Cpu {
 use std::fmt;
 
 #[derive(d::Deref, d::DerefMut, d::AsMut, d::AsRef, Hash, Clone)]
-pub struct Regs<const N: usize>([u32; N]);
+pub struct Regs<const N: usize, const NAMED: bool>([u32; N]);
 
-impl<const N: usize> Default for Regs<N> {
+impl<const N: usize, const NAMED: bool> Default for Regs<N, NAMED> {
     fn default() -> Self {
         let arr = [0; N];
         Self(arr)
     }
 }
 
-impl<const N: usize> fmt::Debug for Regs<N> {
+impl<const N: usize, const NAMED: bool> fmt::Debug for Regs<N, NAMED> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut list = f.debug_list();
         for (i, val) in self
@@ -54,25 +54,36 @@ impl<const N: usize> fmt::Debug for Regs<N> {
             .enumerate()
             .filter(|(_, val)| val != &0)
         {
-            list.entry(&format_args!("${}={}", REG_STR[i], hex(val)));
+            if NAMED {
+                list.entry(&format_args!("${}={}", REG_STR[i], hex(val)));
+            } else {
+                list.entry(&format_args!("$r{}={}", i, hex(val)));
+            }
         }
         list.finish()
     }
 }
 
 macro_rules! coprocessor_definition {
-    ($n:ident) => {
+    ($n:ident, $cnt:expr) => {
         #[derive(derive_more::Debug, Clone, Hash)]
         #[repr(C)]
         pub struct $n {
-            pub reg: Regs<32>,
+            pub reg: Regs<$cnt, true>,
+        }
+    };
+    ($n:ident, $cnt:expr, unnamed) => {
+        #[derive(derive_more::Debug, Clone, Hash)]
+        #[repr(C)]
+        pub struct $n {
+            pub reg: Regs<$cnt, false>,
         }
     };
 }
 
-coprocessor_definition!(Cop0);
-coprocessor_definition!(Cop1);
-coprocessor_definition!(Cop2);
+coprocessor_definition!(Cop0, 32);
+coprocessor_definition!(Cop1, 32);
+coprocessor_definition!(Cop2, 64, unnamed);
 
 // bitfield! {
 //     pub struct Cop0StatusReg(u32);
@@ -268,7 +279,7 @@ impl Default for Cop1 {
 #[allow(clippy::derivable_impls)]
 impl Default for Cop2 {
     fn default() -> Self {
-        Self { reg: Regs([0; 32]) }
+        Self { reg: Regs([0; 64]) }
     }
 }
 
