@@ -437,7 +437,7 @@ impl ADSRState {
             let levels = Simd::from_slice(&self.envelopes.level[base..]);
             let sustain_levels = Simd::from_slice(&self.envelopes.sustain_level[base..]);
             let phases = unsafe {
-                std::ptr::read(self.envelopes.phase[base..].as_ptr() as *const Simd<u16, N>)
+                std::ptr::read(self.envelopes.phase[base..base + N].as_ptr() as *const Simd<u16, N>)
             };
             let is_attack = phases.simd_eq(attack);
             let is_attack_end_level = levels.simd_eq(attack_end_level);
