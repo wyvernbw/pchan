@@ -34,7 +34,7 @@ use crate::{
     cpu::Cpu,
     dynarec_v2::{DynarecBlock, DynarecCache},
     gpu::GpuState,
-    io::{dma::DmaState, irq::IrqState, timers::TimerState, tty::Tty},
+    io::{cdrom::CDRomState, dma::DmaState, irq::IrqState, timers::TimerState, tty::Tty},
     memory::MemoryState,
     spu::SpuState,
 };
@@ -98,6 +98,7 @@ pub struct Emu {
     pub spu:           SpuState,
     #[cfg(feature = "debugger-ext")]
     pub dbg:           DebuggerState,
+    pub cdrom:         CDRomState,
 }
 
 impl Emu {
@@ -135,6 +136,8 @@ pub trait Bus {
     fn dma_mut(&mut self) -> &mut DmaState;
     fn spu(&self) -> &SpuState;
     fn spu_mut(&mut self) -> &mut SpuState;
+    fn cdrom(&self) -> &CDRomState;
+    fn cdrom_mut(&mut self) -> &mut CDRomState;
 }
 
 impl Bus for Emu {
@@ -192,8 +195,19 @@ impl Bus for Emu {
         &self.spu
     }
 
+    #[inline(always)]
     fn spu_mut(&mut self) -> &mut SpuState {
         &mut self.spu
+    }
+
+    #[inline(always)]
+    fn cdrom(&self) -> &CDRomState {
+        &self.cdrom
+    }
+
+    #[inline(always)]
+    fn cdrom_mut(&mut self) -> &mut CDRomState {
+        &mut self.cdrom
     }
 }
 

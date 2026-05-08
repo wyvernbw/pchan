@@ -12,6 +12,7 @@ use crate::memory::{Extend, GUEST_MEM_MAP, MEM_MAP, ScratchpadMem};
 use crate::spu::Spu;
 use crate::{Bus, Emu, io::cdrom::CDRom, memory::fastmem::Fastmem};
 
+#[path = "./cdrom/cdrom.rs"]
 pub mod cdrom;
 pub mod dma;
 pub mod irq;
