@@ -420,14 +420,7 @@ impl Voice {
         // current holds the address shifted right by 3, so we add 2 to advance
         // by 16 bytes.
         self.current.0 = self.current.0.wrapping_add(2);
-        tracing::info!(voice_0_start = self.start.0 << 3);
-        tracing::info!(voice_0_current = self.current.0 << 3);
         if header.flags.loop_end() {
-            tracing::info!(
-                "loop end: {} -> {}",
-                hex(self.current.0 << 3),
-                hex(self.repeat.0 << 3)
-            );
             self.reached_end = true;
             self.current = ADPCMCurrent(self.repeat.0);
             if !header.flags.loop_repeat() {
