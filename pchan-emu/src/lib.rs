@@ -21,6 +21,7 @@
 #![feature(generic_const_exprs)]
 #![feature(const_array)]
 #![feature(portable_simd)]
+#![feature(explicit_tail_calls)]
 // allow unused variables in tests to supress the setup tracing warnings
 #![cfg_attr(test, allow(unused_variables))]
 

@@ -331,7 +331,7 @@ impl Dynarec {
         Self::emit_writeback_free(&mut self.asm, guest_reg, host_reg);
     }
 
-    fn emit_block_epilogue(&mut self, d_clock: u32, new_pc: Option<u32>, emit_ret: bool) {
+    fn emit_writeback_all(&mut self) {
         // emit write back to dirty registers
         self.reg_alloc
             .dirty
@@ -343,6 +343,10 @@ impl Dynarec {
                 let host_reg = self.alloc_reg(guest_reg as _);
                 self.emit_writeback(guest_reg as _, host_reg.reg());
             });
+    }
+
+    fn emit_block_epilogue(&mut self, d_clock: u32, new_pc: Option<u32>, emit_ret: bool) {
+        self.emit_writeback_all();
 
         const {
             debug_assert!(Emu::D_CLOCK_OFFSET == Emu::PC_OFFSET + 4);

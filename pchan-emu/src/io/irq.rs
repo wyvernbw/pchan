@@ -42,6 +42,7 @@ pub enum Irq {
     #[default]
     Irq0Vblank = 0x0,
     Irq1Gpu    = 0x1,
+    Irq2CDRom  = 0x2,
     Irq3Dma    = 0x3,
     Irq4Timer0 = 0x4,
     Irq5Timer1 = 0x5,
@@ -81,7 +82,10 @@ pub trait Interrupts: Bus + IO + Exceptions {
     )]
     fn read<T: Copy>(&self, address: u32) -> IOResult<T> {
         match address {
-            0x1f801070 => Ok(self.irq().i_stat.io_from_u32()),
+            0x1f801070 => {
+                tracing::info!("read i_stat: {:#?}", self.irq().i_stat);
+                Ok(self.irq().i_stat.io_from_u32())
+            }
             0x1f801074 => Ok(self.irq().i_mask.io_from_u32()),
             _ => Err(UnhandledIO(address)),
         }
@@ -100,6 +104,7 @@ pub trait Interrupts: Bus + IO + Exceptions {
                 let write = value.io_into_u32_overwrite(i_stat);
                 let i_stat = i_stat & write;
                 irq.i_stat = IrqField::new_with_raw_value(i_stat);
+                tracing::info!("write i_stat: {:#?}", self.irq().i_stat);
 
                 Ok(())
             }

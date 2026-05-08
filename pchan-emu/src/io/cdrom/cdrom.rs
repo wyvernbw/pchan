@@ -1,15 +1,26 @@
+mod cdrom_cmds;
+mod cdrom_ver;
+
 use crate::{
     Bus, Emu,
-    io::{CastIOFrom, CastIOInto, UnhandledIO},
+    io::{
+        CastIOFrom, CastIOInto, UnhandledIO,
+        cdrom::cdrom_ver::{CDRomVer, CDRomVerPtr},
+        irq::{self, Interrupts},
+    },
 };
 use arbitrary_int::prelude::*;
-use bitbybit::bitfield;
+use bitbybit::{bitenum, bitfield};
+use pchan_utils::hex;
 
 #[derive(Default, derive_more::Debug, Clone)]
 pub struct CDRomState {
     status:      CDRomStatusReg,
     hint_status: CDRomHIntSts,
     hint_mask:   CDRomHIntMask,
+    param_fifo:  heapless::Deque<u8, 16>,
+    result_fifo: heapless::Deque<u8, 16>,
+    ver:         CDRomVerPtr,
 }
 
 macro_rules! trace_todo {
@@ -28,6 +39,9 @@ macro_rules! trace_todo {
 /// - [x] W status reg
 /// - [x] W CD Irq flag
 /// - [x] W CD Irq on/off
+/// - [x] R status reg
+/// - [x] W param fifo
+/// - [ ] W cd cmd reg
 ///
 /// log #0:
 ///
@@ -44,7 +58,14 @@ macro_rules! trace_todo {
 /// WARN pchan_emu::io::cdrom: todo(cdrom): write to cd irq flag register
 /// WARN pchan_emu::io::cdrom: todo(cdrom): write to irq on/off register
 /// ```
-pub trait CDRom: Bus {
+///
+/// log #2:
+///
+/// ```log
+///  WARN pchan_emu::io::cdrom: todo(cdrom): write to param fifo
+///  WARN pchan_emu::io::cdrom: todo(cdrom): write to cd command register
+/// ````
+pub trait CDRom: Bus + Interrupts {
     fn write<T: Copy>(&mut self, address: u32, value: T) -> Result<(), UnhandledIO> {
         let address = address & 0x1fffffff;
         let bank = self.cdrom().bank();
@@ -56,7 +77,18 @@ pub trait CDRom: Bus {
                 Ok(())
             }
 
-            (0x1f801801, 0) => trace_todo!("todo(cdrom): write to cd command register"),
+            (0x1f801801, 0) => {
+                match self.cdrom_mut().send_cmd(value) {
+                    cdrom_cmds::CdromIrqEvent::None => {}
+                    cdrom_cmds::CdromIrqEvent::Immediate => {
+                        self.trigger_irq(irq::Irq::Irq2CDRom);
+                        tracing::info!("trigger cdrom irq!");
+                    }
+                    cdrom_cmds::CdromIrqEvent::InCycles(_) => todo!(),
+                }
+                tracing::info!("cdrom = {:#?}", self.cdrom());
+                Ok(())
+            }
             (0x1f801801, 1) => Ok(()), // unused
             (0x1f801801, 2) => Ok(()), // unused
             (0x1f801801, 3) => {
@@ -65,7 +97,10 @@ pub trait CDRom: Bus {
                 )
             }
 
-            (0x1f801802, 0) => trace_todo!("todo(cdrom): write to param fifo"),
+            (0x1f801802, 0) => {
+                self.cdrom_mut().param_push(value);
+                Ok(())
+            }
             (0x1f801802, 1) => {
                 let hint_mask = CDRomHIntMask::new_with_raw_value(value);
                 self.cdrom_mut().hint_mask.write(hint_mask);
@@ -92,11 +127,13 @@ pub trait CDRom: Bus {
             }
             _ => Err(UnhandledIO(address)),
         }
+        .inspect(|_| tracing::info!("w(cdrom): {}", hex(address)))
     }
     fn read<T>(&self, address: u32) -> Result<T, UnhandledIO> {
         let address = address & 0x1fffffff;
         let bank = self.cdrom().bank();
         match (address, bank) {
+            (0x1f801800, _) => Ok(self.cdrom().status.io_from_u32()),
             (0x1f801801, _) => trace_todo!(0u32, "todo(cdrom): read from response fifo"),
 
             (0x1f801802, _) => trace_todo!(0u32, "todo(cdrom): read from data fifo"),
@@ -109,6 +146,7 @@ pub trait CDRom: Bus {
             }
             _ => Err(UnhandledIO(address)),
         }
+        .inspect(|_| tracing::info!("r(cdrom): {}", hex(address)))
     }
 }
 
@@ -129,11 +167,35 @@ impl CDRom for Emu {}
 /// Writing a value to the low 2 bits of this address changes the bank to said
 /// value. Likewise, the low 2 bits of this address can be read to get the current
 /// bank.
-#[bitfield(u8, debug, default = 0x0)]
+#[bitfield(u8, debug)]
 struct CDRomStatusReg {
     #[bits(0..=1, rw)]
-    bank: u2,
-    // TODO: 2..=7
+    bank:          u2,
+    #[bit(2, rw)]
+    adpcm_busy:    bool,
+    #[bit(3, rw)]
+    param_empty:   bool,
+    #[bit(4, rw)]
+    param_wready:  bool,
+    #[bit(5, rw)]
+    result_rready: bool,
+    #[bit(6, rw)]
+    data_req:      bool,
+    #[bit(7, rw)]
+    busy_status:   bool,
+}
+
+impl Default for CDRomStatusReg {
+    fn default() -> Self {
+        Self::new_with_raw_value(0x0)
+            .with_bank(0.as_())
+            .with_adpcm_busy(false)
+            .with_param_empty(true)
+            .with_param_wready(true)
+            .with_result_rready(false)
+            .with_data_req(false)
+            .with_busy_status(false)
+    }
 }
 
 impl CDRomStatusReg {
@@ -159,7 +221,7 @@ impl CDRomState {
 #[bitfield(u8, default = 0xe0, debug)]
 struct CDRomHIntSts {
     #[bits(0..=2, rw)]
-    intsts:    u3,
+    intsts:    Int,
     #[bit(3, rw)]
     buf_empty: bool,
     #[bit(4, rw)]
@@ -171,13 +233,37 @@ struct CDRomHIntSts {
 #[bitfield(u8, default = 0xe0, debug)]
 struct CDRomHIntMask {
     #[bits(0..=2, rw)]
-    intsts:    u3,
+    intsts:    Int,
     #[bit(3, rw)]
     buf_empty: bool,
     #[bit(4, rw)]
     buf_wrdy:  bool,
     #[bits(5..=7)]
     _reserved: u3,
+}
+
+/// ```plaintext
+/// INT0 NoIntr      No interrupt pending
+/// INT1 DataReady   New sector (ReadN/ReadS) or report packet (Play) available
+/// INT2 Complete    Command finished processing (some commands, after INT3 is fired)
+/// INT3 Acknowledge Command received and acknowledged (all commands)
+/// INT4 DataEnd     Reached end of disc (or end of track if auto-pause enabled)
+/// INT5 DiskError   Command error, read error, license string error or lid opened
+/// INT6 -
+/// INT7 -
+/// ```
+#[bitenum(u3, exhaustive = true)]
+#[derive(Debug)]
+#[expect(clippy::enum_variant_names)]
+enum Int {
+    Int0NoInt     = 0x0,
+    Int1DataReady = 0x1,
+    Int2Complete  = 0x2,
+    Int3Ack       = 0x3,
+    Int4DataEnd   = 0x4,
+    Int5DiskErr   = 0x5,
+    Int6          = 0x6,
+    Int7          = 0x7,
 }
 
 impl CDRomHIntMask {
@@ -201,7 +287,7 @@ impl CDRomHIntMask {
 #[bitfield(u8, debug)]
 struct CDRomHClrCtl {
     #[bits(0..=2, r)]
-    clrint:         u3,
+    clrint:         Int,
     #[bit(3, r)]
     clr_buf_empty:  bool,
     #[bit(4, r)]
@@ -217,15 +303,64 @@ struct CDRomHClrCtl {
 impl CDRomState {
     fn write_h_clr_ctl(&mut self, hclrctl: CDRomHClrCtl) {
         let hintsts = &mut self.hint_status;
-        if hclrctl.clrint().as_u8() != 0 {
-            hintsts.set_intsts(0x0.as_());
+        tracing::info!("cdrom: write hardware clear ctl: {hclrctl:#?}");
+
+        {
+            let intsts = hintsts.intsts().raw_value();
+            let clrint = hclrctl.clrint().raw_value();
+            let new_intsts = intsts & !clrint;
+            let new_intsts = Int::new_with_raw_value(new_intsts);
+            hintsts.set_intsts(new_intsts);
         }
+
         if hclrctl.clr_buf_empty() {
             hintsts.set_buf_empty(false);
         }
         if hclrctl.clr_buf_wrdy() {
             hintsts.set_buf_wrdy(false);
         }
-        // TODO: rest
+        if hclrctl.clr_param_fifo() {
+            self.param_fifo.clear();
+            self.status.set_param_empty(true);
+            self.status.set_param_wready(true);
+        }
+        // TODO: smap, reset decoder
+    }
+}
+
+impl CDRomState {
+    fn param_push(&mut self, param: u8) {
+        match self.param_fifo.push_back(param) {
+            Ok(()) => {
+                self.status.set_param_empty(false);
+                if self.param_fifo.is_full() {
+                    self.status.set_param_wready(false);
+                }
+            }
+            Err(param) => {
+                // overwrite last
+                _ = self.param_fifo.pop_back();
+                become self.param_push(param);
+            }
+        }
+    }
+    fn result_push(&mut self, result: u8) {
+        match self.result_fifo.push_back(result) {
+            Ok(()) => {
+                self.status.set_result_rready(true);
+            }
+            Err(result) => {
+                // overwrite last
+                _ = self.result_fifo.pop_back();
+                become self.result_push(result);
+            }
+        }
+    }
+    fn result_pop(&mut self) -> Option<u8> {
+        let res = self.result_fifo.pop_front();
+        if self.result_fifo.is_empty() {
+            self.status.set_result_rready(false);
+        }
+        res
     }
 }

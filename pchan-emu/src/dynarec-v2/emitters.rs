@@ -3322,6 +3322,7 @@ impl DynarecOp for Syscall {
         dynasm!(
             ctx.dynarec.asm
             ;; let saved = ctx.dynarec.emit_save_volatile_registers()
+            ;; ctx.dynarec.emit_writeback_all()
             ; mov w1, ctx.delay_slot as u32
             ; ldr x3, ->handle_syscall
             ; blr x3
