@@ -41,8 +41,8 @@ macro_rules! trace_todo {
 /// - [x] W CD Irq on/off
 /// - [x] R status reg
 /// - [x] W param fifo
-/// - [ ] W CD cmd reg
-/// - [ ] R CD Irq flag
+/// - [x] W CD cmd reg
+/// - [x] R CD Irq flag
 ///
 /// log #0:
 ///
@@ -147,9 +147,7 @@ pub trait CDRom: Bus + Interrupts {
             (0x1f801803, 0 | 2) => {
                 trace_todo!(0u32, "todo(cdrom): read from cd irq on/off register")
             }
-            (0x1f801803, 1 | 3) => {
-                trace_todo!(0u32, "todo(cdrom): read from cd irq flag register")
-            }
+            (0x1f801803, 1 | 3) => Ok(self.cdrom().hint_status.io_from_u32()),
             _ => Err(UnhandledIO(address)),
         }
         .inspect(|_| tracing::info!("r(cdrom): {}", hex(address)))
