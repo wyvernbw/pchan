@@ -88,14 +88,14 @@ struct Voice {
     keyed_on:    bool,
     reached_end: bool,
 
-    /// old sample. used in adpcm decoding
+    // adpcm decode sample history
     s1: i16,
-    /// older sample. used in adpcm decoding
     s2: i16,
-    /// oldest sample. used in gaussain interpolation
-    s3: i16,
-    /// current decoded sample
-    s0: i16,
+
+    // gaussian interp sample history
+    interp1: i16,
+    interp2: i16,
+    interp3: i16,
 
     /// interpolated sample
     current_sample: i16,
@@ -309,6 +309,7 @@ pub trait Spu: IO {
 
         let mut mixed_l = 0i32;
         let mut mixed_r = 0i32;
+        let i = 4;
         for i in 0..24 {
             let voice = &spu.voices[i];
             let adsr = &spu.adsr;
@@ -347,34 +348,35 @@ impl Voice {
     fn clock(&mut self, spu_ram: &[u16]) {
         let rate = self.rate.0.clamp(0x0, 0x4000);
         self.pitch_counter += rate;
-        self.gauss_interpolation();
 
         // 0x1000 = 44.1khz
         while self.pitch_counter >= 0x1000 {
             self.pitch_counter -= 0x1000;
+
+            // Shift Gaussian history
+            self.interp3 = self.interp2;
+            self.interp2 = self.interp1;
+            self.interp1 = self.decode_buf[self.current_idx as usize];
+
             self.current_idx += 1;
 
             if self.current_idx == 28 {
                 self.current_idx = 0;
                 self.advance_decode(spu_ram);
-                self.gauss_interpolation();
             }
         }
 
-        self.s0 = self.decode_buf[self.current_idx as usize];
-        self.current_sample = self.s0;
+        self.current_sample = self.gauss_interpolation(self.decode_buf[self.current_idx as usize]);
     }
 
-    fn gauss_interpolation(&mut self) {
-        if !self.pitch_counter.is_multiple_of(0x1000) {
-            self.current_sample = gauss_interp::interpolate(
-                ((self.pitch_counter >> 4) & 0xFF) as usize,
-                self.current_sample,
-                self.s1,
-                self.s2,
-                self.s3,
-            );
-        }
+    fn gauss_interpolation(&self, current: i16) -> i16 {
+        gauss_interp::interpolate(
+            ((self.pitch_counter >> 4) & 0xFF) as usize,
+            current,
+            self.interp1,
+            self.interp2,
+            self.interp3,
+        )
     }
 
     fn key_on(&mut self, spu_ram: &[u16]) {
@@ -382,6 +384,8 @@ impl Voice {
         self.current_idx = 0;
         self.pitch_counter = 0x0;
         self.keyed_on = true;
+        self.s2 = 0;
+        self.s1 = 0;
         self.advance_decode(spu_ram);
     }
 
@@ -403,13 +407,7 @@ impl Voice {
             return;
         };
 
-        adpcm::decode_adpcm(
-            block,
-            &mut self.decode_buf,
-            &mut self.s1,
-            &mut self.s2,
-            &mut self.s3,
-        );
+        adpcm::decode_adpcm(block, &mut self.decode_buf, &mut self.s1, &mut self.s2);
 
         let header = ADPCMHeader::from_u16(block[0]);
 

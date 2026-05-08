@@ -128,6 +128,7 @@ pub fn init_tracing(
             .without_time()
             .with_test_writer()
             .with_line_number(false)
+            .with_writer(std::io::stdout)
     });
 
     let file_layer = file.then(|| {
@@ -149,8 +150,7 @@ pub fn init_tracing(
     let env_filter = EnvFilter::builder()
         .with_env_var("PCHAN_LOG")
         .with_default_directive("info".parse().unwrap())
-        .from_env_lossy()
-        .add_directive("cranelift_jit::backend=off".parse().unwrap());
+        .from_env_lossy();
 
     _ = tracing_subscriber::registry()
         .with(stdout_layer)

@@ -56,7 +56,7 @@ impl ADPCMHeader {
 ///  ...       ...
 ///  0Fh       Compressed Data (LSBs=27th Sample, MSBs=28th Sample)
 /// ```
-pub fn decode_adpcm(from: &[u16; 8], to: &mut [i16], s1: &mut i16, s2: &mut i16, s3: &mut i16) {
+pub fn decode_adpcm(from: &[u16; 8], to: &mut [i16], s1: &mut i16, s2: &mut i16) {
     const POS_ADPCM_TABLE: [i32; 5] = [0, 60, 115, 98, 122];
     const NEG_ADPCM_TABLE: [i32; 5] = [0, 0, -52, -55, -60];
 
@@ -102,7 +102,6 @@ pub fn decode_adpcm(from: &[u16; 8], to: &mut [i16], s1: &mut i16, s2: &mut i16,
             *dest = sample as i16;
         }
 
-        *s3 = *s2;
         *s2 = *s1;
         *s1 = *dest;
     }
