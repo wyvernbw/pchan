@@ -43,6 +43,7 @@ macro_rules! trace_todo {
 /// - [x] W param fifo
 /// - [x] W CD cmd reg
 /// - [x] R CD Irq flag
+/// - [x] R res fifo
 ///
 /// log #0:
 ///
@@ -70,6 +71,12 @@ macro_rules! trace_todo {
 /// log #3:
 /// ```log
 ///  WARN pchan_emu::io::cdrom: todo(cdrom): read from cd irq flag register
+/// ```
+///
+/// log #4:
+/// ```log
+/// WARN pchan_emu::io::cdrom: todo(cdrom): read from response fifo
+/// WARN pchan_emu::io::cdrom::cdrom_cmds: todo(cdrom): unhandled cmd: 0x01
 /// ```
 pub trait CDRom: Bus + Interrupts {
     fn write<T: Copy>(&mut self, address: u32, value: T) -> Result<(), UnhandledIO> {
@@ -135,12 +142,17 @@ pub trait CDRom: Bus + Interrupts {
         }
         .inspect(|_| tracing::info!("w(cdrom): {}", hex(address)))
     }
-    fn read<T>(&self, address: u32) -> Result<T, UnhandledIO> {
+    fn read<T>(&mut self, address: u32) -> Result<T, UnhandledIO> {
         let address = address & 0x1fffffff;
         let bank = self.cdrom().bank();
         match (address, bank) {
             (0x1f801800, _) => Ok(self.cdrom().status.io_from_u32()),
-            (0x1f801801, _) => trace_todo!(0u32, "todo(cdrom): read from response fifo"),
+            (0x1f801801, _) => match self.cdrom_mut().result_pop() {
+                Some(value) => Ok(value.io_from_u32()),
+                // technically this is not correct, see psx spx
+                // its probably fine doe
+                None => Ok(0.io_from_u32()),
+            },
 
             (0x1f801802, _) => trace_todo!(0u32, "todo(cdrom): read from data fifo"),
 

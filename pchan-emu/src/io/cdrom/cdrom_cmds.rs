@@ -19,6 +19,10 @@ impl CDRomState {
         self.status.set_busy_status(true);
 
         match cmd {
+            0x01 => {
+                self.status.set_busy_status(false);
+                CdromIrqEvent::Immediate
+            }
             0x19 => {
                 let Some(sub) = self.drain_params().next() else {
                     return CdromIrqEvent::None;

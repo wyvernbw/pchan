@@ -311,7 +311,6 @@ impl IO for Emu {
             // TODO: Spu::read_pure
             .or_else(|_| Dma::read(self, address))
             .or_else(|_| Timers::read_timers(self, address))
-            .or_else(|_| CDRom::read::<T>(self, address))
             .or_else(|_| GenericIOFallback::read::<T>(self, address))
             .or_else(|_| CacheControl::read::<T>(self, address))
     }
