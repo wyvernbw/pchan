@@ -3,6 +3,7 @@ use bitbybit::{bitenum, bitfield};
 use derive_more as d;
 use pchan_macros::{pchan_instrument_read, pchan_instrument_write};
 use pchan_utils::hex;
+use strum::IntoEnumIterator;
 
 use crate::{
     Bus, Emu,
@@ -21,6 +22,10 @@ pub struct IrqState {
 pub struct IrqField {
     #[bit(0)]
     irq0_vblank: bool,
+    #[bit(1)]
+    irq1_gpu:    bool,
+    #[bit(2)]
+    irq2_cdrom:  bool,
     #[bit(3)]
     irq3_dma:    bool,
     #[bit(4)]
@@ -32,12 +37,12 @@ pub struct IrqField {
 
     #[bit(0, rw)]
     irq_flag:           [bool; 11],
-    #[bits(0..=10, r)]
+    #[bits(0..=10, rw)]
     irq_flags_combined: u11,
 }
 
 #[bitenum(u8)]
-#[derive(Debug, PartialEq, Eq, Default)]
+#[derive(Debug, PartialEq, Eq, Default, strum::EnumIter)]
 pub enum Irq {
     #[default]
     Irq0Vblank = 0x0,
@@ -58,20 +63,17 @@ pub trait Interrupts: Bus + IO + Exceptions {
     }
 
     fn trigger_irq(&mut self, irq: Irq) {
-        let stat = self.irq().i_stat;
-        let mask = self.irq().i_mask;
-
-        // irq flag is set even when masked!
-        let new_stat = IrqField::new_with_raw_value(*stat | (1 << irq as u8));
-        self.irq_mut().i_stat = new_stat;
+        let old_stat = self.irq().i_stat;
+        self.irq_mut().i_stat.set_irq_flag(irq as usize, true);
 
         if irq != Irq::Irq0Vblank {
-            tracing::trace!(
+            let mask = self.irq().i_mask;
+            tracing::info!(
                 ?irq,
                 "{:010b} mask{:010b} -> {:010b}",
-                stat.irq_flags_combined(),
+                old_stat.irq_flags_combined(),
                 mask.irq_flags_combined(),
-                new_stat.irq_flags_combined()
+                self.irq().i_stat.irq_flags_combined()
             );
         }
     }
@@ -82,10 +84,7 @@ pub trait Interrupts: Bus + IO + Exceptions {
     )]
     fn read<T: Copy>(&self, address: u32) -> IOResult<T> {
         match address {
-            0x1f801070 => {
-                tracing::info!("read i_stat: {:#?}", self.irq().i_stat);
-                Ok(self.irq().i_stat.io_from_u32())
-            }
+            0x1f801070 => Ok(self.irq().i_stat.io_from_u32()),
             0x1f801074 => Ok(self.irq().i_mask.io_from_u32()),
             _ => Err(UnhandledIO(address)),
         }
@@ -100,11 +99,13 @@ pub trait Interrupts: Bus + IO + Exceptions {
         match address {
             0x1f801070 => {
                 let irq = self.irq_mut();
-                let i_stat = irq.i_stat.raw_value();
-                let write = value.io_into_u32_overwrite(i_stat);
-                let i_stat = i_stat & write;
-                irq.i_stat = IrqField::new_with_raw_value(i_stat);
-                tracing::info!("write i_stat: {:#?}", self.irq().i_stat);
+                let flags = irq.i_stat.irq_flags_combined();
+                let write = value.io_into_u32();
+                let flags = flags & write.as_();
+                irq.i_stat.set_irq_flags_combined(flags);
+                if flags.as_u16().count_ones() == 0 {
+                    self.clear_irq();
+                }
 
                 Ok(())
             }
@@ -123,9 +124,7 @@ pub trait Interrupts: Bus + IO + Exceptions {
             & self.irq().i_mask.irq_flags_combined().as_u32()
             != 0
         {
-            self.raise_exception(Exception::Interrupt);
-        } else {
-            self.clear_exception();
+            self.raise_irq_exception();
         }
     }
 }

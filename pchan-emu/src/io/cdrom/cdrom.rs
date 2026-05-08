@@ -41,7 +41,8 @@ macro_rules! trace_todo {
 /// - [x] W CD Irq on/off
 /// - [x] R status reg
 /// - [x] W param fifo
-/// - [ ] W cd cmd reg
+/// - [ ] W CD cmd reg
+/// - [ ] R CD Irq flag
 ///
 /// log #0:
 ///
@@ -65,6 +66,11 @@ macro_rules! trace_todo {
 ///  WARN pchan_emu::io::cdrom: todo(cdrom): write to param fifo
 ///  WARN pchan_emu::io::cdrom: todo(cdrom): write to cd command register
 /// ````
+///
+/// log #3:
+/// ```log
+///  WARN pchan_emu::io::cdrom: todo(cdrom): read from cd irq flag register
+/// ```
 pub trait CDRom: Bus + Interrupts {
     fn write<T: Copy>(&mut self, address: u32, value: T) -> Result<(), UnhandledIO> {
         let address = address & 0x1fffffff;

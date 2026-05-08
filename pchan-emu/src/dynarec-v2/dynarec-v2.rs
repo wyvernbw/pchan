@@ -168,6 +168,8 @@ impl DynarecBlock {
         }
 
         emu.run_io();
+        emu.cpu.drain_jump_queue();
+        emu.cpu.cop0.set_bd(false);
 
         debug_assert_eq!(emu.cpu.gpr[0], 0);
     }
@@ -214,7 +216,7 @@ impl Dynarec {
             }
         };
 
-        if enabled!(Level::TRACE) {
+        if enabled!(Level::DEBUG) {
             use std::fs::File;
             use std::io::Write;
             File::create("/tmp/jit_code.bin")?.write_all(exec.as_ref())?;
@@ -1086,7 +1088,7 @@ fn fetch_and_compile_single_threaded(
         }
 
         if let Some((_, next)) = state.back() {
-            state.cycles -= next.cycles().min(op.hazard()) as u32;
+            // state.cycles -= next.cycles().min(op.hazard()) as u32;
         }
 
         if op.is_hard_boundary() {

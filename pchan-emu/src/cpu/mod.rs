@@ -4,7 +4,7 @@ use std::{
     ops::{Index, IndexMut},
 };
 
-use bitbybit::bitfield;
+use bitbybit::{bitenum, bitfield};
 use derive_more as d;
 use pchan_utils::{array, hex};
 
@@ -29,6 +29,7 @@ pub struct Cpu {
     pub vblank_timer: u32,
     pub cycles:       u64,
     pub irq:          IrqState,
+    pub jump_queue:   Option<u32>,
 }
 
 use std::fmt;
@@ -81,10 +82,26 @@ coprocessor_definition!(Cop2);
 //     isc, set_isc: 16;
 // }
 
-#[bitfield(u32)]
+#[bitfield(u32, debug)]
 pub struct Cop0StatusReg {
+    /// interrupt enable current
     #[bit(0, rw)]
     iec: bool,
+    /// kernel/user current
+    #[bit(1, rw)]
+    kuc: KernelUserMode,
+    /// interrupt enable previous
+    #[bit(2, rw)]
+    iep: bool,
+    /// kernel/user previous
+    #[bit(3, rw)]
+    kup: KernelUserMode,
+    /// interrupt enable old
+    #[bit(4, rw)]
+    ieo: bool,
+    /// kernel/user old
+    #[bit(5, rw)]
+    kuo: KernelUserMode,
 
     #[bit(8, rw)]
     irq_mask: [bool; 8],
@@ -96,6 +113,13 @@ pub struct Cop0StatusReg {
     isc: bool,
     #[bit(22, rw)]
     bev: bool,
+}
+
+#[bitenum(u1, exhaustive = true)]
+#[derive(Debug)]
+enum KernelUserMode {
+    Kernel = 0x0,
+    User   = 0x1,
 }
 
 impl Default for Cop0 {
@@ -124,6 +148,39 @@ impl Cop0 {
         let cause = self.cause();
         let new_cause = f(cause);
         self.set_cause(new_cause);
+    }
+    pub fn set_bd(&mut self, value: bool) {
+        self.reg[13] = self.cause().with_bd(value).raw_value()
+    }
+    pub fn set_bt(&mut self, value: bool) {
+        self.reg[12] = self.cause().with_bt(value).raw_value();
+    }
+}
+
+#[inline(never)]
+#[unsafe(no_mangle)]
+pub fn emu_set_bd(emu: &mut crate::Emu) {
+    emu.cpu.cop0.set_bd(true);
+}
+#[inline(never)]
+#[unsafe(no_mangle)]
+pub fn emu_set_bt_true(emu: &mut crate::Emu) {
+    emu.cpu.cop0.set_bt(true);
+}
+#[inline(never)]
+#[unsafe(no_mangle)]
+pub fn emu_set_bt_false(emu: &mut crate::Emu) {
+    emu.cpu.cop0.set_bt(false);
+}
+
+impl Cop0StatusReg {
+    pub fn push_exception_stack(&mut self) {
+        self.set_kuo(self.kup());
+        self.set_ieo(self.iep());
+        self.set_kup(self.kuc());
+        self.set_iep(self.iec());
+        self.set_kuo(KernelUserMode::Kernel);
+        self.set_iec(false);
     }
 }
 
@@ -187,6 +244,17 @@ impl Cpu {
 
     pub fn isc(&self) -> bool {
         self.cop0.status().isc()
+    }
+
+    pub fn enqueue_jump(&mut self, address: u32) {
+        self.jump_queue = Some(address);
+    }
+
+    pub fn drain_jump_queue(&mut self) {
+        if let Some(address) = self.jump_queue.take() {
+            tracing::info!("jump to {}", hex(address));
+            self.pc = address;
+        }
     }
 }
 

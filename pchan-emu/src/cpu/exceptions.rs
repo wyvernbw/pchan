@@ -2,7 +2,7 @@ use arbitrary_int::prelude::*;
 use bitbybit::{bitenum, bitfield};
 use tracing::instrument;
 
-use crate::{Bus, Emu};
+use crate::{Bus, Emu, cpu::Cop0StatusReg, io::irq::Irq};
 
 #[bitfield(u32, debug)]
 pub struct CauseRegister {
@@ -16,9 +16,10 @@ pub struct CauseRegister {
 
     #[bits(28..=29, rw)]
     cop_number: u2,
-
+    #[bit(30, rw)]
+    bt:         bool,
     #[bit(31, rw)]
-    bd: bool,
+    bd:         bool,
 }
 
 /// # Exception
@@ -61,7 +62,8 @@ pub trait Exceptions: Bus {
     extern "C" fn handle_syscall(&mut self, bd: bool);
     fn run_exceptions_io(&mut self);
     fn raise_exception(&mut self, exception: Exception);
-    fn clear_exception(&mut self);
+    fn raise_irq_exception(&mut self);
+    fn clear_irq(&mut self);
 }
 
 impl Exceptions for Emu {
@@ -71,27 +73,36 @@ impl Exceptions for Emu {
         cause.set_excode(exception.raw_value());
         self.cpu_mut().cop0.reg[13] = cause.raw_value();
 
-        let epc = match cause.bd() {
-            false => self.cpu().pc,
-            true => self.cpu().pc - 4,
+        let epc = match (cause.bd(), exception) {
+            (false, _) => self.cpu().pc,
+            (true, _) => {
+                // bd is set, meaning pc was updated to the branch destination
+                // as such, we can simply update the TAR register to the current pc.
+                self.cpu_mut().cop0.reg[6] = self.cpu().pc;
+                self.cpu().pc - 4
+            }
         };
         self.cpu_mut().cop0.reg[14] = epc;
 
-        let sr = self.cpu().cop0.reg[12];
-        let new_sr = (sr & !0x3F) | ((sr & 0xF) << 2);
-        self.cpu_mut().cop0.reg[12] = new_sr;
+        let mut sr = Cop0StatusReg::new_with_raw_value(self.cpu().cop0.reg[12]);
+        sr.push_exception_stack();
+        self.cpu_mut().cop0.reg[12] = sr.raw_value();
 
-        self.cpu_mut().pc = match self.cpu().cop0.status().bev() {
+        let new_pc = match self.cpu().cop0.status().bev() {
             false => 0x8000_0080,
             true => 0xbfc0_0180,
-        }
+        };
+        self.cpu_mut().enqueue_jump(new_pc);
     }
 
     #[unsafe(no_mangle)]
     extern "C" fn handle_rfe(&mut self) {
-        let sr = self.cpu().cop0.reg[12];
-        self.cpu_mut().cop0.reg[12] = (sr & !0x3F) | ((sr >> 2) & 0x3F);
-        // panic!("rfe breakpoint");
+        let mut sr = Cop0StatusReg::new_with_raw_value(self.cpu().cop0.reg[12]);
+        sr.set_kuc(sr.kup());
+        sr.set_iec(sr.iep());
+        sr.set_kup(sr.kuo());
+        sr.set_iep(sr.ieo());
+        self.cpu.cop0.reg[12] = sr.raw_value();
     }
 
     #[unsafe(no_mangle)]
@@ -117,22 +128,28 @@ impl Exceptions for Emu {
         let sr = self.cpu.cop0.status();
         let cause = self.cpu.cop0.cause();
         // index 2 = bit 10
-        if cause.irq_pending(2) && sr.irq_mask(2) && sr.iec() {
-            let excode = Exception::new_with_raw_value(cause.excode())
-                .expect("unknown exception not yet implemented.");
-            self.handle_exception(excode);
+        if cause.irq_pending(2) && sr.iec() {
+            // let excode = Exception::new_with_raw_value(cause.excode())
+            //     .expect("unknown exception not yet implemented.");
+            self.handle_exception(Exception::Interrupt);
         }
     }
 
     fn raise_exception(&mut self, exception: Exception) {
+        self.cpu
+            .cop0
+            .update_cause(|cause| cause.with_excode(exception.raw_value()));
+    }
+
+    fn raise_irq_exception(&mut self) {
         self.cpu.cop0.update_cause(|cause| {
             cause
                 .with_irq_pending(2, true)
-                .with_excode(exception.raw_value())
+                .with_excode(Exception::Interrupt.raw_value())
         });
     }
 
-    fn clear_exception(&mut self) {
+    fn clear_irq(&mut self) {
         self.cpu
             .cop0
             .update_cause(|cause| cause.with_irq_pending(2, false));

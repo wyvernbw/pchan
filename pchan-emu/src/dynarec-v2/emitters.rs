@@ -586,6 +586,17 @@ fn emit_store(
             // we have to store x0 since the function call will clobber it
             // call to function
             ;; let saved = ctx.dynarec.emit_save_volatile_registers()
+
+            ;; if ctx.delay_slot {
+                dynasm!(
+                    ctx.dynarec.asm
+                    ; .arch aarch64
+                    ; ldr w1, [x0, #196]
+                    ; orr w1, w1, #0x80000000
+                    ; str w1, [x0, #196]
+                )
+            }
+
             ; fmov w1, S(s(9))
             ; fmov w2, S(s(10))
             ;; func_call(&mut ctx)
@@ -2024,11 +2035,37 @@ macro_rules! jump_to_pc {
     };
 }
 
+impl Dynarec {
+    pub fn emit_set_bt<const VALUE: bool>(&mut self) {
+        match VALUE {
+            true => {
+                #[cfg(target_arch = "aarch64")]
+                dynasm!(
+                    self.asm
+                    ; ldr w1, [x0, #196]
+                    ; orr w1, w1, #0x40000000
+                    ; str w1, [x0, #192]
+                );
+            }
+            false => {
+                dynasm!(
+                    self.asm
+                    ; ldr w1, [x0, #196]
+                    ; and w1, w1, #0xbfffffff
+                    ; str w1, [x0, #192]
+                );
+            }
+        };
+    }
+}
+
 impl DynarecOp for J {
     fn emit<'a>(&self, mut ctx: EmitCtx<'a>) -> EmitSummary {
         let new_pc = (self.imm26 << 2) | (ctx.pc & 0xf0000000);
-        ctx.schedule_in(1, move |mut ctx| {
+        ctx.schedule_in(1, move |ctx| {
             ctx.dynarec.emit_write_pc(Reg::W(1), new_pc);
+            ctx.dynarec.emit_set_bt::<true>();
+
             // #[cfg(target_arch = "aarch64")]
             // dynasm!(
             //     ctx.dynarec.asm
@@ -2795,7 +2832,6 @@ fn test_mtcn_enable_isc() -> color_eyre::Result<()> {
 #[cfg(test)]
 #[rstest]
 fn test_mtcn_enable_irq() -> color_eyre::Result<()> {
-    use crate::cpu::exceptions::Exception;
     use crate::cpu::exceptions::Exceptions;
     use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
     use pchan_utils::setup_tracing;
@@ -2815,7 +2851,17 @@ fn test_mtcn_enable_irq() -> color_eyre::Result<()> {
     assert!(emu.cpu.cop0.status().iec());
     assert!(emu.cpu.cop0.status().irq_mask(2));
 
-    emu.raise_exception(Exception::Interrupt);
+    emu.raise_irq_exception();
+    tracing::info!(irq_mask = %hex(emu.cpu.cop0.status().irq_mask_combined()));
+    tracing::info!(irq_pending  = %hex(emu.cpu.cop0.cause().irq_pending_combined()));
+    tracing::info!(iec = emu.cpu.cop0.status().iec());
+
+    {
+        let sr = emu.cpu.cop0.status();
+        let cause = emu.cpu.cop0.cause();
+        assert!(cause.irq_pending_combined() & sr.irq_mask_combined() != 0 && sr.iec());
+    }
+
     emu.run_io();
 
     assert_eq!(emu.cpu.pc, 0x8000_0080);
@@ -3339,11 +3385,12 @@ impl DynarecOp for Rfe {
         emit_call(&mut ctx, |dynarec| {
             dynasm!(
                 dynarec.asm
+                ;; dynarec.emit_writeback_all()
                 ; ldr x3, ->handle_rfe
                 ; blr x3
             )
         });
-        EmitSummary::pc_updated()
+        EmitSummary::default()
     }
 }
 

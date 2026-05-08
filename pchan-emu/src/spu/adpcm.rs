@@ -127,7 +127,7 @@ fn test_adpcm_decode() {
     let mut decode_buf = [0i16; 28];
     let mut s1 = 392;
     let mut s2 = 465;
-    decode_adpcm(values, &mut decode_buf, &mut s1, &mut s2, &mut 0);
+    decode_adpcm(values, &mut decode_buf, &mut s1, &mut s2);
     assert_eq_hex!(
         decode_buf,
         [
