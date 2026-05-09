@@ -58,19 +58,26 @@ impl AudioTask {
             bail!("audio task not bound");
         };
         let config = self.config.clone();
+        let mut last_samples = [0.0, 0.0];
         let stream = self.device.build_output_stream(
             &self.config.config(),
-            move |data: &mut [f32], _| {
+            move |data: &mut [f32], info| {
                 if config.channels() > 2 {
                     panic!("unsupported audio config: device has more than 2 channels");
                 }
                 for s in data.chunks_mut(2) {
-                    let left = cons.cons.try_pop().unwrap_or(0);
-                    let right = cons.cons.try_pop().unwrap_or(0);
-                    let left = (left as f32) / (i16::MAX as f32 + 1.0);
-                    let right = (right as f32) / (i16::MAX as f32 + 1.0);
-                    s[0] = left;
-                    s[1] = right;
+                    let mut i = 0;
+                    let samples = [cons.cons.try_pop(), cons.cons.try_pop()].map(|src| {
+                        let res = src
+                            .map(|src| (src as f32) / (i16::MAX as f32 + 1.0))
+                            .unwrap_or(last_samples[i]);
+                        i += 1;
+                        res
+                    });
+                    for (src, dest) in samples.iter().copied().zip(s) {
+                        *dest = src;
+                    }
+                    last_samples = samples;
                 }
             },
             |err| tracing::error!("{err}"),
