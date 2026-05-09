@@ -48,7 +48,7 @@ pub struct CauseRegister {
 /// 0Ch Ov      Arithmetic overflow
 /// ```
 #[bitenum(u5)]
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum Exception {
     Interrupt = 0x0,
     Syscall   = 0x8,
@@ -69,9 +69,11 @@ pub trait Exceptions: Bus {
 impl Exceptions for Emu {
     fn handle_exception(&mut self, exception: Exception) {
         let mut sr = Cop0StatusReg::new_with_raw_value(self.cpu().cop0.reg[12]);
-        // if !sr.iec() {
-        //     return;
-        // }
+        tracing::info!(?exception);
+        if !sr.iec() && exception == Exception::Interrupt {
+            tracing::info!("> Skipped");
+            return;
+        }
 
         let cause = self.cpu().cop0.reg[13];
         let mut cause = CauseRegister::new_with_raw_value(cause);
@@ -117,7 +119,6 @@ impl Exceptions for Emu {
 
     #[unsafe(no_mangle)]
     extern "C" fn handle_syscall(&mut self, bd: bool) {
-        tracing::info!("syscall");
         if bd {
             let cause = self.cpu().cop0.reg[13];
             let cause = CauseRegister::new_with_raw_value(cause);

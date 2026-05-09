@@ -3439,9 +3439,11 @@ impl DynarecOp for Rfe {
         emit_call(&mut ctx, |dynarec| {
             dynasm!(
                 dynarec.asm
+                ;; let saved = dynarec.emit_save_volatile_registers()
                 ;; dynarec.emit_writeback_all()
                 ; ldr x3, ->handle_rfe
                 ; blr x3
+                ;; dynarec.emit_restore_saved_registers(saved.into_iter())
             )
         });
         EmitSummary::default()

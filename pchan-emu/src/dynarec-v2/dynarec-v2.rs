@@ -873,9 +873,9 @@ pub fn run_step(emu: &mut Emu, dynarec: Box<Dynarec>) -> Box<Dynarec> {
         }
     };
     block(emu, false);
-    while emu.cpu.pc == pc {
-        block(emu, false);
-    }
+    // while emu.cpu.pc == pc {
+    //     block(emu, false);
+    // }
     emu.dynarec_cache.insert(pc, block);
 
     dynarec.unwrap_or_else(|| {
