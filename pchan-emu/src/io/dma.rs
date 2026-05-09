@@ -284,36 +284,34 @@ pub trait Dma: Bus + IO + Fastmem + Interrupts + Gpu {
         let direction = channel.chcr.direction();
         let sync_mode = channel.chcr.sync_mode();
         match sync_mode {
-            SyncMode::Slice => match direction {
-                TransferDir::DeviceToRam => todo!(),
-                TransferDir::RamToDevice => {
-                    let slice = event
-                        .slice
-                        .expect("event with sync mode slice has no slice state. this is a bug.");
-
-                    let mut addr = slice.addr;
-                    let len = channel.bcr.s1_block_size();
-                    tracing::trace!("dma: transfering slice of {} words...", len);
-                    tracing::trace!(
-                        "dma: current gp0 fifo capacity: {}/{}",
-                        self.gpu().gp0cmd_queue.len(),
-                        self.gpu().gp0cmd_queue.capacity()
-                    );
-                    for _ in 0..len {
-                        let value = Fastmem::read(self, addr).unwrap();
-                        // flushing the queue here is not ideal, as real dma
-                        // would hang until the gpu has capacity for more
-                        // commands. but our commands do not take actual
-                        // time to execute
-                        self.gp0_cmd_queue_push_or_flush(value);
-                        addr += 0x4;
+            SyncMode::Slice => {
+                let slice = event
+                    .slice
+                    .expect("event with sync mode slice has no slice state. this is a bug.");
+                let mut addr = slice.addr;
+                let len = channel.bcr.s1_block_size();
+                for _ in 0..len {
+                    match direction {
+                        TransferDir::DeviceToRam => {
+                            let value = Gpu::read::<u32>(self, 0x1f801810).unwrap();
+                            Fastmem::write(self, addr, value).unwrap();
+                        }
+                        TransferDir::RamToDevice => {
+                            let value = Fastmem::read(self, addr).unwrap();
+                            // flushing the queue here is not ideal, as real dma
+                            // would hang until the gpu has capacity for more
+                            // commands. but our commands do not take actual
+                            // time to execute
+                            self.gp0_cmd_queue_push_or_flush(value);
+                        }
                     }
-                    // do not mark as done until final event is reached
-                    if slice.idx == channel.bcr.s1_block_count() as u32 - 1 {
-                        self.dma_mut().dma2.set_complete();
-                    }
+                    addr += 0x4;
                 }
-            },
+                // do not mark as done until final event is reached
+                if slice.idx == channel.bcr.s1_block_count() as u32 - 1 {
+                    self.dma_mut().dma2.set_complete();
+                }
+            }
             SyncMode::Burst => match direction {
                 TransferDir::DeviceToRam => todo!(),
                 TransferDir::RamToDevice => {
