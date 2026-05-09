@@ -45,13 +45,32 @@ pub struct IrqField {
 #[derive(Debug, PartialEq, Eq, Default, strum::EnumIter)]
 pub enum Irq {
     #[default]
-    Irq0Vblank = 0x0,
-    Irq1Gpu    = 0x1,
-    Irq2CDRom  = 0x2,
-    Irq3Dma    = 0x3,
-    Irq4Timer0 = 0x4,
-    Irq5Timer1 = 0x5,
-    Irq6Timer2 = 0x6,
+    Irq0Vblank           = 0x0,
+    Irq1Gpu              = 0x1,
+    Irq2CDRom            = 0x2,
+    Irq3Dma              = 0x3,
+    Irq4Timer0           = 0x4,
+    Irq5Timer1           = 0x5,
+    Irq6Timer2           = 0x6,
+    Irq7JoypadAndMemcard = 0x7,
+}
+
+impl IrqState {
+    pub fn trigger_irq(&mut self, irq: Irq) {
+        let old_stat = self.i_stat;
+        self.i_stat.set_irq_flag(irq as usize, true);
+
+        if irq != Irq::Irq0Vblank {
+            let mask = self.i_mask;
+            tracing::info!(
+                ?irq,
+                "{:010b} mask{:010b} -> {:010b}",
+                old_stat.irq_flags_combined(),
+                mask.irq_flags_combined(),
+                self.i_stat.irq_flags_combined()
+            );
+        }
+    }
 }
 
 pub trait Interrupts: Bus + IO + Exceptions {
@@ -63,19 +82,7 @@ pub trait Interrupts: Bus + IO + Exceptions {
     }
 
     fn trigger_irq(&mut self, irq: Irq) {
-        let old_stat = self.irq().i_stat;
-        self.irq_mut().i_stat.set_irq_flag(irq as usize, true);
-
-        if irq != Irq::Irq0Vblank {
-            let mask = self.irq().i_mask;
-            tracing::info!(
-                ?irq,
-                "{:010b} mask{:010b} -> {:010b}",
-                old_stat.irq_flags_combined(),
-                mask.irq_flags_combined(),
-                self.irq().i_stat.irq_flags_combined()
-            );
-        }
+        self.irq_mut().trigger_irq(irq);
     }
     #[pchan_macros::instrument(
         level = "trace", "irq:r",

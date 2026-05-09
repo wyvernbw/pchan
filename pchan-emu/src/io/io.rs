@@ -45,6 +45,7 @@ impl Emu {
         self.run_gpu_commands();
         self.run_video_io(self.cpu.d_clock as u64);
         self.run_spu(self.cpu.d_clock as u64);
+        self.run_sio_io(self.cpu.d_clock as u64);
 
         let mut d_clock = self.cpu.d_clock;
         while d_clock > 0 {

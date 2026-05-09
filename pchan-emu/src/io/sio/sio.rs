@@ -1,34 +1,101 @@
+mod joypad;
+
 use arbitrary_int::prelude::*;
 use bitbybit::*;
+use heapless::{Deque, binary_heap::Min};
 use pchan_utils::hex;
 
 use crate::{
     Bus, Emu,
-    io::{CastIOFrom, CastIOInto, UnhandledIO},
+    io::{
+        CastIOFrom, CastIOInto, UnhandledIO,
+        irq::{Interrupts, IrqState},
+        sio::joypad::JoypadState,
+    },
     trace_todo,
 };
+
+use super::irq;
 
 #[derive(Default, derive_more::Debug, Clone)]
 pub struct SioState {
     sio0stat: SioStatusReg,
     sio1stat: SioStatusReg,
     sio0ctrl: SioCtrlReg,
+    sio1ctrl: SioCtrlReg,
+    sio0mode: SioModeReg,
+    sio1mode: SioModeReg,
+
+    sio0bdrate_reload: u16,
+
+    sio0_rx: Deque<u8, 4>,
+    sio0_tx: Sio0Tx,
+
+    event_queue: heapless::BinaryHeap<ScheduledSioEvent, Min, 8>,
+
+    sio0devices: Sio0Devices,
 }
 
-pub trait Sio: Bus {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SioEvent {
+    Sio0ProcTx,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ScheduledSioEvent {
+    clock: u64,
+    event: SioEvent,
+}
+
+impl PartialOrd for ScheduledSioEvent {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for ScheduledSioEvent {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.clock.cmp(&other.clock)
+    }
+}
+
+#[derive(derive_more::Debug, Clone)]
+pub enum Sio0Device {
+    Joypad,
+}
+
+#[derive(Default, derive_more::Debug, Clone)]
+struct Sio0Devices {
+    active: Option<Sio0Device>,
+    joypad: JoypadState,
+}
+
+pub trait Sio: Bus + Interrupts {
     fn write<T: Copy>(&mut self, address: u32, value: T) -> Result<(), UnhandledIO> {
         let address = address & 0x1fffffff;
         let value = value.io_into_u32();
         match address {
             // 1/4  JOY_DATA Joypad/Memory Card Data (R/W)
-            0x1f801040 => trace_todo!("todo(sio): write to joypad/memcard data"),
+            0x1f801040 => {
+                let value = value as u8;
+                // tracing::warn!(tx_on = ?self.sio().sio0ctrl.tx_on());
+                // tracing::warn!(tx_idle = ?self.sio().sio0stat.tx_idle());
+                self.sio_mut().sio0_tx_send(value);
+                if self.sio().sio0ctrl.tx_on() {
+                    self.schedule(SioEvent::Sio0ProcTx, 100);
+                }
+                Ok(())
+            }
             // 1/4  SIO_DATA Serial Port Data (R/W)
             0x1f801050 => trace_todo!("todo(sio): write to sio1 (serial port) data"),
 
             // status is RO
 
             // 2    JOY_MODE Joypad/Memory Card Mode (R/W)
-            0x1f801048 => trace_todo!("todo(sio): write to joypad/memcard mode"),
+            0x1f801048 => {
+                self.sio_mut().sio0mode = SioModeReg::new_with_raw_value(value as u16);
+                Ok(())
+            }
             // 2    SIO_MODE Serial Port Mode (R/W)
             0x1f801058 => trace_todo!("todo(sio): write to sio1 (serial port) mode"),
 
@@ -42,7 +109,10 @@ pub trait Sio: Bus {
             0x1f80105a => trace_todo!("todo(sio): write to sio1 (serial port) ctrl"),
 
             // 2    JOY_BAUD Joypad/Memory Card Baudrate (R/W)
-            0x1f80104e => trace_todo!("todo(sio): write to sio0 bdrate"),
+            0x1f80104e => {
+                self.sio_mut().sio0bdrate_reload = value.io_into_u32() as u16;
+                Ok(())
+            }
             // 2    SIO_BAUD Serial Port Baudrate (R/W)
             0x1f80105e => trace_todo!("todo(sio): write to sio1 bdrate"),
 
@@ -56,7 +126,40 @@ pub trait Sio: Bus {
         let address = address & 0x1fffffff;
         match address {
             // 1F801040h 1/4  JOY_DATA Joypad/Memory Card Data (R/W)
-            0x1f801040 => trace_todo!(0x0, "todo(sio): read from joypad/memcard data"),
+            0x1f801040 => {
+                // the sio hardware is a piece of shit so reading 2 bytes
+                // removes only one from rx, but reading 4 removes all 4!
+                let cnt = size_of::<T>();
+                let res: u32 = match cnt {
+                    1 => self.sio_mut().sio0_rx.pop_front().unwrap_or(0x0) as u32,
+                    2 => {
+                        let rx = &mut self.sio_mut().sio0_rx;
+                        let buf = [rx.pop_front().unwrap_or(0x0), *rx.front().unwrap_or(&0x0)];
+                        u16::from_ne_bytes(buf) as u32
+                    }
+                    4 => {
+                        let mut buf = [0u8; 4];
+                        for x in buf.iter_mut() {
+                            let Some(val) = self.sio_mut().sio0_rx.pop_front() else {
+                                break;
+                            };
+                            *x = val;
+                        }
+                        u32::from_ne_bytes(buf)
+                    }
+                    _ => 0x0,
+                };
+                tracing::info!(
+                    "sio0: read from rx: {} ({} left, sio_stat.1={})",
+                    hex(res),
+                    self.sio().sio0_rx.len(),
+                    self.sio().sio0stat.rx_not_empty()
+                );
+                if self.sio().sio0_rx.is_empty() {
+                    self.sio_mut().sio0stat.set_rx_not_empty(false);
+                }
+                Ok(res.io_from_u32())
+            }
             0x1f801050 => trace_todo!(0x0, "todo(sio): read from sio1 (serial port) data"),
 
             // 1F801044h 4    JOY_STAT Joypad/Memory Card Status (R)
@@ -68,7 +171,7 @@ pub trait Sio: Bus {
             0x1f801058 => trace_todo!(0x0, "todo(sio): read from sio1 (serial port) mode"),
 
             // 1F80104Ah 2    JOY_CTRL Joypad/Memory Card Control (R/W)
-            0x1f80104a => trace_todo!(0x0, "todo(sio): read from joypad/memcard ctrl"),
+            0x1f80104a => Ok(self.sio().sio0ctrl.io_from_u32()),
             0x1f80105a => trace_todo!(0x0, "todo(sio): read from sio1 (serial port) ctrl"),
 
             // 1F80104Eh 2    JOY_BAUD Joypad/Memory Card Baudrate (R/W)
@@ -79,7 +182,83 @@ pub trait Sio: Bus {
             0x1f80105c => trace_todo!(0x0, "todo(sio): read from sio1 (serial port) internal"),
             _ => Err(UnhandledIO(address)),
         }
-        .inspect(|_| tracing::info!("r(sio): {}", hex(address)))
+        // .inspect(|_| tracing::info!("r(sio): {}", hex(address)))
+    }
+
+    fn schedule(&mut self, event: SioEvent, in_cycles: u64) {
+        let event = ScheduledSioEvent {
+            clock: self.cpu().cycles.wrapping_add(in_cycles),
+            event,
+        };
+        _ = self.sio_mut().event_queue.push(event);
+    }
+
+    fn run_sio_io(&mut self, d_clock: u64) {
+        let sio = self.sio_mut();
+        {
+            let bd = sio.sio0stat.bd_timer().as_u32();
+            match bd.checked_sub(d_clock as u32) {
+                Some(bd) => {
+                    sio.sio0stat.set_bd_timer(bd.as_());
+                }
+                None => {
+                    let bd = sio.sio0bdrate_reload as u32;
+                    let factor = match sio.sio0mode.bdrate_reload_factor() {
+                        BdrateReloadFactor::Mul1OrStop => 1,
+                        BdrateReloadFactor::Mul1 => 1,
+                        BdrateReloadFactor::Mul16 => 16,
+                        BdrateReloadFactor::Mul64 => 64,
+                    };
+                    let bd = bd * factor;
+                    let bd = bd / 2;
+                    sio.sio0stat.set_bd_timer(bd.as_());
+                }
+            }
+        }
+
+        sio.poll_sio0_ctrl();
+
+        while let Some(event) = self.sio_mut().event_queue.pop() {
+            if event.clock > self.cpu().cycles {
+                _ = self.sio_mut().event_queue.push(event);
+                break;
+            }
+            match event.event {
+                SioEvent::Sio0ProcTx => {
+                    self.sio0_tx_handle_one();
+                }
+            };
+        }
+    }
+
+    fn sio0_tx_handle_one(&mut self) {
+        let Some(value) = self.sio_mut().sio0_tx_pop() else {
+            return;
+        };
+        match (self.sio().sio0devices.active.as_ref(), value) {
+            (_, 0x01) => self.sio0_connect(Sio0Device::Joypad),
+            (device, _) => {
+                tracing::warn!("todo(sio0.tx): {device:?} unhandled value {}", hex(value))
+            }
+        }
+    }
+
+    fn sio0_connect(&mut self, device: Sio0Device) {
+        self.sio_mut().sio0devices.active = Some(device);
+        match device {
+            Sio0Device::Joypad => {
+                self.sio0_rx_send(0x00);
+                self.sio_mut().sio0stat.set_rx_not_empty(true);
+            }
+        }
+    }
+
+    fn sio0_rx_send(&mut self, value: u8) {
+        _ = self.sio_mut().sio0_rx.push_back(value);
+        let rx_len = 1usize << (self.sio().sio0ctrl.rx_irq_mode() as usize);
+        if self.sio().sio0_rx.len() == rx_len && self.sio().sio0ctrl.rx_irq_on() {
+            self.trigger_irq(irq::Irq::Irq7JoypadAndMemcard);
+        }
     }
 }
 
@@ -111,15 +290,21 @@ const fn sio_idx(addr: u32, base: u32, stride: u32) -> Option<usize> {
 ///   11-31 Baudrate Timer         (15-21 bit timer, decrementing at 33MHz)
 /// ```
 ///
-/// Bit 0 gets set after sending the start bit, bit 2 is set after sending all bits including the stop bit if any.
-/// On SIO0, DSR is wired to the /ACK pin on the controller and memory card ports; bit 7 is thus set when /ACK is low (asserted) and cleared when it is high. Bits 4-6 and 8 are always zero.
-/// The number of bits actually used by the baud rate timer is probably affected by the reload factor set in SIO_MODE.
-#[bitfield(u32, debug, default = 0x0)]
+/// Bit 0 gets set after sending the start bit, bit 2 is set after sending all
+/// bits including the stop bit if any. On SIO0, DSR is wired to the /ACK pin
+/// on the controller and memory card ports; bit 7 is thus set when /ACK is low
+/// (asserted) and cleared when it is high. Bits 4-6 and 8 are always zero. The
+/// number of bits actually used by the baud rate timer is probably affected by
+/// the reload factor set in SIO_MODE.
+#[bitfield(u32, debug, default = 0b001)]
 struct SioStatusReg {
+    /// SIO_STAT.0
     #[bit(0, rw)]
     tx_not_full:  bool,
+    /// SIO_STAT.1
     #[bit(1, rw)]
     rx_not_empty: bool,
+    /// SIO_STAT.2
     #[bit(2, rw)]
     tx_idle:      bool,
     #[bit(3, rw)]
@@ -221,9 +406,153 @@ enum Sio0Port {
 
 impl SioState {
     fn write_sio0_ctrl(&mut self, ctrl: SioCtrlReg) {
+        self.sio0ctrl = ctrl;
         if ctrl.ack() {
             self.sio0stat.set_rx_par_err(false);
             self.sio0stat.set_irq(false);
         }
     }
+
+    fn poll_sio0_ctrl(&mut self) {
+        match (self.sio0ctrl.tx_on(), self.sio0_tx) {
+            (true, Sio0Tx::Idle) => {
+                self.sio0stat.set_tx_idle(true);
+            }
+            (true, Sio0Tx::Queued(value)) => {
+                self.sio0_tx = Sio0Tx::Transferring(value, None);
+                self.sio0stat.set_tx_not_full(true);
+            }
+            (true, Sio0Tx::Transferring(_, _)) => {}
+            (false, _) => {
+                self.sio0stat.set_tx_idle(false);
+            }
+        }
+    }
 }
+
+/// # 1F801048h+N*10h - SIO#_MODE (R/W) (eg. 004Eh --> 8N1 with Factor=MUL16)
+///
+/// ```plaintext
+///   0-1   Baudrate Reload Factor     (1=MUL1, 2=MUL16, 3=MUL64) (or 0=MUL1 on SIO0, STOP on SIO1)
+///   2-3   Character Length           (0=5 bits, 1=6 bits, 2=7 bits, 3=8 bits)
+///   4     Parity Enable              (0=No, 1=Enable)
+///   5     Parity Type                (0=Even, 1=Odd) (seems to be vice-versa...?)
+///   6-7   SIO1 stop bit length       (0=Reserved/1bit, 1=1bit, 2=1.5bits, 3=2bits)
+///   8     SIO0 clock polarity (CPOL) (0=High when idle, 1=Low when idle)
+///   9-15  Not used (always zero)
+/// ```
+///
+/// Bits 6-7 on SIO0 and bit 8 on SIO1 are always zero. On SIO0 the character
+/// length shall be set to 8, the clock polarity should be set to high-when-idle
+/// and parity should be disabled, as all controllers and memory cards expect these
+/// settings.
+#[bitfield(u16, debug, default = 0x0)]
+struct SioModeReg {
+    #[bits(0..=1, rw)]
+    bdrate_reload_factor: BdrateReloadFactor,
+
+    #[bits(2..=3, rw)]
+    char_len:  CharLen,
+    #[bit(4, rw)]
+    parity_on: bool,
+    #[bit(5, rw)]
+    parity_ty: ParityType,
+
+    #[bits(6..=7, rw)]
+    sio1_stop_bit_len:   Sio1StopBitLen,
+    #[bit(8, rw)]
+    sio0_clock_polarity: Sio0ClockPolarity,
+}
+
+#[bitenum(u2, exhaustive = true)]
+#[derive(Debug)]
+enum BdrateReloadFactor {
+    Mul1OrStop = 0x0,
+    Mul1       = 0x1,
+    Mul16      = 0x2,
+    Mul64      = 0x3,
+}
+
+#[bitenum(u2, exhaustive = true)]
+#[derive(Debug)]
+#[expect(clippy::enum_variant_names)]
+enum CharLen {
+    L5Bits = 0x0,
+    L6Bits = 0x1,
+    L7Bits = 0x2,
+    L8Bits = 0x3,
+}
+
+#[bitenum(u1, exhaustive = true)]
+#[derive(Debug)]
+enum ParityType {
+    Even = 0x0,
+    Odd  = 0x1,
+}
+
+#[bitenum(u2, exhaustive = true)]
+#[derive(Debug)]
+enum Sio1StopBitLen {
+    LenNA     = 0x0,
+    Len1Bit   = 0x1,
+    Len1_5Bit = 0x2,
+    Len2Bit   = 0x3,
+}
+
+#[bitenum(u1, exhaustive = true)]
+#[derive(Debug)]
+enum Sio0ClockPolarity {
+    High = 0x0,
+    Low  = 0x1,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Sio0Tx {
+    Idle,
+    Queued(u8),
+    Transferring(u8, Option<u8>),
+}
+
+impl Default for Sio0Tx {
+    fn default() -> Self {
+        Self::Idle
+    }
+}
+
+impl SioState {
+    fn sio0_tx_send(&mut self, value: u8) {
+        self.sio0stat.set_tx_idle(false);
+        self.sio0stat.set_tx_not_full(false);
+        match self.sio0_tx {
+            Sio0Tx::Idle | Sio0Tx::Queued(_) => {
+                if self.sio0stat.tx_idle() {
+                    self.sio0stat.set_tx_not_full(true);
+                    self.sio0_tx = Sio0Tx::Transferring(value, None);
+                } else {
+                    self.sio0_tx = Sio0Tx::Queued(value);
+                }
+            }
+            Sio0Tx::Transferring(old_value, _) => {
+                self.sio0_tx = Sio0Tx::Transferring(old_value, Some(value));
+            }
+        }
+    }
+
+    fn sio0_tx_pop(&mut self) -> Option<u8> {
+        match self.sio0_tx {
+            Sio0Tx::Idle => None,
+            Sio0Tx::Queued(_) => None,
+            Sio0Tx::Transferring(value, Some(next)) => {
+                self.sio0_tx = Sio0Tx::Transferring(next, None);
+                Some(value)
+            }
+            Sio0Tx::Transferring(value, None) => {
+                self.sio0_tx = Sio0Tx::Idle;
+                self.sio0stat.set_tx_idle(true);
+                Some(value)
+            }
+        }
+    }
+}
+
+impl Sio0Devices {}
