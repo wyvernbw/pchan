@@ -7,6 +7,7 @@ use crate::cpu::exceptions::Exceptions;
 use crate::gpu::{Gpu, VideoEvents};
 use crate::io::dma::Dma;
 use crate::io::irq::Interrupts;
+use crate::io::sio::Sio;
 use crate::io::timers::Timers;
 use crate::memory::{Extend, GUEST_MEM_MAP, MEM_MAP, ScratchpadMem};
 use crate::spu::Spu;
@@ -16,9 +17,23 @@ use crate::{Bus, Emu, io::cdrom::CDRom, memory::fastmem::Fastmem};
 pub mod cdrom;
 pub mod dma;
 pub mod irq;
+#[path = "./sio/sio.rs"]
+pub mod sio;
 pub mod timers;
 pub mod tty;
 pub mod vblank;
+
+#[macro_export]
+macro_rules! trace_todo {
+    ($args: tt) => {{
+        tracing::warn!($args);
+        Ok(())
+    }};
+    ($value: expr, $args: tt) => {{
+        tracing::warn!($args);
+        Ok($value.io_from_u32())
+    }};
+}
 
 impl Emu {
     #[pchan_macros::instrument(level = "trace", "io", skip_all, fields(pc = %hex(self.cpu.pc)))]
@@ -298,6 +313,7 @@ impl IO for Emu {
             .or_else(|_| Spu::read(self, address))
             .or_else(|_| Dma::read(self, address))
             .or_else(|_| Timers::read_timers(self, address))
+            .or_else(|_| Sio::read::<T>(self, address))
             .or_else(|_| CDRom::read::<T>(self, address))
             .or_else(|_| GenericIOFallback::read::<T>(self, address))
             .or_else(|_| CacheControl::read::<T>(self, address))
@@ -330,6 +346,7 @@ impl IO for Emu {
             .or_else(|_| Gpu::write(self, address, value))
             .or_else(|_| Spu::write(self, address, value))
             .or_else(|_| Dma::write(self, address, value))
+            .or_else(|_| Sio::write::<T>(self, address, value))
             .or_else(|_| CDRom::write::<T>(self, address, value))
             .or_else(|_| GenericIOFallback::write::<T>(self, address, value))
             .or_else(|_| CacheControl::write::<T>(self, address, value))

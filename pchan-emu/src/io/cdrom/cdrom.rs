@@ -8,6 +8,7 @@ use crate::{
         cdrom::cdrom_ver::{CDRomVer, CDRomVerPtr},
         irq::{self, Interrupts},
     },
+    trace_todo,
 };
 use arbitrary_int::prelude::*;
 use bitbybit::{bitenum, bitfield};
@@ -21,17 +22,6 @@ pub struct CDRomState {
     param_fifo:  heapless::Deque<u8, 16>,
     result_fifo: heapless::Deque<u8, 16>,
     ver:         CDRomVerPtr,
-}
-
-macro_rules! trace_todo {
-    ($args: tt) => {{
-        tracing::warn!($args);
-        Ok(())
-    }};
-    ($value: expr, $args: tt) => {{
-        tracing::warn!($args);
-        Ok($value.io_from_u32())
-    }};
 }
 
 /// Current todo:
