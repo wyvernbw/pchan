@@ -25,6 +25,9 @@ not complete yet, they are enough to render the bios splash screen accurately.
     - [ ] lines
   - [ ] software renderer (not started)
 - [ ] cdrom
+  - [x] basic registers
+  - [x] fifo
+  - [ ] commands
 - [ ] spu
   - [x] basic spu & gauss interpolation
   - [x] audio thread 
@@ -32,6 +35,7 @@ not complete yet, they are enough to render the bios splash screen accurately.
   - [x] adsr envelope
   - [ ] reverb
   - [ ] noise generator
+- [ ] sio
 - [ ] input
 
 ## Build
