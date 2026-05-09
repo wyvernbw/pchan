@@ -68,8 +68,14 @@ pub trait Exceptions: Bus {
 
 impl Exceptions for Emu {
     fn handle_exception(&mut self, exception: Exception) {
+        let mut sr = Cop0StatusReg::new_with_raw_value(self.cpu().cop0.reg[12]);
+        // if !sr.iec() {
+        //     return;
+        // }
+
         let cause = self.cpu().cop0.reg[13];
         let mut cause = CauseRegister::new_with_raw_value(cause);
+
         cause.set_excode(exception.raw_value());
         self.cpu_mut().cop0.reg[13] = cause.raw_value();
 
@@ -84,7 +90,6 @@ impl Exceptions for Emu {
         };
         self.cpu_mut().cop0.reg[14] = epc;
 
-        let mut sr = Cop0StatusReg::new_with_raw_value(self.cpu().cop0.reg[12]);
         sr.push_exception_stack();
         self.cpu_mut().cop0.reg[12] = sr.raw_value();
 
