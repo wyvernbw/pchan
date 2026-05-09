@@ -10,6 +10,7 @@ use bitbybit::bitenum;
 use bitbybit::bitfield;
 use derive_more as d;
 use glam::U8Vec2;
+use glam::U8Vec3;
 use glam::U16Vec2;
 use glam::U64Vec2;
 use glam::u64vec2;
@@ -204,6 +205,10 @@ pub trait Gpu: Bus + Interrupts {
                 Gp0::WaitingForCmd
             }
 
+            0x02 => Gp0::Fill(Gp0VramRect::Color {
+                color: U8Vec3::from_array(cmd.fields().to_le_bytes()),
+            }),
+
             0xc0..=0xdf => {
                 self.gpu_mut().gpustat.set_ready_recv_cmd(false);
                 Gp0::CpRectVramToCpu(Gp0CpRect::RecvDest)
@@ -385,6 +390,30 @@ pub trait Gpu: Bus + Interrupts {
                     self.gpu_mut().gpustat.set_ready_recv_cmd(true);
                     Gp0::WaitingForCmd
                 }
+                Gp0::Fill(gp0_vram_rect) => match *gp0_vram_rect {
+                    Gp0VramRect::Color { color } => {
+                        let pos: VramCoord = unsafe { transmute(value) };
+                        let pos = pos.fill_cmd_pos_mask();
+                        Gp0::Fill(Gp0VramRect::Pos { color, pos })
+                    }
+                    Gp0VramRect::Pos { color, pos } => {
+                        let size: VramCoord = unsafe { transmute(value) };
+                        let size = size.fill_cmd_size_mask();
+                        let mut cursor = VramCursor::new(pos, pos + size);
+                        tracing::info!("started vram fill");
+                        for dest in cursor.iter().step_by(0x10) {
+                            let color = color >> 3u16;
+                            let rgb5 = Rgb5::new_with_raw_value(0x0)
+                                .with_r(color.x.as_())
+                                .with_g(color.y.as_())
+                                .with_b(color.z.as_());
+                            self.gpu_mut().vram_write(dest, rgb5.raw_value());
+                        }
+                        tracing::info!("finished vram fill");
+
+                        Gp0::WaitingForCmd
+                    }
+                },
 
                 Gp0::DrawRectDecode(decoder) => {
                     let decoder = decoder.advance(value);
@@ -645,18 +674,32 @@ pub enum Gp0 {
     CpRectCpuToVram(Gp0CpRect),
     CpRectVramToCpu(Gp0CpRect),
     CpRectVramToVram(Gp0VramCpRect),
+    Fill(Gp0VramRect),
 
     DrawPolygonDecode(DrawPolygonDecoder),
     DrawLineDecode(DrawLineDecoder),
     DrawRectDecode(DrawRectDecoder),
 }
 
-#[derive(Debug, Copy, PartialEq, PartialOrd, Ord, Eq)]
+#[derive(Debug, Copy, PartialEq, PartialOrd, Ord, Eq, d::Mul, d::MulAssign)]
 #[derive_const(Clone, d::Add, d::AddAssign, Default)]
 #[repr(C)]
+#[mul(forward)]
 pub struct VramCoord {
     pub x: u16,
     pub y: u16,
+}
+
+#[bitfield(u16)]
+pub struct Rgb5 {
+    #[bits(0..=4, rw)]
+    r:    u5,
+    #[bits(5..=9, rw)]
+    g:    u5,
+    #[bits(10..=14, rw)]
+    b:    u5,
+    #[bit(15, rw)]
+    mask: bool,
 }
 
 impl VramCoord {
@@ -679,6 +722,12 @@ impl VramCoord {
         self
     }
 
+    pub fn fill_cmd_pos_mask(mut self) -> Self {
+        self.x &= 0x3f0;
+        self.y &= 0x1ff;
+        self
+    }
+
     pub fn copy_cmd_size_mask(mut self) -> Self {
         if self.x == 0 {
             self.x = 0x400;
@@ -688,6 +737,12 @@ impl VramCoord {
         }
         self.x = ((self.x - 1) & 0x3ff) + 1;
         self.y = ((self.y - 1) & 0x1ff) + 1;
+        self
+    }
+
+    pub fn fill_cmd_size_mask(mut self) -> Self {
+        self.x = ((self.x & 0x3ff) + 0x0f) & (!0x0f);
+        self.y &= 0x1ff;
         self
     }
 }
@@ -780,6 +835,12 @@ pub enum Gp0VramCpRect {
     RecvSrc,
     RecvDest { src: VramCoord },
     RecvSize { src: VramCoord, dest: VramCoord },
+}
+
+#[derive(Debug, Clone)]
+pub enum Gp0VramRect {
+    Color { color: U8Vec3 },
+    Pos { color: U8Vec3, pos: VramCoord },
 }
 
 #[bitfield(u32)]

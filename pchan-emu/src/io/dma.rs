@@ -668,7 +668,7 @@ impl DmaChannel {
 
 #[derive(Debug, Default, Clone)]
 pub struct DmaQueue {
-    heap: Box<heapless::BinaryHeap<DmaEvent, Min, 128>>,
+    heap: Box<heapless::BinaryHeap<DmaEvent, Min, 1024>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
