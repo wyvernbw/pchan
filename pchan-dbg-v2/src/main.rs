@@ -53,6 +53,7 @@ use crate::{
     widgets::{
         button::{Button, ButtonResponse, ButtonState, ButtonStyles},
         checkbox::{Checkbox, CheckboxState},
+        dropdown::{Dropdown, DropdownState},
     },
 };
 
@@ -103,6 +104,7 @@ enum LoopMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Focused {
     Preview,
+    SpeedDropdown,
     Registers,
     Mips,
     Mem,
@@ -221,29 +223,38 @@ async fn run_app(env: &EnvVars) -> Result<()> {
                     let average_frame_time = frame_time_sum / frame_time_samples.len() as u128;
                     tui_state.frame_time = Duration::from_nanos_u128(average_frame_time);
                 }
-                let sleep_for = Duration::from_millis(16).saturating_sub(effective_frame_time);
-                let spin_for = Duration::from_millis(3);
-
-                if sleep_for > spin_for {
-                    let sleep_for = sleep_for.saturating_sub(spin_for);
-                    if let Ok(true) = crossterm::event::poll(sleep_for) {
-                        let ev = crossterm::event::read().unwrap();
-                        handle_event(&mut state, &mut tui_state, &ev);
-                        term.draw(|frame| {
-                            draw_app(frame, &mut tui_state, &state);
-                        })
-                        .unwrap();
+                let (sleep_for, spin_for) = match tui_state.speed_dropdown.current() {
+                    Some(EmuSpeed::Unlimited) => (Duration::ZERO, Duration::ZERO),
+                    _ => {
+                        let sleep_for =
+                            Duration::from_millis(16).saturating_sub(effective_frame_time);
+                        let spin_for = Duration::from_millis(3);
+                        (sleep_for, spin_for)
                     }
-                }
-                let now = Instant::now();
-                while now.elapsed() < spin_for {
-                    if let Ok(true) = crossterm::event::poll(Duration::ZERO) {
-                        let ev = crossterm::event::read().unwrap();
-                        handle_event(&mut state, &mut tui_state, &ev);
-                        term.draw(|frame| {
-                            draw_app(frame, &mut tui_state, &state);
-                        })
-                        .unwrap();
+                };
+
+                if sleep_for > Duration::ZERO {
+                    if sleep_for > spin_for {
+                        let sleep_for = sleep_for.saturating_sub(spin_for);
+                        if let Ok(true) = crossterm::event::poll(sleep_for) {
+                            let ev = crossterm::event::read().unwrap();
+                            handle_event(&mut state, &mut tui_state, &ev);
+                            term.draw(|frame| {
+                                draw_app(frame, &mut tui_state, &state);
+                            })
+                            .unwrap();
+                        }
+                    }
+                    let now = Instant::now();
+                    while now.elapsed() < spin_for {
+                        if let Ok(true) = crossterm::event::poll(Duration::ZERO) {
+                            let ev = crossterm::event::read().unwrap();
+                            handle_event(&mut state, &mut tui_state, &ev);
+                            term.draw(|frame| {
+                                draw_app(frame, &mut tui_state, &state);
+                            })
+                            .unwrap();
+                        }
                     }
                 }
 
@@ -319,11 +330,11 @@ fn handle_event(state: &mut AppState, tui_state: &mut TuiState, ev: &event::Even
     match ev.simple().as_str() {
         "ctrl+c" | "q" => tui_state.quit = true,
         event => {
+            tui_state.speed_dropdown.handle_event(ev);
             if let ButtonResponse::Clicked = tui_state.mips_jump_to_pc_button.handle_event(ev) {
                 tui_state.mips_cursor = state.emu.cpu.pc;
             };
             match (tui_state.focused, event) {
-                (Focused::Preview, "tab" | "j") => tui_state.focused = Focused::Registers,
                 (Focused::Preview, "l") => tui_state.focused = Focused::Mips,
                 (Focused::Preview, "f") => tui_state.fullscreen = !tui_state.fullscreen,
                 (Focused::Preview, " ") => {
@@ -336,7 +347,29 @@ fn handle_event(state: &mut AppState, tui_state: &mut TuiState, ev: &event::Even
                 (Focused::Preview, "r") => {
                     state.reinit();
                 }
-                (Focused::Registers, "backtab" | "k") => tui_state.focused = Focused::Preview,
+                (Focused::Preview, "tab" | "j") => {
+                    tui_state.focused = Focused::SpeedDropdown;
+                    tui_state.speed_dropdown.focus();
+                }
+
+                (Focused::SpeedDropdown, event) => {
+                    match (tui_state.speed_dropdown.is_open(), event) {
+                        (false, "tab" | "j") => {
+                            tui_state.focused = Focused::Registers;
+                            tui_state.speed_dropdown.blur();
+                        }
+                        (false, "backtab" | "k") => {
+                            tui_state.focused = Focused::Preview;
+                            tui_state.speed_dropdown.blur();
+                        }
+                        (_, _) => tui_state.speed_dropdown.handle_event(ev),
+                    }
+                }
+
+                (Focused::Registers, "backtab" | "k") => {
+                    tui_state.focused = Focused::SpeedDropdown;
+                    tui_state.speed_dropdown.focus();
+                }
                 (Focused::Registers, "l") => tui_state.focused = Focused::Mips,
                 (Focused::Registers, "ctrl+k" | "up") => tui_state.reg_list.select_previous(),
                 (Focused::Registers, "ctrl+j" | "down") => tui_state.reg_list.select_next(),
@@ -546,6 +579,7 @@ struct TuiState {
     mem_range:     RangeInclusive<u32>,
     exec_history:  VecDeque<u32>,
 
+    speed_dropdown:           DropdownState<EmuSpeed>,
     mips_jump_to_pc_button:   ButtonState,
     add_breakpoint_pane:      AddBreakpointPane,
     jump_to_mem_address_pane: JumpToMemAddressPane,
@@ -588,6 +622,7 @@ impl TuiState {
             mem_range:     0xbfc0_0000..=0xbfc0_0000,
             exec_history:  VecDeque::new(),
 
+            speed_dropdown:           DropdownState::new(),
             mips_jump_to_pc_button:   ButtonState::new(),
             add_breakpoint_pane:      AddBreakpointPane::default(),
             breakpoints_table:        TableState::default().with_selected(Some(0)),
@@ -600,6 +635,21 @@ impl TuiState {
             Style::new().fg(self.theme.primary)
         } else {
             Style::new()
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum EmuSpeed {
+    Unlimited,
+    P100,
+}
+
+impl std::fmt::Display for EmuSpeed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EmuSpeed::Unlimited => write!(f, "unlimited"),
+            EmuSpeed::P100 => write!(f, "100%"),
         }
     }
 }
@@ -626,8 +676,12 @@ fn draw_app(frame: &mut Frame, tui_state: &mut TuiState, state: &AppState) {
     let h1_w = h1.width;
     let img_h = h1_w * ar as u16 / 100;
     let img_h = (img_h * 2) / 3;
-    let [img_area, rest] =
-        Layout::vertical([Constraint::Length(img_h), Constraint::Fill(1)]).areas(h1);
+    let [img_area, dropdown_area, rest] = Layout::vertical([
+        Constraint::Length(img_h),
+        Constraint::Length(1),
+        Constraint::Fill(1),
+    ])
+    .areas(h1);
     let frame_time = tui_state.frame_time.as_millis_f32();
     let fps = 1000.0 / frame_time;
 
@@ -660,6 +714,24 @@ fn draw_app(frame: &mut Frame, tui_state: &mut TuiState, state: &AppState) {
         draw_mem(mem_area, frame, tui_state, state);
         draw_breakpoints(breakpoints_area, frame, tui_state, state);
     }
+
+    let [dropdown_area] = dropdown_area.layout(&Layout::horizontal([Constraint::Length(20)]));
+    frame.render_stateful_widget(
+        Dropdown::new(&[EmuSpeed::P100, EmuSpeed::Unlimited])
+            .style(
+                Style::new()
+                    .with_theme(&tui_state.theme)
+                    .bg(Color::DarkGray),
+            )
+            .focus_style(
+                Style::new()
+                    .bg(tui_state.theme.primary)
+                    .fg(tui_state.theme.bg),
+            )
+            .label("speed"),
+        dropdown_area,
+        &mut tui_state.speed_dropdown,
+    );
 }
 
 fn draw_register_viewer(area: Rect, frame: &mut Frame, tui_state: &mut TuiState, state: &AppState) {

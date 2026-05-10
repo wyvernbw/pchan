@@ -3,6 +3,7 @@ use ratatui::layout::Rect;
 
 pub mod button;
 pub mod checkbox;
+pub mod dropdown;
 
 pub enum EventResponse {
     Next,
