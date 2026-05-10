@@ -70,6 +70,7 @@ pub struct GpuState {
     pub tex_window:      Gp0TexWindowCmd,
     // TODO: remove this
     pub draw_opts_reg:   DrawOptsRegister,
+    #[debug("{} draw calls", self.draw_call_queue.len())]
     pub draw_call_queue: Vec<DrawCall>,
     pub model:           GpuModel,
 
@@ -335,8 +336,9 @@ pub trait Gpu: Bus + Interrupts {
                 }
                 Gp0::CpRectCpuToVram(Gp0CpRect::RecvData(cursor)) => {
                     let mut cursor = *cursor;
+                    let mut lock = self.gpu_mut().lock_vram();
                     for (at, halfword) in cursor.iter().take(2).zip(halfwords(value)) {
-                        self.gpu_mut().vram_write(at, halfword);
+                        lock.vram_write(at, halfword);
                     }
                     match cursor.done() {
                         true => {
@@ -382,9 +384,10 @@ pub trait Gpu: Bus + Interrupts {
                     let mut src_cursor = VramCursor::new(*src, size);
                     let mut dest_cursor = VramCursor::new(*dest, size);
 
+                    let mut lock = self.gpu_mut().lock_vram();
                     for (src, dest) in src_cursor.iter().zip(dest_cursor.iter()) {
-                        let value = self.gpu_mut().vram_read_direct(src);
-                        self.gpu_mut().vram_write(dest, value);
+                        let value = lock.vram_read(src);
+                        lock.vram_write(dest, value);
                     }
 
                     self.gpu_mut().gpustat.set_ready_recv_cmd(true);
@@ -399,17 +402,20 @@ pub trait Gpu: Bus + Interrupts {
                     Gp0VramRect::Pos { color, pos } => {
                         let size: VramCoord = unsafe { transmute(value) };
                         let size = size.fill_cmd_size_mask();
-                        let mut cursor = VramCursor::new(pos, pos + size);
-                        tracing::info!("started vram fill");
-                        for dest in cursor.iter().step_by(0x10) {
-                            let color = color >> 3u16;
-                            let rgb5 = Rgb5::new_with_raw_value(0x0)
-                                .with_r(color.x.as_())
-                                .with_g(color.y.as_())
-                                .with_b(color.z.as_());
-                            self.gpu_mut().vram_write(dest, rgb5.raw_value());
+                        if size.x != 0 && size.y != 0 {
+                            let mut cursor = VramCursor::new(pos, pos + size);
+                            tracing::info!("started vram fill: {cursor:#?}");
+                            let mut lock = self.gpu_mut().lock_vram();
+                            for dest in cursor.iter() {
+                                let color = color >> 3u16;
+                                let rgb5 = Rgb5::new_with_raw_value(0x0)
+                                    .with_r(color.x.as_())
+                                    .with_g(color.y.as_())
+                                    .with_b(color.z.as_());
+                                lock.vram_write(dest, rgb5.raw_value());
+                            }
+                            tracing::info!("finished vram fill");
                         }
-                        tracing::info!("finished vram fill");
 
                         Gp0::WaitingForCmd
                     }
@@ -586,6 +592,24 @@ pub trait Gpu: Bus + Interrupts {
     }
 }
 
+struct VramGuard<'a> {
+    vram: &'a mut [u16],
+}
+
+impl<'a> VramGuard<'a> {
+    fn vram_write(&mut self, coord: VramCoord, value: u16) {
+        let coord = coord.wrap();
+        let addr = coord.x as usize + coord.y as usize * kb(1);
+        self.vram[addr] = value;
+    }
+
+    fn vram_read(&mut self, coord: VramCoord) -> u16 {
+        let coord = coord.wrap();
+        let addr = coord.x as usize + coord.y as usize * kb(1);
+        self.vram[addr]
+    }
+}
+
 impl GpuState {
     fn get_gpu_info_cmd(&self, cmd: GpuCmd) -> Option<GpuInfoCmd> {
         let value = cmd.raw_value();
@@ -598,6 +622,13 @@ impl GpuState {
             GpuInfoCmd::from_repr(value as _)
                 .unwrap_or_else(|| todo!("gpu get info {}", hex(value))),
         )
+    }
+
+    fn lock_vram(&mut self) -> VramGuard<'_> {
+        self.vram_flush_render();
+        VramGuard {
+            vram: &mut self.vram,
+        }
     }
 
     fn vram_flush_render(&mut self) {
@@ -789,7 +820,7 @@ impl VramCursor {
         let curr = self.curr;
 
         self.curr.x += 1;
-        if self.curr.x == self.border.x {
+        if self.curr.x >= self.border.x {
             self.curr.x = self.start.x;
             self.curr.y += 1;
         }
