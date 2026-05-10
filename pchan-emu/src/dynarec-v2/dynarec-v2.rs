@@ -621,27 +621,6 @@ impl Dynarec {
                 );
             })
             .collect()
-        // for reg in self.reg_alloc.allocated_volatile().chunks(2) {
-        //     match reg {
-        //         [a, b] => {
-        //             #[cfg(target_arch = "aarch64")]
-        //             dynasm!(
-        //                 self.asm
-        //                 ; .arch aarch64
-        //                 ; stp X(*a), X(*b), [sp, #-16]!
-        //             );
-        //         }
-        //         [reg] => {
-        //             #[cfg(target_arch = "aarch64")]
-        //             dynasm!(
-        //                 self.asm
-        //                 ; .arch aarch64
-        //                 ; str X(*reg), [sp, #-16]!
-        //             );
-        //         }
-        //         _ => unreachable!(),
-        //     };
-        // }
     }
 
     #[allow(clippy::useless_conversion)]
@@ -660,27 +639,6 @@ impl Dynarec {
             ; .arch aarch64
             ; ldr x0, [sp], #16
         );
-        // for reg in self.reg_alloc.allocated_volatile().chunks(2).rev() {
-        //     match reg {
-        //         [a, b] => {
-        //             #[cfg(target_arch = "aarch64")]
-        //             dynasm!(
-        //                 self.asm
-        //                 ; .arch aarch64
-        //                 ; ldp X(*a), X(*b), [sp], #16
-        //             );
-        //         }
-        //         [reg] => {
-        //             #[cfg(target_arch = "aarch64")]
-        //             dynasm!(
-        //                 self.asm
-        //                 ; .arch aarch64
-        //                 ; ldr X(*reg), [sp], #16
-        //             );
-        //         }
-        //         _ => unreachable!(),
-        //     };
-        // }
     }
 }
 
@@ -1076,6 +1034,7 @@ fn fetch_and_compile_single_threaded(
     let mut ops: Vec<DecodedOp> = Vec::new();
 
     let scheduled_event = emu.pending_event();
+    let mut scratch_cursor = 0;
     while let Some((opcode, op)) = state.pop_item() {
         state.pc = initial_pc + state.op_count as u32 * 0x4;
 
@@ -1108,20 +1067,22 @@ fn fetch_and_compile_single_threaded(
         let delayed = dynarec.pop_scheduled_at(state.pc);
 
         state.apply(op.emit(EmitCtx {
-            dynarec:    &mut dynarec,
-            cache:      &emu.dynarec_cache,
-            pc:         state.pc,
-            d_clock:    state.cycles,
-            delay_slot: false,
+            dynarec:        &mut dynarec,
+            cache:          &emu.dynarec_cache,
+            pc:             state.pc,
+            d_clock:        state.cycles,
+            delay_slot:     false,
+            scratch_cursor: &mut scratch_cursor,
         }));
 
         if let Some(emitter) = delayed {
             state.apply(emitter.emitter.call((EmitCtx {
-                dynarec:    &mut dynarec,
-                cache:      &emu.dynarec_cache,
-                pc:         emitter.pc,
-                d_clock:    state.cycles,
-                delay_slot: false,
+                dynarec:        &mut dynarec,
+                cache:          &emu.dynarec_cache,
+                pc:             emitter.pc,
+                d_clock:        state.cycles,
+                delay_slot:     false,
+                scratch_cursor: &mut scratch_cursor,
             },)));
         }
 
@@ -1155,7 +1116,8 @@ fn fetch_and_compile_single_threaded(
             d_clock: state.cycles,
 
             // this happens in the delay slot basically
-            delay_slot: true,
+            delay_slot:     true,
+            scratch_cursor: &mut scratch_cursor,
         },)));
     }
 

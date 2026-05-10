@@ -23,9 +23,10 @@ pub struct Cpu {
     pub pc:           u32, // store pc and d_clock together so one write can target both
     pub d_clock:      u32,
     pub hilo:         u64,
+    pub scratch_buf:  [u32; Self::SCRATCH_SIZE],
     pub cop0:         Cop0,
-    pub cop1:         Cop1,
     pub cop2:         Cop2,
+    pub cop1:         Cop1,
     pub vblank_timer: u32,
     pub cycles:       u64,
     pub irq:          IrqState,
@@ -220,6 +221,8 @@ impl Cpu {
     pub const PC_OFFSET: usize = offset_of!(Self, pc);
     pub const HILO_OFFSET: usize = offset_of!(Self, hilo);
     pub const D_CLOCK_OFFSET: usize = offset_of!(Self, d_clock);
+    pub const SCRATCH_OFFSET: usize = offset_of!(Cpu, scratch_buf);
+    pub const SCRATCH_SIZE: usize = 16;
 
     pub const fn reg_offset(reg: u8) -> usize {
         (offset_of!(Cpu, gpr) + size_of::<u32>() * reg as usize)

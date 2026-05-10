@@ -34,20 +34,17 @@ use super::ScheduledEmitter;
 
 #[derive(Debug)]
 pub struct EmitCtx<'a> {
-    pub dynarec:    &'a mut Dynarec,
-    pub cache:      &'a DynarecCache,
-    pub pc:         u32,
-    pub d_clock:    u32,
-    pub delay_slot: bool,
+    pub dynarec:        &'a mut Dynarec,
+    pub cache:          &'a DynarecCache,
+    pub pc:             u32,
+    pub d_clock:        u32,
+    pub delay_slot:     bool,
+    pub scratch_cursor: &'a mut u8,
 }
 
 const MAX_SCRATCH_REG: u8 = 3;
 
 impl<'a> EmitCtx<'a> {
-    fn parity(&self) -> impl Fn(u8) -> u8 + 'static {
-        let m = (self.pc >> 2) % 2;
-        move |reg| reg + m as u8 * MAX_SCRATCH_REG
-    }
     fn schedule_in(&mut self, ops: u32, emitter: impl Fn(EmitCtx) -> EmitSummary + 'static) {
         let emitter = SmallBox::new(emitter) as DynEmitter;
         let at = self.pc + ops * 4;
@@ -64,13 +61,35 @@ impl<'a> EmitCtx<'a> {
     fn drain_schedule(&mut self) {
         while let Some(emitter) = self.dynarec.scheduler.queue.pop() {
             emitter.emitter.call((EmitCtx {
-                dynarec:    self.dynarec,
-                cache:      self.cache,
-                pc:         emitter.schedule,
-                d_clock:    self.d_clock,
-                delay_slot: self.delay_slot,
+                dynarec:        self.dynarec,
+                cache:          self.cache,
+                pc:             emitter.schedule,
+                d_clock:        self.d_clock,
+                delay_slot:     self.delay_slot,
+                scratch_cursor: self.scratch_cursor,
             },));
         }
+    }
+
+    fn alloc_scratch(&mut self) -> u32 {
+        let cursor = *self.scratch_cursor as usize;
+        *self.scratch_cursor = ((*self.scratch_cursor + 1) as usize % Cpu::SCRATCH_SIZE) as u8;
+        (Cpu::SCRATCH_OFFSET + cursor * size_of::<u32>()) as u32
+    }
+
+    fn alloc_scratch_pair(&mut self) -> (u32, u32) {
+        const MAX_CURSOR: u8 = Cpu::SCRATCH_SIZE as u8 - 2;
+        if *self.scratch_cursor == MAX_CURSOR {
+            *self.scratch_cursor = 0;
+        }
+        let a = *self.scratch_cursor as usize;
+        let b = a + 1;
+        *self.scratch_cursor =
+            ((*self.scratch_cursor + 2) as usize % (Cpu::SCRATCH_SIZE - 1)) as u8;
+        (
+            (Cpu::SCRATCH_OFFSET + a * size_of::<u32>()) as u32,
+            (Cpu::SCRATCH_OFFSET + b * size_of::<u32>()) as u32,
+        )
     }
 }
 
@@ -570,7 +589,8 @@ fn emit_store(
     imm: i16,
     func_call: impl Fn(&mut EmitCtx) + 'static,
 ) -> EmitSummary {
-    let s = ctx.parity();
+    let (s1, _) = ctx.alloc_scratch_pair();
+    let s1 = s1 as i32;
     ctx.dynarec.emit_load_temp_reg(rs, Reg::W(1));
     ctx.dynarec.emit_load_temp_reg(rt, Reg::W(2));
 
@@ -579,8 +599,7 @@ fn emit_store(
         ; .arch aarch64
         ;; ctx.dynarec.emit_add_imm16(EmitAddImm16Args { dest: Reg::W(1), base: Reg::W(1), offset: imm, temp: None })
         // ; stp w1, w2, [sp, #-16]!
-        ; fmov S(s(9)), w1
-        ; fmov S(s(10)), w2
+        ; stp w1, w2, [x0, #s1]
     );
 
     ctx.schedule_in(1, move |mut ctx| {
@@ -602,8 +621,7 @@ fn emit_store(
                 )
             }
 
-            ; fmov w1, S(s(9))
-            ; fmov w2, S(s(10))
+            ; ldp w1, w2, [x0, #s1]
             ;; func_call(&mut ctx)
             ;; ctx.dynarec.emit_restore_saved_registers(saved.into_iter())
 
@@ -955,13 +973,13 @@ fn emit_load<const ALIGNED: bool>(
     imm: i16,
     func_call: impl Fn(&mut EmitCtx) + 'static,
 ) -> EmitSummary {
-    let s = ctx.parity();
+    let s1 = ctx.alloc_scratch() as u32;
     ctx.dynarec.emit_load_temp_reg(rs, Reg::W(1));
     dynasm!(
         ctx.dynarec.asm
         ; .arch aarch64
         ;; ctx.dynarec.emit_add_imm16(EmitAddImm16Args { dest: Reg::W(1), base: Reg::W(1), offset: imm, temp: None })
-        ; fmov S(s(8)), w1
+        ; str w1, [x0, #s1]
     );
 
     ctx.schedule_in(1, move |mut ctx| {
@@ -971,10 +989,11 @@ fn emit_load<const ALIGNED: bool>(
                 ; .arch aarch64
                 // ; ldr w1, [sp], #16
                 ;; let saved = ctx.dynarec.emit_save_volatile_registers()
-                ; fmov w1, S(s(8))
+                ; ldr w1, [x0, #s1]
                 ;; func_call(&mut ctx)
-                ; fmov S(s(8)), w0 // place return value in s8+
+                ; mov w1, w0
                 ;; ctx.dynarec.emit_restore_saved_registers(saved.into_iter())
+                ; str w1, [x0, #s1]
             );
         } else {
             let rt = ctx.dynarec.emit_load_reg(rt);
@@ -982,11 +1001,12 @@ fn emit_load<const ALIGNED: bool>(
                 ctx.dynarec.asm
                 ; .arch aarch64
                 ;; let saved = ctx.dynarec.emit_save_volatile_registers()
-                ; fmov w1, S(s(8))
+                ; ldr w1, [x0, #s1]
                 ; mov w2, W(*rt)
                 ;; func_call(&mut ctx)
-                ; fmov S(s(8)), w0 // place return value in s8+
+                ; mov w1, w0
                 ;; ctx.dynarec.emit_restore_saved_registers(saved.into_iter())
+                ; str w1, [x0, #s1]
             );
         }
 
@@ -994,7 +1014,7 @@ fn emit_load<const ALIGNED: bool>(
             let rta = ctx.dynarec.alloc_reg(rt);
             dynasm!(
                 ctx.dynarec.asm
-                ; fmov W(*rta), S(s(8))
+                ; ldr W(*rta), [x0, #s1]
             );
             ctx.dynarec.mark_dirty(rt);
             rta.restore(ctx.dynarec);
@@ -1132,7 +1152,7 @@ fn test_loads(
     tracing::info!("finished running");
     tracing::info!(?emu.cpu);
 
-    assert_eq!(emu.cpu.d_clock, 3);
+    assert_eq!(emu.cpu.d_clock, 4);
     assert_eq!(emu.cpu.pc, 0x8);
     assert_eq!(emu.cpu.gpr[10], expected);
 
@@ -1166,7 +1186,7 @@ fn test_partial_loads(
     tracing::info!("finished running");
     tracing::info!(?emu.cpu);
 
-    assert_eq_hex!(emu.cpu.d_clock, 3);
+    assert_eq_hex!(emu.cpu.d_clock, 4);
     assert_eq_hex!(emu.cpu.pc, 0x8);
     assert_eq_hex!(emu.cpu.gpr[10], expected);
 
@@ -1242,7 +1262,7 @@ fn test_load_delay(#[case] instr: impl Fn(u8, u8, i16) -> OpCode) -> color_eyre:
     tracing::info!("finished running");
     tracing::info!(?emu.cpu);
 
-    assert_eq!(emu.cpu.d_clock, 5);
+    assert_eq!(emu.cpu.d_clock, 6);
     assert_eq!(emu.cpu.pc, 0x10);
     assert_eq!(emu.cpu.gpr[10], 69);
     assert_eq!(emu.cpu.gpr[12], 420);
@@ -2129,7 +2149,7 @@ fn test_j(#[case] initial_pc: u32, #[case] jump_imm: u32) -> color_eyre::Result<
     PipelineV2::new(&emu).run_once(&mut emu)?;
     tracing::info!(?emu.cpu);
     assert_eq!(emu.cpu.gpr[9], 69);
-    assert_eq!(emu.cpu.d_clock, 3);
+    assert_eq!(emu.cpu.d_clock, 4);
     assert_eq!(emu.cpu.pc, new_pc);
 
     Ok(())
@@ -2181,7 +2201,7 @@ fn test_jal(#[case] initial_pc: u32, #[case] jump_imm: u32) -> color_eyre::Resul
     PipelineV2::new(&emu).run_once(&mut emu)?;
     tracing::info!(?emu.cpu);
     assert_eq!(emu.cpu.gpr[9], 69);
-    assert_eq!(emu.cpu.d_clock, 3);
+    assert_eq!(emu.cpu.d_clock, 4);
     assert_eq!(emu.cpu.pc, new_pc);
     assert_eq!(emu.cpu.gpr[cpu::RA as usize], initial_pc + 0x8);
 
@@ -2201,14 +2221,13 @@ impl DynarecOp for Jr {
     #[allow(clippy::useless_conversion)]
     fn emit<'a>(&self, mut ctx: EmitCtx<'a>) -> EmitSummary {
         let dest = ctx.dynarec.emit_load_reg(self.rs);
-        let s = ctx.parity();
-
+        let s1 = ctx.alloc_scratch() as u32;
         #[cfg(target_arch = "aarch64")]
         dynasm!(
             ctx.dynarec.asm
             ; .arch aarch64
             // ; str W(*dest), [sp, #-16]!
-            ; fmov S(s(8)), W(*dest)
+            ; str W(*dest), [x0, #s1]
         );
 
         ctx.schedule_in(1, move |ctx| {
@@ -2216,7 +2235,8 @@ impl DynarecOp for Jr {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
-                ; str S(s(8)), [x0, Emu::PC_OFFSET as _]
+                ; ldr w1, [x0, #s1]
+                ; str w1, [x0, Emu::PC_OFFSET as _]
             );
 
             EmitSummary::pc_updated()
@@ -2243,7 +2263,7 @@ fn test_jr(#[case] initial_pc: u32, #[case] rs: (Guest, u32)) -> color_eyre::Res
     PipelineV2::new(&emu).run_once(&mut emu)?;
     tracing::info!(?emu.cpu);
     assert_eq!(emu.cpu.gpr[9], 69);
-    assert_eq!(emu.cpu.d_clock, 3);
+    assert_eq!(emu.cpu.d_clock, 4);
     assert_eq!(emu.cpu.pc, rs.1);
 
     Ok(())
@@ -2293,15 +2313,14 @@ impl DynarecOp for Jalr {
     }
     #[allow(clippy::useless_conversion)]
     fn emit<'a>(&self, mut ctx: EmitCtx<'a>) -> EmitSummary {
-        let s = ctx.parity();
+        let s1 = ctx.alloc_scratch() as u32;
         let dest = ctx.dynarec.emit_load_reg(self.rs);
 
         #[cfg(target_arch = "aarch64")]
         dynasm!(
             ctx.dynarec.asm
             ; .arch aarch64
-            // ; str W(*dest), [sp, #-16]!
-            ; fmov S(s(8)), W(*dest)
+            ; str W(*dest), [x0, #s1]
         );
 
         let rd = self.rd;
@@ -2311,8 +2330,8 @@ impl DynarecOp for Jalr {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
-                // ; ldr w3, [sp], #16
-                ; str S(s(8)), [x0, Emu::PC_OFFSET as _]
+                ; ldr w1, [x0, #s1]
+                ; str w1, [x0, Emu::PC_OFFSET as _]
             );
 
             let ret_address = ctx.pc + 0x8;
@@ -2353,7 +2372,7 @@ fn test_jalr(
     PipelineV2::new(&emu).run_once(&mut emu)?;
     tracing::info!(?emu.cpu);
     assert_eq!(emu.cpu.gpr[9], 69);
-    assert_eq!(emu.cpu.d_clock, 3);
+    assert_eq!(emu.cpu.d_clock, 4);
     assert_eq!(emu.cpu.pc, rs.1);
     assert_eq!(emu.cpu.gpr[rd as usize], initial_pc + 0x8);
 
@@ -2376,7 +2395,8 @@ fn emit_branch(
     imm: i16,
     selector: impl Fn(&mut EmitCtx) + 'static,
 ) -> EmitSummary {
-    let s = ctx.parity();
+    let (s1, _) = ctx.alloc_scratch_pair();
+    let s1 = s1 as i32;
     let rs = ctx.dynarec.emit_load_reg(rs);
     let rt = ctx.dynarec.emit_load_reg(rt);
 
@@ -2384,9 +2404,7 @@ fn emit_branch(
     dynasm!(
         ctx.dynarec.asm
         ; .arch aarch64
-        // ; stp W(*rs), W(*rt), [sp, #-16]!
-        ; fmov S(s(9)), W(*rs)
-        ; fmov S(s(10)), W(*rt)
+        ; stp W(*rs), W(*rt), [x0, #s1]
     );
 
     let branch_dest = (ctx.pc + 0x4).wrapping_add_signed(ext::sign(imm) << 2);
@@ -2394,9 +2412,7 @@ fn emit_branch(
         dynasm!(
             ctx.dynarec.asm
             ; .arch aarch64
-            // ; ldp w2, w3, [sp], #16
-            ; fmov w2, S(s(9))
-            ; fmov w3, S(s(10))
+            ; ldp w2, w3, [x0, #s1]
             ; cmp w2, w3
 
             ; movz w2, (ctx.pc + 0x8) >> 16, lsl #16
@@ -2580,15 +2596,14 @@ fn emit_branch_zero(
     imm: i16,
     selector: impl Fn(&mut EmitCtx) + 'static,
 ) -> EmitSummary {
-    let s = ctx.parity();
+    let s1 = ctx.alloc_scratch() as u32;
     let rs = ctx.dynarec.emit_load_reg(rs);
 
     // calculate branch value
     dynasm!(
         ctx.dynarec.asm
         ; .arch aarch64
-        // ; str W(*rs), [sp, #-16]!
-        ; fmov S(s(8)), W(*rs)
+        ; str W(*rs), [x0, #s1]
     );
 
     let branch_dest = (ctx.pc + 0x4).wrapping_add_signed(ext::sign(imm) << 2);
@@ -2596,8 +2611,7 @@ fn emit_branch_zero(
         dynasm!(
             ctx.dynarec.asm
             ; .arch aarch64
-            // ; ldr w2, [sp], #16
-            ; fmov w2, S(s(8))
+            ; ldr w2, [x0, #s1]
             ; cmp w2, #0
 
             ; movz w2, (ctx.pc + 0x8) >> 16, lsl #16
