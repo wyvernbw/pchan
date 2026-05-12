@@ -696,8 +696,11 @@ fn ensure_vertex_order(vertex_buf: &mut [Vertex], indices: [usize; 3]) {
     let [v0, v1, v2] = vertex_buf
         .get_disjoint_mut(indices)
         .expect("indices must be disjoint");
-    let cross_product_z = (v1.pos.x - v0.pos.x) * (v2.pos.y - v0.pos.y)
-        - (v1.pos.y - v0.pos.y) * (v2.pos.x - v0.pos.x);
+    let v0_pos = v0.pos.as_i64vec2();
+    let v1_pos = v1.pos.as_i64vec2();
+    let v2_pos = v2.pos.as_i64vec2();
+    let cross_product_z = (v1_pos.x - v0_pos.x) * (v2_pos.y - v0_pos.y)
+        - (v1_pos.y - v0_pos.y) * (v2_pos.x - v0_pos.x);
     if cross_product_z < 0 {
         std::mem::swap(v0, v1);
     }
