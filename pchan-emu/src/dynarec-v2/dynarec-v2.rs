@@ -78,10 +78,11 @@ type DynEmitter = SmallBox<dyn Fn(EmitCtx) -> EmitSummary, [usize; 1]>;
 
 #[derive(derive_more::Debug)]
 pub struct Dynarec {
-    reg_alloc: RegAlloc,
-    scheduler: Box<Scheduler>,
+    reg_alloc:             RegAlloc,
+    scheduler:             Box<Scheduler>,
+    pub last_ran_function: Option<DynarecFunction>,
     #[debug(skip)]
-    asm:       Assembler<Reloc>,
+    asm:                   Assembler<Reloc>,
 }
 
 #[derive(Default)]
@@ -102,6 +103,7 @@ impl Default for Dynarec {
             scheduler: Box::new(Scheduler::default()),
             reg_alloc: Default::default(),
             asm,
+            last_ran_function: None,
         }
     }
 }
@@ -123,14 +125,15 @@ impl Dynarec {
             reg_alloc,
             scheduler,
             asm,
+            last_ran_function: None,
         }
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct DynarecFunction {
-    func: fn(*mut Emu),
-    exec: Arc<ExecutableBuffer>,
+    pub func: fn(*mut Emu),
+    pub exec: Arc<ExecutableBuffer>,
 }
 
 #[derive(Debug, Clone)]
@@ -834,14 +837,16 @@ pub fn run_step(emu: &mut Emu, dynarec: Box<Dynarec>) -> Box<Dynarec> {
     // while emu.cpu.pc == pc {
     //     block(emu, false);
     // }
-    emu.dynarec_cache.insert(pc, block);
 
-    dynarec.unwrap_or_else(|| {
+    let mut dynarec = dynarec.unwrap_or_else(|| {
         Box::new(Dynarec::new(CreateDynarecParams {
             scheduler,
             ..default()
         }))
-    })
+    });
+    dynarec.last_ran_function = Some(block.function.clone());
+    emu.dynarec_cache.insert(pc, block);
+    dynarec
 }
 
 #[derive(strum::EnumCount, strum::EnumDiscriminants, strum::EnumIs)]

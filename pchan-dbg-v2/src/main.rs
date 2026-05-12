@@ -10,10 +10,12 @@ pub mod lipgloss_colors;
 pub mod widgets;
 
 use std::{
-    collections::VecDeque,
-    io::stdout,
+    borrow::Cow,
+    collections::{HashMap, VecDeque},
+    io::{Write, stdout},
     ops::RangeInclusive,
-    sync::Arc,
+    process::Stdio,
+    sync::{Arc, mpsc},
     time::{Duration, Instant},
 };
 
@@ -29,7 +31,7 @@ use pchan_emu::{
     cpu::reg_str,
     debug::{Breakpoint, BreakpointKind},
     dynarec_v2::{
-        Dynarec,
+        Dynarec, DynarecFunction,
         emitters::{DecodedOp, DynarecOp},
         run_step,
     },
@@ -42,8 +44,14 @@ use ratatui::{
     DefaultTerminal, Frame, crossterm,
     layout::{Constraint, Layout, Margin, Rect},
     style::{Color, Style, Styled, Stylize},
-    widgets::{Block, BorderType, Borders, Clear, List, ListState, Row, Table, TableState, Widget},
+    symbols,
+    text::ToText,
+    widgets::{
+        Block, BorderType, Borders, Clear, List, ListState, Paragraph, Row, Table, TableState,
+        Tabs, Widget,
+    },
 };
+use smol::LocalExecutor;
 use wgpu::Extent3d;
 
 use crate::{
@@ -64,12 +72,15 @@ fn main() -> Result<()> {
         stdout:     false,
     });
     let env = EnvVars::new()?;
-    smol::block_on(run_app(&env))
+    let exec = LocalExecutor::new();
+    smol::block_on(exec.run(run_app(&exec, &env)))
 }
 
-struct AppState {
-    emu: Emu,
-    gpu: Arc<Renderer>,
+struct AppState<'a, 'e> {
+    exec:    &'a LocalExecutor<'e>,
+    emu:     Emu,
+    dynarec: Box<Dynarec>,
+    gpu:     Arc<Renderer>,
 }
 
 struct Theme {
@@ -106,7 +117,7 @@ enum Focused {
     Preview,
     SpeedDropdown,
     Registers,
-    Mips,
+    Asm,
     Mem,
     Breakpoints,
 }
@@ -127,13 +138,13 @@ fn reinit_emu(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
-impl AppState {
+impl AppState<'_, '_> {
     pub fn reinit(&mut self) {
         reinit_emu(&mut self.emu).unwrap();
     }
 }
 
-async fn run_app(env: &EnvVars) -> Result<()> {
+async fn run_app<'a, 'e>(exec: &'a LocalExecutor<'e>, env: &EnvVars) -> Result<()> {
     let mut emu = Emu::default();
     let mut gpu = Renderer::new().await;
     let mut audio = pchan_audio::AudioTask::new()?;
@@ -155,8 +166,10 @@ async fn run_app(env: &EnvVars) -> Result<()> {
     std::mem::forget(stream);
 
     let mut state = AppState {
+        exec,
         emu,
         gpu: gpu.into(),
+        dynarec: Box::default(),
     };
     let mut tui_state = TuiState::new();
     tui_state.reg_list.select_first();
@@ -167,7 +180,6 @@ async fn run_app(env: &EnvVars) -> Result<()> {
         let mut frame_time_sample_time = Duration::ZERO;
         let mut frame_time_samples = VecDeque::with_capacity(32);
         let mut frame_time_sum = 0u128;
-        let mut dynarec = Box::new(Dynarec::default());
         _ = term.draw(|frame| {
             draw_app(frame, &mut tui_state, &state);
         });
@@ -177,7 +189,7 @@ async fn run_app(env: &EnvVars) -> Result<()> {
             }
 
             if tui_state.emu_running {
-                dynarec = run_step(&mut state.emu, dynarec);
+                state.dynarec = run_step(&mut state.emu, state.dynarec);
                 tui_state.mips_cursor = state.emu.cpu.pc;
                 tui_state.exec_history.push_back(state.emu.cpu.pc);
                 if tui_state.exec_history.len() > 100 {
@@ -331,11 +343,11 @@ fn handle_event(state: &mut AppState, tui_state: &mut TuiState, ev: &event::Even
         "ctrl+c" | "q" => tui_state.quit = true,
         event => {
             tui_state.speed_dropdown.handle_event(ev);
-            if let ButtonResponse::Clicked = tui_state.mips_jump_to_pc_button.handle_event(ev) {
+            if let ButtonResponse::Clicked = tui_state.asm_jump_to_pc_button.handle_event(ev) {
                 tui_state.mips_cursor = state.emu.cpu.pc;
             };
             match (tui_state.focused, event) {
-                (Focused::Preview, "l") => tui_state.focused = Focused::Mips,
+                (Focused::Preview, "l") => tui_state.focused = Focused::Asm,
                 (Focused::Preview, "f") => tui_state.fullscreen = !tui_state.fullscreen,
                 (Focused::Preview, " ") => {
                     tui_state.emu_running = !tui_state.emu_running;
@@ -370,19 +382,33 @@ fn handle_event(state: &mut AppState, tui_state: &mut TuiState, ev: &event::Even
                     tui_state.focused = Focused::SpeedDropdown;
                     tui_state.speed_dropdown.focus();
                 }
-                (Focused::Registers, "l") => tui_state.focused = Focused::Mips,
+                (Focused::Registers, "l") => tui_state.focused = Focused::Asm,
                 (Focused::Registers, "ctrl+k" | "up") => tui_state.reg_list.select_previous(),
                 (Focused::Registers, "ctrl+j" | "down") => tui_state.reg_list.select_next(),
                 (Focused::Registers, "g") => tui_state.reg_list.select_first(),
                 (Focused::Registers, "shift+g") => tui_state.reg_list.select_last(),
-                (Focused::Mips, "h") => tui_state.focused = Focused::Registers,
-                (Focused::Mips, "ctrl+j") => {
-                    tui_state.mips_cursor = tui_state.mips_cursor.saturating_add(4);
-                }
-                (Focused::Mips, "ctrl+k") => {
-                    tui_state.mips_cursor = tui_state.mips_cursor.saturating_sub(4);
-                }
-                (Focused::Mips, "l" | "tab") => tui_state.focused = Focused::Mem,
+                (Focused::Asm, "h") => tui_state.focused = Focused::Registers,
+                (Focused::Asm, "ctrl+j") => match tui_state.asm_current_tab {
+                    AsmTab::Mips => {
+                        tui_state.mips_cursor = tui_state.mips_cursor.saturating_add(4);
+                    }
+                    AsmTab::Objdump => {
+                        tui_state.asm_objdump_list.select_next();
+                    }
+                },
+                (Focused::Asm, "ctrl+k") => match tui_state.asm_current_tab {
+                    AsmTab::Mips => {
+                        tui_state.mips_cursor = tui_state.mips_cursor.saturating_sub(4);
+                    }
+                    AsmTab::Objdump => {
+                        tui_state.asm_objdump_list.select_previous();
+                    }
+                },
+                (Focused::Asm, "tab") => match tui_state.asm_current_tab {
+                    AsmTab::Mips => tui_state.asm_current_tab = AsmTab::Objdump,
+                    AsmTab::Objdump => tui_state.asm_current_tab = AsmTab::Mips,
+                },
+                (Focused::Asm, "l") => tui_state.focused = Focused::Mem,
                 (Focused::Mem, mem_key) => match tui_state.jump_to_mem_address_pane.open {
                     false => match mem_key {
                         "ctrl+h" => tui_state.mem_cursor = tui_state.mem_cursor.saturating_sub(1),
@@ -392,7 +418,7 @@ fn handle_event(state: &mut AppState, tui_state: &mut TuiState, ev: &event::Even
                         "g" => {
                             tui_state.jump_to_mem_address_pane.open = true;
                         }
-                        "h" | "backtab" => tui_state.focused = Focused::Mips,
+                        "h" | "backtab" => tui_state.focused = Focused::Asm,
                         "j" | "tab" => {
                             tui_state.focused = Focused::Breakpoints;
                         }
@@ -433,7 +459,7 @@ fn handle_event(state: &mut AppState, tui_state: &mut TuiState, ev: &event::Even
                 (Focused::Breakpoints, key) => match tui_state.add_breakpoint_pane.open {
                     false => match key {
                         "k" | "backtab" => tui_state.focused = Focused::Mem,
-                        "h" => tui_state.focused = Focused::Mips,
+                        "h" => tui_state.focused = Focused::Asm,
                         "a" => {
                             tui_state.add_breakpoint_pane.open = true;
                             tui_state.add_breakpoint_pane.focus = Some(0);
@@ -580,11 +606,16 @@ struct TuiState {
     exec_history:  VecDeque<u32>,
 
     speed_dropdown:           DropdownState<EmuSpeed>,
-    mips_jump_to_pc_button:   ButtonState,
+    asm_jump_to_pc_button:    ButtonState,
+    asm_current_tab:          AsmTab,
+    asm_objdump_cache:        HashMap<fn(*mut Emu), Objdump>,
+    asm_objdump_list:         ListState,
     add_breakpoint_pane:      AddBreakpointPane,
     jump_to_mem_address_pane: JumpToMemAddressPane,
     breakpoints_table:        TableState,
 }
+
+type Objdump = String;
 
 #[derive(Default)]
 struct AddBreakpointPane {
@@ -601,6 +632,23 @@ struct AddBreakpointPane {
 struct JumpToMemAddressPane {
     open:  bool,
     input: EditorState,
+}
+
+#[derive(Default, Clone, Copy)]
+#[repr(u8)]
+enum AsmTab {
+    #[default]
+    Mips = 0,
+    Objdump,
+}
+
+impl std::fmt::Display for AsmTab {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AsmTab::Mips => write!(f, "mips"),
+            AsmTab::Objdump => write!(f, "objdump"),
+        }
+    }
 }
 
 impl TuiState {
@@ -623,10 +671,13 @@ impl TuiState {
             exec_history:  VecDeque::new(),
 
             speed_dropdown:           DropdownState::new(),
-            mips_jump_to_pc_button:   ButtonState::new(),
+            asm_jump_to_pc_button:    ButtonState::new(),
+            asm_current_tab:          AsmTab::default(),
+            asm_objdump_cache:        HashMap::default(),
             add_breakpoint_pane:      AddBreakpointPane::default(),
             breakpoints_table:        TableState::default().with_selected(Some(0)),
             jump_to_mem_address_pane: JumpToMemAddressPane::default(),
+            asm_objdump_list:         ListState::default(),
         }
     }
 
@@ -706,7 +757,7 @@ fn draw_app(frame: &mut Frame, tui_state: &mut TuiState, state: &AppState) {
     }
 
     draw_register_viewer(rest, frame, tui_state, state);
-    draw_mips_assembly(h2, frame, tui_state, state);
+    draw_assembly(h2, frame, tui_state, state);
 
     {
         let [mem_area, breakpoints_area] =
@@ -803,83 +854,216 @@ fn compute_infinite_list(
     (*cursor - page.start()) as usize
 }
 
-fn draw_mips_assembly(area: Rect, frame: &mut Frame, tui_state: &mut TuiState, state: &AppState) {
-    let area = {
-        let block = Block::bordered()
-            .border_type(BorderType::Rounded)
-            .title("+ mips +")
-            .title_top(format!(
-                "+ {} in {}..{} +",
-                hex(tui_state.mips_cursor),
-                hex(*tui_state.mips_range.start()),
-                hex(*tui_state.mips_range.end())
-            ))
-            .title_bottom(" <C-j>/<C-k> down/up ".dim())
-            .border_style(
-                Style::new()
-                    .with_theme(&tui_state.theme)
-                    .with_focus(tui_state, Focused::Mips),
-            );
-        let a = block.inner(area);
-        frame.render_widget(block, area);
-        a
-    };
-    let [button_area, list_area] =
-        Layout::vertical([Constraint::Length(3), Constraint::Fill(1)]).areas(area);
-
-    {
-        let [button_area] =
-            Layout::horizontal([Constraint::Max("jump to pc".len() as u16 + 4)]).areas(button_area);
-        let button = Button::new("jump to pc").set_styles(ButtonStyles {
-            pressed: tui_state.theme.primary.into(),
-            normal:  tui_state.theme.fg.into(),
-        });
-        frame.render_stateful_widget(button, button_area, &mut tui_state.mips_jump_to_pc_button);
-    }
-
-    let offset = compute_infinite_list(
-        &mut tui_state.mips_cursor,
-        &mut tui_state.mips_range,
-        list_area.height as u32,
-        4,
-        false,
+fn draw_assembly(area: Rect, frame: &mut Frame<'_>, tui_state: &mut TuiState, state: &AppState) {
+    let [tabs_area, area] = area.layout(&Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Fill(1),
+    ]));
+    const TABS_HELP: &str = "<tab> cycle";
+    let [tabs_area, tabs_help_area] = tabs_area.layout(
+        &Layout::horizontal([
+            Constraint::Min(20),
+            Constraint::Length(TABS_HELP.len() as u16),
+        ])
+        .flex(ratatui::layout::Flex::SpaceBetween),
     );
-    let mut table_state = TableState::new();
-    table_state = table_state.with_selected(offset >> 2);
-    let items = tui_state
-        .mips_range
-        .clone()
-        .step_by(0x4)
-        .map(|addr| {
-            let value = IO::try_read_pure::<u32>(&state.emu, addr)
-                .ok()
-                .and_then(|value| std::panic::catch_unwind(|| DecodedOp::decode([value])[0]).ok());
-            let decoded_op =
-                value.unwrap_or(DecodedOp::Illegal(pchan_emu::dynarec_v2::emitters::Illegal));
-            (addr, decoded_op)
-        })
-        .map(|(addr, op)| {
-            let style = match op.is_boundary() {
-                false => tui_state.theme.fg,
-                true => tui_state.theme.primary,
+    let tabs = Tabs::new([
+        AsmTab::Mips.to_string().on_dark_gray(),
+        AsmTab::Objdump.to_string().on_dark_gray(),
+    ])
+    .highlight_style(Style::default().black().on_green().bold())
+    .select(tui_state.asm_current_tab as usize)
+    .divider(" ")
+    .padding("", "");
+    frame.render_widget(tabs, tabs_area);
+    frame.render_widget(TABS_HELP.dim(), tabs_help_area);
+    match tui_state.asm_current_tab {
+        AsmTab::Mips => {
+            let area = {
+                let block = Block::bordered()
+                    .border_type(BorderType::Rounded)
+                    .title("+ mips +")
+                    .title_top(format!(
+                        "+ {} in {}..{} +",
+                        hex(tui_state.mips_cursor),
+                        hex(*tui_state.mips_range.start()),
+                        hex(*tui_state.mips_range.end())
+                    ))
+                    .title_bottom(" <C-j>/<C-k> down/up ".dim())
+                    .border_style(
+                        Style::new()
+                            .with_theme(&tui_state.theme)
+                            .with_focus(tui_state, Focused::Asm),
+                    );
+                let a = block.inner(area);
+                frame.render_widget(block, area);
+                a
             };
-            let mut decoded_op = op.to_string();
-            let idx = addr >> 2;
-            if addr == state.emu.cpu.pc {
-                use std::fmt::Write;
-                _ = write!(decoded_op, " <-");
+            let [button_area, list_area] =
+                Layout::vertical([Constraint::Length(3), Constraint::Fill(1)]).areas(area);
+
+            {
+                let [button_area] =
+                    Layout::horizontal([Constraint::Max("jump to pc".len() as u16 + 4)])
+                        .areas(button_area);
+                let button = Button::new("jump to pc").set_styles(ButtonStyles {
+                    pressed: tui_state.theme.primary.into(),
+                    normal:  tui_state.theme.fg.into(),
+                });
+                frame.render_stateful_widget(
+                    button,
+                    button_area,
+                    &mut tui_state.asm_jump_to_pc_button,
+                );
+            }
+
+            let offset = compute_infinite_list(
+                &mut tui_state.mips_cursor,
+                &mut tui_state.mips_range,
+                list_area.height as u32,
+                4,
+                false,
+            );
+            let mut table_state = TableState::new();
+            table_state = table_state.with_selected(offset >> 2);
+            let items = tui_state
+                .mips_range
+                .clone()
+                .step_by(0x4)
+                .map(|addr| {
+                    let value = IO::try_read_pure::<u32>(&state.emu, addr)
+                        .ok()
+                        .and_then(|value| {
+                            std::panic::catch_unwind(|| DecodedOp::decode([value])[0]).ok()
+                        });
+                    let decoded_op = value
+                        .unwrap_or(DecodedOp::Illegal(pchan_emu::dynarec_v2::emitters::Illegal));
+                    (addr, decoded_op)
+                })
+                .map(|(addr, op)| {
+                    let style = match op.is_boundary() {
+                        false => tui_state.theme.fg,
+                        true => tui_state.theme.primary,
+                    };
+                    let mut decoded_op = op.to_string();
+                    let idx = addr >> 2;
+                    if addr == state.emu.cpu.pc {
+                        use std::fmt::Write;
+                        _ = write!(decoded_op, " <-");
+                    };
+                    let style = if idx % 2 == 0 {
+                        style.darken(0.25)
+                    } else {
+                        style
+                    };
+                    Row::new([hex(addr).to_string().dim(), decoded_op.into()]).style(style)
+                });
+            let list = Table::new(items, [Constraint::Length(10), Constraint::Fill(1)])
+                .theme(&tui_state.theme)
+                .row_highlight_style(tui_state.theme.highlight());
+            frame.render_stateful_widget(list, list_area, &mut table_state);
+        }
+        AsmTab::Objdump => {
+            let area = {
+                let block = Block::bordered()
+                    .border_type(BorderType::Rounded)
+                    .title("+ objdump +")
+                    .title_bottom(" <C-j>/<C-k> down/up ".dim())
+                    .title_top(
+                        format!(
+                            "+ {} +",
+                            state
+                                .dynarec
+                                .last_ran_function
+                                .as_ref()
+                                .map(|f| hex(f.func).to_string())
+                                .unwrap_or("NA".to_string())
+                        )
+                        .bold(),
+                    )
+                    .border_style(
+                        Style::new()
+                            .with_theme(&tui_state.theme)
+                            .with_focus(tui_state, Focused::Asm),
+                    );
+                let a = block.inner(area);
+                frame.render_widget(block, area);
+                a
             };
-            let style = if idx % 2 == 0 {
-                style.darken(0.25)
-            } else {
-                style
+
+            let Some(last_ran_function) = &state.dynarec.last_ran_function else {
+                frame.render_widget(Paragraph::new("何もない").centered(), area);
+                return;
             };
-            Row::new([hex(addr).to_string().dim(), decoded_op.into()]).style(style)
-        });
-    let list = Table::new(items, [Constraint::Length(10), Constraint::Fill(1)])
-        .theme(&tui_state.theme)
-        .row_highlight_style(tui_state.theme.highlight());
-    frame.render_stateful_widget(list, list_area, &mut table_state);
+
+            let objdump = match tui_state.asm_objdump_cache.get(&last_ran_function.func) {
+                None => {
+                    if tui_state.emu_running {
+                        None
+                    } else {
+                        let Ok(objdump) = get_objdump(last_ran_function) else {
+                            return;
+                        };
+                        tui_state
+                            .asm_objdump_cache
+                            .insert(last_ran_function.func, objdump);
+                        tui_state.asm_objdump_list.select_first();
+                        tui_state.asm_objdump_cache.get(&last_ran_function.func)
+                    }
+                }
+                Some(objdump) => Some(objdump),
+            };
+            match objdump {
+                None => {
+                    frame.render_widget(Paragraph::new("running...").centered(), area);
+                }
+                Some(objdump) => {
+                    frame.render_stateful_widget(
+                        List::new(
+                            objdump
+                                .lines()
+                                .flat_map(|line| ansi_to_tui::IntoText::into_text(&line)),
+                        )
+                        .highlight_style(Style::new().on_dark_gray().green()),
+                        area,
+                        &mut tui_state.asm_objdump_list,
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn get_objdump(buf: &DynarecFunction) -> miette::Result<String> {
+    use std::process;
+
+    let mut tempfile = std::fs::File::create("/tmp/pchan-dbg-v2-objdump.bin").into_diagnostic()?;
+    tempfile.write_all(&buf.exec).into_diagnostic()?;
+
+    // objdump -m aarch64 -D -b binary /tmp/jit_code.bin | bat -l asm -P --theme ansi -f --style plain
+
+    let mut cmd = process::Command::new("objdump");
+    cmd.args([
+        "-m",
+        "aarch64",
+        "-D",
+        "-b",
+        "binary",
+        "/tmp/pchan-dbg-v2-objdump.bin",
+    ]);
+    let objdump_proc = cmd.stdout(Stdio::piped()).spawn().into_diagnostic()?;
+    let objdump_stdout = objdump_proc.stdout.expect("need stdout");
+    let mut cmd = process::Command::new("bat");
+    cmd.args([
+        "-l", "asm", "-P", "--theme", "ansi", "-f", "--style", "plain",
+    ]);
+    cmd.stdin(objdump_stdout);
+    let bat_out = cmd.output().into_diagnostic().wrap_err(miette!(
+        help = "must have `bat` installed",
+        "failed to run bat"
+    ))?;
+    let stdout = String::from_utf8(bat_out.stdout).into_diagnostic()?;
+    Ok(stdout.replace("\t", "  "))
 }
 
 fn draw_mem(area: Rect, frame: &mut Frame, tui_state: &mut TuiState, state: &AppState) {
