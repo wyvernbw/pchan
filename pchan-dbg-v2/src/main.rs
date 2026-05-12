@@ -188,7 +188,8 @@ async fn run_app<'a, 'e>(exec: &'a LocalExecutor<'e>, env: &EnvVars) -> Result<(
                 break;
             }
 
-            if tui_state.emu_running {
+            if tui_state.emu_running || tui_state.emu_run_once {
+                tui_state.emu_run_once = false;
                 state.dynarec = run_step(&mut state.emu, state.dynarec);
                 tui_state.mips_cursor = state.emu.cpu.pc;
                 tui_state.exec_history.push_back(state.emu.cpu.pc);
@@ -355,6 +356,9 @@ fn handle_event(state: &mut AppState, tui_state: &mut TuiState, ev: &event::Even
                         LoopMode::Poll => tui_state.loop_mode = LoopMode::Event,
                         LoopMode::Event => tui_state.loop_mode = LoopMode::Poll,
                     }
+                }
+                (Focused::Preview, "n") => {
+                    tui_state.emu_run_once = true;
                 }
                 (Focused::Preview, "r") => {
                     state.reinit();
@@ -592,6 +596,7 @@ struct TuiState {
     theme:         Theme,
     loop_mode:     LoopMode,
     emu_running:   bool,
+    emu_run_once:  bool,
     current_frame: Option<(PixelFormat, Vec<u8>)>,
     framebuffer:   ImageState,
     quit:          bool,
@@ -608,7 +613,7 @@ struct TuiState {
     speed_dropdown:           DropdownState<EmuSpeed>,
     asm_jump_to_pc_button:    ButtonState,
     asm_current_tab:          AsmTab,
-    asm_objdump_cache:        HashMap<fn(*mut Emu), Objdump>,
+    asm_objdump_cache:        Option<(fn(*mut Emu), Objdump)>,
     asm_objdump_list:         ListState,
     add_breakpoint_pane:      AddBreakpointPane,
     jump_to_mem_address_pane: JumpToMemAddressPane,
@@ -665,6 +670,7 @@ impl TuiState {
             focused:       Focused::Preview,
             mips_cursor:   0x0,
             emu_running:   false,
+            emu_run_once:  false,
             mips_range:    0x0..=0x0,
             mem_cursor:    0xbfc0_0000,
             mem_range:     0xbfc0_0000..=0xbfc0_0000,
@@ -673,7 +679,7 @@ impl TuiState {
             speed_dropdown:           DropdownState::new(),
             asm_jump_to_pc_button:    ButtonState::new(),
             asm_current_tab:          AsmTab::default(),
-            asm_objdump_cache:        HashMap::default(),
+            asm_objdump_cache:        None,
             add_breakpoint_pane:      AddBreakpointPane::default(),
             breakpoints_table:        TableState::default().with_selected(Some(0)),
             jump_to_mem_address_pane: JumpToMemAddressPane::default(),
@@ -996,31 +1002,30 @@ fn draw_assembly(area: Rect, frame: &mut Frame<'_>, tui_state: &mut TuiState, st
                 return;
             };
 
-            let objdump = match tui_state.asm_objdump_cache.get(&last_ran_function.func) {
-                None => {
+            let objdump = match tui_state.asm_objdump_cache.as_ref() {
+                Some(objdump) if std::ptr::fn_addr_eq(objdump.0, last_ran_function.func) => {
+                    Some(objdump)
+                }
+                _ => {
                     if tui_state.emu_running {
                         None
                     } else {
                         let Ok(objdump) = get_objdump(last_ran_function) else {
                             return;
                         };
-                        tui_state
-                            .asm_objdump_cache
-                            .insert(last_ran_function.func, objdump);
+                        tui_state.asm_objdump_cache = Some((last_ran_function.func, objdump));
                         tui_state.asm_objdump_list.select_first();
-                        tui_state.asm_objdump_cache.get(&last_ran_function.func)
+                        tui_state.asm_objdump_cache.as_ref()
                     }
                 }
-                Some(objdump) => Some(objdump),
             };
             match objdump {
-                None => {
-                    frame.render_widget(Paragraph::new("running...").centered(), area);
-                }
+                None => {}
                 Some(objdump) => {
                     frame.render_stateful_widget(
                         List::new(
                             objdump
+                                .1
                                 .lines()
                                 .flat_map(|line| ansi_to_tui::IntoText::into_text(&line)),
                         )

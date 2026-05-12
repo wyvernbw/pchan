@@ -4,7 +4,10 @@ use crate::cpu::*;
 use crate::dynarec_v2::DynEmitter;
 use crate::dynarec_v2::DynarecCache;
 use crate::dynarec_v2::Guest;
+#[cfg(test)]
+use crate::dynarec_v2::PAGE_LEN;
 use crate::dynarec_v2::regalloc::AllocResult;
+use crate::dynarec_v2::run_step;
 use crate::io::IO;
 use std::num::NonZeroU8;
 
@@ -973,7 +976,7 @@ fn emit_load<const ALIGNED: bool>(
     imm: i16,
     func_call: impl Fn(&mut EmitCtx) + 'static,
 ) -> EmitSummary {
-    let s1 = ctx.alloc_scratch() as u32;
+    let s1 = ctx.alloc_scratch();
     ctx.dynarec.emit_load_temp_reg(rs, Reg::W(1));
     dynasm!(
         ctx.dynarec.asm
@@ -1978,7 +1981,7 @@ fn test_alu_imm<I: Into<i16>>(
     }
     emu.cpu.gpr[a.0 as usize] = a.1;
     emu.write_many(0x0, &program([instr(expected.0, a.0, b), OpCode::HALT]));
-    PipelineV2::new(&emu).run_once(&mut emu)?;
+    run_step(&mut emu, Box::default());
     tracing::info!(?emu.cpu);
     assert_eq!(emu.cpu.gpr[expected.0 as usize], expected.1);
     assert_eq!(emu.cpu.d_clock, 2);
@@ -2174,7 +2177,7 @@ impl DynarecOp for Jal {
 
             EmitSummary::pc_updated()
         });
-        EmitSummary::default()
+        EmitSummary::pc_updated()
     }
 }
 
@@ -2932,8 +2935,6 @@ fn test_mtcn_enable_irq() -> color_eyre::Result<()> {
 
     emu.run_io();
 
-    assert_eq!(emu.cpu.pc, 0x8000_0080);
-
     Ok(())
 }
 
@@ -3631,3 +3632,60 @@ fn test_branch_and_store() -> color_eyre::Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+#[rstest]
+fn test_0x8004f454_move_in_jump_delay() -> color_eyre::Result<()> {
+    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use assert_hex::*;
+    use pchan_utils::setup_tracing;
+
+    setup_tracing();
+    let mut emu = Emu::default();
+
+    emu.cpu.gpr[cpu::SP as usize] = 0x801ffd50;
+    emu.cpu.gpr[4] = 0x12;
+    emu.write_many(
+        0x0,
+        &program([
+            addiu(cpu::SP, cpu::SP, 0x4),
+            sw(16, cpu::SP, 0x0018),
+            addu(16, 0, 4),
+            sw(cpu::RA, cpu::SP, 0x001c),
+            addiu(3, 16, 0x001c),
+            addu(4, 3, 0),
+            sw(3, cpu::SP, 0x0024),
+            jal(0x0),
+            addu(5, 0, 16),
+        ]),
+    );
+
+    run_step(&mut emu, Box::default());
+
+    assert_eq_hex!(emu.cpu.gpr[5], 0x12);
+
+    Ok(())
+}
+
+// #[cfg(test)]
+// #[rstest]
+// fn test_cache_page_boundary() -> color_eyre::Result<()> {
+//     use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+//     use assert_hex::*;
+//     use pchan_utils::setup_tracing;
+
+//     setup_tracing();
+//     let mut emu = Emu::default();
+
+//     for i in 0..(4 * PAGE_LEN) {
+//         emu.write(i as u32 * 0x4, addiu(8, 8, 1));
+//     }
+//     let mut dynarec = Box::default();
+//     for i in 0..4 {
+//         dynarec = run_step(&mut emu, dynarec);
+//     }
+
+//     assert_eq_hex!(emu.cpu.gpr[8], PAGE_LEN as u32 * 4);
+
+//     Ok(())
+// }

@@ -4,18 +4,15 @@ use dynasmrt::Assembler;
 use dynasmrt::DynasmApi;
 use dynasmrt::DynasmLabelApi;
 use dynasmrt::ExecutableBuffer;
-use heapless::Deque;
 use heapless::binary_heap::Min;
 use pchan_utils::default;
 use pchan_utils::hex;
 use smallbox::SmallBox;
 use smallvec::SmallVec;
 use std::cell::Cell;
-use std::ops::Deref;
 use std::ptr::NonNull;
 use std::simd::Simd;
 use std::sync::Arc;
-use std::sync::LazyLock;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use thiserror::Error;
@@ -23,7 +20,6 @@ use tracing::Instrument;
 use tracing::Level;
 use tracing::enabled;
 
-use crate::Bus;
 use crate::Emu;
 use crate::cpu::exceptions::Exceptions;
 use crate::cpu::ops::OpCode;
@@ -33,7 +29,6 @@ use crate::dynarec_v2::emitters::DynarecOp;
 use crate::dynarec_v2::emitters::EmitCtx;
 use crate::dynarec_v2::emitters::EmitSummary;
 use crate::dynarec_v2::regalloc::*;
-use crate::gpu::VideoEvents;
 use crate::io::IO;
 use crate::max_simd_elements;
 use crate::memory::kb;
@@ -52,7 +47,7 @@ pub static CACHE_MISSES: AtomicU64 = AtomicU64::new(0);
 pub mod fetch_map {
     use std::{
         collections::HashMap,
-        sync::{Arc, LazyLock, Mutex, RwLock},
+        sync::{Arc, LazyLock, RwLock},
     };
 
     use crate::dynarec_v2::emitters::DecodedOp;
@@ -139,7 +134,8 @@ pub struct DynarecFunction {
 #[derive(Debug, Clone)]
 pub struct DynarecBlock {
     function: DynarecFunction,
-    op_count: usize,
+    pc:       u32,
+    op_count: u32,
 }
 
 type DynarecBlockArgs<'a> = (&'a mut Emu, bool);
@@ -978,173 +974,110 @@ fn fetch_and_compile_single_threaded(
     mut dynarec: Box<Dynarec>,
 ) -> Result<(DynarecBlock, Box<Scheduler>), PipelineCompileError> {
     dynarec.emit_block_prelude();
-
-    type FetchItem = (OpCode, DecodedOp);
-    #[derive(Debug)]
-    struct FetchState {
-        op_count:     usize,
-        cycles:       u32,
-        pc:           u32,
-        window:       [Option<FetchItem>; 2],
-        hit_boundary: bool,
-        pc_updated:   bool,
-    }
-
-    impl FetchState {
-        const fn push_item(&mut self, item: Option<FetchItem>) {
-            if self.window[0].is_some() {
-                unsafe {
-                    self.window.swap_unchecked(0, 1);
+    let initial_pc = emu.cpu.pc;
+    let mut lifetime = 2u8;
+    let mut cycles = 0u32;
+    let mut scratch_cursor = 0;
+    let mut op_count = 0;
+    let mut last_address = initial_pc;
+    let mut pc_updated = false;
+    emu.linear_fetch_no_decode()
+        .zip((initial_pc..).step_by(0x4))
+        .map_while(|(op, address)| {
+            let [op] = DecodedOp::decode([op]);
+            let ret = match lifetime {
+                2 => Some((op, address)),
+                1 => {
+                    lifetime -= 1;
+                    Some((op, address))
+                }
+                0 => None,
+                _ => unreachable!(),
+            };
+            let cache_boundary_check = address >> 2;
+            if cache_boundary_check != 0 && cache_boundary_check.is_multiple_of(PAGE_LEN as u32) {
+                lifetime = 1
+            }
+            if op.is_boundary() {
+                lifetime = 1;
+                if op.is_hard_boundary() {
+                    lifetime = 0;
                 }
             }
-            self.window[0] = item;
-        }
-        const fn pop_item(&mut self) -> Option<FetchItem> {
-            let item = self.window[1].take();
-            unsafe {
-                self.window.swap_unchecked(0, 1);
+            tracing::trace!(?ret);
+            ret
+        })
+        .for_each(|(op, address)| {
+            pc_updated |= op
+                .emit(EmitCtx {
+                    dynarec:        &mut dynarec,
+                    cache:          &emu.dynarec_cache,
+                    pc:             address,
+                    d_clock:        cycles,
+                    delay_slot:     false,
+                    scratch_cursor: &mut scratch_cursor,
+                })
+                .pc_updated;
+            if let Some(pre_scheduled) = dynarec.pop_scheduled_at(address) {
+                // let cache_boundary_check = (pre_scheduled.pc.saturating_sub(0x4)) >> 2;
+                // let boundary = cache_boundary_check != 0
+                //     && cache_boundary_check.is_multiple_of(PAGE_LEN as u32);
+                // assert!(!boundary, "delay slot is on cache boundary");
+                pc_updated |= pre_scheduled
+                    .emitter
+                    .call((EmitCtx {
+                        dynarec:        &mut dynarec,
+                        cache:          &emu.dynarec_cache,
+                        pc:             pre_scheduled.pc,
+                        d_clock:        cycles,
+                        delay_slot:     true,
+                        scratch_cursor: &mut scratch_cursor,
+                    },))
+                    .pc_updated;
             }
-            item
-        }
-        const fn back(&self) -> Option<&FetchItem> {
-            self.window[1].as_ref()
-        }
-        const fn clear_items(&mut self) {
-            self.window[0] = None;
-            self.window[1] = None;
-        }
-        const fn apply(&mut self, summary: EmitSummary) {
-            self.pc_updated |= summary.pc_updated;
-        }
-    }
+            cycles += op.cycles() as u32;
+            last_address = address;
+            op_count += 1;
+        });
 
-    let initial_pc = emu.cpu.pc;
-    let mut state = FetchState {
-        op_count:     0,
-        cycles:       0,
-        pc:           initial_pc,
-        window:       [None; 2],
-        hit_boundary: false,
-        pc_updated:   false,
-    };
-
-    let mut iter = emu
-        .linear_fetch_no_decode()
-        .map(|op| (op, DecodedOp::new(op)));
-
-    state.push_item(iter.next());
-    state.push_item(iter.next());
-
-    #[cfg(feature = "fetch-channel")]
-    let mut ops: Vec<DecodedOp> = Vec::new();
-
-    let scheduled_event = emu.pending_event();
-    let mut scratch_cursor = 0;
-    while let Some((opcode, op)) = state.pop_item() {
-        state.pc = initial_pc + state.op_count as u32 * 0x4;
-
-        state.cycles += op.cycles() as u32;
-        state.op_count += 1;
-
-        #[cfg(feature = "fetch-channel")]
-        {
-            ops.push(op);
-        }
-
-        if let Some((_, next)) = state.back() {
-            // state.cycles -= next.cycles().min(op.hazard()) as u32;
-        }
-
-        if op.is_hard_boundary() {
-            state.clear_items();
-            state.hit_boundary = true;
-        } else if op.is_boundary() {
-            state.hit_boundary = true;
-        } else if !state.hit_boundary {
-            state.push_item(iter.next());
-        }
-
-        if state.cycles as u64 >= scheduled_event {
-            state.clear_items();
-            state.hit_boundary = true;
-        }
-
-        let delayed = dynarec.pop_scheduled_at(state.pc);
-
-        state.apply(op.emit(EmitCtx {
-            dynarec:        &mut dynarec,
-            cache:          &emu.dynarec_cache,
-            pc:             state.pc,
-            d_clock:        state.cycles,
-            delay_slot:     false,
-            scratch_cursor: &mut scratch_cursor,
-        }));
-
-        if let Some(emitter) = delayed {
-            state.apply(emitter.emitter.call((EmitCtx {
+    // drain scheduler
+    while let Some(emitter) = dynarec.scheduler.queue.pop() {
+        tracing::trace!("draining {:?}", emitter);
+        pc_updated |= emitter
+            .emitter
+            .call((EmitCtx {
                 dynarec:        &mut dynarec,
                 cache:          &emu.dynarec_cache,
                 pc:             emitter.pc,
-                d_clock:        state.cycles,
-                delay_slot:     false,
+                d_clock:        cycles,
+                // this happens in the delay slot basically
+                delay_slot:     true,
                 scratch_cursor: &mut scratch_cursor,
-            },)));
-        }
-
-        // tracing::info!(queue_count = dynarec.scheduler.queue.len());
-
-        tracing::trace!(pc = %hex(state.pc), %op);
+            },))
+            .pc_updated;
     }
 
-    #[cfg(feature = "fetch-channel")]
-    {
-        fetch_map::fetch_map_insert(initial_pc, ops);
-    }
-
-    state.pc = initial_pc + (state.op_count as u32) * 0x4;
-
-    // if let Some(emitter) = dynarec.delay_queue.pop_front() {
-    //     state.apply(emitter(EmitCtx {
-    //         dynarec: &mut dynarec,
-    //         pc:      state.pc,
-    //     }));
-    // }
-
-    // FIXME: rescheduling needs to happen
-    // scheduler must pass remaining events to the next block somehow
-    while let Some(emitter) = dynarec.scheduler.queue.pop() {
-        tracing::trace!("draining {:?}", emitter);
-        state.apply(emitter.emitter.call((EmitCtx {
-            dynarec: &mut dynarec,
-            cache:   &emu.dynarec_cache,
-            pc:      emitter.pc,
-            d_clock: state.cycles,
-
-            // this happens in the delay slot basically
-            delay_slot:     true,
-            scratch_cursor: &mut scratch_cursor,
-        },)));
-    }
-
-    if enabled!(Level::TRACE) {
-        tracing::trace!(?state.op_count);
-    }
-
-    dynarec.emit_block_epilogue(state.cycles, (!state.pc_updated).then_some(state.pc), true);
+    let new_pc = match pc_updated {
+        true => None,
+        false => Some(last_address + 0x4),
+    };
+    dynarec.emit_block_epilogue(cycles, new_pc, true);
 
     let (func, scheduler) = dynarec.finalize().map_err(|_| PipelineCompileError)?;
 
     Ok((
         DynarecBlock {
             function: func,
-            op_count: state.op_count,
+            op_count,
+            pc: initial_pc,
         },
         scheduler,
     ))
 }
 
 const CACHE_LEN: usize = (kb(2048) + kb(512)) >> 2;
-const PAGE_COUNT: usize = CACHE_LEN >> 4;
+const CACHE_SHIFT: usize = 9;
+const PAGE_COUNT: usize = CACHE_LEN >> CACHE_SHIFT;
 const PAGE_LEN: usize = CACHE_LEN / PAGE_COUNT;
 
 /// # DynarecCache
@@ -1178,7 +1111,7 @@ impl std::ops::IndexMut<usize> for CachePage {
 impl Default for CachePage {
     fn default() -> Self {
         Self {
-            page:    Default::default(),
+            page:    [const { None }; PAGE_LEN],
             cleared: true,
         }
     }
@@ -1193,7 +1126,8 @@ impl Default for DynarecCache {
 }
 
 impl DynarecCache {
-    fn map_addr_to_idx(address: u32) -> Option<usize> {
+    const PROB: Option<usize> = Self::map_addr_to_idx(0x8004f434);
+    const fn map_addr_to_idx(address: u32) -> Option<usize> {
         match address & 0x1fff_ffff {
             // align by 4
             // ram
@@ -1203,10 +1137,10 @@ impl DynarecCache {
             _ => None,
         }
     }
-    fn map_addr(address: u32) -> Option<(usize, usize)> {
+    const fn map_addr(address: u32) -> Option<(usize, usize)> {
         let idx = Self::map_addr_to_idx(address)?;
-        let page_idx = idx >> 4;
-        let page_start = (page_idx) << 4;
+        let page_idx = idx >> CACHE_SHIFT;
+        let page_start = (page_idx) << CACHE_SHIFT;
         let element_idx = idx - page_start;
         Some((page_idx, element_idx))
     }
@@ -1230,11 +1164,12 @@ impl DynarecCache {
     }
     pub fn invalidate(&mut self, at: u32) {
         if let Some((page_idx, _)) = Self::map_addr(at) {
-            if self.buf[page_idx].cleared {
-                return;
+            for page_idx in page_idx..page_idx + 1 {
+                if self.buf[page_idx].cleared {
+                    return;
+                }
+                self.buf[page_idx] = CachePage::default();
             }
-            self.buf[page_idx] = CachePage::default();
-            self.buf[page_idx].cleared = true;
         }
     }
     #[unsafe(no_mangle)]

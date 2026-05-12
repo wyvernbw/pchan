@@ -24,3 +24,14 @@ writes are 0.
 
 FINALLY: $t0 is loaded from `0x1f801c1c`, io port for SPU voice 1 current adsr
 volume. which i dont implement :(.
+
+# Jump Delay Slot Crash
+
+exec history:
+
+```
+0x8004f3d0 
+0x800312a4 <- move $a1, $s0 in delay slot
+0x8004f434
+0x8004fac4 <- crash here
+```
