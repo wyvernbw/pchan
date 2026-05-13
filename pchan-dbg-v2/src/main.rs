@@ -37,6 +37,7 @@ use pchan_emu::{
         emitters::{DecodedOp, DynarecOp},
         run_step,
     },
+    gpu::Rgb5,
     io::{IO, vblank::VBlank},
 };
 use pchan_gpu::Renderer;
@@ -79,10 +80,11 @@ fn main() -> Result<()> {
 }
 
 struct AppState<'a, 'e> {
-    exec:    &'a LocalExecutor<'e>,
-    emu:     Emu,
-    dynarec: Box<Dynarec>,
-    gpu:     Arc<Renderer>,
+    exec:      &'a LocalExecutor<'e>,
+    emu:       Emu,
+    dynarec:   Box<Dynarec>,
+    gpu:       Arc<Renderer>,
+    frame_idx: usize,
 }
 
 struct Theme {
@@ -143,6 +145,7 @@ fn reinit_emu(emu: &mut Emu) -> Result<()> {
 impl AppState<'_, '_> {
     pub fn reinit(&mut self) {
         reinit_emu(&mut self.emu).unwrap();
+        self.frame_idx = 0;
     }
 }
 
@@ -172,6 +175,7 @@ async fn run_app<'a, 'e>(exec: &'a LocalExecutor<'e>, env: &EnvVars) -> Result<(
         emu,
         gpu: gpu.into(),
         dynarec: Box::default(),
+        frame_idx: 0,
     };
     let mut tui_state = TuiState::new();
     tui_state.reg_list.select_first();
@@ -209,8 +213,20 @@ async fn run_app<'a, 'e>(exec: &'a LocalExecutor<'e>, env: &EnvVars) -> Result<(
                 }
             }
 
+            if tui_state.break_on_dropdown.current() == Some(&BreakOn::Draws) {
+                if std::mem::take(&mut state.emu.gpu.vram_mutation_signal) {
+                    tui_state.emu_running = false;
+                    tui_state.loop_mode = LoopMode::Event;
+                }
+            }
+
             // pipe = pipe.run_once(&mut state.emu).unwrap();
             if state.emu.consume_vblank_signal() {
+                state.frame_idx += 1;
+                // if [474].contains(&frame_idx) {
+                //     tui_state.emu_running = false;
+                //     tui_state.loop_mode = LoopMode::Event;
+                // }
                 let last_vblank = state.emu.gpu.last_vblank;
                 let recorded_frame_time = last_vblank.elapsed();
                 let img = draw_display(&state, &mut dp);
@@ -229,6 +245,14 @@ async fn run_app<'a, 'e>(exec: &'a LocalExecutor<'e>, env: &EnvVars) -> Result<(
                         draw_app(frame, &mut tui_state, &state);
                     })
                     .unwrap();
+                }
+
+                if matches!(
+                    tui_state.break_on_dropdown.current(),
+                    Some(BreakOn::Draws | BreakOn::Vsync)
+                ) {
+                    tui_state.emu_running = false;
+                    tui_state.loop_mode = LoopMode::Event;
                 }
 
                 let effective_frame_time = last_vblank.elapsed();
@@ -346,27 +370,27 @@ impl TuiState {
     fn update_current_vram_frame(&mut self, emu: &Emu) {
         self.vram_framebuffer.clear_frontbuffer();
         let vram = &emu.gpu.vram;
-        #[bitfield(u16)]
-        struct Rgb5 {
-            #[bits(0..=4, r)]
-            r: u5,
-            #[bits(5..=9, r)]
-            g: u5,
-            #[bits(10..=14, r)]
-            b: u5,
-        }
         self.current_vram_frame.1.clear();
         for halfword in vram {
             let pixel = Rgb5::new_with_raw_value(*halfword);
-            self.current_vram_frame
-                .1
-                .push((pixel.r().as_u16() * 255 / 31) as u8);
-            self.current_vram_frame
-                .1
-                .push((pixel.g().as_u16() * 255 / 31) as u8);
-            self.current_vram_frame
-                .1
-                .push((pixel.b().as_u16() * 255 / 31) as u8);
+            match pixel.mask() {
+                true => {
+                    for el in [0, 255, 255] {
+                        self.current_vram_frame.1.push(el);
+                    }
+                }
+                false => {
+                    self.current_vram_frame
+                        .1
+                        .push((pixel.r().as_u16() * 255 / 31) as u8);
+                    self.current_vram_frame
+                        .1
+                        .push((pixel.g().as_u16() * 255 / 31) as u8);
+                    self.current_vram_frame
+                        .1
+                        .push((pixel.b().as_u16() * 255 / 31) as u8);
+                }
+            }
         }
         // let vram_frame = std::mem::replace(&mut self.current_vram_frame, create_vram_frame());
         // self.vram_framebuffer
@@ -394,6 +418,7 @@ fn handle_event(state: &mut AppState, tui_state: &mut TuiState, ev: &event::Even
         event => match tui_state.dbg_current_tab {
             DbgTab::Main => {
                 tui_state.speed_dropdown.handle_event(ev);
+                tui_state.break_on_dropdown.handle_event(ev);
                 if let ButtonResponse::Clicked = tui_state.asm_jump_to_pc_button.handle_event(ev) {
                     tui_state.mips_cursor = state.emu.cpu.pc;
                 };
@@ -695,6 +720,7 @@ struct TuiState {
     dbg_current_tab:          DbgTab,
     vram_framebuffer:         ImageState,
     speed_dropdown:           DropdownState<EmuSpeed>,
+    break_on_dropdown:        DropdownState<BreakOn>,
     asm_jump_to_pc_button:    ButtonState,
     asm_current_tab:          AsmTab,
     asm_objdump_cache:        Option<(fn(*mut Emu), Objdump)>,
@@ -793,6 +819,7 @@ impl TuiState {
 
             dbg_current_tab:          DbgTab::Main,
             speed_dropdown:           DropdownState::new(),
+            break_on_dropdown:        DropdownState::new(),
             asm_jump_to_pc_button:    ButtonState::new(),
             asm_current_tab:          AsmTab::default(),
             asm_objdump_cache:        None,
@@ -824,6 +851,23 @@ impl std::fmt::Display for EmuSpeed {
         match self {
             EmuSpeed::Unlimited => write!(f, "unlimited"),
             EmuSpeed::P100 => write!(f, "100%"),
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BreakOn {
+    None,
+    Draws,
+    Vsync,
+}
+
+impl std::fmt::Display for BreakOn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BreakOn::None => write!(f, "none"),
+            BreakOn::Draws => write!(f, "draws"),
+            BreakOn::Vsync => write!(f, "vsync"),
         }
     }
 }
@@ -905,7 +949,8 @@ fn draw_main_view(frame: &mut Frame, area: Rect, tui_state: &mut TuiState, state
         draw_breakpoints(breakpoints_area, frame, tui_state, state);
     }
 
-    let [dropdown_area] = dropdown_area.layout(&Layout::horizontal([Constraint::Length(20)]));
+    let [speed_dropdown_area, break_on_dropdown_area] = dropdown_area
+        .layout(&Layout::horizontal([Constraint::Length(20), Constraint::Length(20)]).spacing(1));
     frame.render_stateful_widget(
         Dropdown::new(&[EmuSpeed::P100, EmuSpeed::Unlimited])
             .style(
@@ -919,8 +964,24 @@ fn draw_main_view(frame: &mut Frame, area: Rect, tui_state: &mut TuiState, state
                     .fg(tui_state.theme.bg),
             )
             .label("speed"),
-        dropdown_area,
+        speed_dropdown_area,
         &mut tui_state.speed_dropdown,
+    );
+    frame.render_stateful_widget(
+        Dropdown::new(&[BreakOn::None, BreakOn::Draws, BreakOn::Vsync])
+            .style(
+                Style::new()
+                    .with_theme(&tui_state.theme)
+                    .bg(Color::DarkGray),
+            )
+            .focus_style(
+                Style::new()
+                    .bg(tui_state.theme.primary)
+                    .fg(tui_state.theme.bg),
+            )
+            .label("break_on"),
+        break_on_dropdown_area,
+        &mut tui_state.break_on_dropdown,
     );
 }
 
@@ -1553,11 +1614,7 @@ fn draw_gpu_view_vram(
             .title_bottom(format!("+ {:01.2}ms {:.0}fps +", frame_time, fps))
             .title_top(" 📺 ")
             .title_top(" <spc> run ".dim())
-            .title_bottom(format!(
-                "+ framebuffer: {} +",
-                tui_state.current_vram_frame.1.len()
-            ))
-            .title_bottom(format!("+ vram: {} +", state.emu.gpu.vram.len()))
+            .title_bottom(format!("+ frame: #{} +", state.frame_idx))
             .theme(&tui_state.theme)
             .focus_style(tui_state, Focused::Preview);
         let inner_vram_area = vram_block.inner(area);

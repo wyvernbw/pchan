@@ -7,7 +7,7 @@ use glam::{I16Vec2, U8Vec2, U8Vec3, U16Vec2, UVec2, i16vec2, u8vec2, u16vec2};
 use pchan_emu::gpu::draw_call::{
     DrawCallCollection, DrawCallKind, DrawPolygon, DrawRect, RectSize, Shading,
 };
-use pchan_emu::gpu::{Conn, GpuStatReg, TextureColorMode, VramCoord};
+use pchan_emu::gpu::{Conn, DrawPixels, GpuStatReg, TextureColorMode, VramCoord};
 use pchan_emu::{Bus, Emu};
 use pchan_utils::Chan;
 use thiserror::Error;
@@ -25,8 +25,8 @@ pub struct Renderer {
     pub display_pipeline: RenderPipeline,
     pub render_texture: Texture,
     pub render_view: TextureView,
+    render_bind_group: BindGroup,
     vram_texture: Texture,
-    bind_group: BindGroup,
     pub display_bind_group: BindGroup,
     pub display_uniform_buffer: Buffer,
     pub display_uniforms: Mutex<DisplayUniforms>,
@@ -46,6 +46,9 @@ pub struct DisplayUniforms {
     pub screen_rect: U16Vec2,
     pub dp_debug: bool,
 }
+
+#[derive(Debug, Clone)]
+pub struct RenderUniforms {}
 
 #[derive(Debug, Error)]
 enum InitError {
@@ -139,23 +142,23 @@ impl Renderer {
 
         // uniforms
 
-        let bind_group_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-            label: Some("pchan_gpu::rasterizer_bind_group_layout"),
-            entries: &[BindGroupLayoutEntry {
-                binding: 0,
-                visibility: ShaderStages::all(),
-                ty: BindingType::StorageTexture {
-                    access: StorageTextureAccess::ReadOnly,
-                    format: TextureFormat::R32Uint,
-                    view_dimension: TextureViewDimension::D2,
-                },
-                count: None,
-            }],
-        });
-
-        let bind_group = device.create_bind_group(&BindGroupDescriptor {
+        let render_bind_group_layout =
+            device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+                label: Some("pchan_gpu::rasterizer_bind_group_layout"),
+                entries: &[BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: ShaderStages::all(),
+                    ty: BindingType::StorageTexture {
+                        access: StorageTextureAccess::ReadOnly,
+                        format: TextureFormat::R32Uint,
+                        view_dimension: TextureViewDimension::D2,
+                    },
+                    count: None,
+                }],
+            });
+        let render_bind_group = device.create_bind_group(&BindGroupDescriptor {
             label: Some("pchan_gpu::rasterizer_bind_group"),
-            layout: &bind_group_layout,
+            layout: &render_bind_group_layout,
             entries: &[BindGroupEntry {
                 binding: 0,
                 resource: BindingResource::TextureView(&vram_view),
@@ -164,7 +167,7 @@ impl Renderer {
 
         let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: None,
-            bind_group_layouts: &[Some(&bind_group_layout)],
+            bind_group_layouts: &[Some(&render_bind_group_layout)],
             immediate_size: 0,
         });
 
@@ -322,7 +325,7 @@ impl Renderer {
             render_texture,
             render_view,
             vram_texture,
-            bind_group,
+            render_bind_group,
             conn: Conn {
                 draw_call_chan: kanal::bounded_async(0),
                 vram_in_chan: kanal::bounded_async(0),
@@ -454,6 +457,19 @@ impl Vertex {
 struct Flags {
     #[bit(0, rw)]
     dither: bool,
+    #[bit(1, rw)]
+    set_mask: bool,
+    #[bit(2, rw)]
+    draw_pixels: DrawPixels,
+}
+
+impl Flags {
+    pub const fn from_gpustat(gpustat: GpuStatReg) -> Self {
+        Self::ZERO
+            .with_set_mask(gpustat.set_mask())
+            .with_dither(gpustat.dither())
+            .with_draw_pixels(gpustat.draw_pixels())
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -599,7 +615,7 @@ impl Scene {
             textured: draw_rect.color.textured(),
             _pad: 0,
             texpage_base: uv.extra_as_texpage(),
-            flags: Flags::ZERO.with_dither(gpustat.dither()),
+            flags: Flags::from_gpustat(gpustat),
             _pad_03: [0; 2],
         };
 
@@ -638,7 +654,7 @@ impl Scene {
             true => gpustat.texpage_colors(),
             false => TextureColorMode::C15BitDirect,
         };
-        let flags = Flags::default()
+        let flags = Flags::from_gpustat(gpustat)
             .with_dither(gpustat.dither() && (header.modulation() || header.goraud()));
         let mut vertices = match shading {
             // DONE: Goraud shading

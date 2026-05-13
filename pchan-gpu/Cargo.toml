@@ -15,6 +15,7 @@ smol.workspace = true
 kanal.workspace = true
 heapless = "0.9.3"
 bitbybit.workspace = true
+arbitrary-int.workspace = true
 
 [dev-dependencies]
 pretty_assertions = {version = "1.4.1", features = ["unstable"]}

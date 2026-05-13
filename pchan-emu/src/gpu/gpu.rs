@@ -79,6 +79,8 @@ pub struct GpuState {
     waiting_on_render: bool,
     pub last_vblank:   Instant,
     pub vblank_signal: bool,
+
+    pub vram_mutation_signal: bool,
 }
 
 #[derive(derive_more::Debug, Clone, Default)]
@@ -116,12 +118,17 @@ impl Default for GpuState {
             waiting_on_render: false,
             last_vblank: Instant::now(),
             vblank_signal: false,
+            vram_mutation_signal: false,
         }
     }
 }
 
 pub fn create_vram() -> Box<[u16]> {
     vec![0; mb(1)].into_boxed_slice()
+}
+
+fn mask_bit(value: u16) -> bool {
+    value & (1 << 15) != 0
 }
 
 pub trait Gpu: Bus + Interrupts {
@@ -336,9 +343,11 @@ pub trait Gpu: Bus + Interrupts {
                 }
                 Gp0::CpRectCpuToVram(Gp0CpRect::RecvData(cursor)) => {
                     let mut cursor = *cursor;
+                    // let set_mask = self.gpu().gpustat.set_mask();
+                    let draw_pixels = self.gpu().gpustat.draw_pixels();
                     let mut lock = self.gpu_mut().lock_vram();
                     for (at, halfword) in cursor.iter().take(2).zip(halfwords(value)) {
-                        lock.vram_write(at, halfword);
+                        lock.vram_draw(at, halfword, draw_pixels);
                     }
                     match cursor.done() {
                         true => {
@@ -383,11 +392,12 @@ pub trait Gpu: Bus + Interrupts {
                     let size = size.copy_cmd_size_mask();
                     let mut src_cursor = VramCursor::new(*src, size);
                     let mut dest_cursor = VramCursor::new(*dest, size);
+                    let draw_pixels = self.gpu().gpustat.draw_pixels();
 
                     let mut lock = self.gpu_mut().lock_vram();
                     for (src, dest) in src_cursor.iter().zip(dest_cursor.iter()) {
                         let value = lock.vram_read(src);
-                        lock.vram_write(dest, value);
+                        lock.vram_draw(dest, value, draw_pixels);
                     }
 
                     self.gpu_mut().gpustat.set_ready_recv_cmd(true);
@@ -555,6 +565,7 @@ pub trait Gpu: Bus + Interrupts {
         }
 
         tracing::debug!("flushing {} draw calls", self.gpu().draw_call_queue.len());
+        self.gpu_mut().vram_flush_render();
         let queue = std::mem::take(&mut self.gpu_mut().draw_call_queue);
         let vram = self.gpu().vram.clone();
         let display = self.gpu().dp.clone();
@@ -593,14 +604,30 @@ pub trait Gpu: Bus + Interrupts {
 }
 
 struct VramGuard<'a> {
-    vram: &'a mut [u16],
+    vram:   &'a mut [u16],
+    signal: &'a mut bool,
 }
 
 impl<'a> VramGuard<'a> {
     fn vram_write(&mut self, coord: VramCoord, value: u16) {
         let coord = coord.wrap();
         let addr = coord.x as usize + coord.y as usize * kb(1);
+        *self.signal = true;
         self.vram[addr] = value;
+    }
+
+    /// like `vram_write`, but takes mask bit into account
+    fn vram_draw(&mut self, coord: VramCoord, value: u16, mode: DrawPixels) {
+        let current = self.vram_read(coord);
+        match mode {
+            DrawPixels::Always => {}
+            DrawPixels::NotToMaskedAreas => {
+                if mask_bit(current) {
+                    return;
+                }
+            }
+        }
+        self.vram_write(coord, value);
     }
 
     fn vram_read(&mut self, coord: VramCoord) -> u16 {
@@ -627,7 +654,8 @@ impl GpuState {
     fn lock_vram(&mut self) -> VramGuard<'_> {
         self.vram_flush_render();
         VramGuard {
-            vram: &mut self.vram,
+            vram:   &mut self.vram,
+            signal: &mut self.vram_mutation_signal,
         }
     }
 
@@ -649,6 +677,7 @@ impl GpuState {
         self.vram_flush_render();
         let coord = coord.wrap();
         let addr = coord.x as usize + coord.y as usize * kb(1);
+        self.vram_mutation_signal = true;
         self.vram[addr] = value;
     }
 
@@ -935,8 +964,10 @@ pub struct GpuStatReg {
     dither:               bool,
     #[bit(10, rw)]
     draw_to_display:      bool,
+    /// GPU_STAT.11
     #[bit(11, rw)]
     set_mask:             bool,
+    /// GPU_STAT.12
     #[bit(12, rw)]
     draw_pixels:          DrawPixels,
     #[bit(13, rw)]
@@ -1002,7 +1033,7 @@ impl GpuStatReg {
 
 #[derive(Debug)]
 #[bitenum(u1, exhaustive = true)]
-enum DrawPixels {
+pub enum DrawPixels {
     Always           = 0x0,
     NotToMaskedAreas = 0x1,
 }

@@ -23,6 +23,12 @@ struct VertexOutput {
 @group(0) @binding(0)
 var vram_t : texture_storage_2d<r32uint,read>;
 
+// struct RenderUniforms {
+// }
+
+// @group(0) @binding(1)
+// var<uniform> render_uniforms: RenderUniforms;
+
 const COLOR_MODE_4BIT:  u32 = 0x0;
 const COLOR_MODE_8BIT:  u32 = 0x1;
 const COLOR_MODE_15BIT: u32 = 0x2;
@@ -68,11 +74,15 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     return out;
 }
 
-fn pack_color(color: vec3<f32>) -> u32 {
+fn pack_color(color: vec3<f32>, mask: bool) -> u32 {
     let r = u32(color.r * 31.0);
     let g = u32(color.g * 31.0);
     let b = u32(color.b * 31.0);
-    return r | (g << 5u) | (b << 10u);
+    var c =  r | (g << 5u) | (b << 10u);
+    if mask {
+        c |= (1 << 15u);
+    }
+    return c;
 }
 
 fn vramcoord_to_texcoord(coord: vec2<f32>) -> vec2<u32> {
@@ -105,6 +115,10 @@ fn pack_h(v: vec2<f32>, f: f32) -> vec2<f32> {
     return vec2<f32>(v.x * f, v.y);
 }
 
+fn get_mask_bit(color: u32) -> bool {
+    return get_flag(color, 15);
+}
+
 fn get_flag(flags: u32, idx: u32) -> bool {
     return (flags & (u32(1) << idx)) != 0;
 }
@@ -113,8 +127,17 @@ fn get_dither(flags: u32) -> bool {
     return get_flag(flags, 0);
 }
 
+fn get_set_mask(flags: u32) -> bool {
+    return get_flag(flags, 1);
+}
+
+fn get_draw_pixels(flags: u32) -> bool {
+    return get_flag(flags, 2);
+}
+
 fn get_color(in: VertexOutput) -> u32 {
     var in_color = in.color;
+    var set_mask = get_set_mask(in.flags);
 
     if get_dither(in.flags) {
         in_color *= 255;
@@ -126,7 +149,7 @@ fn get_color(in: VertexOutput) -> u32 {
         in_color /= 255;
     }
 
-    var color = pack_color(in_color);
+    var color = pack_color(in_color, set_mask);
     switch in.color_mode {
         case COLOR_MODE_4BIT: {
             if in.textured != 0 {
@@ -168,6 +191,13 @@ const DITHER: array<array<i32, 4>, 4> = array(
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) u32 {
+    var draw_pixels = get_draw_pixels(in.flags);
+    if draw_pixels {
+        var current = read_16bit(in.vram_position);
+        if get_mask_bit(current) {
+            discard;
+        }
+    }
     var color = get_color(in);
     if color == 0 {
         discard;
