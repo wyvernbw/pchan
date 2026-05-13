@@ -9,6 +9,7 @@ pub mod lipgloss_colors;
 #[path = "./widgets/widgets.rs"]
 pub mod widgets;
 
+use arbitrary_int::prelude::*;
 use std::{
     borrow::Cow,
     collections::{HashMap, VecDeque},
@@ -19,6 +20,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use bitbybit::bitfield;
 use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture};
 use crossterm_simple_event::CrosstermSimpleEvent;
 use edtui::{
@@ -45,7 +47,7 @@ use ratatui::{
     layout::{Constraint, Layout, Margin, Rect},
     style::{Color, Style, Styled, Stylize},
     symbols,
-    text::ToText,
+    text::{Line, ToText},
     widgets::{
         Block, BorderType, Borders, Clear, List, ListState, Paragraph, Row, Table, TableState,
         Tabs, Widget,
@@ -215,7 +217,14 @@ async fn run_app<'a, 'e>(exec: &'a LocalExecutor<'e>, env: &EnvVars) -> Result<(
                 let size = dp.output_tex.size();
 
                 if tui_state.loop_mode == LoopMode::Poll {
-                    tui_state.update_current_frame(Some((size, img)));
+                    match tui_state.dbg_current_tab {
+                        DbgTab::Main => {
+                            tui_state.update_current_frame(Some((size, img)));
+                        }
+                        DbgTab::Gpu => {
+                            tui_state.update_current_vram_frame(&state.emu);
+                        }
+                    }
                     term.draw(|frame| {
                         draw_app(frame, &mut tui_state, &state);
                     })
@@ -287,10 +296,8 @@ async fn run_app<'a, 'e>(exec: &'a LocalExecutor<'e>, env: &EnvVars) -> Result<(
                 }
             }
         }
-        tui_state.framebuffer.clear_backbuffer();
-        tui_state.framebuffer.swap_buffers();
-        tui_state.framebuffer.clear_backbuffer();
-        tui_state.framebuffer.swap_buffers();
+        tui_state.clear_vram_framebuffer();
+        tui_state.clear_main_framebuffer();
     })
 }
 
@@ -314,9 +321,8 @@ fn run(callback: impl FnOnce(&mut DefaultTerminal)) -> Result<()> {
 
 impl Drop for TuiState {
     fn drop(&mut self) {
-        self.framebuffer.clear_backbuffer();
-        self.framebuffer.swap_buffers();
-        self.framebuffer.clear_backbuffer();
+        self.clear_main_framebuffer();
+        self.clear_vram_framebuffer();
     }
 }
 
@@ -337,239 +343,314 @@ impl TuiState {
             self.current_frame = Some((rgba32, img));
         }
     }
+    fn update_current_vram_frame(&mut self, emu: &Emu) {
+        self.vram_framebuffer.clear_frontbuffer();
+        let vram = &emu.gpu.vram;
+        #[bitfield(u16)]
+        struct Rgb5 {
+            #[bits(0..=4, r)]
+            r: u5,
+            #[bits(5..=9, r)]
+            g: u5,
+            #[bits(10..=14, r)]
+            b: u5,
+        }
+        self.current_vram_frame.1.clear();
+        for halfword in vram {
+            let pixel = Rgb5::new_with_raw_value(*halfword);
+            self.current_vram_frame
+                .1
+                .push((pixel.r().as_u16() * 255 / 31) as u8);
+            self.current_vram_frame
+                .1
+                .push((pixel.g().as_u16() * 255 / 31) as u8);
+            self.current_vram_frame
+                .1
+                .push((pixel.b().as_u16() * 255 / 31) as u8);
+        }
+        // let vram_frame = std::mem::replace(&mut self.current_vram_frame, create_vram_frame());
+        // self.vram_framebuffer
+        //     .write_image(vram_frame)
+        //     .expect("failed to write vram");
+    }
+    fn clear_vram_framebuffer(&mut self) {
+        self.vram_framebuffer.clear_backbuffer();
+        self.vram_framebuffer.clear_frontbuffer();
+    }
+    fn clear_main_framebuffer(&mut self) {
+        self.framebuffer.clear_backbuffer();
+        self.framebuffer.clear_frontbuffer();
+    }
 }
 
 fn handle_event(state: &mut AppState, tui_state: &mut TuiState, ev: &event::Event) {
+    let old_tab = tui_state.dbg_current_tab;
     match ev.simple().as_str() {
         "ctrl+c" | "q" => tui_state.quit = true,
-        event => {
-            tui_state.speed_dropdown.handle_event(ev);
-            if let ButtonResponse::Clicked = tui_state.asm_jump_to_pc_button.handle_event(ev) {
-                tui_state.mips_cursor = state.emu.cpu.pc;
-            };
-            match (tui_state.focused, event) {
-                (Focused::Preview, "l") => tui_state.focused = Focused::Asm,
-                (Focused::Preview, "f") => tui_state.fullscreen = !tui_state.fullscreen,
-                (Focused::Preview, " ") => {
+        "1" => tui_state.dbg_current_tab = DbgTab::Main,
+        "2" => {
+            tui_state.dbg_current_tab = DbgTab::Gpu;
+        }
+        event => match tui_state.dbg_current_tab {
+            DbgTab::Main => {
+                tui_state.speed_dropdown.handle_event(ev);
+                if let ButtonResponse::Clicked = tui_state.asm_jump_to_pc_button.handle_event(ev) {
+                    tui_state.mips_cursor = state.emu.cpu.pc;
+                };
+                match (tui_state.focused, event) {
+                    (Focused::Preview, "l") => tui_state.focused = Focused::Asm,
+                    (Focused::Preview, "f") => tui_state.fullscreen = !tui_state.fullscreen,
+                    (Focused::Preview, " ") => {
+                        tui_state.emu_running = !tui_state.emu_running;
+                        match tui_state.loop_mode {
+                            LoopMode::Poll => tui_state.loop_mode = LoopMode::Event,
+                            LoopMode::Event => tui_state.loop_mode = LoopMode::Poll,
+                        }
+                    }
+                    (Focused::Preview, "n") => {
+                        tui_state.emu_run_once = true;
+                    }
+                    (Focused::Preview, "r") => {
+                        state.reinit();
+                    }
+                    (Focused::Preview, "tab" | "j") => {
+                        tui_state.focused = Focused::SpeedDropdown;
+                        tui_state.speed_dropdown.focus();
+                    }
+
+                    (Focused::SpeedDropdown, event) => {
+                        match (tui_state.speed_dropdown.is_open(), event) {
+                            (false, "tab" | "j") => {
+                                tui_state.focused = Focused::Registers;
+                                tui_state.speed_dropdown.blur();
+                            }
+                            (false, "backtab" | "k") => {
+                                tui_state.focused = Focused::Preview;
+                                tui_state.speed_dropdown.blur();
+                            }
+                            (_, _) => tui_state.speed_dropdown.handle_event(ev),
+                        }
+                    }
+
+                    (Focused::Registers, "backtab" | "k") => {
+                        tui_state.focused = Focused::SpeedDropdown;
+                        tui_state.speed_dropdown.focus();
+                    }
+                    (Focused::Registers, "l") => tui_state.focused = Focused::Asm,
+                    (Focused::Registers, "ctrl+k" | "up") => tui_state.reg_list.select_previous(),
+                    (Focused::Registers, "ctrl+j" | "down") => tui_state.reg_list.select_next(),
+                    (Focused::Registers, "g") => tui_state.reg_list.select_first(),
+                    (Focused::Registers, "shift+g") => tui_state.reg_list.select_last(),
+                    (Focused::Asm, "h") => tui_state.focused = Focused::Registers,
+                    (Focused::Asm, "ctrl+j") => match tui_state.asm_current_tab {
+                        AsmTab::Mips => {
+                            tui_state.mips_cursor = tui_state.mips_cursor.saturating_add(4);
+                        }
+                        AsmTab::Objdump => {
+                            tui_state.asm_objdump_list.select_next();
+                        }
+                    },
+                    (Focused::Asm, "ctrl+k") => match tui_state.asm_current_tab {
+                        AsmTab::Mips => {
+                            tui_state.mips_cursor = tui_state.mips_cursor.saturating_sub(4);
+                        }
+                        AsmTab::Objdump => {
+                            tui_state.asm_objdump_list.select_previous();
+                        }
+                    },
+                    (Focused::Asm, "tab") => match tui_state.asm_current_tab {
+                        AsmTab::Mips => tui_state.asm_current_tab = AsmTab::Objdump,
+                        AsmTab::Objdump => tui_state.asm_current_tab = AsmTab::Mips,
+                    },
+                    (Focused::Asm, "l") => tui_state.focused = Focused::Mem,
+                    (Focused::Mem, mem_key) => match tui_state.jump_to_mem_address_pane.open {
+                        false => match mem_key {
+                            "ctrl+h" => {
+                                tui_state.mem_cursor = tui_state.mem_cursor.saturating_sub(1)
+                            }
+                            "ctrl+j" => {
+                                tui_state.mem_cursor = tui_state.mem_cursor.saturating_add(16)
+                            }
+                            "ctrl+k" => {
+                                tui_state.mem_cursor = tui_state.mem_cursor.saturating_sub(16)
+                            }
+                            "ctrl+l" => {
+                                tui_state.mem_cursor = tui_state.mem_cursor.saturating_add(1)
+                            }
+                            "g" => {
+                                tui_state.jump_to_mem_address_pane.open = true;
+                            }
+                            "h" | "backtab" => tui_state.focused = Focused::Asm,
+                            "j" | "tab" => {
+                                tui_state.focused = Focused::Breakpoints;
+                            }
+                            _ => {}
+                        },
+                        true => match mem_key {
+                            "enter" => {
+                                let address = parse_hex_address(
+                                    &tui_state
+                                        .jump_to_mem_address_pane
+                                        .input
+                                        .lines
+                                        .iter_row()
+                                        .flatten()
+                                        .collect::<String>(),
+                                );
+                                // TODO: report error
+                                if let Ok(address) = address {
+                                    tui_state.mem_cursor = address;
+                                    tui_state.mem_range = address..=address;
+                                    tui_state.jump_to_mem_address_pane.open = false;
+                                }
+                            }
+                            _ => {
+                                if mem_key == "esc"
+                                    && tui_state.jump_to_mem_address_pane.input.mode
+                                        == EditorMode::Normal
+                                {
+                                    tui_state.jump_to_mem_address_pane.open = false;
+                                }
+                                EditorEventHandler::vim_mode().on_event(
+                                    ev.clone(),
+                                    &mut tui_state.jump_to_mem_address_pane.input,
+                                );
+                            }
+                        },
+                    },
+                    (Focused::Breakpoints, key) => match tui_state.add_breakpoint_pane.open {
+                        false => match key {
+                            "k" | "backtab" => tui_state.focused = Focused::Mem,
+                            "h" => tui_state.focused = Focused::Asm,
+                            "a" => {
+                                tui_state.add_breakpoint_pane.open = true;
+                                tui_state.add_breakpoint_pane.focus = Some(0);
+                            }
+                            "d" if let Some(selected) = tui_state.breakpoints_table.selected() => {
+                                let key = state
+                                    .emu
+                                    .dbg
+                                    .breakpoints
+                                    .iter()
+                                    .enumerate()
+                                    .find_map(|(idx, (k, _))| (idx == selected).then_some(*k));
+                                if let Some(key) = key {
+                                    state.emu.dbg.breakpoints.remove(&key);
+                                }
+                            }
+                            "ctrl+j" => tui_state.breakpoints_table.select_next(),
+                            "ctrl+k" => tui_state.breakpoints_table.select_previous(),
+                            "g" => tui_state.breakpoints_table.select_first(),
+                            "shift+g" => tui_state.breakpoints_table.select_last(),
+                            _ => {}
+                        },
+                        true => match (tui_state.add_breakpoint_pane.focus, key) {
+                            (Some(_), "esc") => {
+                                tui_state.add_breakpoint_pane.focus = None;
+                            }
+                            (None, "esc") => {
+                                tui_state.add_breakpoint_pane.open = false;
+                            }
+                            (None, _) => {
+                                tui_state.add_breakpoint_pane.focus = Some(0);
+                            }
+                            (Some(0), "enter" | "tab" | "ctrl+j") => {
+                                tui_state.add_breakpoint_pane.focus = Some(1)
+                            }
+                            (Some(0), _) => {
+                                tui_state
+                                    .add_breakpoint_pane
+                                    .address_input_handler
+                                    .on_event(
+                                        ev.clone(),
+                                        &mut tui_state.add_breakpoint_pane.address_input,
+                                    );
+
+                                if tui_state.add_breakpoint_pane.address_input.lines.is_empty() {
+                                    tui_state.add_breakpoint_pane.error = None;
+                                }
+                            }
+                            (Some(4), "enter") => {
+                                let r = tui_state.add_breakpoint_pane.checkboxes[0].value();
+                                let w = tui_state.add_breakpoint_pane.checkboxes[1].value();
+                                let x = tui_state.add_breakpoint_pane.checkboxes[2].value();
+                                let mut kind = BreakpointKind::NONE;
+                                if r {
+                                    kind |= BreakpointKind::READ;
+                                }
+                                if w {
+                                    kind |= BreakpointKind::WRITE;
+                                }
+                                if x {
+                                    kind |= BreakpointKind::EXECUTE;
+                                }
+                                let line = &tui_state.add_breakpoint_pane.address_input.lines;
+                                let line = line.iter_row().flatten().collect::<String>();
+                                match create_breakpoint(&line, kind) {
+                                    Ok(breakpoint) => {
+                                        tui_state.add_breakpoint_pane.error = None;
+                                        tui_state.add_breakpoint_pane.open = false;
+                                        state
+                                            .emu
+                                            .dbg
+                                            .breakpoints
+                                            .insert(breakpoint.address, breakpoint);
+                                    }
+                                    Err(err) => {
+                                        tui_state.add_breakpoint_pane.error = Some(err);
+                                    }
+                                }
+                            }
+                            (Some(ref mut idx @ 1..=4), "j" | "ctrl+j") => {
+                                *idx += 1;
+                                *idx %= 5;
+                                tui_state.add_breakpoint_pane.focus = Some(*idx);
+                            }
+                            (Some(ref mut idx @ 1..=4), "k" | "ctrl+k") => {
+                                *idx -= 1;
+                                tui_state.add_breakpoint_pane.focus = Some(*idx);
+                            }
+                            (Some(ref mut idx @ 1..=3), _) => {
+                                match tui_state.add_breakpoint_pane.checkboxes[*idx - 1]
+                                    .handle_event(ev)
+                                {
+                                    widgets::EventResponse::Next => {
+                                        *idx += 1;
+                                        *idx %= 5;
+                                    }
+                                    widgets::EventResponse::None => {}
+                                    widgets::EventResponse::GrabFocus => {}
+                                }
+                                tui_state.add_breakpoint_pane.focus = Some(*idx);
+                            }
+                            _ => {}
+                        },
+                    },
+
+                    _ => {}
+                }
+            }
+            DbgTab::Gpu => match event {
+                " " => {
                     tui_state.emu_running = !tui_state.emu_running;
                     match tui_state.loop_mode {
                         LoopMode::Poll => tui_state.loop_mode = LoopMode::Event,
                         LoopMode::Event => tui_state.loop_mode = LoopMode::Poll,
                     }
                 }
-                (Focused::Preview, "n") => {
-                    tui_state.emu_run_once = true;
-                }
-                (Focused::Preview, "r") => {
-                    state.reinit();
-                }
-                (Focused::Preview, "tab" | "j") => {
-                    tui_state.focused = Focused::SpeedDropdown;
-                    tui_state.speed_dropdown.focus();
-                }
-
-                (Focused::SpeedDropdown, event) => {
-                    match (tui_state.speed_dropdown.is_open(), event) {
-                        (false, "tab" | "j") => {
-                            tui_state.focused = Focused::Registers;
-                            tui_state.speed_dropdown.blur();
-                        }
-                        (false, "backtab" | "k") => {
-                            tui_state.focused = Focused::Preview;
-                            tui_state.speed_dropdown.blur();
-                        }
-                        (_, _) => tui_state.speed_dropdown.handle_event(ev),
-                    }
-                }
-
-                (Focused::Registers, "backtab" | "k") => {
-                    tui_state.focused = Focused::SpeedDropdown;
-                    tui_state.speed_dropdown.focus();
-                }
-                (Focused::Registers, "l") => tui_state.focused = Focused::Asm,
-                (Focused::Registers, "ctrl+k" | "up") => tui_state.reg_list.select_previous(),
-                (Focused::Registers, "ctrl+j" | "down") => tui_state.reg_list.select_next(),
-                (Focused::Registers, "g") => tui_state.reg_list.select_first(),
-                (Focused::Registers, "shift+g") => tui_state.reg_list.select_last(),
-                (Focused::Asm, "h") => tui_state.focused = Focused::Registers,
-                (Focused::Asm, "ctrl+j") => match tui_state.asm_current_tab {
-                    AsmTab::Mips => {
-                        tui_state.mips_cursor = tui_state.mips_cursor.saturating_add(4);
-                    }
-                    AsmTab::Objdump => {
-                        tui_state.asm_objdump_list.select_next();
-                    }
-                },
-                (Focused::Asm, "ctrl+k") => match tui_state.asm_current_tab {
-                    AsmTab::Mips => {
-                        tui_state.mips_cursor = tui_state.mips_cursor.saturating_sub(4);
-                    }
-                    AsmTab::Objdump => {
-                        tui_state.asm_objdump_list.select_previous();
-                    }
-                },
-                (Focused::Asm, "tab") => match tui_state.asm_current_tab {
-                    AsmTab::Mips => tui_state.asm_current_tab = AsmTab::Objdump,
-                    AsmTab::Objdump => tui_state.asm_current_tab = AsmTab::Mips,
-                },
-                (Focused::Asm, "l") => tui_state.focused = Focused::Mem,
-                (Focused::Mem, mem_key) => match tui_state.jump_to_mem_address_pane.open {
-                    false => match mem_key {
-                        "ctrl+h" => tui_state.mem_cursor = tui_state.mem_cursor.saturating_sub(1),
-                        "ctrl+j" => tui_state.mem_cursor = tui_state.mem_cursor.saturating_add(16),
-                        "ctrl+k" => tui_state.mem_cursor = tui_state.mem_cursor.saturating_sub(16),
-                        "ctrl+l" => tui_state.mem_cursor = tui_state.mem_cursor.saturating_add(1),
-                        "g" => {
-                            tui_state.jump_to_mem_address_pane.open = true;
-                        }
-                        "h" | "backtab" => tui_state.focused = Focused::Asm,
-                        "j" | "tab" => {
-                            tui_state.focused = Focused::Breakpoints;
-                        }
-                        _ => {}
-                    },
-                    true => match mem_key {
-                        "enter" => {
-                            let address = parse_hex_address(
-                                &tui_state
-                                    .jump_to_mem_address_pane
-                                    .input
-                                    .lines
-                                    .iter_row()
-                                    .flatten()
-                                    .collect::<String>(),
-                            );
-                            // TODO: report error
-                            if let Ok(address) = address {
-                                tui_state.mem_cursor = address;
-                                tui_state.mem_range = address..=address;
-                                tui_state.jump_to_mem_address_pane.open = false;
-                            }
-                        }
-                        _ => {
-                            if mem_key == "esc"
-                                && tui_state.jump_to_mem_address_pane.input.mode
-                                    == EditorMode::Normal
-                            {
-                                tui_state.jump_to_mem_address_pane.open = false;
-                            }
-                            EditorEventHandler::vim_mode().on_event(
-                                ev.clone(),
-                                &mut tui_state.jump_to_mem_address_pane.input,
-                            );
-                        }
-                    },
-                },
-                (Focused::Breakpoints, key) => match tui_state.add_breakpoint_pane.open {
-                    false => match key {
-                        "k" | "backtab" => tui_state.focused = Focused::Mem,
-                        "h" => tui_state.focused = Focused::Asm,
-                        "a" => {
-                            tui_state.add_breakpoint_pane.open = true;
-                            tui_state.add_breakpoint_pane.focus = Some(0);
-                        }
-                        "d" if let Some(selected) = tui_state.breakpoints_table.selected() => {
-                            let key = state
-                                .emu
-                                .dbg
-                                .breakpoints
-                                .iter()
-                                .enumerate()
-                                .find_map(|(idx, (k, _))| (idx == selected).then_some(*k));
-                            if let Some(key) = key {
-                                state.emu.dbg.breakpoints.remove(&key);
-                            }
-                        }
-                        "ctrl+j" => tui_state.breakpoints_table.select_next(),
-                        "ctrl+k" => tui_state.breakpoints_table.select_previous(),
-                        "g" => tui_state.breakpoints_table.select_first(),
-                        "shift+g" => tui_state.breakpoints_table.select_last(),
-                        _ => {}
-                    },
-                    true => match (tui_state.add_breakpoint_pane.focus, key) {
-                        (Some(_), "esc") => {
-                            tui_state.add_breakpoint_pane.focus = None;
-                        }
-                        (None, "esc") => {
-                            tui_state.add_breakpoint_pane.open = false;
-                        }
-                        (None, _) => {
-                            tui_state.add_breakpoint_pane.focus = Some(0);
-                        }
-                        (Some(0), "enter" | "tab" | "ctrl+j") => {
-                            tui_state.add_breakpoint_pane.focus = Some(1)
-                        }
-                        (Some(0), _) => {
-                            tui_state
-                                .add_breakpoint_pane
-                                .address_input_handler
-                                .on_event(
-                                    ev.clone(),
-                                    &mut tui_state.add_breakpoint_pane.address_input,
-                                );
-
-                            if tui_state.add_breakpoint_pane.address_input.lines.is_empty() {
-                                tui_state.add_breakpoint_pane.error = None;
-                            }
-                        }
-                        (Some(4), "enter") => {
-                            let r = tui_state.add_breakpoint_pane.checkboxes[0].value();
-                            let w = tui_state.add_breakpoint_pane.checkboxes[1].value();
-                            let x = tui_state.add_breakpoint_pane.checkboxes[2].value();
-                            let mut kind = BreakpointKind::NONE;
-                            if r {
-                                kind |= BreakpointKind::READ;
-                            }
-                            if w {
-                                kind |= BreakpointKind::WRITE;
-                            }
-                            if x {
-                                kind |= BreakpointKind::EXECUTE;
-                            }
-                            let line = &tui_state.add_breakpoint_pane.address_input.lines;
-                            let line = line.iter_row().flatten().collect::<String>();
-                            match create_breakpoint(&line, kind) {
-                                Ok(breakpoint) => {
-                                    tui_state.add_breakpoint_pane.error = None;
-                                    tui_state.add_breakpoint_pane.open = false;
-                                    state
-                                        .emu
-                                        .dbg
-                                        .breakpoints
-                                        .insert(breakpoint.address, breakpoint);
-                                }
-                                Err(err) => {
-                                    tui_state.add_breakpoint_pane.error = Some(err);
-                                }
-                            }
-                        }
-                        (Some(ref mut idx @ 1..=4), "j" | "ctrl+j") => {
-                            *idx += 1;
-                            *idx %= 5;
-                            tui_state.add_breakpoint_pane.focus = Some(*idx);
-                        }
-                        (Some(ref mut idx @ 1..=4), "k" | "ctrl+k") => {
-                            *idx -= 1;
-                            tui_state.add_breakpoint_pane.focus = Some(*idx);
-                        }
-                        (Some(ref mut idx @ 1..=3), _) => {
-                            match tui_state.add_breakpoint_pane.checkboxes[*idx - 1]
-                                .handle_event(ev)
-                            {
-                                widgets::EventResponse::Next => {
-                                    *idx += 1;
-                                    *idx %= 5;
-                                }
-                                widgets::EventResponse::None => {}
-                                widgets::EventResponse::GrabFocus => {}
-                            }
-                            tui_state.add_breakpoint_pane.focus = Some(*idx);
-                        }
-                        _ => {}
-                    },
-                },
-
                 _ => {}
+            },
+        },
+    }
+
+    if old_tab != tui_state.dbg_current_tab {
+        if tui_state.emu_running {
+            tui_state.clear_main_framebuffer();
+            tui_state.clear_vram_framebuffer();
+        } else {
+            match old_tab {
+                DbgTab::Main => tui_state.clear_main_framebuffer(),
+                DbgTab::Gpu => tui_state.clear_vram_framebuffer(),
             }
         }
     }
@@ -593,23 +674,26 @@ fn create_breakpoint(address: &str, kind: BreakpointKind) -> Result<Breakpoint> 
 }
 
 struct TuiState {
-    theme:         Theme,
-    loop_mode:     LoopMode,
-    emu_running:   bool,
-    emu_run_once:  bool,
-    current_frame: Option<(PixelFormat, Vec<u8>)>,
-    framebuffer:   ImageState,
-    quit:          bool,
-    fullscreen:    bool,
-    frame_time:    Duration,
-    reg_list:      TableState,
-    focused:       Focused,
-    mips_cursor:   u32,
-    mips_range:    RangeInclusive<u32>,
-    mem_cursor:    u32,
-    mem_range:     RangeInclusive<u32>,
-    exec_history:  VecDeque<u32>,
+    theme:              Theme,
+    loop_mode:          LoopMode,
+    emu_running:        bool,
+    emu_run_once:       bool,
+    current_frame:      Option<(PixelFormat, Vec<u8>)>,
+    current_vram_frame: (PixelFormat, Vec<u8>),
+    framebuffer:        ImageState,
+    quit:               bool,
+    fullscreen:         bool,
+    frame_time:         Duration,
+    reg_list:           TableState,
+    focused:            Focused,
+    mips_cursor:        u32,
+    mips_range:         RangeInclusive<u32>,
+    mem_cursor:         u32,
+    mem_range:          RangeInclusive<u32>,
+    exec_history:       VecDeque<u32>,
 
+    dbg_current_tab:          DbgTab,
+    vram_framebuffer:         ImageState,
     speed_dropdown:           DropdownState<EmuSpeed>,
     asm_jump_to_pc_button:    ButtonState,
     asm_current_tab:          AsmTab,
@@ -618,6 +702,36 @@ struct TuiState {
     add_breakpoint_pane:      AddBreakpointPane,
     jump_to_mem_address_pane: JumpToMemAddressPane,
     breakpoints_table:        TableState,
+}
+
+fn create_vram_frame() -> (PixelFormat, Vec<u8>) {
+    (
+        PixelFormat::Rgb24(
+            ImageDimensions {
+                width:  1024,
+                height: 512,
+            },
+            None,
+        ),
+        Vec::with_capacity(1024 * 512),
+    )
+}
+
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+enum DbgTab {
+    #[default]
+    Main = 0x0,
+    Gpu,
+}
+
+impl std::fmt::Display for DbgTab {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DbgTab::Main => write!(f, "1: main"),
+            DbgTab::Gpu => write!(f, "2: gpu"),
+        }
+    }
 }
 
 type Objdump = String;
@@ -659,23 +773,25 @@ impl std::fmt::Display for AsmTab {
 impl TuiState {
     fn new() -> Self {
         TuiState {
-            loop_mode:     LoopMode::Event,
-            current_frame: None,
-            framebuffer:   ImageState::new(),
-            quit:          false,
-            fullscreen:    false,
-            frame_time:    Duration::ZERO,
-            reg_list:      TableState::new(),
-            theme:         Theme::default(),
-            focused:       Focused::Preview,
-            mips_cursor:   0x0,
-            emu_running:   false,
-            emu_run_once:  false,
-            mips_range:    0x0..=0x0,
-            mem_cursor:    0xbfc0_0000,
-            mem_range:     0xbfc0_0000..=0xbfc0_0000,
-            exec_history:  VecDeque::new(),
+            loop_mode:          LoopMode::Event,
+            current_frame:      None,
+            current_vram_frame: create_vram_frame(),
+            framebuffer:        ImageState::new(),
+            quit:               false,
+            fullscreen:         false,
+            frame_time:         Duration::ZERO,
+            reg_list:           TableState::new(),
+            theme:              Theme::default(),
+            focused:            Focused::Preview,
+            mips_cursor:        0x0,
+            emu_running:        false,
+            emu_run_once:       false,
+            mips_range:         0x0..=0x0,
+            mem_cursor:         0xbfc0_0000,
+            mem_range:          0xbfc0_0000..=0xbfc0_0000,
+            exec_history:       VecDeque::new(),
 
+            dbg_current_tab:          DbgTab::Main,
             speed_dropdown:           DropdownState::new(),
             asm_jump_to_pc_button:    ButtonState::new(),
             asm_current_tab:          AsmTab::default(),
@@ -684,6 +800,7 @@ impl TuiState {
             breakpoints_table:        TableState::default().with_selected(Some(0)),
             jump_to_mem_address_pane: JumpToMemAddressPane::default(),
             asm_objdump_list:         ListState::default(),
+            vram_framebuffer:         ImageState::new(),
         }
     }
 
@@ -712,12 +829,28 @@ impl std::fmt::Display for EmuSpeed {
 }
 
 fn draw_app(frame: &mut Frame, tui_state: &mut TuiState, state: &AppState) {
-    let main_block = Block::bordered()
+    let mut main_block = Block::bordered()
         .border_type(BorderType::Rounded)
         .title("+ 🐷🎗️ P-ちゃん dbg (v2) +".set_style(tui_state.theme.primary));
+    for tab in [DbgTab::Main, DbgTab::Gpu] {
+        let selected = tab == tui_state.dbg_current_tab;
+        let style = match selected {
+            true => Style::new()
+                .bg(tui_state.theme.primary)
+                .fg(tui_state.theme.bg)
+                .bold(),
+            false => Style::new().on_dark_gray().fg(tui_state.theme.fg),
+        };
+        main_block = main_block.title(tab.to_string().set_style(style));
+    }
     let area = main_block.inner(frame.area());
     main_block.render(frame.area(), frame.buffer_mut());
-
+    match tui_state.dbg_current_tab {
+        DbgTab::Main => draw_main_view(frame, area, tui_state, state),
+        DbgTab::Gpu => draw_gpu_view(frame, area, tui_state, state),
+    }
+}
+fn draw_main_view(frame: &mut Frame, area: Rect, tui_state: &mut TuiState, state: &AppState) {
     let [h1, h2, h3] = Layout::horizontal([
         Constraint::Ratio(1, 3),
         Constraint::Ratio(1, 3),
@@ -1395,6 +1528,66 @@ fn draw_breakpoints(area: Rect, frame: &mut Frame, tui_state: &mut TuiState, sta
                 return;
             };
             frame.render_widget(err, err_area);
+        }
+    }
+}
+
+fn draw_gpu_view(frame: &mut Frame, area: Rect, tui_state: &mut TuiState, state: &AppState) {
+    let [vram_area] = area.layout(&Layout::horizontal([Constraint::Percentage(90)]));
+    draw_gpu_view_vram(frame, vram_area, tui_state, state);
+}
+
+fn draw_gpu_view_vram(
+    frame: &mut Frame,
+    mut area: Rect,
+    tui_state: &mut TuiState,
+    state: &AppState,
+) {
+    area.height = area.width / 2;
+    area.height = area.height * 2 / 3;
+    let area = {
+        let frame_time = tui_state.frame_time.as_millis_f32();
+        let fps = 1000.0 / frame_time;
+        let vram_block = Block::bordered()
+            .border_type(BorderType::Rounded)
+            .title_bottom(format!("+ {:01.2}ms {:.0}fps +", frame_time, fps))
+            .title_top(" 📺 ")
+            .title_top(" <spc> run ".dim())
+            .title_bottom(format!(
+                "+ framebuffer: {} +",
+                tui_state.current_vram_frame.1.len()
+            ))
+            .title_bottom(format!("+ vram: {} +", state.emu.gpu.vram.len()))
+            .theme(&tui_state.theme)
+            .focus_style(tui_state, Focused::Preview);
+        let inner_vram_area = vram_block.inner(area);
+        vram_block.render(area, frame.buffer_mut());
+        inner_vram_area
+    };
+    let scale = 1024 / area.width;
+    let start = area.x;
+    let frame_width = 1024;
+    let frame_height = tui_state.current_vram_frame.1.len() / 3 / frame_width;
+
+    for row in (0..frame_height).step_by(scale as usize) {
+        for col in (0..(frame_width)).step_by(scale as usize) {
+            let idx_top = (row * frame_width + col) * 3;
+            let idx_bot = ((row + 1) * frame_width + col) * 3;
+            let pixel_top = &tui_state.current_vram_frame.1[idx_top..idx_top + 3];
+            let color_top = Color::Rgb(pixel_top[0], pixel_top[1], pixel_top[2]);
+            let pixel_bot = &tui_state.current_vram_frame.1[idx_bot..idx_bot + 3];
+            let color_bot = Color::Rgb(pixel_bot[0], pixel_bot[1], pixel_bot[2]);
+
+            let cell_x = start + (col / scale as usize) as u16;
+            let cell_y = area.y + (row / 2 / scale as usize) as u16;
+
+            if cell_x < area.width && cell_y < area.height {
+                let cell_area = Rect::new(cell_x, cell_y, 1, 1);
+                "▄"
+                    .bg(color_top)
+                    .fg(color_bot)
+                    .render(cell_area, frame.buffer_mut());
+            }
         }
     }
 }

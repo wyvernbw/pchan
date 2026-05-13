@@ -93,6 +93,10 @@ impl Uv {
     pub fn extra_as_clut(&self) -> U16Vec2 {
         Self::clut_from_u16(self.extra)
     }
+
+    pub fn extra_as_texpage(&self) -> U8Vec2 {
+        U8Vec2::from_array(self.extra.to_le_bytes())
+    }
 }
 
 #[bitfield(u32)]

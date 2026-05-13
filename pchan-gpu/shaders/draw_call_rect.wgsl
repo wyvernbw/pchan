@@ -93,8 +93,12 @@ fn read_4bit(coord: vec2<f32>) -> u32 {
     return (packed >> shift_amt) & 0xFu;
 }
 
-fn read_8bit(coord: vec2<u32>) -> u32 {
-    return 0;
+fn read_8bit(coord: vec2<f32>) -> u32 {
+    var packed = read_16bit(vec2(coord.x / 2, coord.y));
+    let bit_idx = u32(coord.x) % 2;
+    let shift_amt = bit_idx * 2;
+
+    return (packed >> shift_amt) & 0xFFu;
 }
 
 fn pack_h(v: vec2<f32>, f: f32) -> vec2<f32> {
@@ -137,10 +141,10 @@ fn get_color(in: VertexOutput) -> u32 {
         }
         case COLOR_MODE_8BIT: {
             if in.textured != 0 {
-                // let clut_idx = read_8bit(in.texpage_base + in.uv);
-                // let coord = vec2(in.clut.x + clut_idx, in.clut.y);
-                // let clut_color = read_16bit(coord);
-                // color = clut_color;
+                let clut_idx = read_8bit(pack_h(in.texpage_base, 2) + pack_h(in.uv, 1));
+                let coord = vec2(in.clut.x + f32(clut_idx), in.clut.y);
+                let clut_color = read_16bit(coord);
+                color = clut_color;
             }
 
             return color;

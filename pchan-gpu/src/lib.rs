@@ -563,10 +563,10 @@ impl Scene {
         for cmd in &cmds.draw_calls {
             match &cmd.inner {
                 DrawCallKind::Rect(draw_rect) => {
-                    // _ = scene.add_draw_rect_draw_call(draw_rect);
+                    _ = scene.add_draw_rect_draw_call(draw_rect, cmd.gpustat);
                 }
                 DrawCallKind::Polygon(draw_polygon) => {
-                    _ = scene.add_draw_polygon_draw_call(draw_polygon, cmd.gpustat);
+                    scene.add_draw_polygon_draw_call(draw_polygon, cmd.gpustat);
                 }
                 DrawCallKind::Line(draw_line) => {}
             }
@@ -576,17 +576,32 @@ impl Scene {
     }
 
     #[pchan_macros::instrument(skip_all, err)]
-    fn add_draw_rect_draw_call(&mut self, draw_rect: &DrawRect) -> Result<(), DrawRectError> {
-        let top_left: Vertex = draw_rect.vertex1.into();
+    fn add_draw_rect_draw_call(
+        &mut self,
+        draw_rect: &DrawRect,
+        gpustat: GpuStatReg,
+    ) -> Result<(), DrawRectError> {
         let rgb = draw_rect.color.rgb().to_ne_bytes();
         let color_mode = match draw_rect.color.textured() {
             // TODO: pick the correct color mode for textured polygons
             true => TextureColorMode::C15BitDirect,
             false => TextureColorMode::C24BitDirect,
         };
-        let top_left = top_left
-            .with_color(U8Vec3::from_array(rgb))
-            .with_color_mode(color_mode);
+        let color = U8Vec3::from_array(rgb);
+        let uv = draw_rect.uv.unwrap_or_default();
+        let top_left = Vertex {
+            pos: i16vec2(draw_rect.vertex1.x as i16, draw_rect.vertex1.y as i16),
+            color,
+            color_mode,
+            uv: uv.uv,
+            _pad_02: [0; 2],
+            clut: uv.extra_as_clut(),
+            textured: draw_rect.color.textured(),
+            _pad: 0,
+            texpage_base: uv.extra_as_texpage(),
+            flags: Flags::ZERO.with_dither(gpustat.dither()),
+            _pad_03: [0; 2],
+        };
 
         let quad: Quad = match (draw_rect.color.size(), draw_rect.var_size) {
             (RectSize::VarSize, None) => return Err(DrawRectError::MissingVarSize),

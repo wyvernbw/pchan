@@ -147,11 +147,10 @@ impl ImageState {
         &mut self,
         (format, data): (PixelFormat, Vec<u8>),
     ) -> Result<(), ImageFromShmFailureStep<ShmError>> {
-        let seed = Instant::now();
-        let mut hasher = DefaultHasher::new();
-        seed.hash(&mut hasher);
-        let seed = hasher.finish();
-        let img = Image::shm_from((format, data.to_vec()), &format!("{}-{seed}", self.idx))?;
+        let img = Image::shm_from(
+            (format, data),
+            &format!("{}-{}", self.idx, self as *const Self as usize),
+        )?;
         let writer = self.writer.take();
 
         if let Some(writer) = writer {
@@ -245,7 +244,7 @@ impl StatefulWidget for ImageWidget {
                 image_id:     frame.id,
                 placement_id: NonZero::new(1).unwrap(),
                 config:       kittage::display::DisplayConfig {
-                    location:                 kittage::display::DisplayLocation {
+                    location: kittage::display::DisplayLocation {
                         x:                 0,
                         y:                 0,
                         width:             640,
@@ -258,6 +257,7 @@ impl StatefulWidget for ImageWidget {
                         horizontal_offset: 0,
                         vertical_offset:   0,
                     },
+
                     cursor_movement:          kittage::display::CursorMovementPolicy::DontMove,
                     create_virtual_placement: false,
                     parent_id:                None,
