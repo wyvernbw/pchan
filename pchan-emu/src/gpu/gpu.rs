@@ -28,13 +28,13 @@ use crate::gpu::draw_call::DrawCallCollection;
 use crate::gpu::draw_call::DrawCallDecoder;
 use crate::gpu::draw_call::DrawCallKind;
 use crate::gpu::draw_call::DrawLineDecoder;
-use crate::gpu::draw_call::DrawOptsRegister;
 use crate::gpu::draw_call::DrawPolygonDecoder;
 use crate::gpu::draw_call::DrawPolygonHeader;
 use crate::gpu::draw_call::DrawRectDecoder;
 use crate::gpu::draw_call::Gp0SetDrawAreaCmd;
 use crate::gpu::draw_call::Gp0SetDrawOffsetCmd;
 use crate::gpu::draw_call::Gp0SetMaskBitCmd;
+use crate::gpu::draw_call::GpuInternalDrawReg;
 use crate::io::CastIOFrom;
 use crate::io::CastIOInto;
 use crate::io::IOResult;
@@ -68,8 +68,7 @@ pub struct GpuState {
     pub dp:              Display,
     /// GP0(0xe2) - Texture Window setting
     pub tex_window:      Gp0TexWindowCmd,
-    // TODO: remove this
-    pub draw_opts_reg:   DrawOptsRegister,
+    pub draw_reg:        GpuInternalDrawReg,
     #[debug("{} draw calls", self.draw_call_queue.len())]
     pub draw_call_queue: Vec<DrawCall>,
     pub model:           GpuModel,
@@ -107,7 +106,7 @@ impl Default for GpuState {
             gp1cmd_queue: Deque::default(),
             model: GpuModel::default(),
             tex_window: Default::default(),
-            draw_opts_reg: Default::default(),
+            draw_reg: Default::default(),
             draw_call_queue: vec![],
             conn: Conn {
                 draw_call_chan: kanal::bounded_async(0),
@@ -255,7 +254,7 @@ pub trait Gpu: Bus + Interrupts {
             }
             // GP0(E3h) - Set Drawing Area top left (X1,Y1)
             0xe3 => {
-                let opts = &mut self.gpu_mut().draw_opts_reg;
+                let opts = &mut self.gpu_mut().draw_reg;
                 let cmd = Gp0SetDrawAreaCmd::new_with_raw_value(cmd.raw_value());
                 opts.draw_area_top_left.x = cmd.x_coord().as_();
                 opts.draw_area_top_left.y = cmd.y_coord_v2().as_();
@@ -264,7 +263,7 @@ pub trait Gpu: Bus + Interrupts {
             }
             // GP0(E4h) - Set Drawing Area bottom right (X2,Y2)
             0xe4 => {
-                let opts = &mut self.gpu_mut().draw_opts_reg;
+                let opts = &mut self.gpu_mut().draw_reg;
                 let cmd = Gp0SetDrawAreaCmd::new_with_raw_value(cmd.raw_value());
                 opts.draw_area_bottom_right.x = cmd.x_coord().as_();
                 opts.draw_area_bottom_right.y = cmd.y_coord_v2().as_();
@@ -273,7 +272,7 @@ pub trait Gpu: Bus + Interrupts {
             }
             // GP0(E5h) - Set Drawing Offset (X,Y)
             0xe5 => {
-                let opts = &mut self.gpu_mut().draw_opts_reg;
+                let opts = &mut self.gpu_mut().draw_reg;
                 let cmd = Gp0SetDrawOffsetCmd::new_with_raw_value(cmd.raw_value());
                 opts.draw_offset.x = cmd.x_offset().as_();
                 opts.draw_offset.y = cmd.y_offset().as_();
@@ -549,8 +548,9 @@ pub trait Gpu: Bus + Interrupts {
 
     fn create_draw_call(&self, kind: DrawCallKind) -> DrawCall {
         DrawCall {
-            gpustat: self.gpu().gpustat,
-            inner:   kind,
+            gpustat:  self.gpu().gpustat,
+            inner:    kind,
+            draw_reg: self.gpu().draw_reg.clone(),
         }
     }
 

@@ -48,7 +48,7 @@ use ratatui::{
     layout::{Constraint, Layout, Margin, Rect},
     style::{Color, Style, Styled, Stylize},
     symbols,
-    text::{Line, ToText},
+    text::{Line, Span, ToText},
     widgets::{
         Block, BorderType, Borders, Clear, List, ListState, Paragraph, Row, Table, TableState,
         Tabs, Widget,
@@ -1594,8 +1594,33 @@ fn draw_breakpoints(area: Rect, frame: &mut Frame, tui_state: &mut TuiState, sta
 }
 
 fn draw_gpu_view(frame: &mut Frame, area: Rect, tui_state: &mut TuiState, state: &AppState) {
-    let [vram_area] = area.layout(&Layout::horizontal([Constraint::Percentage(90)]));
-    draw_gpu_view_vram(frame, vram_area, tui_state, state);
+    let [vram_area] = area.layout(&Layout::horizontal([Constraint::Percentage(80)]));
+    let area = draw_gpu_view_vram(frame, vram_area, tui_state, state);
+
+    // draw stats
+    let area = {
+        let stats_block = Block::bordered()
+            .border_type(BorderType::Rounded)
+            .theme(&tui_state.theme)
+            .border_style(Style::new().dim());
+        let inner_stats_area = stats_block.inner(area);
+        stats_block.render(area, frame.buffer_mut());
+        inner_stats_area
+    };
+    let draw_reg = &state.emu.gpu.draw_reg;
+    frame.render_widget(
+        List::new([
+            Span::raw(format!(
+                "draw_area_top_left = ({}, {})",
+                draw_reg.draw_area_top_left.x, draw_reg.draw_area_top_left.y
+            )),
+            Span::raw(format!(
+                "draw_area_bottom_right = ({}, {})",
+                draw_reg.draw_area_bottom_right.x, draw_reg.draw_area_bottom_right.y
+            )),
+        ]),
+        area,
+    );
 }
 
 fn draw_gpu_view_vram(
@@ -1603,9 +1628,11 @@ fn draw_gpu_view_vram(
     mut area: Rect,
     tui_state: &mut TuiState,
     state: &AppState,
-) {
+) -> Rect {
+    let original_area = area;
     area.height = area.width / 2;
     area.height = area.height * 2 / 3;
+    let outer_area = area;
     let area = {
         let frame_time = tui_state.frame_time.as_millis_f32();
         let fps = 1000.0 / frame_time;
@@ -1647,6 +1674,11 @@ fn draw_gpu_view_vram(
             }
         }
     }
+
+    original_area.layout::<2>(&Layout::vertical([
+        Constraint::Length(outer_area.height),
+        Constraint::Fill(1),
+    ]))[1]
 }
 
 trait Themed: Styled + Sized {

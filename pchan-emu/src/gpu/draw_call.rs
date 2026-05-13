@@ -24,8 +24,9 @@ pub struct DrawCallCollection {
 
 #[derive(Debug, Clone)]
 pub struct DrawCall {
-    pub gpustat: GpuStatReg,
-    pub inner:   DrawCallKind,
+    pub gpustat:  GpuStatReg,
+    pub draw_reg: GpuInternalDrawReg,
+    pub inner:    DrawCallKind,
 }
 
 #[derive(Debug, Clone)]
@@ -135,7 +136,7 @@ pub struct Gp0SetMaskBitCmd {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct DrawOptsRegister {
+pub struct GpuInternalDrawReg {
     pub draw_area_top_left:     VramCoord,
     pub draw_area_bottom_right: VramCoord,
     pub draw_offset:            IVramCoord,

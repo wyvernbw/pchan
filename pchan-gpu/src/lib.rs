@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use glam::{I16Vec2, U8Vec2, U8Vec3, U16Vec2, UVec2, i16vec2, u8vec2, u16vec2};
 use pchan_emu::gpu::draw_call::{
-    DrawCallCollection, DrawCallKind, DrawPolygon, DrawRect, RectSize, Shading,
+    DrawCallCollection, DrawCallKind, DrawPolygon, DrawRect, GpuInternalDrawReg, RectSize, Shading,
 };
 use pchan_emu::gpu::{Conn, DrawPixels, GpuStatReg, TextureColorMode, VramCoord};
 use pchan_emu::{Bus, Emu};
@@ -51,7 +51,7 @@ pub struct DisplayUniforms {
 pub struct RenderUniforms {}
 
 #[derive(Debug, Error)]
-enum InitError {
+pub enum InitError {
     #[error(transparent)]
     RequestAdapter(#[from] RequestAdapterError),
     #[error(transparent)]
@@ -365,7 +365,7 @@ impl Renderer {
                             };
                             tracing::debug!("received vram");
 
-                            let scene = Scene::new_from_draw_calls(&draw_calls);
+                            let scene = Scene::new_from_draw_calls(draw_calls);
                             let mut pass = self.create_render_pass(scene).await;
                             pass.draw(&vram);
                             pass.finish(&mut vram).await;
@@ -396,14 +396,39 @@ struct Vertex {
     uv: U8Vec2,
     _pad_02: [u8; 2],
     clut: U16Vec2,
-    textured: bool,
-    _pad: u8,
     texpage_base: U8Vec2,
     flags: Flags,
-    _pad_03: [u8; 2],
+    draw_area_top_left: VramCoord,
+    draw_area_bottom_right: VramCoord,
+}
+
+struct VertexSpec {
+    pos: I16Vec2,
+    color: U8Vec3,
+    color_mode: TextureColorMode,
+    uv: U8Vec2,
+    clut: U16Vec2,
+    texpage_base: U8Vec2,
+    flags: Flags,
+    draw_area_top_left: VramCoord,
+    draw_area_bottom_right: VramCoord,
 }
 
 impl Vertex {
+    fn new(spec: VertexSpec) -> Self {
+        Self {
+            pos: spec.pos,
+            color: spec.color,
+            color_mode: spec.color_mode,
+            uv: spec.uv,
+            _pad_02: [0; 2],
+            clut: spec.clut,
+            texpage_base: spec.texpage_base,
+            flags: spec.flags,
+            draw_area_top_left: spec.draw_area_top_left,
+            draw_area_bottom_right: spec.draw_area_bottom_right,
+        }
+    }
     fn desc() -> &'static [VertexAttribute] {
         &[
             // position @location(0)
@@ -436,17 +461,23 @@ impl Vertex {
                 offset: offset_of!(Vertex, texpage_base) as _,
                 shader_location: 4,
             },
-            // textured @location(5)
-            VertexAttribute {
-                format: VertexFormat::Uint8,
-                offset: offset_of!(Vertex, textured) as _,
-                shader_location: 5,
-            },
-            // flags @location(6)
+            // flags @location(5)
             VertexAttribute {
                 format: VertexFormat::Uint8,
                 offset: offset_of!(Vertex, flags) as _,
+                shader_location: 5,
+            },
+            // draw_area_top_left @location(6)
+            VertexAttribute {
+                format: VertexFormat::Uint16x2,
+                offset: offset_of!(Vertex, draw_area_top_left) as _,
                 shader_location: 6,
+            },
+            // draw_area_bottom_right @location(7)
+            VertexAttribute {
+                format: VertexFormat::Uint16x2,
+                offset: offset_of!(Vertex, draw_area_bottom_right) as _,
+                shader_location: 7,
             },
         ]
     }
@@ -461,6 +492,8 @@ struct Flags {
     set_mask: bool,
     #[bit(2, rw)]
     draw_pixels: DrawPixels,
+    #[bit(3, rw)]
+    textured: bool,
 }
 
 impl Flags {
@@ -567,7 +600,7 @@ enum DrawRectError {
 }
 
 impl Scene {
-    pub fn new_from_draw_calls(cmds: &DrawCallCollection) -> Scene {
+    pub fn new_from_draw_calls(cmds: DrawCallCollection) -> Scene {
         let Some(gpustat) = cmds.draw_calls.last().map(|draw| draw.gpustat) else {
             return Scene::default();
         };
@@ -576,13 +609,13 @@ impl Scene {
             dp_start: cmds.display.display_vram_start,
             ..Default::default()
         };
-        for cmd in &cmds.draw_calls {
-            match &cmd.inner {
+        for cmd in cmds.draw_calls {
+            match cmd.inner {
                 DrawCallKind::Rect(draw_rect) => {
-                    _ = scene.add_draw_rect_draw_call(draw_rect, cmd.gpustat);
+                    _ = scene.add_draw_rect_draw_call(&draw_rect, cmd.gpustat, cmd.draw_reg);
                 }
                 DrawCallKind::Polygon(draw_polygon) => {
-                    scene.add_draw_polygon_draw_call(draw_polygon, cmd.gpustat);
+                    scene.add_draw_polygon_draw_call(&draw_polygon, cmd.gpustat, cmd.draw_reg);
                 }
                 DrawCallKind::Line(draw_line) => {}
             }
@@ -596,6 +629,7 @@ impl Scene {
         &mut self,
         draw_rect: &DrawRect,
         gpustat: GpuStatReg,
+        draw_reg: GpuInternalDrawReg,
     ) -> Result<(), DrawRectError> {
         let rgb = draw_rect.color.rgb().to_ne_bytes();
         let color_mode = match draw_rect.color.textured() {
@@ -605,19 +639,17 @@ impl Scene {
         };
         let color = U8Vec3::from_array(rgb);
         let uv = draw_rect.uv.unwrap_or_default();
-        let top_left = Vertex {
+        let top_left = Vertex::new(VertexSpec {
             pos: i16vec2(draw_rect.vertex1.x as i16, draw_rect.vertex1.y as i16),
             color,
             color_mode,
             uv: uv.uv,
-            _pad_02: [0; 2],
             clut: uv.extra_as_clut(),
-            textured: draw_rect.color.textured(),
-            _pad: 0,
             texpage_base: uv.extra_as_texpage(),
-            flags: Flags::from_gpustat(gpustat),
-            _pad_03: [0; 2],
-        };
+            flags: Flags::from_gpustat(gpustat).with_textured(draw_rect.color.textured()),
+            draw_area_top_left: draw_reg.draw_area_top_left,
+            draw_area_bottom_right: draw_reg.draw_area_bottom_right,
+        });
 
         let quad: Quad = match (draw_rect.color.size(), draw_rect.var_size) {
             (RectSize::VarSize, None) => return Err(DrawRectError::MissingVarSize),
@@ -638,7 +670,12 @@ impl Scene {
     }
 
     #[pchan_macros::instrument(skip_all)]
-    fn add_draw_polygon_draw_call(&mut self, draw_polygon: &DrawPolygon, gpustat: GpuStatReg) {
+    fn add_draw_polygon_draw_call(
+        &mut self,
+        draw_polygon: &DrawPolygon,
+        gpustat: GpuStatReg,
+        draw_reg: GpuInternalDrawReg,
+    ) {
         let header = draw_polygon.header;
         let clut = draw_polygon.clut;
         let texpage = draw_polygon.texpage;
@@ -655,46 +692,34 @@ impl Scene {
             false => TextureColorMode::C15BitDirect,
         };
         let flags = Flags::from_gpustat(gpustat)
-            .with_dither(gpustat.dither() && (header.modulation() || header.goraud()));
-        let mut vertices = match shading {
-            // DONE: Goraud shading
-            Shading::Flat => draw_polygon
-                .attrs
-                .iter()
-                .map(|attr| Vertex {
+            .with_dither(gpustat.dither() && (header.modulation() || header.goraud()))
+            .with_textured(header.textured());
+        let mut vertices = draw_polygon
+            .attrs
+            .iter()
+            .map(|attr| {
+                let mut spec = VertexSpec {
                     pos: attr.vertex,
                     color: U8Vec3::from_array(color.to_ne_bytes()),
                     color_mode,
                     uv: attr.uv.unwrap_or_default().uv,
                     texpage_base,
-                    textured: header.textured(),
-                    _pad: 0,
                     clut,
-                    _pad_02: [0; 2],
                     flags,
-                    _pad_03: [0; 2],
-                })
-                .collect::<heapless::Vec<_, 4>>(),
-            Shading::Gouraud => draw_polygon
-                .attrs
-                .iter()
-                .map(|attr| Vertex {
-                    pos: attr.vertex,
-                    color: attr
-                        .color
-                        .unwrap_or(U8Vec3::from_array(color.to_ne_bytes())),
-                    color_mode,
-                    uv: attr.uv.unwrap_or_default().uv,
-                    clut,
-                    texpage_base,
-                    textured: header.textured(),
-                    _pad: 0,
-                    _pad_02: [0; 2],
-                    flags,
-                    _pad_03: [0; 2],
-                })
-                .collect(),
-        };
+                    draw_area_top_left: draw_reg.draw_area_top_left,
+                    draw_area_bottom_right: draw_reg.draw_area_bottom_right,
+                };
+                match shading {
+                    Shading::Flat => {}
+                    Shading::Gouraud => {
+                        spec.color = attr
+                            .color
+                            .unwrap_or(U8Vec3::from_array(color.to_ne_bytes()));
+                    }
+                }
+                Vertex::new(spec)
+            })
+            .collect::<heapless::Vec<_, 4>>();
         match header.vertex_count() {
             pchan_emu::gpu::draw_call::DrawPolygonVertexCount::Three => {
                 assert_eq!(vertices.len(), 3);

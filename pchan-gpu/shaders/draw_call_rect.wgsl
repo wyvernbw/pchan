@@ -4,8 +4,9 @@ struct VertexInput {
     @location(2) clut: vec2<u32>,
     @location(3) uv: vec2<u32>,
     @location(4) texpage_base: vec2<u32>,
-    @location(5) textured: u32,
-    @location(6) flags: u32,
+    @location(5) flags: u32,
+    @location(6) draw_area_top_left: vec2<u32>,
+    @location(7) draw_area_bottom_right: vec2<u32>
 };
 
 struct VertexOutput {
@@ -16,8 +17,9 @@ struct VertexOutput {
     @interpolate(flat) @location(6) clut: vec2<f32>,
     @interpolate(linear) @location(7) uv: vec2<f32>,
     @interpolate(flat) @location(8) texpage_base: vec2<f32>,
-    @interpolate(flat) @location(9) textured: u32,
     @interpolate(flat) @location(10) flags: u32,
+    @interpolate(flat) @location(11) draw_area_top_left: vec2<f32>,
+    @interpolate(flat) @location(12) draw_area_bottom_right: vec2<f32>
 };
 
 @group(0) @binding(0)
@@ -61,12 +63,13 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     out.vram_position = vec2<f32>(vec2(in.position.x, 512 - in.position.y));
     out.color_mode = color_mode;
     out.flags = in.flags;
+    out.draw_area_top_left = vec2<f32>(in.draw_area_top_left);
+    out.draw_area_bottom_right = vec2<f32>(in.draw_area_bottom_right);
 
     // https://psx-spx.consoledev.net/graphicsprocessingunitgpu/#clut-attribute-color-lookup-table-aka-palette
     out.clut = vec2<f32>(vec2(in.clut.x * 16, in.clut.y));
 
     out.uv = vec2<f32>(in.uv);
-    out.textured = in.textured;
     out.texpage_base = vec2<f32>(vec2(in.texpage_base.x * 64, in.texpage_base.y * 256));
 
     out.color = rgb8_split_color(color);
@@ -135,6 +138,10 @@ fn get_draw_pixels(flags: u32) -> bool {
     return get_flag(flags, 2);
 }
 
+fn get_textured(flags: u32) -> bool {
+    return get_flag(flags, 3);
+}
+
 fn get_color(in: VertexOutput) -> u32 {
     var in_color = in.color;
     var set_mask = get_set_mask(in.flags);
@@ -150,9 +157,10 @@ fn get_color(in: VertexOutput) -> u32 {
     }
 
     var color = pack_color(in_color, set_mask);
+    let textured = get_textured(in.flags);
     switch in.color_mode {
         case COLOR_MODE_4BIT: {
-            if in.textured != 0 {
+            if textured {
                 let clut_idx = read_4bit(pack_h(in.texpage_base, 4) + pack_h(in.uv, 1));
                 let coord = vec2(in.clut.x + f32(clut_idx), in.clut.y);
                 let clut_color = read_16bit(coord);
@@ -163,7 +171,7 @@ fn get_color(in: VertexOutput) -> u32 {
             return color;
         }
         case COLOR_MODE_8BIT: {
-            if in.textured != 0 {
+            if textured {
                 let clut_idx = read_8bit(pack_h(in.texpage_base, 2) + pack_h(in.uv, 1));
                 let coord = vec2(in.clut.x + f32(clut_idx), in.clut.y);
                 let clut_color = read_16bit(coord);
@@ -173,7 +181,7 @@ fn get_color(in: VertexOutput) -> u32 {
             return color;
         }
         case COLOR_MODE_15BIT, COLOR_MODE_24BIT, default: {
-            if in.textured != 0 {
+            if textured {
                 color = read_16bit(in.texpage_base + in.uv);
             }
 
@@ -191,6 +199,12 @@ const DITHER: array<array<i32, 4>, 4> = array(
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) u32 {
+    if in.vram_position.x < in.draw_area_top_left.x
+    || in.vram_position.y < in.draw_area_top_left.y
+    || in.vram_position.x > in.draw_area_bottom_right.x
+    || in.vram_position.y > in.draw_area_bottom_right.y {
+        discard;
+    }
     var draw_pixels = get_draw_pixels(in.flags);
     if draw_pixels {
         var current = read_16bit(in.vram_position);
