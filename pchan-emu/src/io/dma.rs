@@ -294,6 +294,7 @@ pub trait Dma: Bus + IO + Fastmem + Interrupts + Gpu {
                         .slice
                         .expect("event with sync mode slice has no slice state. this is a bug.");
                     let mut addr = slice.addr;
+                    self.dma_mut().dma2.madr.set_addr(addr.as_());
                     let len = channel.bcr.s1_block_size();
                     for _ in 0..len {
                         match direction {
@@ -400,6 +401,7 @@ pub trait Dma: Bus + IO + Fastmem + Interrupts + Gpu {
 
                     count += 1;
                     if header.is_end_marker() {
+                        self.dma_mut().dma2.madr.set_addr(DmaNodeHeader::END.as_());
                         break;
                     }
                 }
