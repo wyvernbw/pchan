@@ -3,6 +3,7 @@ use crate::{
     gpu::Gpu,
     io::{CastIOFrom, CastIOInto, IO, IOResult, Interrupts, UnhandledIO, irq::Irq},
     memory::fastmem::Fastmem,
+    trace_todo,
 };
 use arbitrary_int::prelude::*;
 use bitbybit::{bitenum, bitfield};
@@ -54,25 +55,25 @@ pub trait Dma: Bus + IO + Fastmem + Interrupts + Gpu {
     fn read<T: Copy>(&self, address: u32) -> IOResult<T> {
         let address = address & 0x1fffffff;
         match address {
-            0x1f801080..=0x1f80108f => todo!("read at dma0 (MDECin)"),
-            0x1f801090..=0x1f80109f => todo!("read at dma1 (MDECout)"),
+            0x1f801080..=0x1f80108f => trace_todo!(0x0, "read at dma0 (MDECin)"),
+            0x1f801090..=0x1f80109f => trace_todo!(0x0, "read at dma1 (MDECout)"),
 
             // dma 2
             0x1f8010a0 => Ok(self.dma().dma2.madr.addr().io_from_u32()),
-            0x1f8010a4 => todo!("read at dma2bcr (gpu bcr)"),
+            0x1f8010a4 => Ok(self.dma().dma2.bcr.io_from_u32()),
             0x1f8010a8 => {
                 let chcr = self.dma().dma2.chcr;
                 tracing::trace!("read at dma2chcr (gpu chcr): {:?}", chcr.transfer());
                 Ok(chcr.io_from_u32())
             }
 
-            0x1f8010b0..=0x1f8010bf => todo!("read at dma3 (cdrom)"),
-            0x1f8010c0..=0x1f8010cf => todo!("read at dma4 (spu)"),
-            0x1f8010d0..=0x1f8010df => todo!("read at dma5 (pio)"),
+            0x1f8010b0..=0x1f8010bf => trace_todo!(0x0, "read at dma3 (cdrom)"),
+            0x1f8010c0..=0x1f8010cf => trace_todo!(0x0, "read at dma4 (spu)"),
+            0x1f8010d0..=0x1f8010df => trace_todo!(0x0, "read at dma5 (pio)"),
 
             // dma 6
-            0x1f8010e0 => todo!("read at dma6madr (otc madr)"),
-            0x1f8010e4 => todo!("read at dma6bcr (otc bcr)"),
+            0x1f8010e0 => trace_todo!(0x0, "read at dma6madr (otc madr)"),
+            0x1f8010e4 => trace_todo!(0x0, "read at dma6bcr (otc bcr)"),
             0x1f8010e8 => {
                 let chcr = self.dma().dma6.chcr;
                 tracing::trace!(dma6 = ?chcr.transfer(), "read at dma6chcr (otc chcr)");
@@ -88,8 +89,8 @@ pub trait Dma: Bus + IO + Fastmem + Interrupts + Gpu {
     fn write<T: Copy>(&mut self, address: u32, value: T) -> IOResult<()> {
         let address = address & 0x1fffffff;
         match address {
-            0x1f801080..=0x1f80108f => todo!("write at dma0 (MDECin)"),
-            0x1f801090..=0x1f80109f => todo!("write at dma1 (MDECout)"),
+            0x1f801080..=0x1f80108f => trace_todo!("write at dma0 (MDECin)"),
+            0x1f801090..=0x1f80109f => trace_todo!("write at dma1 (MDECout)"),
 
             // dma 2
             0x1f8010a0 => {
@@ -117,9 +118,9 @@ pub trait Dma: Bus + IO + Fastmem + Interrupts + Gpu {
                 Ok(())
             }
 
-            0x1f8010b0..=0x1f8010bf => todo!("write at dma3 (cdrom)"),
-            0x1f8010c0..=0x1f8010cf => todo!("write at dma4 (spu)"),
-            0x1f8010d0..=0x1f8010df => todo!("write at dma5 (pio)"),
+            0x1f8010b0..=0x1f8010bf => trace_todo!("write at dma3 (cdrom)"),
+            0x1f8010c0..=0x1f8010cf => trace_todo!("write at dma4 (spu)"),
+            0x1f8010d0..=0x1f8010df => trace_todo!("write at dma5 (pio)"),
 
             // dma 6
             0x1f8010e0 => {
@@ -176,35 +177,36 @@ pub trait Dma: Bus + IO + Fastmem + Interrupts + Gpu {
     }
 
     fn dma_schedule(&mut self, event: DmaEvent) {
-        if let Some(slice) = event.slice {
-            let cycles_per_step = event.init_chan.slice_cycles();
-            let mut upcoming = event.upcoming;
+        tracing::info!("dma: schedulde dma event: {:#?}", event);
+        // if let Some(slice) = event.slice {
+        // let cycles_per_step = event.init_chan.slice_cycles();
+        // let mut upcoming = event.upcoming;
 
-            let start = slice.idx as u16;
-            let end = event.init_chan.bcr.s1_block_count();
-            let mut addr = event.init_chan.madr.addr().as_u32();
-            let addr_step = event.init_chan.bcr.s1_block_size();
-            for i in start..end {
-                let slice = SliceTransferState {
-                    addr,
-                    idx: i as u32,
-                };
-                addr += addr_step as u32 * 0x4;
-                self.dma_mut()
-                    .queue
-                    .heap
-                    .push(DmaEvent {
-                        upcoming,
-                        init_chan: event.init_chan,
-                        slice: Some(slice),
-                        dma_t: event.dma_t,
-                    })
-                    .unwrap();
-                upcoming += cycles_per_step;
-            }
-        } else {
-            self.dma_mut().queue.heap.push(event).unwrap();
-        }
+        // let start = slice.idx as u16;
+        // let end = event.init_chan.bcr.s1_block_count();
+        // let mut addr = event.init_chan.madr.addr().as_u32();
+        // let addr_step = event.init_chan.bcr.s1_block_size();
+        // for i in start..end {
+        //     let slice = SliceTransferState {
+        //         addr,
+        //         idx: i as u32,
+        //     };
+        //     addr += addr_step as u32 * 0x4;
+        //     self.dma_mut()
+        //         .queue
+        //         .heap
+        //         .push(DmaEvent {
+        //             upcoming,
+        //             init_chan: event.init_chan,
+        //             slice: Some(slice),
+        //             dma_t: event.dma_t,
+        //         })
+        //         .unwrap();
+        //     upcoming += cycles_per_step;
+        // }
+        // } else {
+        self.dma_mut().queue.heap.push(event).unwrap();
+        // }
     }
 
     fn run_dma_transfers(&mut self) {
@@ -283,33 +285,65 @@ pub trait Dma: Bus + IO + Fastmem + Interrupts + Gpu {
         let channel = event.init_chan;
         let direction = channel.chcr.direction();
         let sync_mode = channel.chcr.sync_mode();
+        let clock = self.cpu().cycles;
         match sync_mode {
             SyncMode::Slice => {
-                let slice = event
-                    .slice
-                    .expect("event with sync mode slice has no slice state. this is a bug.");
-                let mut addr = slice.addr;
-                let len = channel.bcr.s1_block_size();
-                for _ in 0..len {
-                    match direction {
-                        TransferDir::DeviceToRam => {
-                            let value = Gpu::read::<u32>(self, 0x1f801810).unwrap();
-                            Fastmem::write(self, addr, value).unwrap();
+                let mut current_event = Some(event);
+                while let Some(event) = current_event {
+                    let slice = event
+                        .slice
+                        .expect("event with sync mode slice has no slice state. this is a bug.");
+                    let mut addr = slice.addr;
+                    let len = channel.bcr.s1_block_size();
+                    for _ in 0..len {
+                        match direction {
+                            TransferDir::DeviceToRam => {
+                                let value = Gpu::read::<u32>(self, 0x1f801810).unwrap();
+                                Fastmem::write(self, addr, value).unwrap();
+                            }
+                            TransferDir::RamToDevice => {
+                                let value = Fastmem::read(self, addr).unwrap();
+                                // flushing the queue here is not ideal, as real dma
+                                // would hang until the gpu has capacity for more
+                                // commands. but our commands do not take actual
+                                // time to execute
+                                self.gp0_cmd_queue_push_or_flush(value);
+                                tracing::trace!("dma2(slice): {}", hex(value));
+                            }
                         }
-                        TransferDir::RamToDevice => {
-                            let value = Fastmem::read(self, addr).unwrap();
-                            // flushing the queue here is not ideal, as real dma
-                            // would hang until the gpu has capacity for more
-                            // commands. but our commands do not take actual
-                            // time to execute
-                            self.gp0_cmd_queue_push_or_flush(value);
+                        addr += 0x4;
+                    }
+                    // do not mark as done until final event is reached
+                    tracing::debug!(
+                        "dma event.{} [{}/{}]",
+                        hex(channel.madr.addr().as_u32()),
+                        slice.idx,
+                        channel.bcr.s1_block_count()
+                    );
+                    if slice.idx >= channel.bcr.s1_block_count() as u32 - 1 {
+                        self.dma_mut().dma2.set_complete();
+                        break;
+                    } else {
+                        let cycles_per_step = event.init_chan.slice_cycles();
+                        let upcoming = event.upcoming + cycles_per_step;
+                        let addr_step = event.init_chan.bcr.s1_block_size();
+                        let slice = SliceTransferState {
+                            addr: slice.addr + addr_step as u32 * 0x4,
+                            idx:  slice.idx + 1,
+                        };
+                        let next_event = DmaEvent {
+                            upcoming,
+                            init_chan: event.init_chan,
+                            slice: Some(slice),
+                            dma_t: event.dma_t,
+                        };
+                        if upcoming < clock {
+                            current_event = Some(next_event);
+                        } else {
+                            self.dma_mut().queue.heap.push(next_event).unwrap();
+                            break;
                         }
                     }
-                    addr += 0x4;
-                }
-                // do not mark as done until final event is reached
-                if slice.idx == channel.bcr.s1_block_count() as u32 - 1 {
-                    self.dma_mut().dma2.set_complete();
                 }
             }
             SyncMode::Burst => match direction {
@@ -319,6 +353,7 @@ pub trait Dma: Bus + IO + Fastmem + Interrupts + Gpu {
                     for _ in 0..channel.bcr.s0_word_count() {
                         let value = Fastmem::read(self, addr).unwrap();
                         self.gp0_cmd_queue_push_or_flush(value);
+                        tracing::trace!("dma2(burst): {}", hex(value));
                         addr += 0x4;
                     }
                     self.dma_mut().dma2.set_complete();
