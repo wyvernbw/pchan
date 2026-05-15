@@ -82,6 +82,8 @@ pub trait Dma: Bus + IO + Fastmem + Interrupts + Gpu {
 
             0x1f8010f0 => Ok(self.dma().dpcr.io_from_u32()),
             0x1f8010f4 => Ok(self.dma().dicr.io_from_u32()),
+            0x1f8010f8 => todo!("todo(dma): read at dma transfer complete register"),
+            0x1f8010fc => todo!("todo(dma): read at dma otc fill value"),
             _ => Err(UnhandledIO(address)),
         }
     }
@@ -93,20 +95,20 @@ pub trait Dma: Bus + IO + Fastmem + Interrupts + Gpu {
             0x1f801090..=0x1f80109f => trace_todo!("write at dma1 (MDECout)"),
 
             // dma 2
-            0x1f8010a0 => {
+            0x1f8010a0..0x1f8010a4 => {
                 self.dma_mut().dma2.io_set_madr(value);
-                tracing::trace!("write at dma2madr (gpu madr): {:#?}", self.dma().dma2.madr);
+                tracing::info!("write at dma2madr (gpu madr): {:#?}", self.dma().dma2.madr);
                 Ok(())
             }
             0x1f8010a4 => {
                 self.dma_mut().dma2.io_set_bcr(value);
-                tracing::trace!("write at dma2bcr (gpu bcr): {:#?}", self.dma().dma2.bcr);
+                tracing::info!("write at dma2bcr (gpu bcr): {:#?}", self.dma().dma2.bcr);
                 Ok(())
             }
             0x1f8010a8 => {
                 let chcr = DmaChcr::new_with_raw_value(value.io_into_u32());
                 self.dma_mut().dma2.chcr = chcr;
-                tracing::trace!("write at dma2chcr (gpu chcr): {:#?}", chcr);
+                tracing::info!("write at dma2chcr (gpu chcr): {:#?}", chcr);
                 match self.dma().dma2.chcr.transfer() {
                     Transfer::StoppedCompleted => {}
                     Transfer::StartBusy => {
@@ -325,6 +327,9 @@ pub trait Dma: Bus + IO + Fastmem + Interrupts + Gpu {
                         self.dma_mut().dma2.set_complete();
                         break;
                     } else {
+                        let bcr = &mut self.dma_mut().dma2.bcr;
+                        bcr.set_s1_block_count(bcr.s1_block_count() - 1);
+
                         let cycles_per_step = event.init_chan.slice_cycles();
                         let upcoming = event.upcoming + cycles_per_step;
                         let addr_step = event.init_chan.bcr.s1_block_size();
@@ -694,8 +699,7 @@ impl DmaChannel {
         self.chcr.transfer()
     }
     fn io_set_madr<T: Copy>(&mut self, value: T) {
-        let madr = DmaMadr::new_with_raw_value(value.io_into_u32());
-        self.madr = madr;
+        self.madr.set_addr(value.io_into_u32().as_());
     }
     fn io_set_bcr<T: Copy>(&mut self, value: T) {
         let bcr = DmaBcr::new_with_raw_value(value.io_into_u32());

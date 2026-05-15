@@ -409,10 +409,12 @@ impl TuiState {
 
 fn handle_event(state: &mut AppState, tui_state: &mut TuiState, ev: &event::Event) {
     let old_tab = tui_state.dbg_current_tab;
+    let nothing_focused =
+        !(tui_state.add_breakpoint_pane.open || tui_state.jump_to_mem_address_pane.open);
     match ev.simple().as_str() {
         "ctrl+c" | "q" => tui_state.quit = true,
-        "1" => tui_state.dbg_current_tab = DbgTab::Main,
-        "2" => {
+        "1" if nothing_focused => tui_state.dbg_current_tab = DbgTab::Main,
+        "2" if nothing_focused => {
             tui_state.dbg_current_tab = DbgTab::Gpu;
         }
         event => match tui_state.dbg_current_tab {

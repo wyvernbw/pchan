@@ -35,3 +35,13 @@ exec history:
 0x8004f434
 0x8004fac4 <- crash here
 ```
+
+# Bad Gpu dma madr
+
+correct values from pcsx-r:
+- 0x001aa81c
+- 0x001ac59c
+- 0x001ae59c
+- 0x0006693c
+- 0x00066eb8
+- 0xffffff00
