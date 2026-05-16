@@ -276,6 +276,7 @@ pub trait Gpu: Bus + Interrupts {
                 let cmd = Gp0SetDrawOffsetCmd::new_with_raw_value(cmd.raw_value());
                 opts.draw_offset.x = cmd.x_offset().as_();
                 opts.draw_offset.y = cmd.y_offset().as_();
+                tracing::info!("set draw offset: {:?}", opts.draw_offset);
 
                 Gp0::WaitingForCmd
             }
@@ -509,11 +510,35 @@ pub trait Gpu: Bus + Interrupts {
                     tracing::debug!("set framebuffer coords");
                 }
                 0x06 => {
-                    // TODO
+                    ///  0-11   X1 (260h+0)       ;12bit       ;\counted in video clock units,
+                    ///  12-23  X2 (260h+320*8)   ;12bit       ;/relative to HSYNC
+                    #[bitfield(u32)]
+                    struct HDisplayRange {
+                        #[bits(0..=11, r)]
+                        start: u12,
+                        #[bits(12..=23, r)]
+                        end:   u12,
+                    }
+
+                    let value = HDisplayRange::new_with_raw_value(value.raw_value());
+                    self.gpu_mut().dp.display_range_start.x = value.start().as_();
+                    self.gpu_mut().dp.display_range_end.x = value.end().as_();
                     tracing::debug!("set h framebuffer range");
                 }
                 0x07 => {
-                    // TODO
+                    /// 0-9   Y1 (NTSC=88h-(240/2), (PAL=A3h-(288/2))  ;\scanline numbers on screen,
+                    /// 10-19 Y2 (NTSC=88h+(240/2), (PAL=A3h+(288/2))  ;/relative to VSYNC
+                    /// 20-23 Not used (zero)
+                    #[bitfield(u32)]
+                    struct VDisplayRange {
+                        #[bits(0..=9, r)]
+                        start: u10,
+                        #[bits(10..=19,r)]
+                        end:   u10,
+                    }
+                    let value = VDisplayRange::new_with_raw_value(value.raw_value());
+                    self.gpu_mut().dp.display_range_start.y = value.start().as_();
+                    self.gpu_mut().dp.display_range_end.y = value.end().as_();
                     tracing::debug!("set v framebuffer range");
                 }
                 0x08 => {
@@ -816,8 +841,8 @@ impl const From<u32> for VramCoord {
 #[derive(Debug, Clone, Copy, d::Add, d::AddAssign, PartialEq, PartialOrd, Ord, Eq, Default)]
 #[repr(C)]
 pub struct IVramCoord {
-    x: i16,
-    y: i16,
+    pub x: i16,
+    pub y: i16,
 }
 
 impl IVramCoord {
@@ -1405,6 +1430,25 @@ pub trait VideoEvents: Gpu + VBlank {
             VideoMode::Pal => 709379,
         };
         cycles * 451584 / factor
+    }
+
+    /// returns start (topleft) and end (bottomright)
+    fn dp_coords(&self) -> (U16Vec2, U16Vec2) {
+        let width = match self.gpu().gpustat.h_resolution_2() {
+            HRes2::Standard => match self.gpu().gpustat.h_resolution_1() {
+                HRes1::Res256 => 256,
+                HRes1::Res320 => 320,
+                HRes1::Res512 => 512,
+                HRes1::Res640 => 640,
+            },
+            HRes2::Res368 => 368,
+        };
+        let height = match self.gpu().gpustat.v_resolution() {
+            VRes::Res240 => 240,
+            VRes::Res480 => 480,
+        };
+        let start = self.gpu().dp.display_vram_start;
+        (start, start + U16Vec2::new(width, height))
     }
 
     fn run_video_io(&mut self, by_cpu_cycles: u64) {

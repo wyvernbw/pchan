@@ -7,10 +7,11 @@ use glam::{I16Vec2, U8Vec2, U8Vec3, U16Vec2, UVec2, i16vec2, u8vec2, u16vec2};
 use pchan_emu::gpu::draw_call::{
     DrawCallCollection, DrawCallKind, DrawPolygon, DrawRect, GpuInternalDrawReg, RectSize, Shading,
 };
-use pchan_emu::gpu::{Conn, DrawPixels, GpuStatReg, TextureColorMode, VramCoord};
+use pchan_emu::gpu::{Conn, DrawPixels, GpuStatReg, IVramCoord, TextureColorMode, VramCoord};
 use pchan_emu::{Bus, Emu};
 use pchan_utils::Chan;
 use thiserror::Error;
+use tracing::Level;
 use wgpu::*;
 
 #[derive(Debug)]
@@ -400,6 +401,7 @@ struct Vertex {
     flags: Flags,
     draw_area_top_left: VramCoord,
     draw_area_bottom_right: VramCoord,
+    draw_offset: IVramCoord,
 }
 
 struct VertexSpec {
@@ -412,6 +414,7 @@ struct VertexSpec {
     flags: Flags,
     draw_area_top_left: VramCoord,
     draw_area_bottom_right: VramCoord,
+    draw_offset: IVramCoord,
 }
 
 impl Vertex {
@@ -427,6 +430,7 @@ impl Vertex {
             flags: spec.flags,
             draw_area_top_left: spec.draw_area_top_left,
             draw_area_bottom_right: spec.draw_area_bottom_right,
+            draw_offset: spec.draw_offset,
         }
     }
     fn desc() -> &'static [VertexAttribute] {
@@ -478,6 +482,12 @@ impl Vertex {
                 format: VertexFormat::Uint16x2,
                 offset: offset_of!(Vertex, draw_area_bottom_right) as _,
                 shader_location: 7,
+            },
+            // draw_offset @location(8)
+            VertexAttribute {
+                format: VertexFormat::Sint16x2,
+                offset: offset_of!(Vertex, draw_offset) as _,
+                shader_location: 8,
             },
         ]
     }
@@ -610,6 +620,9 @@ impl Scene {
             ..Default::default()
         };
         for cmd in cmds.draw_calls {
+            if tracing::enabled!(Level::DEBUG) {
+                tracing::debug!("{:?}", cmd.inner)
+            }
             match cmd.inner {
                 DrawCallKind::Rect(draw_rect) => {
                     _ = scene.add_draw_rect_draw_call(&draw_rect, cmd.gpustat, cmd.draw_reg);
@@ -649,6 +662,7 @@ impl Scene {
             flags: Flags::from_gpustat(gpustat).with_textured(draw_rect.color.textured()),
             draw_area_top_left: draw_reg.draw_area_top_left,
             draw_area_bottom_right: draw_reg.draw_area_bottom_right,
+            draw_offset: draw_reg.draw_offset,
         });
 
         let quad: Quad = match (draw_rect.color.size(), draw_rect.var_size) {
@@ -662,9 +676,7 @@ impl Scene {
                 Quad::new_with_topleft_and_size(top_left, u16vec2(16, 16))
             }
         };
-        let mut vertices = triangulate_quad(&quad.vertices());
-        ensure_vertex_order(&mut vertices, [0, 1, 2]);
-        ensure_vertex_order(&mut vertices, [3, 4, 5]);
+        let vertices = triangulate_quad(&quad.vertices());
         self.vertex_buf.extend(vertices);
         Ok(())
     }
@@ -708,6 +720,7 @@ impl Scene {
                     flags,
                     draw_area_top_left: draw_reg.draw_area_top_left,
                     draw_area_bottom_right: draw_reg.draw_area_bottom_right,
+                    draw_offset: draw_reg.draw_offset,
                 };
                 match shading {
                     Shading::Flat => {}

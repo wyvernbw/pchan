@@ -39,7 +39,7 @@ fn vs_main(
     if display.debug_display != 0 {
         res = vec2(1024, 512);
     } else {
-        res = vec2<f32>(display.resolution);
+        res = vec2<f32>(display.resolution - display.display_area_pos);
     }
 
     let tex_aspect  = res.x / res.y;

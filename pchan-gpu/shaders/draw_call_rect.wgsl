@@ -6,7 +6,8 @@ struct VertexInput {
     @location(4) texpage_base: vec2<u32>,
     @location(5) flags: u32,
     @location(6) draw_area_top_left: vec2<u32>,
-    @location(7) draw_area_bottom_right: vec2<u32>
+    @location(7) draw_area_bottom_right: vec2<u32>,
+    @location(8) draw_offset: vec2<i32>
 };
 
 struct VertexOutput {
@@ -19,7 +20,8 @@ struct VertexOutput {
     @interpolate(flat) @location(8) texpage_base: vec2<f32>,
     @interpolate(flat) @location(10) flags: u32,
     @interpolate(flat) @location(11) draw_area_top_left: vec2<f32>,
-    @interpolate(flat) @location(12) draw_area_bottom_right: vec2<f32>
+    @interpolate(flat) @location(12) draw_area_bottom_right: vec2<f32>,
+    @interpolate(flat) @location(13) draw_offset: vec2<f32>
 };
 
 @group(0) @binding(0)
@@ -59,12 +61,14 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     let color_mode = (in.color_and_mode >> 24u) & 0xFFu;
     let color = in.color_and_mode & 0x00FFFFFFu;
 
-    out.clip_position = vec4<f32>(f32(in.position.x) / 512.0 - 1.0, f32(512 - in.position.y) / 256.0 - 1.0, 0.0, 1.0);
-    out.vram_position = vec2<f32>(vec2(in.position.x, 512 - in.position.y));
+    let pos = vec2<u32>(vec2<i32>(in.position) + vec2(in.draw_offset.x, in.draw_offset.y));
+    out.clip_position = vec4<f32>(f32(pos.x) / 512.0 - 1.0, f32(512 - pos.y) / 256.0 - 1.0, 0.0, 1.0);
+    out.vram_position = vec2<f32>(vec2<i32>(in.position) + in.draw_offset);
     out.color_mode = color_mode;
     out.flags = in.flags;
     out.draw_area_top_left = vec2<f32>(in.draw_area_top_left);
     out.draw_area_bottom_right = vec2<f32>(in.draw_area_bottom_right);
+    out.draw_offset = vec2<f32>(in.draw_offset);
 
     // https://psx-spx.consoledev.net/graphicsprocessingunitgpu/#clut-attribute-color-lookup-table-aka-palette
     out.clut = vec2<f32>(vec2(in.clut.x * 16, in.clut.y));
@@ -94,6 +98,7 @@ fn vramcoord_to_texcoord(coord: vec2<f32>) -> vec2<u32> {
 
 fn read_16bit(coord: vec2<f32>) -> u32 {
     let texcoord = vramcoord_to_texcoord(coord);
+    // wgpu tex coords are +Y = down
     var packed = textureLoad(vram_t, texcoord).r;
     return (packed >> ((u32(coord.x) % 2) * 16)) & 0xFFFF;
 }

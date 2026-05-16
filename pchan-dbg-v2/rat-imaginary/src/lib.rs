@@ -247,8 +247,8 @@ impl StatefulWidget for ImageWidget {
                     location: kittage::display::DisplayLocation {
                         x:                 0,
                         y:                 0,
-                        width:             640,
-                        height:            480,
+                        width:             0,
+                        height:            0,
                         x_offset:          0,
                         y_offset:          0,
                         columns:           area.width,
