@@ -28,6 +28,7 @@ pub static AMIDOG_TESTS: &[u8] =
 #[derive(derive_more::Debug, Clone)]
 pub struct BootloaderState {
     bios_path: PathBuf,
+    sideload:  Option<Exe<'static, Vec<u8>>>,
 }
 
 impl Default for BootloaderState {
@@ -35,6 +36,7 @@ impl Default for BootloaderState {
         let bios_path = std::env::var("PCHAN_BIOS").unwrap_or("./SCPH1001.BIN".to_owned());
         BootloaderState {
             bios_path: bios_path.into(),
+            sideload:  None,
         }
     }
 }
@@ -68,11 +70,9 @@ pub trait Bootloader: Bus + IO {
         // is technically not writeable
         {
             let this = &mut *self;
-            let mut address = 0xBFC0_0000;
-            for value in bios_slice.iter().copied() {
+            for (address, value) in (0xBFC0_0000..).zip(bios_slice.iter().copied()) {
                 this.mem_mut()
                     .write_region(MEM_MAP.bios, GUEST_MEM_MAP.bios, address, value);
-                address += 0x1;
             }
         };
         tracing::info!("loaded bios: {}kb", from_kb(bios_slice.len()));
@@ -80,18 +80,27 @@ pub trait Bootloader: Bus + IO {
         Ok(())
     }
 
-    fn run_sideloading(&mut self, exe: &[u8]) -> Result<(), BootError> {
+    fn run_sideloading(&mut self) -> Result<(), BootError> {
         match self.cpu().pc {
-            0x80030000 => self.sideload_exe(exe),
+            0x80030000 => self.trigger_sideload_exe(),
             _ => Ok(()),
         }
     }
 
-    #[instrument(err, skip_all)]
     fn sideload_exe(&mut self, exe: &[u8]) -> Result<(), BootError> {
         let exe = Exe::parse(exe)?.to_owned_code();
         tracing::info!("parsed executable");
-        self.cpu_mut().pc = exe.header.initial_pc;
+        self.bootloader_mut().sideload = Some(exe);
+        Ok(())
+    }
+
+    #[instrument(err, skip_all)]
+    fn trigger_sideload_exe(&mut self) -> Result<(), BootError> {
+        let Some(exe) = self.bootloader_mut().sideload.take() else {
+            return Ok(());
+        };
+        // self.cpu_mut().pc = exe.header.initial_pc;
+        self.cpu_mut().jump_queue = Some(exe.header.initial_pc);
         tracing::info!("header = {:#?}", exe.header);
         self.cpu_mut().gpr[cpu::GP as usize] = exe.header.initial_gp;
         if exe.header.sp_fp_base != 0 {

@@ -38,6 +38,12 @@ macro_rules! trace_todo {
 impl Emu {
     #[pchan_macros::instrument(level = "trace", "io", skip_all, fields(pc = %hex(self.cpu.pc)))]
     pub fn run_io(&mut self) {
+        #[cfg(feature = "amidog-tests")]
+        {
+            use crate::bootloader::AMIDOG_TESTS;
+            self.sideload_exe(AMIDOG_TESTS).unwrap();
+        }
+
         self.cpu_mut().vblank_timer = self.cpu().vblank_timer.wrapping_add(self.cpu().d_clock);
         self.cpu_mut().cycles = self.cpu().cycles.wrapping_add(self.cpu().d_clock as u64);
 
@@ -58,11 +64,7 @@ impl Emu {
         self.run_dma_transfers();
         self.run_irq_io();
         self.run_exceptions_io();
-        #[cfg(feature = "amidog-tests")]
-        {
-            use crate::bootloader::AMIDOG_TESTS;
-            self.run_sideloading(AMIDOG_TESTS).unwrap();
-        }
+        _ = self.run_sideloading();
     }
 
     pub fn run_io_kernel_functions(&mut self) {
