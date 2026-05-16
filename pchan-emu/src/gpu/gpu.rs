@@ -140,6 +140,7 @@ pub trait Gpu: Bus + Interrupts {
                 match &self.gpu().gp0 {
                     Gp0::CpRectVramToCpu(Gp0CpRect::RecvData(cursor)) => {
                         let mut cursor = *cursor;
+                        self.gpu_mut().vram_flush_render();
                         for (idx, at) in cursor.iter().take(2).enumerate() {
                             self.gpu_mut().vram_read(at, idx);
                         }
@@ -155,6 +156,7 @@ pub trait Gpu: Bus + Interrupts {
                     }
                     Gp0::CpRectCpuToVram(_) => {}
                     _ => {
+                        tracing::warn!("read from gp0read, but no copy command initiated");
                         self.gpu_mut().gpustat.set_ready_recv_cmd(true);
                     }
                 }
@@ -345,7 +347,7 @@ pub trait Gpu: Bus + Interrupts {
                     let mut cursor = *cursor;
                     // let set_mask = self.gpu().gpustat.set_mask();
                     let draw_pixels = self.gpu().gpustat.draw_pixels();
-                    let mut lock = self.gpu_mut().lock_vram();
+                    let mut lock = self.gpu_mut().lock_vram_mut();
                     for (at, halfword) in cursor.iter().take(2).zip(halfwords(value)) {
                         lock.vram_draw(at, halfword, draw_pixels);
                     }
@@ -394,7 +396,7 @@ pub trait Gpu: Bus + Interrupts {
                     let mut dest_cursor = VramCursor::new(*dest, size);
                     let draw_pixels = self.gpu().gpustat.draw_pixels();
 
-                    let mut lock = self.gpu_mut().lock_vram();
+                    let mut lock = self.gpu_mut().lock_vram_mut();
                     for (src, dest) in src_cursor.iter().zip(dest_cursor.iter()) {
                         let value = lock.vram_read(src);
                         lock.vram_draw(dest, value, draw_pixels);
@@ -414,8 +416,8 @@ pub trait Gpu: Bus + Interrupts {
                         let size = size.fill_cmd_size_mask();
                         if size.x != 0 && size.y != 0 {
                             let mut cursor = VramCursor::new(pos, pos + size);
-                            tracing::info!("started vram fill: {cursor:#?}");
-                            let mut lock = self.gpu_mut().lock_vram();
+                            tracing::info!(pc = %hex(self.cpu().pc), "started vram fill: {cursor:#?}");
+                            let mut lock = self.gpu_mut().lock_vram_mut();
                             for dest in cursor.iter() {
                                 let color = color >> 3u16;
                                 let rgb5 = Rgb5::new_with_raw_value(0x0)
@@ -584,30 +586,6 @@ pub trait Gpu: Bus + Interrupts {
         self.gpu_mut().draw_call_queue.push(draw_call);
     }
 
-    fn flush_draw_calls(&mut self) {
-        if self.gpu().draw_call_queue.is_empty() {
-            return;
-        }
-
-        tracing::debug!("flushing {} draw calls", self.gpu().draw_call_queue.len());
-        self.gpu_mut().vram_flush_render();
-        let queue = std::mem::take(&mut self.gpu_mut().draw_call_queue);
-        let vram = self.gpu().vram.clone();
-        let display = self.gpu().dp.clone();
-        self.gpu()
-            .conn
-            .draw_call_chan
-            .0
-            .as_sync()
-            .send(DrawCallCollection {
-                draw_calls: queue,
-                display,
-            })
-            .unwrap();
-        self.gpu().conn.vram_in_chan.0.as_sync().send(vram).unwrap();
-        self.gpu_mut().waiting_on_render = true;
-    }
-
     fn gpu_reconnect(&mut self, other: &impl Gpu) {
         self.gpu_mut().conn = other.gpu().conn.clone();
     }
@@ -628,12 +606,35 @@ pub trait Gpu: Bus + Interrupts {
     }
 }
 
-struct VramGuard<'a> {
-    vram:   &'a mut [u16],
-    signal: &'a mut bool,
+struct Read;
+struct ReadWrite;
+
+trait VramAccessType {
+    type VramRef<'a>;
+    type SignalRef<'a>;
 }
 
-impl<'a> VramGuard<'a> {
+impl VramAccessType for Read {
+    type VramRef<'a> = &'a [u16];
+    type SignalRef<'a> = &'a bool;
+}
+impl VramAccessType for ReadWrite {
+    type VramRef<'a> = &'a mut [u16];
+    type SignalRef<'a> = &'a mut bool;
+}
+
+struct VramGuard<'a, T: VramAccessType> {
+    vram:   T::VramRef<'a>,
+    signal: T::SignalRef<'a>,
+}
+
+impl<'a> VramGuard<'a, ReadWrite> {
+    fn as_readonly(&self) -> VramGuard<'_, Read> {
+        VramGuard {
+            vram:   self.vram,
+            signal: self.signal,
+        }
+    }
     fn vram_write(&mut self, coord: VramCoord, value: u16) {
         let coord = coord.wrap();
         let addr = coord.x as usize + coord.y as usize * kb(1);
@@ -656,6 +657,11 @@ impl<'a> VramGuard<'a> {
     }
 
     fn vram_read(&mut self, coord: VramCoord) -> u16 {
+        self.as_readonly().vram_read(coord)
+    }
+}
+impl<'a> VramGuard<'a, Read> {
+    fn vram_read(&mut self, coord: VramCoord) -> u16 {
         let coord = coord.wrap();
         let addr = coord.x as usize + coord.y as usize * kb(1);
         self.vram[addr]
@@ -676,7 +682,15 @@ impl GpuState {
         )
     }
 
-    fn lock_vram(&mut self) -> VramGuard<'_> {
+    fn lock_vram(&mut self) -> VramGuard<'_, Read> {
+        self.vram_flush_render();
+        VramGuard {
+            vram:   &self.vram,
+            signal: &self.vram_mutation_signal,
+        }
+    }
+
+    fn lock_vram_mut(&mut self) -> VramGuard<'_, ReadWrite> {
         self.vram_flush_render();
         VramGuard {
             vram:   &mut self.vram,
@@ -684,7 +698,35 @@ impl GpuState {
         }
     }
 
+    pub fn flush_draw_calls(&mut self) {
+        if self.draw_call_queue.is_empty() {
+            return;
+        }
+
+        self.wait_for_render_result();
+        tracing::debug!("flushing {} draw calls", self.draw_call_queue.len());
+        let queue = std::mem::take(&mut self.draw_call_queue);
+        let vram = self.vram.clone();
+        let display = self.dp.clone();
+        self.conn
+            .draw_call_chan
+            .0
+            .as_sync()
+            .send(DrawCallCollection {
+                draw_calls: queue,
+                display,
+            })
+            .unwrap();
+        self.conn.vram_in_chan.0.as_sync().send(vram).unwrap();
+        self.waiting_on_render = true;
+    }
+
     fn vram_flush_render(&mut self) {
+        self.flush_draw_calls();
+        self.wait_for_render_result();
+    }
+
+    fn wait_for_render_result(&mut self) {
         if self.waiting_on_render {
             let vram = self
                 .conn
@@ -706,8 +748,8 @@ impl GpuState {
         self.vram[addr] = value;
     }
 
+    #[pchan_macros::instrument(skip(self), ret)]
     fn vram_read_direct(&mut self, coord: VramCoord) -> u16 {
-        self.vram_flush_render();
         let coord = coord.wrap();
         let addr = coord.x as usize + coord.y as usize * kb(1);
         self.vram[addr]
@@ -715,6 +757,7 @@ impl GpuState {
 
     /// returns value through `self.gp0read`
     fn vram_read(&mut self, coord: VramCoord, idx: usize) {
+        debug_assert!((0..=1).contains(&idx));
         let value = self.vram_read_direct(coord);
         self.gp0read[idx] = value;
     }

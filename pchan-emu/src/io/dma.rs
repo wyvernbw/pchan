@@ -82,8 +82,8 @@ pub trait Dma: Bus + IO + Fastmem + Interrupts + Gpu {
 
             0x1f8010f0 => Ok(self.dma().dpcr.io_from_u32()),
             0x1f8010f4 => Ok(self.dma().dicr.io_from_u32()),
-            0x1f8010f8 => todo!("todo(dma): read at dma transfer complete register"),
-            0x1f8010fc => todo!("todo(dma): read at dma otc fill value"),
+            0x1f8010f8 => trace_todo!(0x0, "todo(dma): read at dma transfer complete register"),
+            0x1f8010fc => trace_todo!(0x0, "todo(dma): read at dma otc fill value"),
             _ => Err(UnhandledIO(address)),
         }
     }
@@ -324,6 +324,7 @@ pub trait Dma: Bus + IO + Fastmem + Interrupts + Gpu {
                         channel.bcr.s1_block_count()
                     );
                     if slice.idx >= channel.bcr.s1_block_count() as u32 - 1 {
+                        tracing::info!("dma event.{} finished", hex(channel.madr.addr().as_u32()));
                         self.dma_mut().dma2.set_complete();
                         break;
                     } else {

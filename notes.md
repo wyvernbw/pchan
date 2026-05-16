@@ -38,10 +38,16 @@ exec history:
 
 # Bad Gpu dma madr
 
-correct values from pcsx-r:
-- 0x001aa81c
-- 0x001ac59c
-- 0x001ae59c
-- 0x0006693c
-- 0x00066eb8
-- 0xffffff00
+write to madr happens at 0x80050760. address is actually perfectly fine! problem
+is pchan ram is empty at 0x801b6c24, but there should be data there. data is
+supposed to be written at that address in ram via vram to ram dma (i think).
+
+the flow should be:
+- clear area (works fine)
+- render a bunch of polygons in a circle to create those balls (does not happen?)
+- blit the rendered balls to ram (works fine, but vram is zero)
+
+the draw calls are flushed AFTER the blit happens. when reading or writing to vram,
+we need to flush draw commands.
+
+fixed.

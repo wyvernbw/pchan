@@ -345,7 +345,7 @@ fn pchan_instrument_generic(
             debug_assertions,
             ::tracing::instrument(
                 skip(#skip_values),
-                fields(address = %pchan_utils::hex(address)),
+                fields(address = %pchan_utils::hex(address), pc = %pchan_utils::hex(self.cpu().pc)),
                 name = #name_str
             )
         )]
