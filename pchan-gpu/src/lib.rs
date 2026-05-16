@@ -87,8 +87,7 @@ impl Renderer {
                 trace: Trace::Off,
             })
             .await?;
-        let shader_module =
-            device.create_shader_module(include_wgsl!("../shaders/draw_call_rect.wgsl"));
+        let shader_module = device.create_shader_module(include_wgsl!("../shaders/psx-gp0.wgsl"));
 
         // output render texture
         let render_texture = device.create_texture(&TextureDescriptor {
@@ -691,15 +690,11 @@ impl Scene {
         let clut = draw_polygon.clut;
         let texpage = draw_polygon.texpage;
         let texpage_base = texpage.to_u8vec2();
-        // let texpage_base = u8vec2(
-        //     gpustat.texpage_x_base().as_u8(),
-        //     gpustat.texpage_y_base().as_u8(),
-        // );
 
         let color = header.color();
         let shading = header.shading();
         let color_mode = match header.textured() {
-            true => gpustat.texpage_colors(),
+            true => draw_polygon.texpage.texpage_colors(),
             false => TextureColorMode::C15BitDirect,
         };
         let flags = Flags::from_gpustat(gpustat)

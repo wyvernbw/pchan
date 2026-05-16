@@ -150,6 +150,7 @@ fn get_textured(flags: u32) -> bool {
 fn get_color(in: VertexOutput) -> u32 {
     var in_color = in.color;
     var set_mask = get_set_mask(in.flags);
+    let textured = get_textured(in.flags);
 
     if get_dither(in.flags) {
         in_color *= 255;
@@ -162,7 +163,6 @@ fn get_color(in: VertexOutput) -> u32 {
     }
 
     var color = pack_color(in_color, set_mask);
-    let textured = get_textured(in.flags);
     switch in.color_mode {
         case COLOR_MODE_4BIT: {
             if textured {
