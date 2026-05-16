@@ -1054,6 +1054,10 @@ impl GpuStatReg {
         };
         U16Vec2::new(horizontal, vertical)
     }
+
+    pub fn texpage_base(self) -> U8Vec2 {
+        U8Vec2::new(self.texpage_x_base().as_u8(), self.texpage_y_base().as_u8())
+    }
 }
 
 #[derive(Debug)]

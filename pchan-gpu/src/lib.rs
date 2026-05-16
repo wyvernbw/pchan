@@ -646,8 +646,7 @@ impl Scene {
     ) -> Result<(), DrawRectError> {
         let rgb = draw_rect.color.rgb().to_ne_bytes();
         let color_mode = match draw_rect.color.textured() {
-            // TODO: pick the correct color mode for textured polygons
-            true => TextureColorMode::C15BitDirect,
+            true => gpustat.texpage_colors(),
             false => TextureColorMode::C24BitDirect,
         };
         let color = U8Vec3::from_array(rgb);
@@ -658,7 +657,7 @@ impl Scene {
             color_mode,
             uv: uv.uv,
             clut: uv.extra_as_clut(),
-            texpage_base: uv.extra_as_texpage(),
+            texpage_base: gpustat.texpage_base(),
             flags: Flags::from_gpustat(gpustat).with_textured(draw_rect.color.textured()),
             draw_area_top_left: draw_reg.draw_area_top_left,
             draw_area_bottom_right: draw_reg.draw_area_bottom_right,
