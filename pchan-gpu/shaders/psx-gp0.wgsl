@@ -61,7 +61,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     let color_mode = (in.color_and_mode >> 24u) & 0xFFu;
     let color = in.color_and_mode & 0x00FFFFFFu;
 
-    let pos = vec2<u32>(vec2<i32>(in.position) + vec2(in.draw_offset.x, in.draw_offset.y));
+    let pos = vec2<i32>(vec2<i32>(in.position) + vec2(in.draw_offset.x, in.draw_offset.y));
     out.clip_position = vec4<f32>(f32(pos.x) / 512.0 - 1.0, f32(512 - pos.y) / 256.0 - 1.0, 0.0, 1.0);
     out.vram_position = vec2<f32>(vec2<i32>(in.position) + in.draw_offset);
     out.color_mode = color_mode;

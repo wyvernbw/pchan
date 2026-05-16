@@ -480,6 +480,26 @@ impl DrawPolygonDecoder {
     }
 }
 
+#[cfg(test)]
+#[test]
+fn draw_polygon_decode_goraud_untextured_triangle() {
+    let values = [
+        0x30ff8080, 0x00f00140, 0x00200000, 0x02120140, 0x00200000, 0x01fb01ae,
+    ];
+    let mut decoder = DrawPolygonDecoder::new(values[0]);
+    let mut poly = None;
+    for i in values.iter().copied().skip(1) {
+        match decoder.advance(i) {
+            Ok(d) => decoder = d,
+            Err(p) => {
+                poly = Some(p);
+                break;
+            }
+        }
+    }
+    println!("{poly:#?}");
+}
+
 #[derive(Debug, Clone)]
 pub struct DrawLine {
     header: DrawLineHeader,
