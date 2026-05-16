@@ -443,7 +443,7 @@ impl Dynarec {
                 dynasm!(
                     self.asm
                     ; .arch aarch64
-                    ; str W(host_reg), [sp], #16
+                    ; str W(host_reg), [sp, #-16]!
                 );
                 self.reg_alloc.dirty.set(guest_reg as usize, false);
             }
