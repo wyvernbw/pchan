@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 pub struct EnvVars {
     pub bios_path: PathBuf,
+    pub exe_path:  Option<PathBuf>,
 }
 
 impl EnvVars {
@@ -19,6 +20,13 @@ impl EnvVars {
             .parse()
             .into_diagnostic()
             .wrap_err("value in PCHAN_BIOS is not a valid path.")?;
-        Ok(Self { bios_path })
+        let exe_path = std::env::args()
+            .skip(1)
+            .next()
+            .map(|exe_path| PathBuf::from(exe_path));
+        Ok(Self {
+            bios_path,
+            exe_path,
+        })
     }
 }

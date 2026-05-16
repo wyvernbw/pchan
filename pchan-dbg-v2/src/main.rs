@@ -13,7 +13,8 @@ use arbitrary_int::prelude::*;
 use std::{
     borrow::Cow,
     collections::{HashMap, VecDeque},
-    io::{Write, stdout},
+    fs,
+    io::{Read, Write, stdout},
     ops::RangeInclusive,
     process::Stdio,
     sync::{Arc, mpsc},
@@ -37,7 +38,7 @@ use pchan_emu::{
         emitters::{DecodedOp, DynarecOp},
         run_step,
     },
-    gpu::Rgb5,
+    gpu::{Rgb5, VideoEvents},
     io::{IO, vblank::VBlank},
 };
 use pchan_gpu::Renderer;
@@ -169,6 +170,13 @@ async fn run_app<'a, 'e>(exec: &'a LocalExecutor<'e>, env: &EnvVars) -> Result<(
     pchan_bind::bind_audio(&mut audio, &mut emu);
     let stream = audio.start()?;
     std::mem::forget(stream);
+    if let Some(exe_path) = &env.exe_path {
+        let mut exe = fs::File::open(exe_path).into_diagnostic()?;
+        let mut buf = vec![];
+        exe.read_to_end(&mut buf).into_diagnostic()?;
+        tracing::info!("exe: read {} bytes", buf.len());
+        emu.sideload_exe(&buf).into_diagnostic()?;
+    }
 
     let mut state = AppState {
         exec,
@@ -904,13 +912,12 @@ fn draw_main_view(frame: &mut Frame, area: Rect, tui_state: &mut TuiState, state
     ])
     .areas(area);
 
-    let (width, height) = match &tui_state.current_frame {
-        Some((PixelFormat::Rgba32(img, _), _)) => (img.width, img.height),
-        _ => (640, 480),
-    };
+    let (start, end) = state.emu.dp_coords();
+    let res = end - start;
+    let (width, height) = (res.x, res.y);
     let ar = height * 100 / width;
     let h1_w = h1.width;
-    let img_h = h1_w * ar as u16 / 100;
+    let img_h = h1_w * ar / 100;
     let img_h = (img_h * 2) / 3;
     let [img_area, dropdown_area, rest] = Layout::vertical([
         Constraint::Length(img_h),
@@ -1619,6 +1626,10 @@ fn draw_gpu_view(frame: &mut Frame, area: Rect, tui_state: &mut TuiState, state:
             Span::raw(format!(
                 "draw_area_bottom_right = ({}, {})",
                 draw_reg.draw_area_bottom_right.x, draw_reg.draw_area_bottom_right.y
+            )),
+            Span::raw(format!(
+                "draw_offset = ({}, {})",
+                draw_reg.draw_offset.x, draw_reg.draw_offset.y
             )),
         ]),
         area,
