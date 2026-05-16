@@ -436,7 +436,7 @@ impl Vertex {
         &[
             // position @location(0)
             VertexAttribute {
-                format: VertexFormat::Uint16x2,
+                format: VertexFormat::Sint16x2,
                 offset: 0x0,
                 shader_location: 0,
             },

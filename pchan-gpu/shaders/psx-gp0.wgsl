@@ -1,5 +1,5 @@
 struct VertexInput {
-    @location(0) position: vec2<u32>,
+    @location(0) position: vec2<i32>,
     @location(1) color_and_mode: u32,
     @location(2) clut: vec2<u32>,
     @location(3) uv: vec2<u32>,
