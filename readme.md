@@ -1,9 +1,13 @@
-<img src="./recording.gif"></img>
+
 
 # P-chan 🐷🎀
 *Pーちゃん* 
 
 WIP high performance PlayStation 1 emulator
+
+<div align="center">
+  <img src="./recording.gif" width=50%></img>
+</div>
 
 ## Status
 
