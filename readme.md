@@ -9,12 +9,26 @@ WIP high performance PlayStation 1 emulator
   <img src="./recording.gif" width=50%></img>
 </div>
 
+## Build
+
+> By default P-Chan compiles with opt-level=1. If you want faster compile times, pass `-C opt-level=0` to `RUSTFLAGS`
+
+For the tui debugger:
+
+```sh
+cargo run -p pchan-dbg-v2
+# or to run an executable
+cargo run -p pchan-dbg-v2 -- game.exe
+```
+
 ## Status
 
 The current emulator includes the dynarec cpu and hardware rasterizer. Though
 not complete yet, they are enough to render the bios splash screen accurately.
 
-- [x] memory and base of memory mapped IO
+- [x] memory
+  - [x] fastmem (bios and ram)
+  - [x] io interface
 - [x] dynarec (dynasm-rs based, 95% completed, very few rare instructions left)
   - [x] removed cranelift (way too slow)
   - [x] aarch64
@@ -27,13 +41,14 @@ not complete yet, they are enough to render the bios splash screen accurately.
     - [x] draw calls
   - [ ] `WIP` hardware (wgpu) renderer
     - [x] polygons (tris and quads)
-    - [ ] rects (sprites)
+    - [x] rects (sprites)
     - [ ] lines
   - [ ] software renderer (not started)
 - [ ] cdrom
   - [x] basic registers
   - [x] fifo
   - [ ] commands
+  - [ ] cd-xa (music)
 - [ ] spu
   - [x] basic spu & gauss interpolation
   - [x] audio thread 
@@ -42,27 +57,10 @@ not complete yet, they are enough to render the bios splash screen accurately.
   - [ ] reverb
   - [ ] noise generator
 - [ ] sio
-- [ ] input
-
-## Build
-
-to build the entire workspace:
-
-```
-cargo build --workspace
-```
-
-to run the fully-featured tui debugger (i highly recommend release mode)
-
-```
-cargo run -p pchan-dbg --release
-```
-
-or for the egui debugger:
-
-```
-cargo run -p pchan-dbg-egui
-```
+  - [ ] input
+    - [ ] digital joypad
+    - [ ] analog joypad
+  - [ ] memcards
 
 ## Milestones
 
