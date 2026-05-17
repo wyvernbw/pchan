@@ -52,7 +52,8 @@ opt-level = 1
 panic = "unwind"
 
 [profile.release]
-lto = "thin"
+codegen-units = 1
+lto = "fat"
 panic = "unwind"
 
 [profile.bench]

@@ -160,7 +160,6 @@ pub trait Gpu: Bus + Interrupts {
                         self.gpu_mut().gpustat.set_ready_recv_cmd(true);
                     }
                 }
-                tracing::trace!(gp0read = ?self.gpu().gp0read);
                 Ok(self.gpu().gp0read.io_from_u32())
             }
             0x1f80_1814 => Ok(self.gpu().gpustat.io_from_u32()),
@@ -706,7 +705,8 @@ impl GpuState {
         self.wait_for_render_result();
         tracing::debug!("flushing {} draw calls", self.draw_call_queue.len());
         let queue = std::mem::take(&mut self.draw_call_queue);
-        let vram = self.vram.clone();
+        // transfer ownership of the vram to the render thread
+        let vram = std::mem::take(&mut self.vram);
         let display = self.dp.clone();
         self.conn
             .draw_call_chan
@@ -748,7 +748,6 @@ impl GpuState {
         self.vram[addr] = value;
     }
 
-    #[pchan_macros::instrument(skip(self), ret)]
     fn vram_read_direct(&mut self, coord: VramCoord) -> u16 {
         let coord = coord.wrap();
         let addr = coord.x as usize + coord.y as usize * kb(1);

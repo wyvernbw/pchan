@@ -327,9 +327,9 @@ impl Renderer {
             vram_texture,
             render_bind_group,
             conn: Conn {
-                draw_call_chan: kanal::bounded_async(0),
-                vram_in_chan: kanal::bounded_async(0),
-                vram_out_chan: kanal::bounded_async(1),
+                draw_call_chan: kanal::bounded_async(2),
+                vram_in_chan: kanal::bounded_async(2),
+                vram_out_chan: kanal::bounded_async(2),
             },
             display_pipeline,
             display_bind_group,

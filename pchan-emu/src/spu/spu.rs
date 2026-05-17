@@ -324,11 +324,9 @@ pub trait Spu: IO {
         let spu = self.spu_mut();
 
         spu.adsr.clock();
-        // TODO benchmark vs parallel iterator.
         let adsr = &mut spu.adsr;
         let flags = &mut spu.voice_flags;
-        let mut idx = 0;
-        spu.voices.iter_mut().for_each(|voice| {
+        spu.voices.iter_mut().enumerate().for_each(|(idx, voice)| {
             let old_on = voice.keyed_on;
             voice.clock(&spu.mem);
             if old_on && !voice.keyed_on {
@@ -339,7 +337,6 @@ pub trait Spu: IO {
                 voice.reached_end = false;
                 flags.endx.set_on(idx, true);
             }
-            idx += 1;
         });
 
         let mut mixed_l = 0i32;
