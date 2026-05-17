@@ -1,6 +1,5 @@
 use arbitrary_int::prelude::*;
 use pchan_utils::hex;
-use tracing::instrument;
 
 use crate::bootloader::Bootloader;
 use crate::cpu::exceptions::Exceptions;

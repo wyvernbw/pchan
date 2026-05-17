@@ -179,36 +179,8 @@ pub trait Dma: Bus + IO + Fastmem + Interrupts + Gpu {
     }
 
     fn dma_schedule(&mut self, event: DmaEvent) {
-        tracing::info!("dma: schedulde dma event: {:#?}", event);
-        // if let Some(slice) = event.slice {
-        // let cycles_per_step = event.init_chan.slice_cycles();
-        // let mut upcoming = event.upcoming;
-
-        // let start = slice.idx as u16;
-        // let end = event.init_chan.bcr.s1_block_count();
-        // let mut addr = event.init_chan.madr.addr().as_u32();
-        // let addr_step = event.init_chan.bcr.s1_block_size();
-        // for i in start..end {
-        //     let slice = SliceTransferState {
-        //         addr,
-        //         idx: i as u32,
-        //     };
-        //     addr += addr_step as u32 * 0x4;
-        //     self.dma_mut()
-        //         .queue
-        //         .heap
-        //         .push(DmaEvent {
-        //             upcoming,
-        //             init_chan: event.init_chan,
-        //             slice: Some(slice),
-        //             dma_t: event.dma_t,
-        //         })
-        //         .unwrap();
-        //     upcoming += cycles_per_step;
-        // }
-        // } else {
+        tracing::debug!("dma: schedulde dma event: {:#?}", event);
         self.dma_mut().queue.heap.push(event).unwrap();
-        // }
     }
 
     fn run_dma_transfers(&mut self) {

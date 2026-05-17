@@ -1,4 +1,5 @@
 use byteorder::{LE, ReadBytesExt};
+use pchan_macros::instrument;
 use pchan_utils::hex;
 use std::{
     borrow::Cow,
@@ -9,7 +10,6 @@ use std::{
     string::FromUtf8Error,
 };
 use thiserror::Error;
-use tracing::instrument;
 
 use crate::{
     Bus, cpu,

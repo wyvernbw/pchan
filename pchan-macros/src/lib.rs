@@ -297,7 +297,7 @@ pub fn opcode(_attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn instrument_write(_attr: TokenStream, item: TokenStream) -> TokenStream {
     format!(
-        r#"#[cfg_attr(debug_assertions, instrument(
+        r#"#[cfg_attr(feature = "trace", instrument(
             level = Level::TRACE,
             skip(self, address),
             fields(
@@ -342,7 +342,7 @@ fn pchan_instrument_generic(
 
     quote! {
         #[cfg_attr(
-            debug_assertions,
+            feature = "trace",
             ::tracing::instrument(
                 skip(#skip_values),
                 fields(address = %pchan_utils::hex(address), pc = %pchan_utils::hex(self.cpu().pc)),
@@ -359,7 +359,7 @@ pub fn instrument(args: TokenStream, input: TokenStream) -> TokenStream {
     let args: proc_macro2::TokenStream = args.into();
     let input: proc_macro2::TokenStream = input.into();
     quote! {
-        #[cfg_attr(debug_assertions, ::tracing::instrument(#args))]
+        #[cfg_attr(feature = "trace", ::tracing::instrument(#args))]
         #input
     }
     .into()

@@ -585,7 +585,7 @@ pub struct DrawLineDecoder {
 impl DrawCallDecoder for DrawLineDecoder {
     type Output = DrawLine;
 
-    #[tracing::instrument(skip_all)]
+    #[pchan_macros::instrument(skip_all)]
     fn advance<T: Copy>(mut self, value: T) -> Result<Self, Self::Output> {
         tracing::info!(attrs = self.attrs.len());
         let value32 = value.io_into_u32();

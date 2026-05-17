@@ -1,6 +1,6 @@
 use arbitrary_int::prelude::*;
 use bitbybit::{bitenum, bitfield};
-use tracing::instrument;
+use pchan_macros::instrument;
 
 use crate::{Bus, Emu, cpu::Cop0StatusReg, io::irq::Irq};
 

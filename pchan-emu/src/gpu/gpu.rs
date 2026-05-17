@@ -2,7 +2,6 @@ pub mod draw_call;
 
 use std::mem::transmute;
 use std::sync::atomic::AtomicU64;
-use std::sync::atomic::AtomicUsize;
 use std::time::Instant;
 
 use arbitrary_int::prelude::*;
@@ -15,11 +14,8 @@ use glam::U16Vec2;
 use glam::U64Vec2;
 use glam::u64vec2;
 use heapless::Deque;
-use heapless::binary_heap::Min;
 use pchan_utils::AsyncChan;
 use pchan_utils::hex;
-use tracing::Level;
-use tracing::instrument;
 
 use crate::Bus;
 use crate::Emu;
@@ -29,7 +25,6 @@ use crate::gpu::draw_call::DrawCallDecoder;
 use crate::gpu::draw_call::DrawCallKind;
 use crate::gpu::draw_call::DrawLineDecoder;
 use crate::gpu::draw_call::DrawPolygonDecoder;
-use crate::gpu::draw_call::DrawPolygonHeader;
 use crate::gpu::draw_call::DrawRectDecoder;
 use crate::gpu::draw_call::Gp0SetDrawAreaCmd;
 use crate::gpu::draw_call::Gp0SetDrawOffsetCmd;

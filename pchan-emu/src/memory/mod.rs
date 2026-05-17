@@ -1,5 +1,4 @@
 use pchan_utils::hex;
-use tracing::instrument;
 
 use crate::{
     Bus, Emu,
