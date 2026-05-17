@@ -1,3 +1,5 @@
+<img src="./recording.gif"></img>
+
 # P-chan 🐷🎀
 *Pーちゃん* 
 
