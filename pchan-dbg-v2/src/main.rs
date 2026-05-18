@@ -272,8 +272,8 @@ async fn run_app<'a, 'e>(exec: &'a LocalExecutor<'e>, env: &EnvVars) -> Result<(
                     }
                 }
                 frame_time_sample_time += effective_frame_time;
-                if frame_time_sample_time >= Duration::from_secs(1) {
-                    frame_time_sample_time -= Duration::from_secs(1);
+                if frame_time_sample_time >= Duration::from_millis(500) {
+                    frame_time_sample_time -= Duration::from_millis(500);
                     let average_frame_time = frame_time_sum / frame_time_samples.len() as u128;
                     tui_state.frame_time = Duration::from_nanos_u128(average_frame_time);
                 }

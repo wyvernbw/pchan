@@ -1,7 +1,10 @@
+#![feature(duration_millis_float)]
+
 pub(crate) mod render_pass;
 
 use std::mem::offset_of;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use glam::{I16Vec2, U8Vec2, U8Vec3, U16Vec2, UVec2, i16vec2, u8vec2, u16vec2};
 use pchan_emu::gpu::draw_call::{
@@ -354,6 +357,7 @@ impl Renderer {
                     tracing::trace!("waiting for draw calls...");
                     match self.conn.draw_call_chan.1.recv().await {
                         Ok(draw_calls) => {
+                            let now = Instant::now();
                             tracing::trace!(
                                 "received {} draw_calls: {:#?}",
                                 draw_calls.draw_calls.len(),
@@ -369,8 +373,9 @@ impl Renderer {
                             let mut pass = self.create_render_pass(scene).await;
                             pass.draw(&vram);
                             pass.finish(&mut vram).await;
+                            let elapsed = now.elapsed().as_millis_f32();
                             _ = self.conn.vram_out_chan.0.send(vram).await;
-                            tracing::info!("finished render");
+                            tracing::info!("finished render ({elapsed:01.2}ms)");
                         }
                         Err(err) => {
                             tracing::error!(%err);

@@ -113,7 +113,7 @@ pub trait IO: Bus {
         let value = Extend::<E>::ext(value);
         self.write(address, value);
     }
-    #[pchan_macros::instrument(level = "trace", ret, skip_all)]
+    #[pchan_macros::instrument(level = "trace", skip_all)]
     fn try_write32_unaligned_l(&mut self, address: u32, value: u32) -> IOResult<()> {
         let spill = address % size_of::<u32>() as u32;
         let aligned_address = address - spill;
@@ -133,7 +133,7 @@ pub trait IO: Bus {
 
         self.try_write(aligned_address, value)
     }
-    #[pchan_macros::instrument(level = "trace", ret, skip_all)]
+    #[pchan_macros::instrument(level = "trace", skip_all)]
     fn try_write32_unaligned_r(&mut self, address: u32, value: u32) -> IOResult<()> {
         let shift = (address & 3) << 3;
         let aligned = address & !3;
@@ -160,11 +160,6 @@ pub trait IO: Bus {
         let shift = 24 - shift;
         let value = read_value << shift;
 
-        #[cfg(debug_assertions)]
-        {
-            tracing::info!(ret=%hex(value));
-        }
-
         Ok(overwrite | value)
     }
 
@@ -177,11 +172,6 @@ pub trait IO: Bus {
         let mask = 0xffff_ffffu32.unbounded_shl(32 - shift);
         let overwrite = overwrite & mask;
         let value = read_value >> shift;
-
-        #[cfg(debug_assertions)]
-        {
-            tracing::info!(ret=%hex(value));
-        }
 
         Ok(overwrite | value)
     }
@@ -323,6 +313,7 @@ impl IO for Emu {
 
     fn try_read_pure<T: Copy>(&self, address: u32) -> IOResult<T> {
         Fastmem::read::<T>(self, address)
+            .or_else(|_| Sio::read_pure(self, address))
             .or_else(|_| ScratchpadMem::read(self, address))
             .or_else(|_| Interrupts::read(self, address))
             .or_else(|_| Gpu::read_pure(self, address))
@@ -354,14 +345,14 @@ impl IO for Emu {
             .or_else(|_| CacheControl::write::<T>(self, address, value))
     }
 
-    #[pchan_macros::instrument(ret, skip_all)]
+    #[pchan_macros::instrument(skip_all)]
     fn write32_unaligned_l(&mut self, address: u32, value: u32) {
         if let Err(err) = self.try_write32_unaligned_l(address, value) {
             self.panic(&format!("{}", err));
         }
     }
 
-    #[pchan_macros::instrument(ret, skip_all)]
+    #[pchan_macros::instrument(skip_all)]
     fn write32_unaligned_r(&mut self, address: u32, value: u32) {
         if let Err(err) = self.try_write32_unaligned_r(address, value) {
             self.panic(&format!("{}", err));

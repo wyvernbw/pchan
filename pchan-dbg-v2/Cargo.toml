@@ -5,6 +5,7 @@ edition = "2024"
 
 [features]
 image-debug = []
+trace = ["pchan-emu/trace"]
 
 [dependencies]
 crossterm-simple-event = "0.1.0"

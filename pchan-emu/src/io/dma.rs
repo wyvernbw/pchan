@@ -97,18 +97,18 @@ pub trait Dma: Bus + IO + Fastmem + Interrupts + Gpu {
             // dma 2
             0x1f8010a0..0x1f8010a4 => {
                 self.dma_mut().dma2.io_set_madr(value);
-                tracing::info!("write at dma2madr (gpu madr): {:#?}", self.dma().dma2.madr);
+                tracing::debug!("write at dma2madr (gpu madr): {:#?}", self.dma().dma2.madr);
                 Ok(())
             }
             0x1f8010a4 => {
                 self.dma_mut().dma2.io_set_bcr(value);
-                tracing::info!("write at dma2bcr (gpu bcr): {:#?}", self.dma().dma2.bcr);
+                tracing::debug!("write at dma2bcr (gpu bcr): {:#?}", self.dma().dma2.bcr);
                 Ok(())
             }
             0x1f8010a8 => {
                 let chcr = DmaChcr::new_with_raw_value(value.io_into_u32());
                 self.dma_mut().dma2.chcr = chcr;
-                tracing::info!("write at dma2chcr (gpu chcr): {:#?}", chcr);
+                tracing::debug!("write at dma2chcr (gpu chcr): {:#?}", chcr);
                 match self.dma().dma2.chcr.transfer() {
                     Transfer::StoppedCompleted => {}
                     Transfer::StartBusy => {

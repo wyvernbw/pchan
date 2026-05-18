@@ -266,7 +266,6 @@ impl Cpu {
 
     pub fn drain_jump_queue(&mut self) {
         if let Some(address) = self.jump_queue.take() {
-            tracing::info!("jump to {}", hex(address));
             self.pc = address;
         }
     }
