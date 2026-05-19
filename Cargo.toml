@@ -22,7 +22,8 @@ members = [
     "pchan-bind",
     "pchan-audio",
     "pchan-dbg-egui",
-    "pchan-dbg-v2"
+    "pchan-dbg-v2",
+    "pchan-input"
 ]
 
 [workspace.dependencies]
@@ -36,6 +37,7 @@ pchan-macros = { path = "./pchan-macros" }
 pchan-utils = { path = "./pchan-utils" }
 pchan-bind = { path = "./pchan-bind" }
 pchan-audio = { path = "./pchan-audio" }
+pchan-input = { path = "./pchan-input" }
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 kanal = "0.1.1"
 

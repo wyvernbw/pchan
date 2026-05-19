@@ -144,6 +144,8 @@ pub trait Bus {
     fn cdrom_mut(&mut self) -> &mut CDRomState;
     fn sio(&self) -> &SioState;
     fn sio_mut(&mut self) -> &mut SioState;
+    fn irq_mut(&mut self) -> &mut IrqState;
+    fn irq(&self) -> &IrqState;
 }
 
 impl Bus for Emu {
@@ -224,6 +226,12 @@ impl Bus for Emu {
     #[inline(always)]
     fn sio_mut(&mut self) -> &mut SioState {
         &mut self.sio
+    }
+    fn irq_mut(&mut self) -> &mut IrqState {
+        &mut self.irq
+    }
+    fn irq(&self) -> &IrqState {
+        &self.irq
     }
 }
 

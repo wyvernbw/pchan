@@ -10,9 +10,9 @@ pub mod lipgloss_colors;
 pub mod widgets;
 
 use arbitrary_int::prelude::*;
-use gilrs_core::{EvCode, Gilrs, native_ev_codes::BTN_SOUTH};
+use pchan_input::Input;
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::VecDeque,
     fs,
     io::{Read, Write, stdout},
     ops::RangeInclusive,
@@ -82,8 +82,7 @@ struct AppState {
     dynarec:   Box<Dynarec>,
     gpu:       Arc<Renderer>,
     frame_idx: usize,
-    gilrs:     Gilrs,
-    gamepads:  HashSet<usize>,
+    input:     pchan_input::Input,
 }
 
 struct Theme {
@@ -175,15 +174,13 @@ async fn run_app(env: &EnvVars) -> Result<()> {
         tracing::info!("exe: read {} bytes", buf.len());
         emu.sideload_exe(&buf).into_diagnostic()?;
     }
-    let gilrs = Gilrs::new().map_err(|err| miette!("{err}"))?;
 
     let mut state = AppState {
         emu,
         gpu: gpu.into(),
         dynarec: Box::default(),
         frame_idx: 0,
-        gilrs,
-        gamepads: HashSet::new(),
+        input: Input::new(),
     };
     let mut tui_state = TuiState::new();
     tui_state.reg_list.select_first();
@@ -198,25 +195,7 @@ async fn run_app(env: &EnvVars) -> Result<()> {
             draw_app(frame, &mut tui_state, &state);
         });
         loop {
-            while let Some(event) = state.gilrs.next_event() {
-                match event.event {
-                    gilrs_core::EventType::ButtonPressed(ev_code) => match ev_code {
-                        BTN_SOUTH => {
-                            tui_state.quit = true;
-                        }
-                        _ => {}
-                    },
-                    gilrs_core::EventType::ButtonReleased(ev_code) => {}
-                    gilrs_core::EventType::AxisValueChanged(_, ev_code) => {}
-                    gilrs_core::EventType::Connected => {
-                        state.gamepads.insert(event.id);
-                    }
-                    gilrs_core::EventType::Disconnected => {
-                        state.gamepads.remove(&event.id);
-                    }
-                    _ => {}
-                }
-            }
+            state.input.drive_gamepads(&mut state.emu);
             if tui_state.quit {
                 break;
             }
@@ -909,8 +888,8 @@ fn draw_app(frame: &mut Frame, tui_state: &mut TuiState, state: &AppState) {
         };
         main_block = main_block.title(tab.to_string().set_style(style));
     }
-    if !state.gamepads.is_empty() {
-        let pads = state.gamepads.len();
+    if !state.input.gamepads().is_empty() {
+        let pads = state.input.gamepads().len();
         let txt = match pads {
             1 => "controller connected!",
             _ => "controllers connected!",

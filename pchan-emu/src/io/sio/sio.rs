@@ -1,4 +1,4 @@
-mod joypad;
+pub mod joypad;
 
 use arbitrary_int::prelude::*;
 use bitbybit::*;
@@ -36,8 +36,8 @@ pub struct SioState {
 
     event_queue: heapless::BinaryHeap<ScheduledSioEvent, Min, 8>,
 
-    sio0devices: Sio0Ports,
-    irq_latch:   bool,
+    pub sio0ports: Sio0Ports,
+    irq_latch:     bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,26 +70,10 @@ pub enum PeripheralKind {
     Joypad,
 }
 
-#[derive(derive_more::Debug, Clone)]
-struct Sio0Ports {
+#[derive(derive_more::Debug, Clone, Default)]
+pub struct Sio0Ports {
     selected: Option<PeripheralKind>,
     ports:    [PortState; 2],
-}
-
-impl Default for Sio0Ports {
-    fn default() -> Self {
-        Self {
-            selected: Default::default(),
-            ports:    [
-                // connect joypad on port 1 by default
-                PortState {
-                    joypad:  Joypad::default().plug_in(),
-                    memcard: (),
-                },
-                PortState::default(),
-            ],
-        }
-    }
 }
 
 impl Sio0Ports {
@@ -102,10 +86,10 @@ impl Sio0Ports {
 }
 
 #[derive(Default, derive_more::Debug, Clone)]
-struct PortState {
-    joypad:  Joypad,
+pub struct PortState {
+    pub joypad: Joypad,
     // TODO
-    memcard: (),
+    memcard:    (),
 }
 
 pub enum TxWriteResult {
@@ -340,7 +324,7 @@ pub trait Sio: Bus + Interrupts {
                 (None, _) => return,
                 (Some(device), byte) => {
                     let port = self.sio().sio0ctrl.sio0_port();
-                    if self.sio().sio0devices.is_connected(port) {
+                    if self.sio().sio0ports.is_connected(port) {
                         let port = self.sio_mut().view_serial_port(port);
                         match device {
                             PeripheralKind::Joypad => {
@@ -359,7 +343,7 @@ pub trait Sio: Bus + Interrupts {
                 TxWriteResult::Ok => {
                     self.sio_mut().sio0stat.set_tx_idle(true);
                     let port = self.sio().sio0ctrl.sio0_port();
-                    if self.sio().sio0devices.is_connected(port) {
+                    if self.sio().sio0ports.is_connected(port) {
                         if self.sio().sio0ctrl.dsr_irq_on() && self.sio().sio0ctrl.tx_on() {
                             if !self.sio().sio0stat.dsr_in_lvl() {
                                 self.sio_mut().sio0stat.set_irq(true);
@@ -378,11 +362,11 @@ pub trait Sio: Bus + Interrupts {
     }
 
     fn sio0_select(&mut self, device: PeripheralKind) {
-        self.sio_mut().sio0devices.selected = Some(device);
+        self.sio_mut().sio0ports.selected = Some(device);
     }
 
     fn sio0_deselect(&mut self) {
-        self.sio_mut().sio0devices.selected = None;
+        self.sio_mut().sio0ports.selected = None;
     }
 
     fn sio0_rx_send(&mut self, value: u8) {
@@ -402,7 +386,7 @@ struct SerialPortViewMut<'a> {
 impl SioState {
     fn view_serial_port(&mut self, port: Sio0Port) -> SerialPortViewMut<'_> {
         SerialPortViewMut {
-            port: &mut self.sio0devices.ports[port as usize],
+            port: &mut self.sio0ports.ports[port as usize],
             rx:   &mut self.sio0_rx,
         }
     }
@@ -552,8 +536,8 @@ enum RxIrqMode {
 }
 
 #[bitenum(u1, exhaustive = true)]
-#[derive(Debug, PartialEq, Eq)]
-enum Sio0Port {
+#[derive(Debug, PartialEq, Eq, Hash)]
+pub enum Sio0Port {
     Port1 = 0x0,
     Port2 = 0x1,
 }
@@ -702,7 +686,7 @@ impl SioState {
         self.sio0ctrl = ctrl;
         let port = self.sio0ctrl.sio0_port();
         if old_port != port || !self.sio0ctrl.dtr_out_lvl() {
-            self.sio0devices.selected = None;
+            self.sio0ports.selected = None;
             self.sio0_tx = Sio0Tx::Idle;
         }
 
@@ -731,8 +715,8 @@ impl SioState {
 
     fn sio0_selected_device(&self) -> Option<PeripheralKind> {
         let port = self.sio0ctrl.sio0_port();
-        let port = self.sio0devices.port(port);
-        let selected = self.sio0devices.selected?;
+        let port = self.sio0ports.port(port);
+        let selected = self.sio0ports.selected?;
         match selected {
             PeripheralKind::Joypad => port.joypad.connected.then_some(selected),
         }
@@ -753,8 +737,11 @@ impl SioState {
 }
 
 impl Sio0Ports {
-    fn port(&self, port: Sio0Port) -> &PortState {
+    pub fn port(&self, port: Sio0Port) -> &PortState {
         &self.ports[port as usize]
+    }
+    pub fn port_mut(&mut self, port: Sio0Port) -> &mut PortState {
+        &mut self.ports[port as usize]
     }
 }
 

@@ -29,7 +29,6 @@ pub struct Cpu {
     pub cop1:         Cop1,
     pub vblank_timer: u32,
     pub cycles:       u64,
-    pub irq:          IrqState,
     pub jump_queue:   Option<u32>,
 }
 

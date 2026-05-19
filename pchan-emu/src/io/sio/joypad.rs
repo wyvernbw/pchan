@@ -1,7 +1,10 @@
-use arbitrary_int::prelude::*;
 use bitbybit::{bitenum, bitfield};
+use gilrs_core::{EvCode, Event};
 
-use crate::io::sio::{Peripheral, TxWriteResult};
+use crate::{
+    Bus, Emu,
+    io::sio::{Peripheral, Sio0Port, TxWriteResult},
+};
 
 use super::Sio0Rx;
 
@@ -31,7 +34,7 @@ enum ControllerId {
 }
 
 impl Joypad {
-    pub fn plug_in(mut self) -> Self {
+    pub fn plug_in(&mut self) -> &mut Self {
         self.connected = true;
         self
     }
@@ -71,7 +74,7 @@ impl Peripheral for Joypad {
 
 #[bitenum(u1, exhaustive = true)]
 #[derive(Default, Debug)]
-enum ButtonState {
+pub enum ButtonState {
     Pressed  = 0x0,
     #[default]
     Released = 0x1,
@@ -135,3 +138,57 @@ pub struct DigitalSwitches {
     #[bit(15, rw)]
     square:     ButtonState,
 }
+
+impl DigitalSwitches {
+    pub fn press(&mut self, code: EvCode) {
+        self.set_state(code, ButtonState::Pressed);
+    }
+    pub fn release(&mut self, code: EvCode) {
+        self.set_state(code, ButtonState::Released);
+    }
+    pub fn set_state(&mut self, code: EvCode, state: ButtonState) {
+        use gilrs_core::native_ev_codes::*;
+
+        match code {
+            // TODO: all buttons
+            BTN_DPAD_DOWN => self.set_dpad_down(state),
+            BTN_DPAD_UP => self.set_dpad_up(state),
+            BTN_DPAD_LEFT => self.set_dpad_left(state),
+            BTN_DPAD_RIGHT => self.set_dpad_right(state),
+            BTN_NORTH => self.set_triangle(state),
+            BTN_SOUTH => self.set_x(state),
+            BTN_EAST => self.set_circle(state),
+            BTN_WEST => self.set_square(state),
+            _ => {}
+        }
+    }
+}
+
+pub trait InputEvents: Bus {
+    fn send_input_event(&mut self, event: Event, port: Sio0Port) {
+        match event.event {
+            gilrs_core::EventType::ButtonPressed(code) => {
+                self.sio_mut()
+                    .sio0ports
+                    .port_mut(port)
+                    .joypad
+                    .switches
+                    .press(code);
+            }
+            gilrs_core::EventType::ButtonReleased(code) => {
+                self.sio_mut()
+                    .sio0ports
+                    .port_mut(port)
+                    .joypad
+                    .switches
+                    .release(code);
+            }
+            gilrs_core::EventType::AxisValueChanged(_, code) => {}
+            gilrs_core::EventType::Connected => {}
+            gilrs_core::EventType::Disconnected => {}
+            _ => {}
+        };
+    }
+}
+
+impl InputEvents for Emu {}

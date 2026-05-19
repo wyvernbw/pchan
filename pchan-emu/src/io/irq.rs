@@ -74,13 +74,6 @@ impl IrqState {
 }
 
 pub trait Interrupts: Bus + IO + Exceptions {
-    fn irq_mut(&mut self) -> &mut IrqState {
-        &mut self.cpu_mut().irq
-    }
-    fn irq(&self) -> &IrqState {
-        &self.cpu().irq
-    }
-
     fn trigger_irq(&mut self, irq: Irq) {
         self.irq_mut().trigger_irq(irq);
     }

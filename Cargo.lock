@@ -3782,6 +3782,7 @@ dependencies = [
  "pchan-bind",
  "pchan-emu",
  "pchan-gpu",
+ "pchan-input",
  "pchan-utils",
  "rat-imaginary",
  "ratatui",
@@ -3805,6 +3806,7 @@ dependencies = [
  "dynasm",
  "dynasmrt",
  "enum_dispatch",
+ "gilrs-core",
  "glam",
  "heapless",
  "kanal",
@@ -3843,6 +3845,15 @@ dependencies = [
  "thiserror 2.0.18",
  "tracing",
  "wgpu",
+]
+
+[[package]]
+name = "pchan-input"
+version = "0.1.0"
+dependencies = [
+ "gilrs-core",
+ "pchan-bind",
+ "pchan-emu",
 ]
 
 [[package]]

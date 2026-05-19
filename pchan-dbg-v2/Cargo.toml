@@ -26,3 +26,4 @@ ansi-to-tui = "8.0.1"
 bitbybit.workspace = true
 arbitrary-int.workspace = true
 gilrs-core = "0.6.7"
+pchan-input.workspace = true
