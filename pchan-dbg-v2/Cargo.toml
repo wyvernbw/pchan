@@ -25,3 +25,4 @@ edtui = { version = "0.11.3", default-features = false }
 ansi-to-tui = "8.0.1"
 bitbybit.workspace = true
 arbitrary-int.workspace = true
+gilrs-core = "0.6.7"

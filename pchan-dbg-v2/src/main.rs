@@ -10,18 +10,17 @@ pub mod lipgloss_colors;
 pub mod widgets;
 
 use arbitrary_int::prelude::*;
+use gilrs_core::{EvCode, Gilrs, native_ev_codes::BTN_SOUTH};
 use std::{
-    borrow::Cow,
-    collections::{HashMap, VecDeque},
+    collections::{HashSet, VecDeque},
     fs,
     io::{Read, Write, stdout},
     ops::RangeInclusive,
     process::Stdio,
-    sync::{Arc, mpsc},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
-use bitbybit::bitfield;
 use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture};
 use crossterm_simple_event::CrosstermSimpleEvent;
 use edtui::{
@@ -48,8 +47,7 @@ use ratatui::{
     DefaultTerminal, Frame, crossterm,
     layout::{Constraint, Layout, Margin, Rect},
     style::{Color, Style, Styled, Stylize},
-    symbols,
-    text::{Line, Span, ToText},
+    text::{Span, ToSpan},
     widgets::{
         Block, BorderType, Borders, Clear, List, ListState, Paragraph, Row, Table, TableState,
         Tabs, Widget,
@@ -61,7 +59,6 @@ use wgpu::Extent3d;
 use crate::{
     display::{DisplayState, draw_display},
     init::EnvVars,
-    lipgloss_colors::LIPGLOSS,
     widgets::{
         button::{Button, ButtonResponse, ButtonState, ButtonStyles},
         checkbox::{Checkbox, CheckboxState},
@@ -77,15 +74,16 @@ fn main() -> Result<()> {
     });
     let env = EnvVars::new()?;
     let exec = LocalExecutor::new();
-    smol::block_on(exec.run(run_app(&exec, &env)))
+    smol::block_on(exec.run(run_app(&env)))
 }
 
-struct AppState<'a, 'e> {
-    exec:      &'a LocalExecutor<'e>,
+struct AppState {
     emu:       Emu,
     dynarec:   Box<Dynarec>,
     gpu:       Arc<Renderer>,
     frame_idx: usize,
+    gilrs:     Gilrs,
+    gamepads:  HashSet<usize>,
 }
 
 struct Theme {
@@ -143,14 +141,14 @@ fn reinit_emu(emu: &mut Emu) -> Result<()> {
     Ok(())
 }
 
-impl AppState<'_, '_> {
+impl AppState {
     pub fn reinit(&mut self) {
         reinit_emu(&mut self.emu).unwrap();
         self.frame_idx = 0;
     }
 }
 
-async fn run_app<'a, 'e>(exec: &'a LocalExecutor<'e>, env: &EnvVars) -> Result<()> {
+async fn run_app(env: &EnvVars) -> Result<()> {
     let mut emu = Emu::default();
     let mut gpu = Renderer::new().await;
     let mut audio = pchan_audio::AudioTask::new()?;
@@ -177,13 +175,15 @@ async fn run_app<'a, 'e>(exec: &'a LocalExecutor<'e>, env: &EnvVars) -> Result<(
         tracing::info!("exe: read {} bytes", buf.len());
         emu.sideload_exe(&buf).into_diagnostic()?;
     }
+    let gilrs = Gilrs::new().map_err(|err| miette!("{err}"))?;
 
     let mut state = AppState {
-        exec,
         emu,
         gpu: gpu.into(),
         dynarec: Box::default(),
         frame_idx: 0,
+        gilrs,
+        gamepads: HashSet::new(),
     };
     let mut tui_state = TuiState::new();
     tui_state.reg_list.select_first();
@@ -198,6 +198,25 @@ async fn run_app<'a, 'e>(exec: &'a LocalExecutor<'e>, env: &EnvVars) -> Result<(
             draw_app(frame, &mut tui_state, &state);
         });
         loop {
+            while let Some(event) = state.gilrs.next_event() {
+                match event.event {
+                    gilrs_core::EventType::ButtonPressed(ev_code) => match ev_code {
+                        BTN_SOUTH => {
+                            tui_state.quit = true;
+                        }
+                        _ => {}
+                    },
+                    gilrs_core::EventType::ButtonReleased(ev_code) => {}
+                    gilrs_core::EventType::AxisValueChanged(_, ev_code) => {}
+                    gilrs_core::EventType::Connected => {
+                        state.gamepads.insert(event.id);
+                    }
+                    gilrs_core::EventType::Disconnected => {
+                        state.gamepads.remove(&event.id);
+                    }
+                    _ => {}
+                }
+            }
             if tui_state.quit {
                 break;
             }
@@ -665,16 +684,15 @@ fn handle_event(state: &mut AppState, tui_state: &mut TuiState, ev: &event::Even
                     _ => {}
                 }
             }
-            DbgTab::Gpu => match event {
-                " " => {
+            DbgTab::Gpu => {
+                if event == " " {
                     tui_state.emu_running = !tui_state.emu_running;
                     match tui_state.loop_mode {
                         LoopMode::Poll => tui_state.loop_mode = LoopMode::Event,
                         LoopMode::Event => tui_state.loop_mode = LoopMode::Poll,
                     }
                 }
-                _ => {}
-            },
+            }
         },
     }
 
@@ -708,6 +726,8 @@ fn create_breakpoint(address: &str, kind: BreakpointKind) -> Result<Breakpoint> 
     })
 }
 
+type CachedObjdump = Option<(fn(*mut Emu), Objdump)>;
+
 struct TuiState {
     theme:              Theme,
     loop_mode:          LoopMode,
@@ -733,7 +753,7 @@ struct TuiState {
     break_on_dropdown:        DropdownState<BreakOn>,
     asm_jump_to_pc_button:    ButtonState,
     asm_current_tab:          AsmTab,
-    asm_objdump_cache:        Option<(fn(*mut Emu), Objdump)>,
+    asm_objdump_cache:        CachedObjdump,
     asm_objdump_list:         ListState,
     add_breakpoint_pane:      AddBreakpointPane,
     jump_to_mem_address_pane: JumpToMemAddressPane,
@@ -840,14 +860,6 @@ impl TuiState {
             vram_framebuffer:         ImageState::new(),
         }
     }
-
-    fn focus_style(&self, value: Focused) -> Style {
-        if self.focused == value {
-            Style::new().fg(self.theme.primary)
-        } else {
-            Style::new()
-        }
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -896,6 +908,24 @@ fn draw_app(frame: &mut Frame, tui_state: &mut TuiState, state: &AppState) {
             false => Style::new().on_dark_gray().fg(tui_state.theme.fg),
         };
         main_block = main_block.title(tab.to_string().set_style(style));
+    }
+    if !state.gamepads.is_empty() {
+        let pads = state.gamepads.len();
+        let txt = match pads {
+            1 => "controller connected!",
+            _ => "controllers connected!",
+        };
+        main_block = main_block.title(vec![
+            "+ ".to_span(),
+            format!("{pads} {txt}").set_style(
+                Style::new()
+                    .bg(tui_state.theme.bg)
+                    .fg(tui_state.theme.primary)
+                    .bold()
+                    .italic(),
+            ),
+            " +".to_span(),
+        ]);
     }
     let area = main_block.inner(frame.area());
     main_block.render(frame.area(), frame.buffer_mut());
@@ -1731,7 +1761,7 @@ impl StyleExt for Style {
 
 impl<T: Styled> Themed for T {}
 
-trait ColorExt: Sized {
+pub trait ColorExt: Sized {
     const BLACK: Self;
     const WHITE: Self;
 
