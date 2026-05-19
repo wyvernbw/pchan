@@ -25,10 +25,10 @@ impl CDRomState {
                 let Some(sub) = self.drain_params().next() else {
                     return CdromIrqEvent::None;
                 };
+                tracing::info!("cdrom: cmd 0x19");
                 match sub {
                     // 20h INT3(yy,mm,dd,ver) Get cdrom BIOS date/version (yy,mm,dd,ver)
                     0x20 => {
-                        self.hint_status.set_intsts(Int::Int3Ack);
                         self.status.set_busy_status(false);
                         for value in self.ver.iter() {
                             self.result_push(value);

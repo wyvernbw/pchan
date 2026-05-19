@@ -76,7 +76,7 @@ pub trait CDRom: Bus + Interrupts {
         match (address, bank) {
             (0x1f801800, _) => {
                 let status = CDRomStatusReg::new_with_raw_value(value);
-                self.cdrom_mut().status.write(status);
+                self.cdrom_mut().status.set_bank(status.bank());
                 Ok(())
             }
 
@@ -85,6 +85,8 @@ pub trait CDRom: Bus + Interrupts {
                     cdrom_cmds::CdromIrqEvent::None => {}
                     cdrom_cmds::CdromIrqEvent::Immediate => {
                         self.trigger_irq(irq::Irq::Irq2CDRom);
+                        self.cdrom_mut().hint_status.set_intsts(Int::Int3Ack);
+                        tracing::info!("HINT_STAT={}", hex(self.cdrom().hint_status));
                         tracing::info!("trigger cdrom irq!");
                     }
                     cdrom_cmds::CdromIrqEvent::InCycles(_) => todo!(),
@@ -119,6 +121,13 @@ pub trait CDRom: Bus + Interrupts {
             (0x1f801803, 0) => trace_todo!("todo(cdrom): write to request register"),
             (0x1f801803, 1) => {
                 let hclrctl = CDRomHClrCtl::new_with_raw_value(value);
+                let ack = hclrctl.clrint().raw_value();
+                let hint_status = self.cdrom().hint_status.intsts().raw_value();
+                let hint_status = hint_status & (!ack);
+                self.cdrom_mut()
+                    .hint_status
+                    .set_intsts(Int::new_with_raw_value(hint_status));
+                tracing::info!("HINT_STAT={}", hex(hint_status));
                 self.cdrom_mut().write_h_clr_ctl(hclrctl);
                 Ok(())
             }
@@ -130,7 +139,7 @@ pub trait CDRom: Bus + Interrupts {
             }
             _ => Err(UnhandledIO(address)),
         }
-        .inspect(|_| tracing::info!("w(cdrom): {}", hex(address)))
+        .inspect(|_| tracing::info!("w(cdrom): {},{}", hex(address), bank))
     }
     fn read<T>(&mut self, address: u32) -> Result<T, UnhandledIO> {
         let address = address & 0x1fffffff;
@@ -152,7 +161,7 @@ pub trait CDRom: Bus + Interrupts {
             (0x1f801803, 1 | 3) => Ok(self.cdrom().hint_status.io_from_u32()),
             _ => Err(UnhandledIO(address)),
         }
-        .inspect(|_| tracing::info!("r(cdrom): {}", hex(address)))
+        .inspect(|_| tracing::info!("r(cdrom): {},{}", hex(address), bank))
     }
 }
 
