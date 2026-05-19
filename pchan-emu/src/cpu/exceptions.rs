@@ -99,6 +99,7 @@ impl Exceptions for Emu {
             false => 0x8000_0080,
             true => 0xbfc0_0180,
         };
+        self.cpu_mut().pc = new_pc;
         self.cpu_mut().enqueue_jump(new_pc);
     }
 
@@ -134,7 +135,7 @@ impl Exceptions for Emu {
         let sr = self.cpu.cop0.status();
         let cause = self.cpu.cop0.cause();
         // index 2 = bit 10
-        if cause.irq_pending(2) && sr.iec() {
+        if cause.irq_pending(2) && sr.iec() && sr.irq_mask(2) {
             // let excode = Exception::new_with_raw_value(cause.excode())
             //     .expect("unknown exception not yet implemented.");
             self.handle_exception(Exception::Interrupt);

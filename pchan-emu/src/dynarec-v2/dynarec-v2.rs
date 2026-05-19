@@ -1036,6 +1036,9 @@ fn fetch_and_compile_single_threaded(
                     .pc_updated;
             }
             cycles += op.cycles() as u32;
+            if op.hazard() != 0 {
+                cycles -= 1;
+            }
             last_address = address;
             op_count += 1;
         });

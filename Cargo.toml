@@ -45,16 +45,17 @@ version = "2.0.2"
 branch = "wyvernbw-feature-gates" 
 
 [profile.dev.package."*"]
-opt-level = 1
+opt-level = "s"
 
 [profile.dev]
-opt-level = 1
+opt-level = "s"
 panic = "unwind"
 
 [profile.release]
 codegen-units = 1
 lto = "fat"
 panic = "unwind"
+strip = "debuginfo"
 
 [profile.bench]
 debug = 2

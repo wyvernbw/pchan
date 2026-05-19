@@ -51,3 +51,23 @@ the draw calls are flushed AFTER the blit happens. when reading or writing to vr
 we need to flush draw commands.
 
 fixed.
+
+# Sio0 kernel ISR never sending 0x42
+
+the kernel successfuly reaches 0x000045e4, at which point loading 0x42 into
+register $t2 should be guaranteed. next it should write that to sio0 tx. 
+- [x] $t2 is 0x42 in the next block, correct
+
+at 0x000045f0 (block 0x000045e4) the kernel checks for bit I_STAT.07 (controller
+irq). it seems that the bit never gets set, even though the irq *does* trigger
+in the logs?
+
+the write of 0x42 happens at 0x0000462c, after a loop that waits for I_STAT.07
+to be set. There seems to be a timing issue in pchan. before the loop an ack
+to I_STAT.07 happens. this note from psx-spx seems relevant:
+```
+After sending a byte, the Kernel waits 100 cycles or so, and does THEN
+acknowledge any old IRQ7, and does then wait for the new IRQ7. Due to that
+bizarre coding, emulators can't trigger IRQ7 immediately within 0 cycles after
+sending the byte.
+```

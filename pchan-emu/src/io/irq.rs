@@ -13,8 +13,8 @@ use crate::{
 
 #[derive(Debug, Clone, Copy, Hash, Default)]
 pub struct IrqState {
-    i_stat: IrqField,
-    i_mask: IrqField,
+    pub i_stat: IrqField,
+    pub i_mask: IrqField,
 }
 
 #[bitfield(u32, debug)]
@@ -34,6 +34,8 @@ pub struct IrqField {
     irq5_timer1: bool,
     #[bit(6)]
     irq6_timer2: bool,
+    #[bit(7)]
+    irq7_sio0:   bool,
 
     #[bit(0, rw)]
     irq_flag:           [bool; 11],
@@ -97,10 +99,14 @@ pub trait Interrupts: Bus + IO + Exceptions {
         }
     }
     #[pchan_macros::instrument(
-        level = "trace",
+        level = "info",
         "irq:w",
         skip_all,
-        fields(address=%hex(address), value=%hex(value.io_into_u32()))
+        fields(
+            pc=%hex(self.cpu().pc),
+            address=%hex(address),
+            value=%hex(value.io_into_u32())
+        )
     )]
     fn write<T: Copy>(&mut self, address: u32, value: T) -> IOResult<()> {
         match address {
@@ -110,6 +116,7 @@ pub trait Interrupts: Bus + IO + Exceptions {
                 let write = value.io_into_u32();
                 let flags = flags & write.as_();
                 irq.i_stat.set_irq_flags_combined(flags);
+                tracing::trace!("{flags:010b}");
                 if flags.as_u16().count_ones() == 0 {
                     self.clear_irq();
                 }
