@@ -20,10 +20,7 @@ impl EnvVars {
             .parse()
             .into_diagnostic()
             .wrap_err("value in PCHAN_BIOS is not a valid path.")?;
-        let exe_path = std::env::args()
-            .skip(1)
-            .next()
-            .map(|exe_path| PathBuf::from(exe_path));
+        let exe_path = std::env::args().nth(1).map(PathBuf::from);
         Ok(Self {
             bios_path,
             exe_path,

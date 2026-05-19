@@ -195,7 +195,6 @@ async fn run_app(env: &EnvVars) -> Result<()> {
             draw_app(frame, &mut tui_state, &state);
         });
         loop {
-            state.input.drive_gamepads(&mut state.emu);
             if tui_state.quit {
                 break;
             }
@@ -311,6 +310,8 @@ async fn run_app(env: &EnvVars) -> Result<()> {
                 }
 
                 state.emu.gpu.last_vblank = Instant::now();
+
+                state.input.drive_gamepads(&mut state.emu);
             }
 
             match tui_state.loop_mode {
@@ -914,6 +915,16 @@ fn draw_app(frame: &mut Frame, tui_state: &mut TuiState, state: &AppState) {
     }
 }
 fn draw_main_view(frame: &mut Frame, area: Rect, tui_state: &mut TuiState, state: &AppState) {
+    if tui_state.fullscreen {
+        {
+            let mut dp_uniforms = state.gpu.display_uniforms.lock().unwrap();
+            dp_uniforms.screen_rect.x = area.width;
+            dp_uniforms.screen_rect.y = area.height * 7 / 4;
+        }
+        draw_framebuffer(frame, area, tui_state, state);
+        return;
+    }
+
     let [h1, h2, h3] = Layout::horizontal([
         Constraint::Ratio(1, 3),
         Constraint::Ratio(1, 3),
@@ -921,41 +932,52 @@ fn draw_main_view(frame: &mut Frame, area: Rect, tui_state: &mut TuiState, state
     ])
     .areas(area);
 
-    let (start, end) = state.emu.dp_coords();
-    let res = end - start;
-    let (width, height) = (res.x, res.y);
-    let ar = height * 100 / width;
-    let h1_w = h1.width;
-    let img_h = h1_w * ar / 100;
-    let img_h = (img_h * 2) / 3;
-    let [img_area, dropdown_area, rest] = Layout::vertical([
-        Constraint::Length(img_h),
-        Constraint::Length(1),
-        Constraint::Fill(1),
-    ])
-    .areas(h1);
-    let frame_time = tui_state.frame_time.as_millis_f32();
-    let fps = 1000.0 / frame_time;
+    fn draw_framebuffer(
+        frame: &mut Frame,
+        area: Rect,
+        tui_state: &mut TuiState,
+        state: &AppState,
+    ) -> (Rect, Rect) {
+        let (start, end) = state.emu.dp_coords();
+        let res = end - start;
+        let (width, height) = (res.x, res.y);
+        let ar = height * 100 / width;
+        let area_w = area.width;
+        let img_h = area_w * ar / 100;
+        let img_h = (img_h * 2) / 3;
+        let [img_area, dropdown_area, rest] = Layout::vertical([
+            Constraint::Length(img_h),
+            Constraint::Length(1),
+            Constraint::Fill(1),
+        ])
+        .areas(area);
+        let frame_time = tui_state.frame_time.as_millis_f32();
+        let fps = 1000.0 / frame_time;
 
-    let img_block = Block::bordered()
-        .border_type(BorderType::Rounded)
-        .title_bottom(format!(
-            "+ {}x{} {:01.2}ms {:.0}fps +",
-            width, height, frame_time, fps
-        ))
-        .title_top(" 📺 ")
-        .title_top(" <spc> run • <f> fullscreen ".dim())
-        .theme(&tui_state.theme)
-        .focus_style(tui_state, Focused::Preview);
-    let inner_img_area = img_block.inner(img_area);
-    img_block.render(img_area, frame.buffer_mut());
+        let img_block = Block::bordered()
+            .border_type(BorderType::Rounded)
+            .title_bottom(format!(
+                "+ {}x{} {:01.2}ms {:.0}fps +",
+                width, height, frame_time, fps
+            ))
+            .title_top(" 📺 ")
+            .title_top(" <spc> run • <f> fullscreen ".dim())
+            .theme(&tui_state.theme)
+            .focus_style(tui_state, Focused::Preview);
+        let inner_img_area = img_block.inner(img_area);
+        img_block.render(img_area, frame.buffer_mut());
 
-    if tui_state.current_frame.is_some() {
-        ImageWidget.render(inner_img_area, frame, &mut tui_state.framebuffer);
-    } else {
-        let area = inner_img_area.centered(Constraint::Length(10), Constraint::Length(1));
-        frame.render_widget("何もない".set_style(Style::new().dim()), area);
+        if tui_state.current_frame.is_some() {
+            ImageWidget.render(inner_img_area, frame, &mut tui_state.framebuffer);
+        } else {
+            let area = inner_img_area.centered(Constraint::Length(10), Constraint::Length(1));
+            frame.render_widget("何もない".set_style(Style::new().dim()), area);
+        }
+
+        (dropdown_area, rest)
     }
+
+    let (dropdown_area, rest) = draw_framebuffer(frame, h1, tui_state, state);
 
     draw_register_viewer(rest, frame, tui_state, state);
     draw_assembly(h2, frame, tui_state, state);

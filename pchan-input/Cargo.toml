@@ -4,6 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-gilrs-core = "0.6.7"
 pchan-bind.workspace = true
 pchan-emu.workspace = true
+sdl2 = "0.38.0"

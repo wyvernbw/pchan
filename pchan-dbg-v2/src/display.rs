@@ -44,7 +44,7 @@ impl DisplayState {
         let (start, end) = state.emu.dp_coords();
         dp.dp_start = start;
         dp.dp_res = end;
-        dp.screen_rect = end - start;
+        // dp.screen_rect = end - start;
         let size = dp.screen_rect;
 
         drop(dp);

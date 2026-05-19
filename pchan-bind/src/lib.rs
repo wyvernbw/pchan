@@ -1,3 +1,5 @@
+pub mod input;
+
 use std::{fmt::Debug, sync::Arc};
 
 use ringbuf::{CachingCons, CachingProd, SharedRb, storage::Heap, traits::Split};

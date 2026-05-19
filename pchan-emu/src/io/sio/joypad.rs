@@ -1,5 +1,5 @@
 use bitbybit::{bitenum, bitfield};
-use gilrs_core::{EvCode, Event};
+use pchan_bind::input::{InputEvent, PchanButton};
 
 use crate::{
     Bus, Emu,
@@ -140,53 +140,47 @@ pub struct DigitalSwitches {
 }
 
 impl DigitalSwitches {
-    pub fn press(&mut self, code: EvCode) {
+    pub fn press(&mut self, code: PchanButton) {
         self.set_state(code, ButtonState::Pressed);
     }
-    pub fn release(&mut self, code: EvCode) {
+    pub fn release(&mut self, code: PchanButton) {
         self.set_state(code, ButtonState::Released);
     }
-    pub fn set_state(&mut self, code: EvCode, state: ButtonState) {
-        use gilrs_core::native_ev_codes::*;
-
+    pub fn set_state(&mut self, code: PchanButton, state: ButtonState) {
         match code {
             // TODO: all buttons
-            BTN_DPAD_DOWN => self.set_dpad_down(state),
-            BTN_DPAD_UP => self.set_dpad_up(state),
-            BTN_DPAD_LEFT => self.set_dpad_left(state),
-            BTN_DPAD_RIGHT => self.set_dpad_right(state),
-            BTN_NORTH => self.set_triangle(state),
-            BTN_SOUTH => self.set_x(state),
-            BTN_EAST => self.set_circle(state),
-            BTN_WEST => self.set_square(state),
+            PchanButton::DpadDown => self.set_dpad_down(state),
+            PchanButton::DpadUp => self.set_dpad_up(state),
+            PchanButton::DpadLeft => self.set_dpad_left(state),
+            PchanButton::DpadRight => self.set_dpad_right(state),
+            PchanButton::Triangle => self.set_triangle(state),
+            PchanButton::X => self.set_x(state),
+            PchanButton::Circle => self.set_circle(state),
+            PchanButton::Square => self.set_square(state),
             _ => {}
         }
     }
 }
 
 pub trait InputEvents: Bus {
-    fn send_input_event(&mut self, event: Event, port: Sio0Port) {
-        match event.event {
-            gilrs_core::EventType::ButtonPressed(code) => {
+    fn send_input_event(&mut self, event: InputEvent, port: Sio0Port) {
+        match event {
+            InputEvent::Press(btn) => {
                 self.sio_mut()
                     .sio0ports
                     .port_mut(port)
                     .joypad
                     .switches
-                    .press(code);
+                    .press(btn);
             }
-            gilrs_core::EventType::ButtonReleased(code) => {
+            InputEvent::Release(btn) => {
                 self.sio_mut()
                     .sio0ports
                     .port_mut(port)
                     .joypad
                     .switches
-                    .release(code);
+                    .release(btn);
             }
-            gilrs_core::EventType::AxisValueChanged(_, code) => {}
-            gilrs_core::EventType::Connected => {}
-            gilrs_core::EventType::Disconnected => {}
-            _ => {}
         };
     }
 }
