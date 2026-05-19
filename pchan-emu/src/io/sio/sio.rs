@@ -2,6 +2,7 @@ mod joypad;
 
 use arbitrary_int::prelude::*;
 use bitbybit::*;
+use derive_more as d;
 use heapless::{Deque, binary_heap::Min};
 use pchan_utils::hex;
 
@@ -10,7 +11,7 @@ use crate::{
     io::{
         CastIOFrom, CastIOInto, UnhandledIO,
         irq::{Interrupts, Irq},
-        sio::joypad::JoypadState,
+        sio::joypad::Joypad,
     },
     trace_todo,
 };
@@ -18,8 +19,6 @@ use crate::{
 use super::irq;
 
 const HI_Z: u32 = u32::MAX;
-
-type Sio0Rx = Deque<u8, 4>;
 
 #[derive(Default, derive_more::Debug, Clone)]
 pub struct SioState {
@@ -38,6 +37,7 @@ pub struct SioState {
     event_queue: heapless::BinaryHeap<ScheduledSioEvent, Min, 8>,
 
     sio0devices: Sio0Ports,
+    irq_latch:   bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,7 +83,7 @@ impl Default for Sio0Ports {
             ports:    [
                 // connect joypad on port 1 by default
                 PortState {
-                    joypad:  JoypadState::default(),
+                    joypad:  Joypad::default().plug_in(),
                     memcard: (),
                 },
                 PortState::default(),
@@ -103,12 +103,22 @@ impl Sio0Ports {
 
 #[derive(Default, derive_more::Debug, Clone)]
 struct PortState {
-    joypad:  JoypadState,
+    joypad:  Joypad,
     // TODO
     memcard: (),
 }
 
-pub trait Peripheral {}
+pub enum TxWriteResult {
+    Ok,
+    TransferFinished,
+}
+
+pub trait Peripheral {
+    fn on_tx_write(&mut self, byte: u8, rx: &mut Sio0Rx) -> TxWriteResult;
+}
+
+#[derive(d::Deref, d::DerefMut, Debug, Default, Clone)]
+pub struct Sio0Rx(Deque<u8, 4>);
 
 pub trait Sio: Bus + Interrupts {
     #[pchan_macros::instrument(skip_all, fields(pc = %hex(self.cpu().pc)))]
@@ -161,7 +171,7 @@ pub trait Sio: Bus + Interrupts {
             0x1f80105c => trace_todo!("todo(sio): write to sio1 (serial port) internal"),
             _ => Err(UnhandledIO(address)),
         }
-        .inspect(|_| tracing::info!("w(sio): {}", hex(address)))
+        // .inspect(|_| tracing::info!("w(sio): {}", hex(address)))
     }
     #[pchan_macros::instrument(skip_all, fields(pc = %hex(self.cpu().pc)))]
     fn read<T: Copy>(&mut self, address: u32) -> Result<T, UnhandledIO> {
@@ -204,7 +214,7 @@ pub trait Sio: Bus + Interrupts {
                     _ => 0xff,
                 };
                 tracing::info!(
-                    "sio0: read from rx: {} (len={}, sio_stat.1={})",
+                    "sio0: recv {} (len={}, sio_stat.1={})",
                     hex(res),
                     og_len,
                     og_rx_not_empty
@@ -222,14 +232,14 @@ pub trait Sio: Bus + Interrupts {
             }
             _ => Sio::read_pure(self, address),
         }
-        .inspect(|value| {
-            tracing::info!(
-                "r(sio): [{}]={} ({} byte - 0 extended)",
-                hex(address),
-                hex((*value).io_into_u32()),
-                size_of::<T>(),
-            )
-        })
+        // .inspect(|value| {
+        //     tracing::info!(
+        //         "r(sio): [{}]={} ({} byte - 0 extended)",
+        //         hex(address),
+        //         hex((*value).io_into_u32()),
+        //         size_of::<T>(),
+        //     )
+        // })
     }
     fn read_pure<T: Copy>(&self, address: u32) -> Result<T, UnhandledIO> {
         let address = address & 0x1fffffff;
@@ -278,7 +288,8 @@ pub trait Sio: Bus + Interrupts {
                 }
             }
         }
-        if sio.sio0stat.irq() {
+        if sio.sio0stat.irq() && !sio.irq_latch {
+            sio.irq_latch = true;
             self.schedule(SioEvent::Sio0Irq, 100);
         }
 
@@ -296,6 +307,7 @@ pub trait Sio: Bus + Interrupts {
                     self.sio0_tx_proc();
                 }
                 SioEvent::Sio0Irq => {
+                    self.sio_mut().irq_latch = false;
                     let cycles = self.sio().sio_cycles();
                     self.trigger_irq(Irq::Irq7JoypadAndMemcard);
                     self.schedule(SioEvent::Sio0Ack, cycles as _);
@@ -315,15 +327,37 @@ pub trait Sio: Bus + Interrupts {
 
         debug_assert!(self.sio().sio0stat.tx_not_full(), "tx must be mid transfer");
 
-        match (self.sio().sio0_selected_device(), value) {
-            (None, 0x01) => {
-                self.sio0_select(PeripheralKind::Joypad);
-                let ctrl = self.sio().sio0ctrl;
-                if ctrl.rx_on() | ctrl.dtr_out_lvl() {
-                    self.sio_mut().sio0rx_push(HI_Z as u8);
-                    self.sio_mut().sio0stat.set_rx_not_empty(true);
+        let tx_write_result: Option<TxWriteResult> =
+            match (self.sio().sio0_selected_device(), value) {
+                (None, 0x01) => {
+                    self.sio0_select(PeripheralKind::Joypad);
+                    let ctrl = self.sio().sio0ctrl;
+                    if ctrl.rx_on() | ctrl.dtr_out_lvl() {
+                        self.sio_mut().sio0_rx.push(HI_Z as u8);
+                    }
+                    Some(TxWriteResult::Ok)
+                }
+                (None, _) => return,
+                (Some(device), byte) => {
+                    let port = self.sio().sio0ctrl.sio0_port();
+                    if self.sio().sio0devices.is_connected(port) {
+                        let port = self.sio_mut().view_serial_port(port);
+                        match device {
+                            PeripheralKind::Joypad => {
+                                Some(port.port.joypad.on_tx_write(byte, port.rx))
+                            }
+                        }
+                    } else {
+                        None
+                    }
+                }
+            };
+        let rx_empty = self.sio().sio0_rx.is_empty();
+        self.sio_mut().sio0stat.set_rx_not_empty(!rx_empty);
+        if let Some(tx_write_result) = tx_write_result {
+            match tx_write_result {
+                TxWriteResult::Ok => {
                     self.sio_mut().sio0stat.set_tx_idle(true);
-
                     let port = self.sio().sio0ctrl.sio0_port();
                     if self.sio().sio0devices.is_connected(port) {
                         if self.sio().sio0ctrl.dsr_irq_on() && self.sio().sio0ctrl.tx_on() {
@@ -334,11 +368,12 @@ pub trait Sio: Bus + Interrupts {
                         }
                     }
                 }
-            }
-            (device, _) => {
-                todo!("todo(sio0.tx): {device:?} unhandled value {}", hex(value))
+                TxWriteResult::TransferFinished => {
+                    self.sio0_deselect();
+                }
             }
         }
+
         tracing::info!("SIO0_STAT.1" = self.sio().sio0stat.rx_not_empty())
     }
 
@@ -346,11 +381,29 @@ pub trait Sio: Bus + Interrupts {
         self.sio_mut().sio0devices.selected = Some(device);
     }
 
+    fn sio0_deselect(&mut self) {
+        self.sio_mut().sio0devices.selected = None;
+    }
+
     fn sio0_rx_send(&mut self, value: u8) {
-        _ = self.sio_mut().sio0_rx.push_back(value);
+        self.sio_mut().sio0_rx.push(value);
         let rx_len = 1usize << (self.sio().sio0ctrl.rx_irq_mode() as usize);
         if self.sio().sio0_rx.len() == rx_len && self.sio().sio0ctrl.rx_irq_on() {
             self.trigger_irq(irq::Irq::Irq7JoypadAndMemcard);
+        }
+    }
+}
+
+struct SerialPortViewMut<'a> {
+    port: &'a mut PortState,
+    rx:   &'a mut Sio0Rx,
+}
+
+impl SioState {
+    fn view_serial_port(&mut self, port: Sio0Port) -> SerialPortViewMut<'_> {
+        SerialPortViewMut {
+            port: &mut self.sio0devices.ports[port as usize],
+            rx:   &mut self.sio0_rx,
         }
     }
 }
@@ -685,13 +738,6 @@ impl SioState {
         }
     }
 
-    /// overwrites the last item if full
-    fn sio0rx_push(&mut self, value: u8) {
-        self.sio0_rx.pop_back();
-        let res = self.sio0_rx.push_back(value);
-        debug_assert!(res.is_ok(), "cannot be full")
-    }
-
     fn sio_cycles(&self) -> u32 {
         let bd = self.sio0bdrate_reload as u32;
         let factor = match self.sio0mode.bdrate_reload_factor() {
@@ -709,5 +755,16 @@ impl SioState {
 impl Sio0Ports {
     fn port(&self, port: Sio0Port) -> &PortState {
         &self.ports[port as usize]
+    }
+}
+
+impl Sio0Rx {
+    /// overwrites the last item if full
+    fn push(&mut self, value: u8) {
+        if self.is_full() {
+            self.pop_back();
+        }
+        let res = self.push_back(value);
+        debug_assert!(res.is_ok(), "cannot be full")
     }
 }
