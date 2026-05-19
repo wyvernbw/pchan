@@ -9,7 +9,7 @@ use std::{
 use kanal::{AsyncReceiver, AsyncSender, Receiver, Sender};
 use tracing_subscriber::{
     EnvFilter, Layer,
-    fmt::{self, MakeWriter, format::FmtSpan, writer::BoxMakeWriter},
+    fmt::{self, format::FmtSpan},
     util::SubscriberInitExt,
 };
 

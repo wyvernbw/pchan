@@ -1,8 +1,9 @@
 use pchan_utils::hex;
 
+use crate::io::CastIOInto;
 use crate::{
     Bus, Emu,
-    io::{CastIOInto, IOResult, UnhandledIO},
+    io::{IOResult, UnhandledIO},
 };
 
 pub mod fastmem;

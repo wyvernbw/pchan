@@ -1,13 +1,11 @@
 use arbitrary_int::prelude::*;
 use bitbybit::{bitenum, bitfield};
 use derive_more as d;
-use pchan_macros::{pchan_instrument_read, pchan_instrument_write};
 use pchan_utils::hex;
-use strum::IntoEnumIterator;
 
 use crate::{
     Bus, Emu,
-    cpu::exceptions::{Exception, Exceptions},
+    cpu::exceptions::Exceptions,
     io::{CastIOFrom, CastIOInto, IO, IOResult, UnhandledIO},
 };
 

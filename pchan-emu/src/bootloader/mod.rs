@@ -14,7 +14,7 @@ use thiserror::Error;
 use crate::{
     Bus, cpu,
     io::IO,
-    memory::{self, GUEST_MEM_MAP, MEM_MAP},
+    memory::{GUEST_MEM_MAP, MEM_MAP},
 };
 use crate::{
     Emu,

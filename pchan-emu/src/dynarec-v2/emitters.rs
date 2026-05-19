@@ -4,22 +4,19 @@ use crate::cpu::*;
 use crate::dynarec_v2::DynEmitter;
 use crate::dynarec_v2::DynarecCache;
 use crate::dynarec_v2::Guest;
-#[cfg(test)]
-use crate::dynarec_v2::PAGE_LEN;
+
 use crate::dynarec_v2::regalloc::AllocResult;
-use crate::dynarec_v2::run_step;
+#[cfg(test)]
 use crate::io::IO;
 use std::num::NonZeroU8;
 
 use arbitrary_int::traits::Integer;
 use enum_dispatch::enum_dispatch;
 
-use pchan_utils::default;
 use pchan_utils::hex;
 #[cfg(test)]
 use rstest::rstest;
 use smallbox::SmallBox;
-use smallvec::SmallVec;
 
 use crate::cpu::ops::*;
 use crate::cpu::ops::{HaltBlock, OpCode};
@@ -815,7 +812,7 @@ mod test_unaligned_load_stores {
 
     use crate::cpu::{
         SP,
-        ops::{OpCode, addiu, lui, lwl, lwr, ori, swl, swr},
+        ops::{OpCode, lui, lwl, lwr, ori, swl, swr},
         program,
     };
 
@@ -1971,7 +1968,7 @@ fn test_alu_imm<I: Into<i16>>(
     #[case] a: (Guest, u32),
     #[case] b: I,
 ) -> color_eyre::Result<()> {
-    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use crate::{Emu, cpu::program, dynarec_v2::run_step};
     use pchan_utils::setup_tracing;
 
     setup_tracing();
@@ -2039,28 +2036,6 @@ fn test_lui(
     assert_eq!(emu.cpu.pc, 0x8);
 
     Ok(())
-}
-
-macro_rules! jump_to_pc {
-    ($asm:expr, $new_pc:expr) => {
-        #[cfg(target_arch = "aarch64")]
-        dynasm!(
-            $asm
-            ; ldr x3, ->jump // defined in prelude
-            ; str x0, [sp, #-16]!
-            // load 32bit psx address into second argument
-            // first argument is already context structure
-            ; movz w1, new_pc >> 16, lsl #16
-            ; movk w1, new_pc & 0x0000_ffff
-            ; blr x3
-
-            ; mov x3, x0
-            ; ldr x0, [sp], #16
-            ; cbz x3, >miss
-            ; br x3
-            ; miss:
-        );
-    };
 }
 
 impl Dynarec {
@@ -2224,7 +2199,7 @@ impl DynarecOp for Jr {
     #[allow(clippy::useless_conversion)]
     fn emit<'a>(&self, mut ctx: EmitCtx<'a>) -> EmitSummary {
         let dest = ctx.dynarec.emit_load_reg(self.rs);
-        let s1 = ctx.alloc_scratch() as u32;
+        let s1 = ctx.alloc_scratch();
         #[cfg(target_arch = "aarch64")]
         dynasm!(
             ctx.dynarec.asm
@@ -2316,7 +2291,7 @@ impl DynarecOp for Jalr {
     }
     #[allow(clippy::useless_conversion)]
     fn emit<'a>(&self, mut ctx: EmitCtx<'a>) -> EmitSummary {
-        let s1 = ctx.alloc_scratch() as u32;
+        let s1 = ctx.alloc_scratch();
         let dest = ctx.dynarec.emit_load_reg(self.rs);
 
         #[cfg(target_arch = "aarch64")]
@@ -2599,7 +2574,7 @@ fn emit_branch_zero(
     imm: i16,
     selector: impl Fn(&mut EmitCtx) + 'static,
 ) -> EmitSummary {
-    let s1 = ctx.alloc_scratch() as u32;
+    let s1 = ctx.alloc_scratch();
     let rs = ctx.dynarec.emit_load_reg(rs);
 
     // calculate branch value
@@ -3636,7 +3611,7 @@ fn test_branch_and_store() -> color_eyre::Result<()> {
 #[cfg(test)]
 #[rstest]
 fn test_0x8004f454_move_in_jump_delay() -> color_eyre::Result<()> {
-    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use crate::{Emu, cpu::program, dynarec_v2::run_step};
     use assert_hex::*;
     use pchan_utils::setup_tracing;
 
@@ -3666,26 +3641,3 @@ fn test_0x8004f454_move_in_jump_delay() -> color_eyre::Result<()> {
 
     Ok(())
 }
-
-// #[cfg(test)]
-// #[rstest]
-// fn test_cache_page_boundary() -> color_eyre::Result<()> {
-//     use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
-//     use assert_hex::*;
-//     use pchan_utils::setup_tracing;
-
-//     setup_tracing();
-//     let mut emu = Emu::default();
-
-//     for i in 0..(4 * PAGE_LEN) {
-//         emu.write(i as u32 * 0x4, addiu(8, 8, 1));
-//     }
-//     let mut dynarec = Box::default();
-//     for i in 0..4 {
-//         dynarec = run_step(&mut emu, dynarec);
-//     }
-
-//     assert_eq_hex!(emu.cpu.gpr[8], PAGE_LEN as u32 * 4);
-
-//     Ok(())
-// }

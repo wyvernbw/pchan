@@ -5,7 +5,7 @@ use crate::{
     Bus, Emu,
     io::{
         CastIOFrom, CastIOInto, UnhandledIO,
-        cdrom::cdrom_ver::{CDRomVer, CDRomVerPtr},
+        cdrom::cdrom_ver::CDRomVerPtr,
         irq::{self, Interrupts},
     },
     trace_todo,

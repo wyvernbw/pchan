@@ -1,5 +1,3 @@
-use std::time::Instant;
-
 use crate::{
     Emu,
     gpu::{DrawEvenOdd, Gpu, VBLANK_COUNT},

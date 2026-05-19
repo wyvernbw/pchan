@@ -1,4 +1,3 @@
-#![feature(proc_macro_totokens)]
 extern crate proc_macro;
 use darling::*;
 use proc_macro::TokenStream;

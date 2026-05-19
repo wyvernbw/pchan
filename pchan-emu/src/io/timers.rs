@@ -1,11 +1,9 @@
 use arbitrary_int::prelude::*;
 use derive_more as d;
-use std::ops::RangeInclusive;
 
 use crate::{
     Bus, Emu,
     io::{CastIOFrom, CastIOInto, IO, UnhandledIO, irq::Interrupts},
-    memory::{GUEST_MEM_MAP, MEM_MAP},
 };
 
 use super::irq::Irq;

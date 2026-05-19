@@ -780,6 +780,7 @@ impl DmaChannel {
     }
 }
 
+#[expect(clippy::len_without_is_empty)]
 #[bitfield(u32, debug)]
 #[derive(Default)]
 pub struct DmaNodeHeader {

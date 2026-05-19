@@ -1,10 +1,6 @@
 use std::collections::VecDeque;
 
-use bitvec::{
-    prelude as bv,
-    slice::{BitSlice, IterOnes},
-    view::BitView,
-};
+use bitvec::{prelude as bv, view::BitView};
 use bv::Lsb0;
 use derive_more as de;
 use pchan_utils::array;

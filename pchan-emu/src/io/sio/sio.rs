@@ -9,7 +9,7 @@ use crate::{
     Bus, Emu,
     io::{
         CastIOFrom, CastIOInto, UnhandledIO,
-        irq::{Interrupts, Irq, IrqState},
+        irq::{Interrupts, Irq},
         sio::joypad::JoypadState,
     },
     trace_todo,
@@ -18,6 +18,8 @@ use crate::{
 use super::irq;
 
 const HI_Z: u32 = u32::MAX;
+
+type Sio0Rx = Deque<u8, 4>;
 
 #[derive(Default, derive_more::Debug, Clone)]
 pub struct SioState {
@@ -30,12 +32,12 @@ pub struct SioState {
 
     sio0bdrate_reload: u16,
 
-    sio0_rx: Deque<u8, 4>,
+    sio0_rx: Sio0Rx,
     sio0_tx: Sio0Tx,
 
     event_queue: heapless::BinaryHeap<ScheduledSioEvent, Min, 8>,
 
-    sio0devices: Sio0Devices,
+    sio0devices: Sio0Ports,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,41 +66,49 @@ impl Ord for ScheduledSioEvent {
 }
 
 #[derive(derive_more::Debug, Clone, Copy)]
-pub enum Sio0Device {
+pub enum PeripheralKind {
     Joypad,
 }
 
 #[derive(derive_more::Debug, Clone)]
-struct Sio0Devices {
-    selected: Option<Sio0Device>,
-    ports:    [SerialPort; 2],
+struct Sio0Ports {
+    selected: Option<PeripheralKind>,
+    ports:    [PortState; 2],
 }
 
-impl Default for Sio0Devices {
+impl Default for Sio0Ports {
     fn default() -> Self {
         Self {
             selected: Default::default(),
             ports:    [
                 // connect joypad on port 1 by default
-                SerialPort {
-                    joypad:       JoypadState::default(),
-                    joypad_conn:  true,
-                    memcard:      (),
-                    memcard_conn: false,
+                PortState {
+                    joypad:  JoypadState::default(),
+                    memcard: (),
                 },
-                SerialPort::default(),
+                PortState::default(),
             ],
         }
     }
 }
 
-#[derive(Default, derive_more::Debug, Clone)]
-struct SerialPort {
-    joypad:       JoypadState,
-    joypad_conn:  bool,
-    memcard:      (),
-    memcard_conn: bool,
+impl Sio0Ports {
+    fn is_connected(&self, on_port: Sio0Port) -> bool {
+        match self.selected {
+            Some(PeripheralKind::Joypad) => self.port(on_port).joypad.connected,
+            None => false,
+        }
+    }
 }
+
+#[derive(Default, derive_more::Debug, Clone)]
+struct PortState {
+    joypad:  JoypadState,
+    // TODO
+    memcard: (),
+}
+
+pub trait Peripheral {}
 
 pub trait Sio: Bus + Interrupts {
     #[pchan_macros::instrument(skip_all, fields(pc = %hex(self.cpu().pc)))]
@@ -283,7 +293,7 @@ pub trait Sio: Bus + Interrupts {
             }
             match event.event {
                 SioEvent::Sio0ProcTx => {
-                    self.sio0_tx_handle_one();
+                    self.sio0_tx_proc();
                 }
                 SioEvent::Sio0Irq => {
                     let cycles = self.sio().sio_cycles();
@@ -298,7 +308,7 @@ pub trait Sio: Bus + Interrupts {
         }
     }
 
-    fn sio0_tx_handle_one(&mut self) {
+    fn sio0_tx_proc(&mut self) {
         let Some(value) = self.sio_mut().sio0_tx_pop() else {
             return;
         };
@@ -307,18 +317,15 @@ pub trait Sio: Bus + Interrupts {
 
         match (self.sio().sio0_selected_device(), value) {
             (None, 0x01) => {
-                self.sio0_select(Sio0Device::Joypad);
+                self.sio0_select(PeripheralKind::Joypad);
                 let ctrl = self.sio().sio0ctrl;
                 if ctrl.rx_on() | ctrl.dtr_out_lvl() {
+                    self.sio_mut().sio0rx_push(HI_Z as u8);
                     self.sio_mut().sio0stat.set_rx_not_empty(true);
-                    self.sio_mut().sio0_rx.push_back(HI_Z as u8);
                     self.sio_mut().sio0stat.set_tx_idle(true);
 
-                    let port_n = self.sio().sio0ctrl.sio0_port();
-                    let port = self.sio().sio0devices.port(port_n);
-                    tracing::info!(?port_n, "select joypad");
-                    if port.joypad_conn {
-                        tracing::info!("-> joypad connected!");
+                    let port = self.sio().sio0ctrl.sio0_port();
+                    if self.sio().sio0devices.is_connected(port) {
                         if self.sio().sio0ctrl.dsr_irq_on() && self.sio().sio0ctrl.tx_on() {
                             if !self.sio().sio0stat.dsr_in_lvl() {
                                 self.sio_mut().sio0stat.set_irq(true);
@@ -335,7 +342,7 @@ pub trait Sio: Bus + Interrupts {
         tracing::info!("SIO0_STAT.1" = self.sio().sio0stat.rx_not_empty())
     }
 
-    fn sio0_select(&mut self, device: Sio0Device) {
+    fn sio0_select(&mut self, device: PeripheralKind) {
         self.sio_mut().sio0devices.selected = Some(device);
     }
 
@@ -498,63 +505,6 @@ enum Sio0Port {
     Port2 = 0x1,
 }
 
-impl SioState {
-    fn write_sio0_ctrl(&mut self, ctrl: SioCtrlReg) {
-        // tracing::info!("sio0: write ctrl {ctrl:#?}");
-        let old_port = self.sio0ctrl.sio0_port();
-        self.sio0ctrl = ctrl;
-        let port = self.sio0ctrl.sio0_port();
-        if old_port != port || !self.sio0ctrl.dtr_out_lvl() {
-            self.sio0devices.selected = None;
-            self.sio0_tx = Sio0Tx::Idle;
-        }
-
-        tracing::info!(ack=ctrl.ack(), port = ?self.sio0ctrl.sio0_port(), "/CS"=self.sio0ctrl.dtr_out_lvl(), rxen = ?(self.sio0ctrl.rx_on() as usize));
-        if ctrl.ack() {
-            self.sio0stat.set_rx_par_err(false);
-            self.sio0stat.set_irq(false);
-        }
-
-        if ctrl.reset() {
-            self.sio0mode = SioModeReg::default();
-            self.sio0stat = SioStatusReg::default();
-            self.sio0ctrl = SioCtrlReg::default();
-            self.sio0_tx = Sio0Tx::Idle;
-            self.sio0_rx.clear();
-        }
-
-        self.sio0ctrl.set_ack(false);
-        self.sio0ctrl.set_reset(false);
-    }
-
-    fn read_sio0_ctrl(&self) -> SioCtrlReg {
-        tracing::info!(port = ?self.sio0ctrl.sio0_port(), "/CS"=self.sio0ctrl.dtr_out_lvl(), rxen = ?(self.sio0ctrl.rx_on() as usize));
-        self.sio0ctrl
-    }
-
-    fn sio0_selected_device(&self) -> Option<Sio0Device> {
-        let port = self.sio0ctrl.sio0_port();
-        let port = self.sio0devices.port(port);
-        let selected = self.sio0devices.selected?;
-        match selected {
-            Sio0Device::Joypad => port.joypad_conn.then_some(selected),
-        }
-    }
-
-    fn sio_cycles(&self) -> u32 {
-        let bd = self.sio0bdrate_reload as u32;
-        let factor = match self.sio0mode.bdrate_reload_factor() {
-            BdrateReloadFactor::Mul1OrStop => 1,
-            BdrateReloadFactor::Mul1 => 1,
-            BdrateReloadFactor::Mul16 => 16,
-            BdrateReloadFactor::Mul64 => 64,
-        };
-        let bd = bd * factor;
-
-        bd / 2
-    }
-}
-
 /// # 1F801048h+N*10h - SIO#_MODE (R/W) (eg. 004Eh --> 8N1 with Factor=MUL16)
 ///
 /// ```plaintext
@@ -692,10 +642,72 @@ impl SioState {
             }
         }
     }
+
+    fn write_sio0_ctrl(&mut self, ctrl: SioCtrlReg) {
+        // tracing::info!("sio0: write ctrl {ctrl:#?}");
+        let old_port = self.sio0ctrl.sio0_port();
+        self.sio0ctrl = ctrl;
+        let port = self.sio0ctrl.sio0_port();
+        if old_port != port || !self.sio0ctrl.dtr_out_lvl() {
+            self.sio0devices.selected = None;
+            self.sio0_tx = Sio0Tx::Idle;
+        }
+
+        tracing::info!(ack=ctrl.ack(), port = ?self.sio0ctrl.sio0_port(), "/CS"=self.sio0ctrl.dtr_out_lvl(), rxen = ?(self.sio0ctrl.rx_on() as usize));
+        if ctrl.ack() {
+            self.sio0stat.set_rx_par_err(false);
+            self.sio0stat.set_irq(false);
+        }
+
+        if ctrl.reset() {
+            self.sio0mode = SioModeReg::default();
+            self.sio0stat = SioStatusReg::default();
+            self.sio0ctrl = SioCtrlReg::default();
+            self.sio0_tx = Sio0Tx::Idle;
+            self.sio0_rx.clear();
+        }
+
+        self.sio0ctrl.set_ack(false);
+        self.sio0ctrl.set_reset(false);
+    }
+
+    fn read_sio0_ctrl(&self) -> SioCtrlReg {
+        tracing::info!(port = ?self.sio0ctrl.sio0_port(), "/CS"=self.sio0ctrl.dtr_out_lvl(), rxen = ?(self.sio0ctrl.rx_on() as usize));
+        self.sio0ctrl
+    }
+
+    fn sio0_selected_device(&self) -> Option<PeripheralKind> {
+        let port = self.sio0ctrl.sio0_port();
+        let port = self.sio0devices.port(port);
+        let selected = self.sio0devices.selected?;
+        match selected {
+            PeripheralKind::Joypad => port.joypad.connected.then_some(selected),
+        }
+    }
+
+    /// overwrites the last item if full
+    fn sio0rx_push(&mut self, value: u8) {
+        self.sio0_rx.pop_back();
+        let res = self.sio0_rx.push_back(value);
+        debug_assert!(res.is_ok(), "cannot be full")
+    }
+
+    fn sio_cycles(&self) -> u32 {
+        let bd = self.sio0bdrate_reload as u32;
+        let factor = match self.sio0mode.bdrate_reload_factor() {
+            BdrateReloadFactor::Mul1OrStop => 1,
+            BdrateReloadFactor::Mul1 => 1,
+            BdrateReloadFactor::Mul16 => 16,
+            BdrateReloadFactor::Mul64 => 64,
+        };
+        let bd = bd * factor;
+
+        bd / 2
+    }
 }
 
-impl Sio0Devices {
-    fn port(&self, port: Sio0Port) -> &SerialPort {
+impl Sio0Ports {
+    fn port(&self, port: Sio0Port) -> &PortState {
         &self.ports[port as usize]
     }
 }

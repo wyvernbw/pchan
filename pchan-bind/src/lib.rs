@@ -1,10 +1,6 @@
 use std::{fmt::Debug, sync::Arc};
 
-use ringbuf::{
-    CachingCons, CachingProd, SharedRb,
-    storage::{Heap, Ref},
-    traits::Split,
-};
+use ringbuf::{CachingCons, CachingProd, SharedRb, storage::Heap, traits::Split};
 
 pub use ringbuf;
 

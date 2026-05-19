@@ -8,7 +8,6 @@ use bitbybit::bitfield;
 use pchan_bind::ringbuf::traits::*;
 use pchan_bind::{AudioProducer, BindAudioProducer};
 use pchan_utils::{CacheAligned, hex};
-use rayon::iter::{IndexedParallelIterator, IntoParallelRefMutIterator, ParallelIterator};
 
 use crate::Emu;
 use crate::io::{CastIOFrom, CastIOInto, IO, IOResult, UnhandledIO};
@@ -183,7 +182,7 @@ pub trait Spu: IO {
             0x1f801d82 => Ok(self.spu().main_vol_right.io_from_u32()),
 
             0x1f801db8 => todo!("todo(spu): read from current main volume l/r"),
-            addr @ 0x1f801e00..=0x1f801e5c if let Some(n) = voice_idx(addr, 0x1f801e00, 0x4) => {
+            addr @ 0x1f801e00..=0x1f801e5c if let Some(_) = voice_idx(addr, 0x1f801e00, 0x4) => {
                 todo!("todo(spu): read from current voice volume l/r")
             }
 
@@ -303,7 +302,7 @@ pub trait Spu: IO {
                 Ok(())
             }
             0x1f801db8 => todo!("todo(spu): write to current main volume l/r"),
-            addr @ 0x1f801e00..=0x1f801e5c if let Some(n) = voice_idx(addr, 0x1f801e00, 0x4) => {
+            addr @ 0x1f801e00..=0x1f801e5c if let Some(_) = voice_idx(addr, 0x1f801e00, 0x4) => {
                 todo!("todo(spu): write to current voice volume l/r")
             }
             _ => Err(UnhandledIO(address)),

@@ -33,7 +33,7 @@ impl Default for Tty {
 }
 
 #[derive(Error, Debug)]
-enum TtyFlushError {
+pub enum TtyFlushError {
     #[error("tty: invalid utf8: {0}")]
     Utf8Err(#[from] Utf8Error),
     #[error("tty: channel closed")]

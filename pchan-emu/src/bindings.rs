@@ -84,6 +84,7 @@ impl Emu {
         unsafe { IO::read_ext::<i32, ext::NoExt>(&mut *self, address) }
     }
 
+    /// # Safety
     pub unsafe extern "C" fn ext_run_io(self: *mut Emu) {
         unsafe {
             self.as_mut_unchecked().run_io();

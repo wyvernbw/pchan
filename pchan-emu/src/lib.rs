@@ -5,7 +5,6 @@
 #![allow(clippy::collapsible_if)]
 #![feature(arbitrary_self_types_pointers)]
 #![cfg_attr(test, feature(random))]
-#![feature(slice_swap_unchecked)]
 #![feature(read_array)]
 #![feature(stmt_expr_attributes)]
 #![feature(const_clone)]
@@ -14,15 +13,12 @@
 #![feature(const_convert)]
 #![feature(unboxed_closures)]
 #![feature(fn_traits)]
-#![feature(const_ops)]
 #![feature(const_trait_impl)]
-#![feature(debug_closure_helpers)]
 #![feature(iter_intersperse)]
 #![feature(generic_const_exprs)]
 #![feature(const_array)]
 #![feature(portable_simd)]
 #![feature(const_try)]
-#![feature(alloc_slice_into_array)]
 #![feature(explicit_tail_calls)]
 // allow unused variables in tests to supress the setup tracing warnings
 #![cfg_attr(test, allow(unused_variables))]
@@ -35,7 +31,7 @@ use crate::debug::DebuggerState;
 use crate::{
     bootloader::BootloaderState,
     cpu::Cpu,
-    dynarec_v2::{DynarecBlock, DynarecCache},
+    dynarec_v2::DynarecCache,
     gpu::GpuState,
     io::{
         cdrom::CDRomState, dma::DmaState, irq::IrqState, sio::SioState, timers::TimerState,
@@ -106,6 +102,7 @@ pub struct Emu {
     pub dbg:           DebuggerState,
     pub cdrom:         CDRomState,
     pub sio:           SioState,
+    pub irq:           IrqState,
 }
 
 impl Emu {

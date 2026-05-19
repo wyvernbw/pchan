@@ -1,6 +1,4 @@
 use crate::io::cdrom::CDRomState;
-use arbitrary_int::prelude::*;
-use bitbybit::*;
 use pchan_utils::hex;
 
 use super::Int;

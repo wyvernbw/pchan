@@ -1413,7 +1413,7 @@ impl GpuState {
     }
 
     pub fn pending_event(&self) -> (VideoEventKind, u64) {
-        let hblank = self.cycles_hblank_pending();
+        let _hblank = self.cycles_hblank_pending();
         let vblank = self.cycles_vblank_pending();
 
         // if hblank < vblank {

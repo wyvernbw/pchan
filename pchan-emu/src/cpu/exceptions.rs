@@ -1,8 +1,7 @@
 use arbitrary_int::prelude::*;
 use bitbybit::{bitenum, bitfield};
-use pchan_macros::instrument;
 
-use crate::{Bus, Emu, cpu::Cop0StatusReg, io::irq::Irq};
+use crate::{Bus, Emu, cpu::Cop0StatusReg};
 
 #[bitfield(u32, debug)]
 pub struct CauseRegister {
