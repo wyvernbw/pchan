@@ -155,8 +155,8 @@ pub trait CDRom: Bus + Interrupts {
             }
             _ => Err(UnhandledIO(address)),
         }
-        // .inspect(|_| tracing::info!("w(cdrom): {},{}", hex(address), bank))
     }
+
     fn read<T>(&mut self, address: u32) -> Result<T, UnhandledIO> {
         let address = address & 0x1fffffff;
         let bank = self.cdrom().bank();
@@ -177,7 +177,6 @@ pub trait CDRom: Bus + Interrupts {
             (0x1f801803, 1 | 3) => Ok(self.cdrom().hint_status.io_from_u32()),
             _ => Err(UnhandledIO(address)),
         }
-        // .inspect(|_| tracing::info!("r(cdrom): {},{}", hex(address), bank))
     }
 
     #[tracing::instrument(skip_all)]
