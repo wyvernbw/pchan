@@ -98,7 +98,7 @@ pub trait CDRom: Bus + Interrupts {
                     match response {
                         CdromResponse::None => {}
                         CdromResponse::Immediate(response) => {
-                            self.cdrom_mut().result_fifo.extend(response.data);
+                            self.cdrom_mut().result_push_many(response.data);
                             self.cdrom_mut().hint_status.set_intsts(response.int);
                             self.trigger_irq(irq::Irq::Irq2CDRom);
                             tracing::info!("HINT_STAT={}", hex(self.cdrom().hint_status));
@@ -113,6 +113,7 @@ pub trait CDRom: Bus + Interrupts {
                         }
                     }
                 }
+                self.cdrom_mut().param_fifo.clear();
                 tracing::info!("cdrom = {:#?}", self.cdrom());
                 Ok(())
             }
@@ -143,13 +144,6 @@ pub trait CDRom: Bus + Interrupts {
             (0x1f801803, 0) => trace_todo!("todo(cdrom): write to request register"),
             (0x1f801803, 1) => {
                 let hclrctl = CDRomHClrCtl::new_with_raw_value(value);
-                let ack = hclrctl.clrint().raw_value();
-                let hint_status = self.cdrom().hint_status.intsts().raw_value();
-                let hint_status = hint_status & (!ack);
-                self.cdrom_mut()
-                    .hint_status
-                    .set_intsts(HInt::new_with_raw_value(hint_status));
-                tracing::info!("HINT_STAT={}", hex(hint_status));
                 self.cdrom_mut().write_h_clr_ctl(hclrctl);
                 Ok(())
             }
@@ -189,10 +183,16 @@ pub trait CDRom: Bus + Interrupts {
     #[tracing::instrument(skip_all)]
     fn handle_ev_cdrom_response(&mut self, ctx: EvCtx) {
         let response = self.cdrom_mut().responses.remove(ctx.id);
-        self.cdrom_mut().result_fifo.extend(response.data);
+        self.cdrom_mut().result_push_many(response.data);
         self.cdrom_mut().hint_status.set_intsts(response.int);
         self.cdrom_mut().status.set_busy_status(false);
-        self.trigger_irq(irq::Irq::Irq2CDRom);
+
+        let hint_status = self.cdrom().hint_status.raw_value();
+        let hint_mask = self.cdrom().hint_mask.raw_value();
+        if hint_status & hint_mask != 0 {
+            self.trigger_irq(irq::Irq::Irq2CDRom);
+        }
+
         tracing::info!("HINT_STAT={}", hex(self.cdrom().hint_status));
         tracing::info!("trigger cdrom irq!");
     }
@@ -266,7 +266,7 @@ impl CDRomState {
 ///  4   BFWRDY Sound map XA-ADPCM buffer write ready (1=decoder is ready for next sector)
 ///  5-7 -      Reserved                              (always 1)
 /// ```
-#[bitfield(u8, default = 0xe0, debug)]
+#[bitfield(u8, default = 0x0, debug)]
 struct CDRomHIntSts {
     #[bits(0..=2, rw)]
     intsts:    HInt,
@@ -301,7 +301,7 @@ struct CDRomHIntMask {
 /// INT7 -
 /// ```
 #[bitenum(u3, exhaustive = true)]
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum HInt {
     Int0NoInt     = 0x0,
     Int1DataReady = 0x1,
@@ -358,6 +358,10 @@ impl CDRomState {
             let new_intsts = intsts & !clrint;
             let new_intsts = HInt::new_with_raw_value(new_intsts);
             hintsts.set_intsts(new_intsts);
+
+            if hclrctl.clrint() != HInt::Int0NoInt {
+                self.result_fifo.clear();
+            }
         }
 
         if hclrctl.clr_buf_empty() {
