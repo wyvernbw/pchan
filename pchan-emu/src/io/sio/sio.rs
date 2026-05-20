@@ -264,15 +264,13 @@ pub trait Sio: Bus + Interrupts {
 
     fn run_sio_bdtimers(&mut self, d_clock: u64) {
         let sio = self.sio_mut();
-        {
-            let bd = sio.sio0stat.bd_timer().as_u32();
-            match bd.checked_sub(d_clock as u32) {
-                Some(bd) => {
-                    sio.sio0stat.set_bd_timer(bd.as_());
-                }
-                None => {
-                    sio.sio0stat.set_bd_timer(sio.sio_cycles().as_());
-                }
+        let bd = sio.sio0stat.bd_timer().as_u32();
+        match bd.checked_sub(d_clock as u32) {
+            Some(bd) => {
+                sio.sio0stat.set_bd_timer(bd.as_());
+            }
+            None => {
+                sio.sio0stat.set_bd_timer(sio.sio_cycles().as_());
             }
         }
     }

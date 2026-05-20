@@ -50,10 +50,8 @@ impl Emu {
         self.cpu_mut().cycles = self.cpu().cycles.wrapping_add(d_clock);
         self.evque_advance(d_clock);
 
-        // gpu commands must run before dma to ensure gp0 fifo is cleared
-        self.run_gpu_commands();
         self.run_video_io(d_clock);
-        self.run_sio_io(d_clock);
+        self.run_sio_bdtimers(d_clock);
 
         let mut d_clock = d_clock;
         while d_clock > 0 {

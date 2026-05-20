@@ -1,13 +1,12 @@
 use crate::{
     Bus, Emu,
-    gpu::Gpu,
+    gpu::{Gpu, GpuCmd},
     io::{CastIOFrom, CastIOInto, IO, IOResult, Interrupts, UnhandledIO, evque::EvCtx, irq::Irq},
     memory::fastmem::Fastmem,
     trace_todo,
 };
 use arbitrary_int::prelude::*;
 use bitbybit::{bitenum, bitfield};
-use heapless::binary_heap::Min;
 use pchan_macros::{pchan_instrument_read, pchan_instrument_write};
 use pchan_utils::hex;
 use slab::Slab;
@@ -280,7 +279,7 @@ pub trait Dma: Bus + IO + Fastmem + Interrupts + Gpu {
                                 // would hang until the gpu has capacity for more
                                 // commands. but our commands do not take actual
                                 // time to execute
-                                self.gp0_cmd_queue_push_or_flush(value);
+                                self.gp0_cmd(value);
                                 tracing::trace!("dma2(slice): {}", hex(value));
                             }
                         }
@@ -329,7 +328,7 @@ pub trait Dma: Bus + IO + Fastmem + Interrupts + Gpu {
                     let mut addr = channel.madr.addr().as_u32();
                     for _ in 0..channel.bcr.s0_word_count() {
                         let value = Fastmem::read(self, addr).unwrap();
-                        self.gp0_cmd_queue_push_or_flush(value);
+                        self.gp0_cmd(value);
                         tracing::trace!("dma2(burst): {}", hex(value));
                         addr += 0x4;
                     }
@@ -355,7 +354,7 @@ pub trait Dma: Bus + IO + Fastmem + Interrupts + Gpu {
                         let addr = addr + idx as u32 * 0x4 + 0x4;
                         let cmd = IO::read::<u32>(self, addr);
                         tracing::trace!(addr = %hex(addr), "dma2 push: {}", hex(cmd),);
-                        self.gp0_cmd_queue_push_or_flush(cmd);
+                        self.gp0_cmd(GpuCmd::new_with_raw_value(cmd));
                     }
                     visited.insert(addr).expect(
                         "bug: dma2 linked list traversal visited set capacity is too small.",
