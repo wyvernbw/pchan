@@ -19,4 +19,12 @@ impl CDRomVerPtr {
     pub fn iter(self) -> impl Iterator<Item = u8> {
         self.0.iter().copied()
     }
+
+    pub fn to_owned(&self) -> CDRomVer {
+        *self.0
+    }
+
+    pub fn as_slice(&self) -> &[u8] {
+        self.0.as_slice()
+    }
 }

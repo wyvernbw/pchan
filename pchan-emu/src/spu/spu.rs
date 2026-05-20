@@ -7,9 +7,10 @@ use std::sync::Mutex;
 use bitbybit::bitfield;
 use pchan_bind::ringbuf::traits::*;
 use pchan_bind::{AudioProducer, BindAudioProducer};
-use pchan_utils::{CacheAligned, hex};
+use pchan_utils::hex;
 
 use crate::Emu;
+use crate::io::evque::EvCtx;
 use crate::io::{CastIOFrom, CastIOInto, IO, IOResult, UnhandledIO};
 use crate::memory::kb;
 use crate::spu::adpcm::{ADPCMCurrent, ADPCMHeader, ADPCMRepeat, ADPCMSampleRate, ADPCMStart};
@@ -17,7 +18,7 @@ use crate::spu::adsr::{ADSRState, EnvelopePhase, apply_volume};
 
 #[derive(derive_more::Debug)]
 pub struct SpuState {
-    voices:         Box<[CacheAligned<Voice>; 24]>,
+    voices:         Box<[Voice; 24]>,
     adsr:           ADSRState,
     main_vol_left:  i16,
     main_vol_right: i16,
@@ -309,6 +310,7 @@ pub trait Spu: IO {
         }
     }
 
+    #[deprecated]
     fn run_spu(&mut self, mut dclock: u64) {
         dclock += self.spu().clock;
         self.spu_mut().clock = 0;
@@ -317,6 +319,16 @@ pub trait Spu: IO {
             self.clock();
         }
         self.spu_mut().clock += dclock;
+    }
+
+    fn handle_ev_spu_clock(&mut self, ctx: EvCtx) {
+        self.clock();
+        self.evque_mut().schedule_from(
+            Self::handle_ev_spu_clock,
+            0,
+            ctx.clock,
+            SpuState::CLOCK_CYCLES,
+        );
     }
 
     fn clock(&mut self) {

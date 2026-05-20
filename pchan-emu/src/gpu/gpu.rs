@@ -57,9 +57,7 @@ pub struct GpuState {
     pub gpustat:         GpuStatReg,
     pub gp0:             Gp0,
     pub gp0read:         [u16; 2],
-    pub gp0cmd_queue:    Deque<u32, 16>,
     pub gp0read_queue:   Deque<u32, 32>,
-    pub gp1cmd_queue:    Deque<u32, 16>,
     pub dp:              Display,
     /// GP0(0xe2) - Texture Window setting
     pub tex_window:      Gp0TexWindowCmd,
@@ -97,8 +95,6 @@ impl Default for GpuState {
             gp0: Gp0::WaitingForCmd,
             gp0read: Default::default(),
             gp0read_queue: Deque::new(),
-            gp0cmd_queue: Deque::new(),
-            gp1cmd_queue: Deque::default(),
             model: GpuModel::default(),
             tex_window: Default::default(),
             draw_reg: Default::default(),
@@ -181,17 +177,11 @@ pub trait Gpu: Bus + Interrupts {
 
         match address {
             0x1f80_1810 => {
-                self.gpu_mut()
-                    .gp0cmd_queue
-                    .push_back(value.io_into_u32_overwrite(0x0))
-                    .unwrap();
+                self.gp0_cmd(GpuCmd::new_with_raw_value(value.io_into_u32_overwrite(0x0)));
                 Ok(())
             }
             0x1f80_1814 => {
-                self.gpu_mut()
-                    .gp1cmd_queue
-                    .push_back(value.io_into_u32())
-                    .unwrap();
+                self.gp1_cmd(GpuCmd::new_with_raw_value(value.io_into_u32_overwrite(0x0)));
                 Ok(())
             }
             _ => Err(UnhandledIO(address)),
@@ -308,262 +298,247 @@ pub trait Gpu: Bus + Interrupts {
         }
     }
 
-    fn gp0_cmd_queue_push(&mut self, value: u32) -> Result<(), u32> {
-        self.gpu_mut().gp0cmd_queue.push_back(value)
-    }
-
-    fn gp0_cmd_queue_push_or_flush(&mut self, value: u32) {
-        while self.gp0_cmd_queue_push(value).is_err() {
-            self.gp0_cmd_queue_flush();
-        }
-    }
-
     #[pchan_macros::instrument(level = "trace", skip_all)]
-    fn gp0_cmd_queue_flush(&mut self) {
-        while let Some(value) = self.gpu_mut().gp0cmd_queue.pop_front() {
-            tracing::trace!(gp0cmd = %hex(value));
-            let cmd = GpuCmd::new_with_raw_value(value);
-            let gp0 = match &mut self.gpu_mut().gp0 {
-                Gp0::WaitingForCmd => self.gp0reduce(cmd),
-                Gp0::CpRectCpuToVram(Gp0CpRect::RecvDest) => {
-                    let dest: VramCoord = unsafe { transmute(value) };
-                    let dest = dest.copy_cmd_pos_mask();
-                    tracing::debug!("cpu to vram copy destination: {dest:?}");
-                    Gp0::CpRectCpuToVram(Gp0CpRect::RecvSize { dest })
+    fn gp0_cmd(&mut self, cmd: GpuCmd) {
+        let value = cmd.raw_value();
+        tracing::trace!(gp0cmd = %hex(cmd));
+        let gp0 = match &mut self.gpu_mut().gp0 {
+            Gp0::WaitingForCmd => self.gp0reduce(cmd),
+            Gp0::CpRectCpuToVram(Gp0CpRect::RecvDest) => {
+                let dest: VramCoord = unsafe { transmute(value) };
+                let dest = dest.copy_cmd_pos_mask();
+                tracing::debug!("cpu to vram copy destination: {dest:?}");
+                Gp0::CpRectCpuToVram(Gp0CpRect::RecvSize { dest })
+            }
+            Gp0::CpRectCpuToVram(Gp0CpRect::RecvSize { dest }) => {
+                let size: VramCoord = unsafe { transmute(value) };
+                let size = size.copy_cmd_size_mask();
+                tracing::debug!("cpu to vram copy size: {size:?}");
+                Gp0::CpRectCpuToVram(Gp0CpRect::RecvData(VramCursor::new(*dest, *dest + size)))
+            }
+            Gp0::CpRectCpuToVram(Gp0CpRect::RecvData(cursor)) => {
+                let mut cursor = *cursor;
+                // let set_mask = self.gpu().gpustat.set_mask();
+                let draw_pixels = self.gpu().gpustat.draw_pixels();
+                let mut lock = self.gpu_mut().lock_vram_mut();
+                for (at, halfword) in cursor.iter().take(2).zip(halfwords(value)) {
+                    lock.vram_draw(at, halfword, draw_pixels);
                 }
-                Gp0::CpRectCpuToVram(Gp0CpRect::RecvSize { dest }) => {
-                    let size: VramCoord = unsafe { transmute(value) };
-                    let size = size.copy_cmd_size_mask();
-                    tracing::debug!("cpu to vram copy size: {size:?}");
-                    Gp0::CpRectCpuToVram(Gp0CpRect::RecvData(VramCursor::new(*dest, *dest + size)))
-                }
-                Gp0::CpRectCpuToVram(Gp0CpRect::RecvData(cursor)) => {
-                    let mut cursor = *cursor;
-                    // let set_mask = self.gpu().gpustat.set_mask();
-                    let draw_pixels = self.gpu().gpustat.draw_pixels();
-                    let mut lock = self.gpu_mut().lock_vram_mut();
-                    for (at, halfword) in cursor.iter().take(2).zip(halfwords(value)) {
-                        lock.vram_draw(at, halfword, draw_pixels);
-                    }
-                    match cursor.done() {
-                        true => {
-                            self.gpu_mut().gpustat.set_ready_recv_cmd(true);
-
-                            Gp0::WaitingForCmd
-                        }
-                        false => Gp0::CpRectCpuToVram(Gp0CpRect::RecvData(cursor)),
-                    }
-                }
-
-                Gp0::CpRectVramToCpu(Gp0CpRect::RecvDest) => {
-                    let dest: VramCoord = unsafe { transmute(value) };
-                    let dest = dest.copy_cmd_pos_mask();
-                    Gp0::CpRectVramToCpu(Gp0CpRect::RecvSize { dest })
-                }
-
-                Gp0::CpRectVramToCpu(Gp0CpRect::RecvSize { dest }) => {
-                    let dest = *dest;
-                    let size: VramCoord = unsafe { transmute(value) };
-                    let size = size.copy_cmd_size_mask();
-
-                    self.gpu_mut().gpustat.set_ready_send_vram(true);
-                    Gp0::CpRectVramToCpu(Gp0CpRect::RecvData(VramCursor::new(dest, dest + size)))
-                }
-                // cancel vram to cpu?
-                Gp0::CpRectVramToCpu(Gp0CpRect::RecvData(_)) => self.gpu().gp0.clone(),
-
-                // vram to vram copy
-                Gp0::CpRectVramToVram(Gp0VramCpRect::RecvSrc) => {
-                    let src: VramCoord = unsafe { transmute(value) };
-                    let src = src.copy_cmd_pos_mask();
-                    Gp0::CpRectVramToVram(Gp0VramCpRect::RecvDest { src })
-                }
-                Gp0::CpRectVramToVram(Gp0VramCpRect::RecvDest { src }) => {
-                    let dest: VramCoord = unsafe { transmute(value) };
-                    let dest = dest.copy_cmd_pos_mask();
-                    Gp0::CpRectVramToVram(Gp0VramCpRect::RecvSize { src: *src, dest })
-                }
-                Gp0::CpRectVramToVram(Gp0VramCpRect::RecvSize { src, dest }) => {
-                    let size: VramCoord = unsafe { transmute(value) };
-                    let size = size.copy_cmd_size_mask();
-                    let mut src_cursor = VramCursor::new(*src, size);
-                    let mut dest_cursor = VramCursor::new(*dest, size);
-                    let draw_pixels = self.gpu().gpustat.draw_pixels();
-
-                    let mut lock = self.gpu_mut().lock_vram_mut();
-                    for (src, dest) in src_cursor.iter().zip(dest_cursor.iter()) {
-                        let value = lock.vram_read(src);
-                        lock.vram_draw(dest, value, draw_pixels);
-                    }
-
-                    self.gpu_mut().gpustat.set_ready_recv_cmd(true);
-                    Gp0::WaitingForCmd
-                }
-                Gp0::Fill(gp0_vram_rect) => match *gp0_vram_rect {
-                    Gp0VramRect::Color { color } => {
-                        let pos: VramCoord = unsafe { transmute(value) };
-                        let pos = pos.fill_cmd_pos_mask();
-                        Gp0::Fill(Gp0VramRect::Pos { color, pos })
-                    }
-                    Gp0VramRect::Pos { color, pos } => {
-                        let size: VramCoord = unsafe { transmute(value) };
-                        let size = size.fill_cmd_size_mask();
-                        if size.x != 0 && size.y != 0 {
-                            let mut cursor = VramCursor::new(pos, pos + size);
-                            tracing::info!(pc = %hex(self.cpu().pc), "started vram fill: {cursor:#?}");
-                            let mut lock = self.gpu_mut().lock_vram_mut();
-                            for dest in cursor.iter() {
-                                let color = color >> 3u16;
-                                let rgb5 = Rgb5::new_with_raw_value(0x0)
-                                    .with_r(color.x.as_())
-                                    .with_g(color.y.as_())
-                                    .with_b(color.z.as_());
-                                lock.vram_write(dest, rgb5.raw_value());
-                            }
-                            tracing::info!("finished vram fill");
-                        }
+                match cursor.done() {
+                    true => {
+                        self.gpu_mut().gpustat.set_ready_recv_cmd(true);
 
                         Gp0::WaitingForCmd
                     }
-                },
+                    false => Gp0::CpRectCpuToVram(Gp0CpRect::RecvData(cursor)),
+                }
+            }
 
-                Gp0::DrawRectDecode(decoder) => {
-                    let decoder = decoder.advance(value);
-                    match decoder {
-                        Ok(decoder) => Gp0::DrawRectDecode(decoder),
-                        Err(draw_call) => {
-                            tracing::trace!(?draw_call, "decoded");
-                            self.gpu_mut().gpustat.set_ready_recv_cmd(true);
-                            self.issue_draw_call(DrawCallKind::Rect(draw_call));
-                            Gp0::WaitingForCmd
+            Gp0::CpRectVramToCpu(Gp0CpRect::RecvDest) => {
+                let dest: VramCoord = unsafe { transmute(value) };
+                let dest = dest.copy_cmd_pos_mask();
+                Gp0::CpRectVramToCpu(Gp0CpRect::RecvSize { dest })
+            }
+
+            Gp0::CpRectVramToCpu(Gp0CpRect::RecvSize { dest }) => {
+                let dest = *dest;
+                let size: VramCoord = unsafe { transmute(value) };
+                let size = size.copy_cmd_size_mask();
+
+                self.gpu_mut().gpustat.set_ready_send_vram(true);
+                Gp0::CpRectVramToCpu(Gp0CpRect::RecvData(VramCursor::new(dest, dest + size)))
+            }
+            // cancel vram to cpu?
+            Gp0::CpRectVramToCpu(Gp0CpRect::RecvData(_)) => self.gpu().gp0.clone(),
+
+            // vram to vram copy
+            Gp0::CpRectVramToVram(Gp0VramCpRect::RecvSrc) => {
+                let src: VramCoord = unsafe { transmute(value) };
+                let src = src.copy_cmd_pos_mask();
+                Gp0::CpRectVramToVram(Gp0VramCpRect::RecvDest { src })
+            }
+            Gp0::CpRectVramToVram(Gp0VramCpRect::RecvDest { src }) => {
+                let dest: VramCoord = unsafe { transmute(value) };
+                let dest = dest.copy_cmd_pos_mask();
+                Gp0::CpRectVramToVram(Gp0VramCpRect::RecvSize { src: *src, dest })
+            }
+            Gp0::CpRectVramToVram(Gp0VramCpRect::RecvSize { src, dest }) => {
+                let size: VramCoord = unsafe { transmute(value) };
+                let size = size.copy_cmd_size_mask();
+                let mut src_cursor = VramCursor::new(*src, size);
+                let mut dest_cursor = VramCursor::new(*dest, size);
+                let draw_pixels = self.gpu().gpustat.draw_pixels();
+
+                let mut lock = self.gpu_mut().lock_vram_mut();
+                for (src, dest) in src_cursor.iter().zip(dest_cursor.iter()) {
+                    let value = lock.vram_read(src);
+                    lock.vram_draw(dest, value, draw_pixels);
+                }
+
+                self.gpu_mut().gpustat.set_ready_recv_cmd(true);
+                Gp0::WaitingForCmd
+            }
+            Gp0::Fill(gp0_vram_rect) => match *gp0_vram_rect {
+                Gp0VramRect::Color { color } => {
+                    let pos: VramCoord = unsafe { transmute(value) };
+                    let pos = pos.fill_cmd_pos_mask();
+                    Gp0::Fill(Gp0VramRect::Pos { color, pos })
+                }
+                Gp0VramRect::Pos { color, pos } => {
+                    let size: VramCoord = unsafe { transmute(value) };
+                    let size = size.fill_cmd_size_mask();
+                    if size.x != 0 && size.y != 0 {
+                        let mut cursor = VramCursor::new(pos, pos + size);
+                        tracing::info!(pc = %hex(self.cpu().pc), "started vram fill: {cursor:#?}");
+                        let mut lock = self.gpu_mut().lock_vram_mut();
+                        for dest in cursor.iter() {
+                            let color = color >> 3u16;
+                            let rgb5 = Rgb5::new_with_raw_value(0x0)
+                                .with_r(color.x.as_())
+                                .with_g(color.y.as_())
+                                .with_b(color.z.as_());
+                            lock.vram_write(dest, rgb5.raw_value());
                         }
+                        tracing::info!("finished vram fill");
+                    }
+
+                    Gp0::WaitingForCmd
+                }
+            },
+
+            Gp0::DrawRectDecode(decoder) => {
+                let decoder = decoder.advance(value);
+                match decoder {
+                    Ok(decoder) => Gp0::DrawRectDecode(decoder),
+                    Err(draw_call) => {
+                        tracing::trace!(?draw_call, "decoded");
+                        self.gpu_mut().gpustat.set_ready_recv_cmd(true);
+                        self.issue_draw_call(DrawCallKind::Rect(draw_call));
+                        Gp0::WaitingForCmd
                     }
                 }
-                Gp0::DrawPolygonDecode(decoder) => {
-                    // we put this back in at the end of the function
-                    let decoder = std::mem::take(decoder);
+            }
+            Gp0::DrawPolygonDecode(decoder) => {
+                // we put this back in at the end of the function
+                let decoder = std::mem::take(decoder);
 
-                    let decoder = decoder.advance(value);
-                    match decoder {
-                        Ok(decoder) => Gp0::DrawPolygonDecode(decoder),
-                        Err(draw_call) => {
-                            tracing::trace!(?draw_call, "decoded");
-                            self.gpu_mut().gpustat.set_ready_recv_cmd(true);
-                            self.issue_draw_call(DrawCallKind::Polygon(draw_call));
-                            Gp0::WaitingForCmd
-                        }
+                let decoder = decoder.advance(value);
+                match decoder {
+                    Ok(decoder) => Gp0::DrawPolygonDecode(decoder),
+                    Err(draw_call) => {
+                        tracing::trace!(?draw_call, "decoded");
+                        self.gpu_mut().gpustat.set_ready_recv_cmd(true);
+                        self.issue_draw_call(DrawCallKind::Polygon(draw_call));
+                        Gp0::WaitingForCmd
                     }
                 }
-                Gp0::DrawLineDecode(decoder) => {
-                    let decoder = std::mem::take(decoder);
-                    let decoder = decoder.advance(value);
-                    match decoder {
-                        Ok(decoder) => Gp0::DrawLineDecode(decoder),
-                        Err(draw_call) => {
-                            tracing::trace!(?draw_call, "decoded");
-                            self.gpu_mut().gpustat.set_ready_recv_cmd(true);
-                            self.issue_draw_call(DrawCallKind::Line(draw_call));
-                            Gp0::WaitingForCmd
-                        }
+            }
+            Gp0::DrawLineDecode(decoder) => {
+                let decoder = std::mem::take(decoder);
+                let decoder = decoder.advance(value);
+                match decoder {
+                    Ok(decoder) => Gp0::DrawLineDecode(decoder),
+                    Err(draw_call) => {
+                        tracing::trace!(?draw_call, "decoded");
+                        self.gpu_mut().gpustat.set_ready_recv_cmd(true);
+                        self.issue_draw_call(DrawCallKind::Line(draw_call));
+                        Gp0::WaitingForCmd
                     }
                 }
-            };
+            }
+        };
 
-            self.gpu_mut().gp0 = gp0;
-        }
+        self.gpu_mut().gp0 = gp0;
     }
 
-    fn gp1_cmd_queue_flush(&mut self) {
-        while let Some(value) = self.gpu_mut().gp1cmd_queue.pop_front() {
-            let value = GpuCmd::new_with_raw_value(value.io_into_u32());
-            tracing::trace!(cmd = ?value.cmd());
-            match value.cmd() {
-                0x00 => {
-                    self.gpu_mut().gp0cmd_queue.clear();
-                    self.gpu_mut().gpustat = GpuStatReg::new_with_raw_value(0x14802000);
-                    self.gpu_mut().gpustat.mock_ready();
-                }
-                0x01 => {
-                    self.gpu_mut().gp0cmd_queue.clear();
-                }
-                0x02 => {
-                    self.gpu_mut().gpustat.set_irq(false);
-                }
-                // GP1(03h) - Display Enable
-                0x03 => {
-                    let cmd = Gp1DisplayEnableCmd::new_with_raw_value(value.raw_value());
-                    self.gpu_mut().gpustat.set_display_enable(cmd.on_off());
-                }
-                0x04 => {
-                    let dir = DmaDirection::new_with_raw_value(value.fields().as_());
-                    self.gpu_mut().gpustat.set_dma_direction(dir);
-                    self.gpu_mut().compute_dma_request();
-                }
-                // GP1(05h) - Start of Display area (in VRAM)
-                0x05 => {
-                    let cmd = Gp1StartOfDisplayArea::new_with_raw_value(value.raw_value());
-                    self.gpu_mut().dp.display_vram_start = cmd.to_u16vec2();
-                    tracing::debug!("set framebuffer coords");
-                }
-                0x06 => {
-                    ///  0-11   X1 (260h+0)       ;12bit       ;\counted in video clock units,
-                    ///  12-23  X2 (260h+320*8)   ;12bit       ;/relative to HSYNC
-                    #[bitfield(u32)]
-                    struct HDisplayRange {
-                        #[bits(0..=11, r)]
-                        start: u12,
-                        #[bits(12..=23, r)]
-                        end:   u12,
-                    }
-
-                    let value = HDisplayRange::new_with_raw_value(value.raw_value());
-                    self.gpu_mut().dp.display_range_start.x = value.start().as_();
-                    self.gpu_mut().dp.display_range_end.x = value.end().as_();
-                    tracing::debug!("set h framebuffer range");
-                }
-                0x07 => {
-                    /// 0-9   Y1 (NTSC=88h-(240/2), (PAL=A3h-(288/2))  ;\scanline numbers on screen,
-                    /// 10-19 Y2 (NTSC=88h+(240/2), (PAL=A3h+(288/2))  ;/relative to VSYNC
-                    /// 20-23 Not used (zero)
-                    #[bitfield(u32)]
-                    struct VDisplayRange {
-                        #[bits(0..=9, r)]
-                        start: u10,
-                        #[bits(10..=19,r)]
-                        end:   u10,
-                    }
-                    let value = VDisplayRange::new_with_raw_value(value.raw_value());
-                    self.gpu_mut().dp.display_range_start.y = value.start().as_();
-                    self.gpu_mut().dp.display_range_end.y = value.end().as_();
-                    tracing::debug!("set v framebuffer range");
-                }
-                0x08 => {
-                    let cmd = DisplayModeCmd::new_with_raw_value(value.raw_value);
-                    let gpustat = &mut self.gpu_mut().gpustat;
-                    gpustat.set_h_resolution_1(cmd.hres_1());
-                    gpustat.set_v_resolution(cmd.vres());
-                    gpustat.set_video_mode(cmd.video_mode());
-                    gpustat.set_display_color_depth(cmd.display_color_depth());
-                    gpustat.set_v_interlace(cmd.v_interlace());
-                    gpustat.set_h_resolution_2(cmd.hres_2());
-                    gpustat.set_reverse_flag(cmd.screen_hflip());
-                }
-                // get gpu info
-                0x10 => {
-                    let Some(cmd) = self.gpu().get_gpu_info_cmd(value) else {
-                        return;
-                    };
-                    match cmd {
-                        GpuInfoCmd::Unused00 | GpuInfoCmd::Unused01 => {}
-                        GpuInfoCmd::TexWindow => {
-                            self.gpu_mut().gp0read = unsafe {
-                                transmute::<u32, [u16; 2]>(self.gpu().tex_window.raw_value())
-                            };
-                        }
-                    }
-                }
-                value => todo!("gp1 command: {}", hex(value)),
+    fn gp1_cmd(&mut self, value: GpuCmd) {
+        tracing::trace!(cmd = ?value.cmd());
+        match value.cmd() {
+            0x00 => {
+                // self.gpu_mut().gp0cmd_queue.clear();
+                self.gpu_mut().gpustat = GpuStatReg::new_with_raw_value(0x14802000);
+                self.gpu_mut().gpustat.mock_ready();
             }
+            0x01 => {
+                // self.gpu_mut().gp0cmd_queue.clear();
+            }
+            0x02 => {
+                self.gpu_mut().gpustat.set_irq(false);
+            }
+            // GP1(03h) - Display Enable
+            0x03 => {
+                let cmd = Gp1DisplayEnableCmd::new_with_raw_value(value.raw_value());
+                self.gpu_mut().gpustat.set_display_enable(cmd.on_off());
+            }
+            0x04 => {
+                let dir = DmaDirection::new_with_raw_value(value.fields().as_());
+                self.gpu_mut().gpustat.set_dma_direction(dir);
+                self.gpu_mut().compute_dma_request();
+            }
+            // GP1(05h) - Start of Display area (in VRAM)
+            0x05 => {
+                let cmd = Gp1StartOfDisplayArea::new_with_raw_value(value.raw_value());
+                self.gpu_mut().dp.display_vram_start = cmd.to_u16vec2();
+                tracing::debug!("set framebuffer coords");
+            }
+            0x06 => {
+                ///  0-11   X1 (260h+0)       ;12bit       ;\counted in video clock units,
+                ///  12-23  X2 (260h+320*8)   ;12bit       ;/relative to HSYNC
+                #[bitfield(u32)]
+                struct HDisplayRange {
+                    #[bits(0..=11, r)]
+                    start: u12,
+                    #[bits(12..=23, r)]
+                    end:   u12,
+                }
+
+                let value = HDisplayRange::new_with_raw_value(value.raw_value());
+                self.gpu_mut().dp.display_range_start.x = value.start().as_();
+                self.gpu_mut().dp.display_range_end.x = value.end().as_();
+                tracing::debug!("set h framebuffer range");
+            }
+            0x07 => {
+                /// 0-9   Y1 (NTSC=88h-(240/2), (PAL=A3h-(288/2))  ;\scanline numbers on screen,
+                /// 10-19 Y2 (NTSC=88h+(240/2), (PAL=A3h+(288/2))  ;/relative to VSYNC
+                /// 20-23 Not used (zero)
+                #[bitfield(u32)]
+                struct VDisplayRange {
+                    #[bits(0..=9, r)]
+                    start: u10,
+                    #[bits(10..=19,r)]
+                    end:   u10,
+                }
+                let value = VDisplayRange::new_with_raw_value(value.raw_value());
+                self.gpu_mut().dp.display_range_start.y = value.start().as_();
+                self.gpu_mut().dp.display_range_end.y = value.end().as_();
+                tracing::debug!("set v framebuffer range");
+            }
+            0x08 => {
+                let cmd = DisplayModeCmd::new_with_raw_value(value.raw_value);
+                let gpustat = &mut self.gpu_mut().gpustat;
+                gpustat.set_h_resolution_1(cmd.hres_1());
+                gpustat.set_v_resolution(cmd.vres());
+                gpustat.set_video_mode(cmd.video_mode());
+                gpustat.set_display_color_depth(cmd.display_color_depth());
+                gpustat.set_v_interlace(cmd.v_interlace());
+                gpustat.set_h_resolution_2(cmd.hres_2());
+                gpustat.set_reverse_flag(cmd.screen_hflip());
+            }
+            // get gpu info
+            0x10 => {
+                let Some(cmd) = self.gpu().get_gpu_info_cmd(value) else {
+                    return;
+                };
+                match cmd {
+                    GpuInfoCmd::Unused00 | GpuInfoCmd::Unused01 => {}
+                    GpuInfoCmd::TexWindow => {
+                        self.gpu_mut().gp0read = unsafe {
+                            transmute::<u32, [u16; 2]>(self.gpu().tex_window.raw_value())
+                        };
+                    }
+                }
+            }
+            value => todo!("gp1 command: {}", hex(value)),
         }
     }
 
@@ -582,13 +557,6 @@ pub trait Gpu: Bus + Interrupts {
 
     fn gpu_reconnect(&mut self, other: &impl Gpu) {
         self.gpu_mut().conn = other.gpu().conn.clone();
-    }
-
-    fn run_gpu_commands(&mut self) {
-        self.gp0_cmd_queue_flush();
-        self.gp1_cmd_queue_flush();
-        self.gpu_mut().compute_dma_request();
-        self.poll_draw_result();
     }
 
     fn poll_draw_result(&mut self) {
@@ -763,8 +731,8 @@ impl GpuState {
                 self.gpustat.set_dma_request(false);
             }
             DmaDirection::Unknown => {
-                let fifo_available = !self.gp0cmd_queue.is_full();
-                self.gpustat.set_dma_request(fifo_available);
+                // let fifo_available = !self.gp0cmd_queue.is_full();
+                self.gpustat.set_dma_request(true);
             }
             DmaDirection::CpuToGp0 => {
                 self.gpustat

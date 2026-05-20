@@ -129,7 +129,7 @@ fn reinit_emu(emu: &mut Emu) -> Result<()> {
     let gpu = emu.gpu.conn.clone();
     let dbg = std::mem::take(&mut emu.dbg);
 
-    *emu = Emu::default();
+    *emu = Emu::new();
     emu.spu.put_prod(audio);
     emu.gpu.conn = gpu;
     emu.dbg = dbg;
@@ -148,7 +148,7 @@ impl AppState {
 }
 
 async fn run_app(env: &EnvVars) -> Result<()> {
-    let mut emu = Emu::default();
+    let mut emu = Emu::new();
     let mut gpu = Renderer::new().await;
     let mut audio = pchan_audio::AudioTask::new()?;
     {

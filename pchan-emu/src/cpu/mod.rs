@@ -222,6 +222,7 @@ impl Cpu {
     pub const D_CLOCK_OFFSET: usize = offset_of!(Self, d_clock);
     pub const SCRATCH_OFFSET: usize = offset_of!(Cpu, scratch_buf);
     pub const SCRATCH_SIZE: usize = 8;
+    pub const CLOCK: u32 = 33_868_800;
 
     pub const fn reg_offset(reg: u8) -> usize {
         (offset_of!(Cpu, gpr) + size_of::<u32>() * reg as usize)

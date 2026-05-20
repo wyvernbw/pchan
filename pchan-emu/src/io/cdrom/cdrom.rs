@@ -1,18 +1,16 @@
 mod cdrom_cmds;
 mod cdrom_ver;
 
-use crate::{
-    Bus, Emu,
-    io::{
-        CastIOFrom, CastIOInto, UnhandledIO,
-        cdrom::{cdrom_cmds::StatusCode, cdrom_ver::CDRomVerPtr},
-        irq::{self, Interrupts},
-    },
-    trace_todo,
-};
+use crate::io::cdrom::cdrom_cmds::{CdromResponse, Response, StatusCode};
+use crate::io::cdrom::cdrom_ver::CDRomVerPtr;
+use crate::io::evque::EvCtx;
+use crate::io::irq::{self, Interrupts};
+use crate::io::{CastIOFrom, CastIOInto, UnhandledIO};
+use crate::{Bus, Emu, trace_todo};
 use arbitrary_int::prelude::*;
 use bitbybit::{bitenum, bitfield};
 use pchan_utils::hex;
+use slab::Slab;
 
 #[derive(Default, derive_more::Debug, Clone)]
 pub struct CDRomState {
@@ -25,6 +23,7 @@ pub struct CDRomState {
 
     status_code:  StatusCode,
     drive_status: DriveStatus,
+    responses:    Slab<Response>,
 }
 
 #[derive(Default, derive_more::Debug, Clone)]
@@ -32,9 +31,9 @@ enum DriveStatus {
     LidOpen,
     SpinUp,
     DetectBusy,
-    #[default]
     NoDisk,
     AudioDisk,
+    #[default]
     LicensedMode2,
 }
 
@@ -97,14 +96,21 @@ pub trait CDRom: Bus + Interrupts {
             (0x1f801801, 0) => {
                 for response in self.cdrom_mut().send_cmd(value) {
                     match response {
-                        cdrom_cmds::CdromIrqEvent::None => {}
-                        cdrom_cmds::CdromIrqEvent::Immediate(int) => {
+                        CdromResponse::None => {}
+                        CdromResponse::Immediate(response) => {
+                            self.cdrom_mut().result_fifo.extend(response.data);
+                            self.cdrom_mut().hint_status.set_intsts(response.int);
                             self.trigger_irq(irq::Irq::Irq2CDRom);
-                            self.cdrom_mut().hint_status.set_intsts(int);
                             tracing::info!("HINT_STAT={}", hex(self.cdrom().hint_status));
                             tracing::info!("trigger cdrom irq!");
                         }
-                        cdrom_cmds::CdromIrqEvent::InCycles(_, int) => todo!(),
+                        CdromResponse::InCycles(in_cycles, id) => {
+                            self.evque_mut().schedule(
+                                Self::handle_ev_cdrom_response,
+                                id,
+                                in_cycles,
+                            );
+                        }
                     }
                 }
                 tracing::info!("cdrom = {:#?}", self.cdrom());
@@ -178,6 +184,17 @@ pub trait CDRom: Bus + Interrupts {
             _ => Err(UnhandledIO(address)),
         }
         // .inspect(|_| tracing::info!("r(cdrom): {},{}", hex(address), bank))
+    }
+
+    #[tracing::instrument(skip_all)]
+    fn handle_ev_cdrom_response(&mut self, ctx: EvCtx) {
+        let response = self.cdrom_mut().responses.remove(ctx.id);
+        self.cdrom_mut().result_fifo.extend(response.data);
+        self.cdrom_mut().hint_status.set_intsts(response.int);
+        self.cdrom_mut().status.set_busy_status(false);
+        self.trigger_irq(irq::Irq::Irq2CDRom);
+        tracing::info!("HINT_STAT={}", hex(self.cdrom().hint_status));
+        tracing::info!("trigger cdrom irq!");
     }
 }
 

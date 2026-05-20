@@ -5,6 +5,7 @@ use crate::bootloader::Bootloader;
 use crate::cpu::exceptions::Exceptions;
 use crate::gpu::{Gpu, VideoEvents};
 use crate::io::dma::Dma;
+use crate::io::evque::EventQueue;
 use crate::io::irq::Interrupts;
 use crate::io::sio::Sio;
 use crate::io::timers::Timers;
@@ -15,6 +16,7 @@ use crate::{Bus, Emu, io::cdrom::CDRom, memory::fastmem::Fastmem};
 #[path = "./cdrom/cdrom.rs"]
 pub mod cdrom;
 pub mod dma;
+pub mod evque;
 pub mod irq;
 #[path = "./sio/sio.rs"]
 pub mod sio;
@@ -43,25 +45,22 @@ impl Emu {
             self.sideload_exe(AMIDOG_TESTS).unwrap();
         }
 
-        self.cpu_mut().vblank_timer = self.cpu().vblank_timer.wrapping_add(self.cpu().d_clock);
-        self.cpu_mut().cycles = self.cpu().cycles.wrapping_add(self.cpu().d_clock as u64);
+        let d_clock = self.cpu().d_clock as u64;
+        self.cpu_mut().vblank_timer = self.cpu().vblank_timer.wrapping_add(d_clock as u32);
+        self.cpu_mut().cycles = self.cpu().cycles.wrapping_add(d_clock);
+        self.evque_advance(d_clock);
 
-        // gpu commands must run before dma to ensure gp0 fifo is cleared
-        self.run_gpu_commands();
-        self.run_video_io(self.cpu.d_clock as u64);
-        self.run_spu(self.cpu.d_clock as u64);
-        self.run_sio_io(self.cpu.d_clock as u64);
+        self.run_video_io(d_clock);
+        self.run_sio_bdtimers(d_clock);
 
-        let mut d_clock = self.cpu.d_clock;
+        let mut d_clock = d_clock;
         while d_clock > 0 {
-            self.timers_advance_by_cpu(d_clock.min(u16::MAX as u32) as u16);
+            self.timers_advance_by_cpu(d_clock.min(u16::MAX as u64) as u16);
             self.run_timer_pipeline();
-            d_clock = d_clock.saturating_sub(u16::MAX as u32);
+            d_clock = d_clock.saturating_sub(u64::MAX);
         }
-        self.run_io_kernel_functions();
 
-        self.run_dma_transfers();
-        self.run_irq_io();
+        self.run_io_kernel_functions();
         self.run_exceptions_io();
         _ = self.run_sideloading();
     }
@@ -74,17 +73,6 @@ impl Emu {
             }
             _ => {}
         }
-    }
-
-    pub fn pending_event(&self) -> u64 {
-        let video_event = self.gpu().pending_event().1;
-        let video_event = self.video_cycles_to_cpu_cycles_approx(video_event);
-        let dma_event = self
-            .dma()
-            .pending_event()
-            .unwrap_or(u64::MAX)
-            .saturating_sub(self.cpu.cycles);
-        video_event.min(dma_event)
     }
 }
 

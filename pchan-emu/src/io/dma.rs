@@ -1,15 +1,15 @@
 use crate::{
     Bus, Emu,
-    gpu::Gpu,
-    io::{CastIOFrom, CastIOInto, IO, IOResult, Interrupts, UnhandledIO, irq::Irq},
+    gpu::{Gpu, GpuCmd},
+    io::{CastIOFrom, CastIOInto, IO, IOResult, Interrupts, UnhandledIO, evque::EvCtx, irq::Irq},
     memory::fastmem::Fastmem,
     trace_todo,
 };
 use arbitrary_int::prelude::*;
 use bitbybit::{bitenum, bitfield};
-use heapless::binary_heap::Min;
 use pchan_macros::{pchan_instrument_read, pchan_instrument_write};
 use pchan_utils::hex;
+use slab::Slab;
 
 #[derive(Debug, Clone)]
 pub struct DmaState {
@@ -19,17 +19,18 @@ pub struct DmaState {
     dma2: DmaChannel,
     dma6: DmaChannel,
 
-    queue: DmaQueue,
+    events: Slab<DmaEvent>,
 }
 
 impl Default for DmaState {
     fn default() -> Self {
         Self {
-            dpcr:  Dpcr::new_with_raw_value(0x07654321),
-            dicr:  Dicr::default(),
-            dma2:  DmaChannel::default(),
-            dma6:  DmaChannel::default(),
-            queue: DmaQueue::default(),
+            dpcr:   Dpcr::new_with_raw_value(0x07654321),
+            dicr:   Dicr::default(),
+            dma2:   DmaChannel::default(),
+            dma6:   DmaChannel::default(),
+            // queue: DmaQueue::default(),
+            events: Slab::with_capacity(1024),
         }
     }
 }
@@ -180,26 +181,23 @@ pub trait Dma: Bus + IO + Fastmem + Interrupts + Gpu {
 
     fn dma_schedule(&mut self, event: DmaEvent) {
         tracing::debug!("dma: schedulde dma event: {:#?}", event);
-        self.dma_mut().queue.heap.push(event).unwrap();
+        let id = self.dma_mut().events.insert(event);
+        self.evque_mut()
+            .schedule(Self::handle_dma_event, id, event.in_cycles);
     }
 
-    fn run_dma_transfers(&mut self) {
-        while let Some(event) = self.dma().queue.heap.peek() {
-            if event.upcoming > self.cpu().cycles {
-                break;
+    fn handle_dma_event(&mut self, ctx: EvCtx) {
+        let event = self.dma_mut().events.remove(ctx.id);
+        let idx = event.dma_t.idx();
+        match event.dma_t {
+            DmaTransportKind::Otc => {
+                self.dma6_write_data(event);
             }
-            let idx = event.dma_t.idx();
-            match event.dma_t {
-                DmaTransportKind::Otc => {
-                    self.dma6_write_data(*event);
-                }
-                DmaTransportKind::Gpu => {
-                    self.dma2_write_data(*event);
-                }
+            DmaTransportKind::Gpu => {
+                self.dma2_write_data(event);
             }
-            self.dma_irq_raise_complete(idx as usize);
-            _ = self.dma_mut().queue.heap.pop();
         }
+        self.dma_irq_raise_complete(idx as usize);
     }
 
     fn dma_irq_raise_complete(&mut self, idx: usize) {
@@ -223,16 +221,15 @@ pub trait Dma: Bus + IO + Fastmem + Interrupts + Gpu {
     }
 
     fn create_dma_event(&self, channel: DmaChannel, kind: DmaTransportKind) -> DmaEvent {
-        let clock = self.cpu().cycles;
         match channel.chcr.sync_mode() {
             SyncMode::Burst => DmaEvent {
-                upcoming:  clock + channel.burst_cycles(),
+                in_cycles: channel.burst_cycles(),
                 init_chan: channel,
                 slice:     None,
                 dma_t:     kind,
             },
             SyncMode::Slice => DmaEvent {
-                upcoming:  clock + channel.slice_cycles(),
+                in_cycles: channel.slice_cycles(),
                 init_chan: channel,
                 slice:     Some(SliceTransferState {
                     addr: channel.madr.addr().as_u32(),
@@ -241,13 +238,13 @@ pub trait Dma: Bus + IO + Fastmem + Interrupts + Gpu {
                 dma_t:     kind,
             },
             SyncMode::LinkedList => DmaEvent {
-                upcoming:  clock + channel.linked_list_cycles(self),
+                in_cycles: channel.linked_list_cycles(self),
                 init_chan: channel,
                 slice:     None,
                 dma_t:     kind,
             },
             SyncMode::Reserved => DmaEvent {
-                upcoming:  0,
+                in_cycles: 0,
                 init_chan: channel,
                 slice:     None,
                 dma_t:     kind,
@@ -282,7 +279,7 @@ pub trait Dma: Bus + IO + Fastmem + Interrupts + Gpu {
                                 // would hang until the gpu has capacity for more
                                 // commands. but our commands do not take actual
                                 // time to execute
-                                self.gp0_cmd_queue_push_or_flush(value);
+                                self.gp0_cmd(value);
                                 tracing::trace!("dma2(slice): {}", hex(value));
                             }
                         }
@@ -304,22 +301,22 @@ pub trait Dma: Bus + IO + Fastmem + Interrupts + Gpu {
                         bcr.set_s1_block_count(bcr.s1_block_count() - 1);
 
                         let cycles_per_step = event.init_chan.slice_cycles();
-                        let upcoming = event.upcoming + cycles_per_step;
                         let addr_step = event.init_chan.bcr.s1_block_size();
+                        let upcoming = clock + cycles_per_step;
                         let slice = SliceTransferState {
                             addr: slice.addr + addr_step as u32 * 0x4,
                             idx:  slice.idx + 1,
                         };
                         let next_event = DmaEvent {
-                            upcoming,
+                            in_cycles: cycles_per_step,
                             init_chan: event.init_chan,
-                            slice: Some(slice),
-                            dma_t: event.dma_t,
+                            slice:     Some(slice),
+                            dma_t:     event.dma_t,
                         };
                         if upcoming < clock {
                             current_event = Some(next_event);
                         } else {
-                            self.dma_mut().queue.heap.push(next_event).unwrap();
+                            self.dma_schedule(next_event);
                             break;
                         }
                     }
@@ -331,7 +328,7 @@ pub trait Dma: Bus + IO + Fastmem + Interrupts + Gpu {
                     let mut addr = channel.madr.addr().as_u32();
                     for _ in 0..channel.bcr.s0_word_count() {
                         let value = Fastmem::read(self, addr).unwrap();
-                        self.gp0_cmd_queue_push_or_flush(value);
+                        self.gp0_cmd(value);
                         tracing::trace!("dma2(burst): {}", hex(value));
                         addr += 0x4;
                     }
@@ -357,7 +354,7 @@ pub trait Dma: Bus + IO + Fastmem + Interrupts + Gpu {
                         let addr = addr + idx as u32 * 0x4 + 0x4;
                         let cmd = IO::read::<u32>(self, addr);
                         tracing::trace!(addr = %hex(addr), "dma2 push: {}", hex(cmd),);
-                        self.gp0_cmd_queue_push_or_flush(cmd);
+                        self.gp0_cmd(GpuCmd::new_with_raw_value(cmd));
                     }
                     visited.insert(addr).expect(
                         "bug: dma2 linked list traversal visited set capacity is too small.",
@@ -413,12 +410,6 @@ pub trait Dma: Bus + IO + Fastmem + Interrupts + Gpu {
         let end_node = DmaNodeHeader::new_with_raw_value(DmaNodeHeader::END);
         Fastmem::write(self, addr, end_node).expect("dma6 otc write must go to ram!");
         self.dma_mut().dma6.set_complete();
-    }
-}
-
-impl DmaState {
-    pub fn pending_event(&self) -> Option<u64> {
-        self.queue.heap.peek().map(|event| event.upcoming + 0x1)
     }
 }
 
@@ -680,32 +671,12 @@ impl DmaChannel {
     }
 }
 
-#[derive(Debug, Default, Clone)]
-pub struct DmaQueue {
-    heap: Box<heapless::BinaryHeap<DmaEvent, Min, 1024>>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DmaEvent {
-    upcoming:  u64,
+    in_cycles: u64,
     init_chan: DmaChannel,
     slice:     Option<SliceTransferState>,
     dma_t:     DmaTransportKind,
-}
-
-impl PartialOrd for DmaEvent {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for DmaEvent {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        match self.upcoming.cmp(&other.upcoming) {
-            core::cmp::Ordering::Equal => self.dma_t.idx().cmp(&other.dma_t.idx()),
-            ord => ord,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
