@@ -34,8 +34,8 @@ use crate::{
     dynarec_v2::DynarecCache,
     gpu::GpuState,
     io::{
-        cdrom::CDRomState, dma::DmaState, irq::IrqState, sio::SioState, timers::TimerState,
-        tty::Tty,
+        cdrom::CDRomState, dma::DmaState, evque::Evque, irq::IrqState, sio::SioState,
+        timers::TimerState, tty::Tty,
     },
     memory::MemoryState,
     spu::SpuState,
@@ -103,6 +103,7 @@ pub struct Emu {
     pub cdrom:         CDRomState,
     pub sio:           SioState,
     pub irq:           IrqState,
+    pub evque:         Evque<Self>,
 }
 
 impl Emu {
@@ -146,6 +147,8 @@ pub trait Bus {
     fn sio_mut(&mut self) -> &mut SioState;
     fn irq_mut(&mut self) -> &mut IrqState;
     fn irq(&self) -> &IrqState;
+    fn evque(&self) -> &Evque<Self>;
+    fn evque_mut(&mut self) -> &mut Evque<Self>;
 }
 
 impl Bus for Emu {
@@ -232,6 +235,14 @@ impl Bus for Emu {
     }
     fn irq(&self) -> &IrqState {
         &self.irq
+    }
+
+    fn evque(&self) -> &Evque<Self> {
+        &self.evque
+    }
+
+    fn evque_mut(&mut self) -> &mut Evque<Self> {
+        &mut self.evque
     }
 }
 
