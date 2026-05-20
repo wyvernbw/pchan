@@ -5,7 +5,7 @@ use crate::{
     Bus, Emu,
     io::{
         CastIOFrom, CastIOInto, UnhandledIO,
-        cdrom::cdrom_ver::CDRomVerPtr,
+        cdrom::{cdrom_cmds::StatusCode, cdrom_ver::CDRomVerPtr},
         irq::{self, Interrupts},
     },
     trace_todo,
@@ -22,6 +22,20 @@ pub struct CDRomState {
     param_fifo:  heapless::Deque<u8, 16>,
     result_fifo: heapless::Deque<u8, 16>,
     ver:         CDRomVerPtr,
+
+    status_code:  StatusCode,
+    drive_status: DriveStatus,
+}
+
+#[derive(Default, derive_more::Debug, Clone)]
+enum DriveStatus {
+    LidOpen,
+    SpinUp,
+    DetectBusy,
+    #[default]
+    NoDisk,
+    AudioDisk,
+    LicensedMode2,
 }
 
 /// Current todo:
@@ -81,15 +95,17 @@ pub trait CDRom: Bus + Interrupts {
             }
 
             (0x1f801801, 0) => {
-                match self.cdrom_mut().send_cmd(value) {
-                    cdrom_cmds::CdromIrqEvent::None => {}
-                    cdrom_cmds::CdromIrqEvent::Immediate => {
-                        self.trigger_irq(irq::Irq::Irq2CDRom);
-                        self.cdrom_mut().hint_status.set_intsts(Int::Int3Ack);
-                        tracing::info!("HINT_STAT={}", hex(self.cdrom().hint_status));
-                        tracing::info!("trigger cdrom irq!");
+                for response in self.cdrom_mut().send_cmd(value) {
+                    match response {
+                        cdrom_cmds::CdromIrqEvent::None => {}
+                        cdrom_cmds::CdromIrqEvent::Immediate(int) => {
+                            self.trigger_irq(irq::Irq::Irq2CDRom);
+                            self.cdrom_mut().hint_status.set_intsts(int);
+                            tracing::info!("HINT_STAT={}", hex(self.cdrom().hint_status));
+                            tracing::info!("trigger cdrom irq!");
+                        }
+                        cdrom_cmds::CdromIrqEvent::InCycles(_, int) => todo!(),
                     }
-                    cdrom_cmds::CdromIrqEvent::InCycles(_) => todo!(),
                 }
                 tracing::info!("cdrom = {:#?}", self.cdrom());
                 Ok(())
@@ -126,7 +142,7 @@ pub trait CDRom: Bus + Interrupts {
                 let hint_status = hint_status & (!ack);
                 self.cdrom_mut()
                     .hint_status
-                    .set_intsts(Int::new_with_raw_value(hint_status));
+                    .set_intsts(HInt::new_with_raw_value(hint_status));
                 tracing::info!("HINT_STAT={}", hex(hint_status));
                 self.cdrom_mut().write_h_clr_ctl(hclrctl);
                 Ok(())
@@ -236,7 +252,7 @@ impl CDRomState {
 #[bitfield(u8, default = 0xe0, debug)]
 struct CDRomHIntSts {
     #[bits(0..=2, rw)]
-    intsts:    Int,
+    intsts:    HInt,
     #[bit(3, rw)]
     buf_empty: bool,
     #[bit(4, rw)]
@@ -248,7 +264,7 @@ struct CDRomHIntSts {
 #[bitfield(u8, default = 0xe0, debug)]
 struct CDRomHIntMask {
     #[bits(0..=2, rw)]
-    intsts:    Int,
+    intsts:    HInt,
     #[bit(3, rw)]
     buf_empty: bool,
     #[bit(4, rw)]
@@ -269,8 +285,7 @@ struct CDRomHIntMask {
 /// ```
 #[bitenum(u3, exhaustive = true)]
 #[derive(Debug)]
-#[expect(clippy::enum_variant_names)]
-enum Int {
+pub enum HInt {
     Int0NoInt     = 0x0,
     Int1DataReady = 0x1,
     Int2Complete  = 0x2,
@@ -302,7 +317,7 @@ impl CDRomHIntMask {
 #[bitfield(u8, debug)]
 struct CDRomHClrCtl {
     #[bits(0..=2, r)]
-    clrint:         Int,
+    clrint:         HInt,
     #[bit(3, r)]
     clr_buf_empty:  bool,
     #[bit(4, r)]
@@ -324,7 +339,7 @@ impl CDRomState {
             let intsts = hintsts.intsts().raw_value();
             let clrint = hclrctl.clrint().raw_value();
             let new_intsts = intsts & !clrint;
-            let new_intsts = Int::new_with_raw_value(new_intsts);
+            let new_intsts = HInt::new_with_raw_value(new_intsts);
             hintsts.set_intsts(new_intsts);
         }
 

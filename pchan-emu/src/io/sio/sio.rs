@@ -298,7 +298,7 @@ pub trait Sio: Bus + Interrupts {
                 }
                 SioEvent::Sio0Ack => {
                     self.sio_mut().sio0stat.set_dsr_in_lvl(false);
-                    tracing::info!("pulse /ack");
+                    tracing::trace!("pulse /ack");
                 }
             };
         }
@@ -357,8 +357,6 @@ pub trait Sio: Bus + Interrupts {
                 }
             }
         }
-
-        tracing::info!("SIO0_STAT.1" = self.sio().sio0stat.rx_not_empty())
     }
 
     fn sio0_select(&mut self, device: PeripheralKind) {
@@ -690,7 +688,7 @@ impl SioState {
             self.sio0_tx = Sio0Tx::Idle;
         }
 
-        tracing::info!(ack=ctrl.ack(), port = ?self.sio0ctrl.sio0_port(), "/CS"=self.sio0ctrl.dtr_out_lvl(), rxen = ?(self.sio0ctrl.rx_on() as usize));
+        tracing::trace!(ack=ctrl.ack(), port = ?self.sio0ctrl.sio0_port(), "/CS"=self.sio0ctrl.dtr_out_lvl(), rxen = ?(self.sio0ctrl.rx_on() as usize));
         if ctrl.ack() {
             self.sio0stat.set_rx_par_err(false);
             self.sio0stat.set_irq(false);
@@ -709,7 +707,7 @@ impl SioState {
     }
 
     fn read_sio0_ctrl(&self) -> SioCtrlReg {
-        tracing::info!(port = ?self.sio0ctrl.sio0_port(), "/CS"=self.sio0ctrl.dtr_out_lvl(), rxen = ?(self.sio0ctrl.rx_on() as usize));
+        tracing::trace!(port = ?self.sio0ctrl.sio0_port(), "/CS"=self.sio0ctrl.dtr_out_lvl(), rxen = ?(self.sio0ctrl.rx_on() as usize));
         self.sio0ctrl
     }
 
