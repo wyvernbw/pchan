@@ -721,7 +721,7 @@ impl GpuState {
         self.wait_for_render_result();
     }
 
-    fn wait_for_render_result(&mut self) {
+    pub fn wait_for_render_result(&mut self) {
         if self.waiting_on_render {
             let vram = self
                 .conn

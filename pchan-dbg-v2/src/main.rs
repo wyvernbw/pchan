@@ -243,7 +243,7 @@ async fn run_app(env: &EnvVars) -> Result<()> {
                             tui_state.update_current_frame(Some((size, img)));
                         }
                         DbgTab::Gpu => {
-                            tui_state.update_current_vram_frame(&state.emu);
+                            tui_state.update_current_vram_frame(&mut state.emu);
                         }
                     }
                     term.draw(|frame| {
@@ -374,8 +374,12 @@ impl TuiState {
             self.current_frame = Some((rgba32, img));
         }
     }
-    fn update_current_vram_frame(&mut self, emu: &Emu) {
+    fn update_current_vram_frame(&mut self, emu: &mut Emu) {
         self.vram_framebuffer.clear_frontbuffer();
+        let vram = &emu.gpu.vram;
+        if vram.is_empty() {
+            emu.gpu.wait_for_render_result();
+        }
         let vram = &emu.gpu.vram;
         self.current_vram_frame.1.clear();
         for halfword in vram {
