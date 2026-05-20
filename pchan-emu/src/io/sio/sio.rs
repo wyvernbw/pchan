@@ -3,14 +3,14 @@ pub mod joypad;
 use arbitrary_int::prelude::*;
 use bitbybit::*;
 use derive_more as d;
-use heapless::{Deque, binary_heap::Min};
+use heapless::Deque;
 use pchan_utils::hex;
-use slab::Slab;
 
 use crate::{
     Bus, Emu,
     io::{
         CastIOFrom, CastIOInto, UnhandledIO,
+        evque::{EvCtx, PchanEventFn},
         irq::{Interrupts, Irq},
         sio::joypad::Joypad,
     },
@@ -44,6 +44,16 @@ pub enum SioEvent {
     Sio0ProcTx,
     Sio0Irq,
     Sio0Ack,
+}
+
+impl SioEvent {
+    fn to_callback<T: Sio + ?Sized>(&self) -> PchanEventFn<T> {
+        match self {
+            SioEvent::Sio0ProcTx => Sio::handle_ev_sio0_tx_proc,
+            SioEvent::Sio0Irq => Sio::handle_ev_sio0_irq,
+            SioEvent::Sio0Ack => Sio::handle_ev_sio0_ack,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -252,7 +262,7 @@ pub trait Sio: Bus + Interrupts {
         }
     }
 
-    fn run_sio_io(&mut self, d_clock: u64) {
+    fn run_sio_bdtimers(&mut self, d_clock: u64) {
         let sio = self.sio_mut();
         {
             let bd = sio.sio0stat.bd_timer().as_u32();
@@ -267,27 +277,27 @@ pub trait Sio: Bus + Interrupts {
         }
     }
 
-    fn sio_schedule_event(&mut self, ev: SioEvent, in_cycles: u64) {
-        let cb = match ev {
-            SioEvent::Sio0ProcTx => Self::handle_ev_sio0_tx_proc,
-            SioEvent::Sio0Irq => Self::handle_ev_sio0_irq,
-            SioEvent::Sio0Ack => Self::handle_ev_sio0_ack,
-        };
-        self.evque_mut().schedule(cb, 0, in_cycles);
+    fn sio_schedule_event_from(&mut self, ev: SioEvent, from_clock: u64, in_cycles: u64) {
+        self.evque_mut()
+            .schedule_from(ev.to_callback(), 0, from_clock, in_cycles);
     }
 
-    fn handle_ev_sio0_tx_proc(&mut self, _: usize, _: u64) {
+    fn sio_schedule_event(&mut self, ev: SioEvent, in_cycles: u64) {
+        self.evque_mut().schedule(ev.to_callback(), 0, in_cycles);
+    }
+
+    fn handle_ev_sio0_tx_proc(&mut self, _: EvCtx) {
         self.sio0_tx_proc();
     }
 
-    fn handle_ev_sio0_irq(&mut self, _: usize, _: u64) {
+    fn handle_ev_sio0_irq(&mut self, ctx: EvCtx) {
         self.sio_mut().irq_latch = false;
         let cycles = self.sio().sio_cycles();
         self.trigger_irq(Irq::Irq7JoypadAndMemcard);
-        self.sio_schedule_event(SioEvent::Sio0Ack, cycles as _);
+        self.sio_schedule_event_from(SioEvent::Sio0Ack, ctx.clock, cycles as _);
     }
 
-    fn handle_ev_sio0_ack(&mut self, _: usize, _: u64) {
+    fn handle_ev_sio0_ack(&mut self, _: EvCtx) {
         self.sio_mut().sio0stat.set_dsr_in_lvl(false);
         tracing::trace!("pulse /ack");
     }
@@ -351,7 +361,7 @@ pub trait Sio: Bus + Interrupts {
         }
     }
 
-    fn handle_ev_sio0_transfer(&mut self, _: usize, _: u64) {
+    fn handle_ev_sio0_transfer(&mut self, _: EvCtx) {
         if let Some((ev, in_cycles)) = self.sio_mut().sio0_run_transfer() {
             self.sio_schedule_event(ev, in_cycles);
         }

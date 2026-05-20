@@ -53,7 +53,6 @@ impl Emu {
         // gpu commands must run before dma to ensure gp0 fifo is cleared
         self.run_gpu_commands();
         self.run_video_io(d_clock);
-        self.run_spu(d_clock);
         self.run_sio_io(d_clock);
 
         let mut d_clock = d_clock;
@@ -62,8 +61,8 @@ impl Emu {
             self.run_timer_pipeline();
             d_clock = d_clock.saturating_sub(u64::MAX);
         }
-        self.run_io_kernel_functions();
 
+        self.run_io_kernel_functions();
         self.run_exceptions_io();
         _ = self.run_sideloading();
     }

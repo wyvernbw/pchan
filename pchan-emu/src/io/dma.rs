@@ -1,7 +1,7 @@
 use crate::{
     Bus, Emu,
     gpu::Gpu,
-    io::{CastIOFrom, CastIOInto, IO, IOResult, Interrupts, UnhandledIO, irq::Irq},
+    io::{CastIOFrom, CastIOInto, IO, IOResult, Interrupts, UnhandledIO, evque::EvCtx, irq::Irq},
     memory::fastmem::Fastmem,
     trace_todo,
 };
@@ -187,8 +187,8 @@ pub trait Dma: Bus + IO + Fastmem + Interrupts + Gpu {
             .schedule(Self::handle_dma_event, id, event.in_cycles);
     }
 
-    fn handle_dma_event(&mut self, id: usize, _: u64) {
-        let event = self.dma_mut().events.remove(id);
+    fn handle_dma_event(&mut self, ctx: EvCtx) {
+        let event = self.dma_mut().events.remove(ctx.id);
         let idx = event.dma_t.idx();
         match event.dma_t {
             DmaTransportKind::Otc => {

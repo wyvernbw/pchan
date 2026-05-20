@@ -38,7 +38,7 @@ use crate::{
         timers::TimerState, tty::Tty,
     },
     memory::MemoryState,
-    spu::SpuState,
+    spu::{Spu, SpuState},
 };
 
 pub mod bindings;
@@ -121,6 +121,12 @@ impl Emu {
             hex(self.cpu.pc),
             self
         )
+    }
+
+    pub fn new() -> Self {
+        let mut emu = Emu::default();
+        emu.handle_ev_spu_clock(io::evque::EvCtx::ZERO);
+        emu
     }
 }
 
