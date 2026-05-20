@@ -154,23 +154,23 @@ impl CDRomState {
             }
             // ReadTOC - Command 1Eh --> INT3(stat) --> INT2(stat)
             0x1e => {
-                self.status_code.set_read(true);
-                let id = arena.insert(Response {
+                self.status.set_busy_status(false);
+                tracing::info!("ReadTOC INT3(stat) --> INT2(stat)");
+                let res1 = arena.insert(Response {
+                    int:  HInt::Int3Ack,
+                    data: smallvec![self.status_code.raw_value()],
+                });
+                let res2 = arena.insert(Response {
                     int:  HInt::Int2Complete,
                     data: smallvec![self.status_code.raw_value()],
                 });
                 smallvec![
-                    CdromResponse::Immediate(Response {
-                        int:  HInt::Int3Ack,
-                        data: smallvec![self.status_code.raw_value()],
-                    }),
-                    CdromResponse::InCycles(Cpu::CLOCK as u64, id),
+                    CdromResponse::InCycles(105, res1),
+                    CdromResponse::InCycles(Cpu::CLOCK as u64, res2),
                 ]
             }
             cmd => {
                 todo!("todo(cdrom): unhandled cmd: {}", hex(cmd));
-                // tracing::warn!("todo(cdrom): unhandled cmd: {}", hex(cmd));
-                // one(CdromIrqEvent::None)
             }
         }
     }
