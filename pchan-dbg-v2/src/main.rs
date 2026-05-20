@@ -11,15 +11,13 @@ pub mod widgets;
 
 use arbitrary_int::prelude::*;
 use pchan_input::Input;
-use std::{
-    collections::VecDeque,
-    fs,
-    io::{Read, Write, stdout},
-    ops::RangeInclusive,
-    process::Stdio,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::collections::VecDeque;
+use std::fs;
+use std::io::{Read, Write, stdout};
+use std::ops::RangeInclusive;
+use std::process::Stdio;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture};
 use crossterm_simple_event::CrosstermSimpleEvent;
@@ -27,44 +25,34 @@ use edtui::{
     EditorEventHandler, EditorMode, EditorState, EditorStatusLine, EditorTheme, EditorView,
 };
 use miette::{Context, IntoDiagnostic, Result, miette};
-use pchan_emu::{
-    Emu,
-    bootloader::Bootloader,
-    cpu::reg_str,
-    debug::{Breakpoint, BreakpointKind},
-    dynarec_v2::{
-        Dynarec, DynarecFunction,
-        emitters::{DecodedOp, DynarecOp},
-        run_step,
-    },
-    gpu::{Rgb5, VideoEvents},
-    io::{IO, vblank::VBlank},
-};
+use pchan_emu::Emu;
+use pchan_emu::bootloader::Bootloader;
+use pchan_emu::cpu::reg_str;
+use pchan_emu::debug::{Breakpoint, BreakpointKind};
+use pchan_emu::dynarec_v2::emitters::{DecodedOp, DynarecOp};
+use pchan_emu::dynarec_v2::{Dynarec, DynarecFunction, run_step};
+use pchan_emu::gpu::{Rgb5, VideoEvents};
+use pchan_emu::io::IO;
+use pchan_emu::io::vblank::VBlank;
 use pchan_gpu::Renderer;
 use pchan_utils::{InitTracingArgs, hex, hex_pref};
 use rat_imaginary::{ImageDimensions, ImageState, ImageWidget, PixelFormat};
-use ratatui::{
-    DefaultTerminal, Frame, crossterm,
-    layout::{Constraint, Layout, Margin, Rect},
-    style::{Color, Style, Styled, Stylize},
-    text::{Span, ToSpan},
-    widgets::{
-        Block, BorderType, Borders, Clear, List, ListState, Paragraph, Row, Table, TableState,
-        Tabs, Widget,
-    },
+use ratatui::layout::{Constraint, Layout, Margin, Rect};
+use ratatui::style::{Color, Style, Styled, Stylize};
+use ratatui::text::{Span, ToSpan};
+use ratatui::widgets::{
+    Block, BorderType, Borders, Clear, List, ListState, Paragraph, Row, Table, TableState, Tabs,
+    Widget,
 };
+use ratatui::{DefaultTerminal, Frame, crossterm};
 use smol::LocalExecutor;
 use wgpu::Extent3d;
 
-use crate::{
-    display::{DisplayState, draw_display},
-    init::EnvVars,
-    widgets::{
-        button::{Button, ButtonResponse, ButtonState, ButtonStyles},
-        checkbox::{Checkbox, CheckboxState},
-        dropdown::{Dropdown, DropdownState},
-    },
-};
+use crate::display::{DisplayState, draw_display};
+use crate::init::EnvVars;
+use crate::widgets::button::{Button, ButtonResponse, ButtonState, ButtonStyles};
+use crate::widgets::checkbox::{Checkbox, CheckboxState};
+use crate::widgets::dropdown::{Dropdown, DropdownState};
 
 fn main() -> Result<()> {
     pchan_utils::init_tracing(InitTracingArgs {
@@ -339,6 +327,7 @@ fn run(callback: impl FnOnce(&mut DefaultTerminal)) -> Result<()> {
     let result = std::panic::catch_unwind(move || {
         let callback = callback;
         let callback = callback.0;
+        _ = crossterm::execute!(stdout(), DisableMouseCapture);
         callback(&mut term);
     })
     .map_err(|err| {
@@ -354,6 +343,7 @@ impl Drop for TuiState {
     fn drop(&mut self) {
         self.clear_main_framebuffer();
         self.clear_vram_framebuffer();
+        _ = crossterm::execute!(stdout(), DisableMouseCapture);
     }
 }
 
