@@ -76,6 +76,7 @@ impl IrqState {
 pub trait Interrupts: Bus + IO + Exceptions {
     fn trigger_irq(&mut self, irq: Irq) {
         self.irq_mut().trigger_irq(irq);
+        self.run_irq_io();
     }
     #[pchan_macros::instrument(
         level = "trace", "irq:r",
@@ -111,6 +112,7 @@ pub trait Interrupts: Bus + IO + Exceptions {
                 if flags.as_u16().count_ones() == 0 {
                     self.clear_irq();
                 }
+                self.run_irq_io();
 
                 Ok(())
             }
@@ -118,10 +120,15 @@ pub trait Interrupts: Bus + IO + Exceptions {
                 self.irq_mut().i_mask = IrqField::new_with_raw_value(
                     value.io_into_u32_overwrite(self.irq_mut().i_mask.raw_value()),
                 );
+                self.run_irq_io();
                 Ok(())
             }
             _ => Err(UnhandledIO(address)),
         }
+    }
+
+    fn handle_ev_irq(&mut self, _: usize, _: u64) {
+        self.run_irq_io();
     }
 
     fn run_irq_io(&mut self) {

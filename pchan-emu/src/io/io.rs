@@ -64,7 +64,6 @@ impl Emu {
         }
         self.run_io_kernel_functions();
 
-        self.run_irq_io();
         self.run_exceptions_io();
         _ = self.run_sideloading();
     }
