@@ -7,7 +7,7 @@ use std::sync::Mutex;
 use bitbybit::bitfield;
 use pchan_bind::ringbuf::traits::*;
 use pchan_bind::{AudioProducer, BindAudioProducer};
-use pchan_utils::{CacheAligned, hex};
+use pchan_utils::hex;
 
 use crate::Emu;
 use crate::io::evque::EvCtx;
@@ -18,7 +18,7 @@ use crate::spu::adsr::{ADSRState, EnvelopePhase, apply_volume};
 
 #[derive(derive_more::Debug)]
 pub struct SpuState {
-    voices:         Box<[CacheAligned<Voice>; 24]>,
+    voices:         Box<[Voice; 24]>,
     adsr:           ADSRState,
     main_vol_left:  i16,
     main_vol_right: i16,

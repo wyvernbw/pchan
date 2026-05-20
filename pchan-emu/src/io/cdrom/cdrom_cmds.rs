@@ -1,13 +1,24 @@
+use crate::cpu::Cpu;
 use crate::io::cdrom::{CDRomState, DriveStatus};
 use bitbybit::bitfield;
 use pchan_utils::hex;
+use smallvec::{SmallVec, smallvec};
 
 use super::HInt;
 
-pub enum CdromIrqEvent {
+#[derive(Debug, Clone)]
+pub struct Response {
+    pub int:  HInt,
+    pub data: SmallVec<[u8; 8]>,
+}
+
+pub type ResponseId = usize;
+
+#[derive(Debug, Clone)]
+pub enum CdromResponse {
     None,
-    Immediate(HInt),
-    InCycles(u64, HInt),
+    Immediate(Response),
+    InCycles(u64, ResponseId),
 }
 
 /// ```plaintext
@@ -42,7 +53,7 @@ pub struct StatusCode {
 
 impl Default for StatusCode {
     fn default() -> Self {
-        Self::ZERO.with_spindle_mot(true)
+        Self::ZERO
     }
 }
 
@@ -50,34 +61,40 @@ impl CDRomState {
     fn drain_params(&mut self) -> impl Iterator<Item = u8> {
         std::iter::from_fn(|| self.param_fifo.pop_front())
     }
-    pub fn send_cmd(&mut self, cmd: u8) -> [CdromIrqEvent; 2] {
-        fn one(event: CdromIrqEvent) -> [CdromIrqEvent; 2] {
-            [event, CdromIrqEvent::None]
-        }
-
+    pub fn send_cmd(&mut self, cmd: u8) -> SmallVec<[CdromResponse; 2]> {
         self.status.set_busy_status(true);
+        let arena = &mut self.responses;
+
+        fn diskerr(data: &[u8]) -> SmallVec<[CdromResponse; 2]> {
+            smallvec![CdromResponse::Immediate(Response {
+                int:  HInt::Int5DiskErr,
+                data: SmallVec::from_slice(data),
+            })]
+        }
 
         match cmd {
             0x01 => {
                 tracing::info!("0x01 nop");
                 self.status.set_busy_status(false);
-                self.result_push(self.status_code.raw_value());
-                one(CdromIrqEvent::Immediate(HInt::Int3Ack))
+                smallvec![CdromResponse::Immediate(Response {
+                    int:  HInt::Int3Ack,
+                    data: smallvec![self.status_code.raw_value()],
+                })]
             }
             0x19 => {
                 tracing::info!("0x19 test command");
                 let Some(sub) = self.drain_params().next() else {
-                    return one(CdromIrqEvent::None);
+                    return smallvec![CdromResponse::None];
                 };
                 tracing::info!("cdrom: cmd 0x19");
                 match sub {
                     // 20h INT3(yy,mm,dd,ver) Get cdrom BIOS date/version (yy,mm,dd,ver)
                     0x20 => {
                         self.status.set_busy_status(false);
-                        for value in self.ver.iter() {
-                            self.result_push(value);
-                        }
-                        one(CdromIrqEvent::Immediate(HInt::Int3Ack))
+                        smallvec![CdromResponse::Immediate(Response {
+                            int:  HInt::Int3Ack,
+                            data: SmallVec::from_slice(self.ver.as_slice()),
+                        })]
                     }
 
                     _ => {
@@ -85,7 +102,7 @@ impl CDRomState {
                             "todo(cdrom): cmd 0x19 (test) uhandled sub value: {}",
                             hex(sub)
                         );
-                        one(CdromIrqEvent::None)
+                        smallvec![CdromResponse::None]
                     }
                 }
             }
@@ -94,53 +111,60 @@ impl CDRomState {
                 tracing::info!("0x1a INT3(stat) -> INT2/5(...)");
                 match self.drive_status {
                     DriveStatus::LidOpen => {
-                        self.result_push(0x11);
-                        self.result_push(0x80);
                         self.status.set_busy_status(false);
-                        one(CdromIrqEvent::Immediate(HInt::Int5DiskErr))
+                        diskerr(&[0x11, 0x80])
                     }
                     DriveStatus::SpinUp => {
-                        self.result_push(0x01);
-                        self.result_push(0x80);
                         self.status.set_busy_status(false);
-                        one(CdromIrqEvent::Immediate(HInt::Int5DiskErr))
+                        diskerr(&[0x01, 0x80])
                     }
                     DriveStatus::DetectBusy => {
-                        self.result_push(0x03);
-                        self.result_push(0x80);
                         self.status.set_busy_status(false);
-                        one(CdromIrqEvent::Immediate(HInt::Int5DiskErr))
+                        diskerr(&[0x03, 0x80])
                     }
                     DriveStatus::NoDisk => {
-                        self.result_push(self.status_code.raw_value());
-                        self.result_push(0x08);
-                        self.result_push(0x40);
                         self.status.set_busy_status(false);
-                        [
-                            CdromIrqEvent::Immediate(HInt::Int3Ack),
-                            CdromIrqEvent::Immediate(HInt::Int5DiskErr),
+                        smallvec![
+                            CdromResponse::Immediate(Response {
+                                int:  HInt::Int3Ack,
+                                data: smallvec![0x08, 0x40],
+                            }),
+                            CdromResponse::Immediate(Response {
+                                int:  HInt::Int5DiskErr,
+                                data: smallvec![],
+                            }),
                         ]
                     }
                     DriveStatus::AudioDisk => todo!(),
                     // INT3(stat), INT2(02h,00h, 20h,00h, 53h,43h,45h,4xh)
                     DriveStatus::LicensedMode2 => {
-                        self.result_push(self.status_code.raw_value());
-                        self.result_push_many([0x02, 0x00, 0x20, 0x00, 0x53, 0x43, 0x45, 0x49]);
                         self.status.set_busy_status(false);
-                        [
-                            CdromIrqEvent::Immediate(HInt::Int3Ack),
-                            CdromIrqEvent::Immediate(HInt::Int2Complete),
+                        smallvec![
+                            CdromResponse::Immediate(Response {
+                                int:  HInt::Int3Ack,
+                                data: smallvec![self.status_code.raw_value()],
+                            }),
+                            CdromResponse::Immediate(Response {
+                                int:  HInt::Int2Complete,
+                                data: smallvec![0x02, 0x00, 0x20, 0x00, 0x53, 0x43, 0x45, 0x49],
+                            }),
                         ]
                     }
                 }
             }
             // ReadTOC - Command 1Eh --> INT3(stat) --> INT2(stat)
             0x1e => {
-                self.result_push_many([self.status_code.raw_value(); 2]);
-                self.status.set_busy_status(false);
-                [
-                    CdromIrqEvent::Immediate(HInt::Int3Ack),
-                    CdromIrqEvent::Immediate(HInt::Int2Complete),
+                self.status_code.set_read(true);
+                let id = arena.insert(Response {
+                    int:  HInt::Int2Complete,
+                    data: smallvec![self.status_code.raw_value()],
+                });
+                smallvec![
+                    CdromResponse::Immediate(Response {
+                        int:  HInt::Int3Ack,
+                        data: smallvec![self.status_code.raw_value()],
+                    }),
+                    CdromResponse::InCycles(Cpu::CLOCK as u64, id),
                 ]
             }
             cmd => {

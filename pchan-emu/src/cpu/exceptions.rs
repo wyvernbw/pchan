@@ -68,9 +68,7 @@ pub trait Exceptions: Bus {
 impl Exceptions for Emu {
     fn handle_exception(&mut self, exception: Exception) {
         let mut sr = Cop0StatusReg::new_with_raw_value(self.cpu().cop0.reg[12]);
-        tracing::info!(?exception);
         if !sr.iec() && exception == Exception::Interrupt {
-            tracing::info!("> Skipped");
             return;
         }
 
