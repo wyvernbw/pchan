@@ -5,6 +5,7 @@ use bitbybit::*;
 use derive_more as d;
 use heapless::{Deque, binary_heap::Min};
 use pchan_utils::hex;
+use slab::Slab;
 
 use crate::{
     Bus, Emu,
@@ -33,8 +34,6 @@ pub struct SioState {
 
     sio0_rx: Sio0Rx,
     sio0_tx: Sio0Tx,
-
-    event_queue: heapless::BinaryHeap<ScheduledSioEvent, Min, 8>,
 
     pub sio0ports: Sio0Ports,
     irq_latch:     bool,
@@ -114,6 +113,8 @@ pub trait Sio: Bus + Interrupts {
             0x1f801040 => {
                 let value = value as u8;
                 self.sio_mut().sio0_tx_send(value);
+                self.evque_mut()
+                    .schedule(Self::handle_ev_sio0_transfer, 0, 250_000);
                 Ok(())
             }
             // 1/4  SIO_DATA Serial Port Data (R/W)
@@ -136,7 +137,7 @@ pub trait Sio: Bus + Interrupts {
                 self.sio_mut()
                     .write_sio0_ctrl(SioCtrlReg::new_with_raw_value(value.io_into_u32()));
                 if let Some((event, in_cycles)) = self.sio_mut().sio0_run_transfer() {
-                    self.schedule(event, in_cycles);
+                    self.sio_schedule_event(event, in_cycles);
                 }
                 Ok(())
             }
@@ -251,14 +252,6 @@ pub trait Sio: Bus + Interrupts {
         }
     }
 
-    fn schedule(&mut self, event: SioEvent, in_cycles: u64) {
-        let event = ScheduledSioEvent {
-            clock: self.cpu().cycles.wrapping_add(in_cycles),
-            event,
-        };
-        _ = self.sio_mut().event_queue.push(event);
-    }
-
     fn run_sio_io(&mut self, d_clock: u64) {
         let sio = self.sio_mut();
         {
@@ -272,36 +265,31 @@ pub trait Sio: Bus + Interrupts {
                 }
             }
         }
-        if sio.sio0stat.irq() && !sio.irq_latch {
-            sio.irq_latch = true;
-            self.schedule(SioEvent::Sio0Irq, 100);
-        }
+    }
 
-        if let Some((event, cycles)) = self.sio_mut().sio0_run_transfer() {
-            self.schedule(event, cycles);
-        }
+    fn sio_schedule_event(&mut self, ev: SioEvent, in_cycles: u64) {
+        let cb = match ev {
+            SioEvent::Sio0ProcTx => Self::handle_ev_sio0_tx_proc,
+            SioEvent::Sio0Irq => Self::handle_ev_sio0_irq,
+            SioEvent::Sio0Ack => Self::handle_ev_sio0_ack,
+        };
+        self.evque_mut().schedule(cb, 0, in_cycles);
+    }
 
-        while let Some(event) = self.sio_mut().event_queue.pop() {
-            if event.clock > self.cpu().cycles {
-                _ = self.sio_mut().event_queue.push(event);
-                break;
-            }
-            match event.event {
-                SioEvent::Sio0ProcTx => {
-                    self.sio0_tx_proc();
-                }
-                SioEvent::Sio0Irq => {
-                    self.sio_mut().irq_latch = false;
-                    let cycles = self.sio().sio_cycles();
-                    self.trigger_irq(Irq::Irq7JoypadAndMemcard);
-                    self.schedule(SioEvent::Sio0Ack, cycles as _);
-                }
-                SioEvent::Sio0Ack => {
-                    self.sio_mut().sio0stat.set_dsr_in_lvl(false);
-                    tracing::trace!("pulse /ack");
-                }
-            };
-        }
+    fn handle_ev_sio0_tx_proc(&mut self, _: usize, _: u64) {
+        self.sio0_tx_proc();
+    }
+
+    fn handle_ev_sio0_irq(&mut self, _: usize, _: u64) {
+        self.sio_mut().irq_latch = false;
+        let cycles = self.sio().sio_cycles();
+        self.trigger_irq(Irq::Irq7JoypadAndMemcard);
+        self.sio_schedule_event(SioEvent::Sio0Ack, cycles as _);
+    }
+
+    fn handle_ev_sio0_ack(&mut self, _: usize, _: u64) {
+        self.sio_mut().sio0stat.set_dsr_in_lvl(false);
+        tracing::trace!("pulse /ack");
     }
 
     fn sio0_tx_proc(&mut self) {
@@ -348,6 +336,10 @@ pub trait Sio: Bus + Interrupts {
                             if !self.sio().sio0stat.dsr_in_lvl() {
                                 self.sio_mut().sio0stat.set_irq(true);
                             }
+                            if self.sio().sio0stat.irq() && !self.sio().irq_latch {
+                                self.sio_mut().irq_latch = true;
+                                self.sio_schedule_event(SioEvent::Sio0Irq, 100);
+                            }
                             self.sio_mut().sio0stat.set_dsr_in_lvl(true);
                         }
                     }
@@ -356,6 +348,12 @@ pub trait Sio: Bus + Interrupts {
                     self.sio0_deselect();
                 }
             }
+        }
+    }
+
+    fn handle_ev_sio0_transfer(&mut self, _: usize, _: u64) {
+        if let Some((ev, in_cycles)) = self.sio_mut().sio0_run_transfer() {
+            self.sio_schedule_event(ev, in_cycles);
         }
     }
 
