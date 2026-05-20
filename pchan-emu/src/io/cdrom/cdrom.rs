@@ -155,7 +155,7 @@ pub trait CDRom: Bus + Interrupts {
             }
             _ => Err(UnhandledIO(address)),
         }
-        .inspect(|_| tracing::info!("w(cdrom): {},{}", hex(address), bank))
+        // .inspect(|_| tracing::info!("w(cdrom): {},{}", hex(address), bank))
     }
     fn read<T>(&mut self, address: u32) -> Result<T, UnhandledIO> {
         let address = address & 0x1fffffff;
@@ -177,7 +177,7 @@ pub trait CDRom: Bus + Interrupts {
             (0x1f801803, 1 | 3) => Ok(self.cdrom().hint_status.io_from_u32()),
             _ => Err(UnhandledIO(address)),
         }
-        .inspect(|_| tracing::info!("r(cdrom): {},{}", hex(address), bank))
+        // .inspect(|_| tracing::info!("r(cdrom): {},{}", hex(address), bank))
     }
 }
 
@@ -384,6 +384,11 @@ impl CDRomState {
                 _ = self.result_fifo.pop_back();
                 become self.result_push(result);
             }
+        }
+    }
+    fn result_push_many(&mut self, results: impl IntoIterator<Item = u8>) {
+        for res in results {
+            self.result_push(res);
         }
     }
     fn result_pop(&mut self) -> Option<u8> {

@@ -62,6 +62,7 @@ impl Input {
     pub fn drive_gamepads(&mut self, emu: &mut Emu) {
         while let Some(event) = self.events.poll_event() {
             match event {
+                Event::Quit { .. } => break,
                 Event::ControllerDeviceAdded {
                     timestamp: _,
                     which,

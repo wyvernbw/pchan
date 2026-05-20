@@ -115,18 +115,38 @@ impl CDRomState {
                         self.result_push(self.status_code.raw_value());
                         self.result_push(0x08);
                         self.result_push(0x40);
+                        self.status.set_busy_status(false);
                         [
                             CdromIrqEvent::Immediate(HInt::Int3Ack),
                             CdromIrqEvent::Immediate(HInt::Int5DiskErr),
                         ]
                     }
                     DriveStatus::AudioDisk => todo!(),
-                    DriveStatus::LicensedMode2 => todo!(),
+                    // INT3(stat), INT2(02h,00h, 20h,00h, 53h,43h,45h,4xh)
+                    DriveStatus::LicensedMode2 => {
+                        self.result_push(self.status_code.raw_value());
+                        self.result_push_many([0x02, 0x00, 0x20, 0x00, 0x53, 0x43, 0x45, 0x49]);
+                        self.status.set_busy_status(false);
+                        [
+                            CdromIrqEvent::Immediate(HInt::Int3Ack),
+                            CdromIrqEvent::Immediate(HInt::Int2Complete),
+                        ]
+                    }
                 }
             }
+            // ReadTOC - Command 1Eh --> INT3(stat) --> INT2(stat)
+            0x1e => {
+                self.result_push_many([self.status_code.raw_value(); 2]);
+                self.status.set_busy_status(false);
+                [
+                    CdromIrqEvent::Immediate(HInt::Int3Ack),
+                    CdromIrqEvent::Immediate(HInt::Int2Complete),
+                ]
+            }
             cmd => {
-                tracing::warn!("todo(cdrom): unhandled cmd: {}", hex(cmd));
-                one(CdromIrqEvent::None)
+                todo!("todo(cdrom): unhandled cmd: {}", hex(cmd));
+                // tracing::warn!("todo(cdrom): unhandled cmd: {}", hex(cmd));
+                // one(CdromIrqEvent::None)
             }
         }
     }
