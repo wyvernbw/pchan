@@ -1,10 +1,8 @@
 use bitbybit::{bitenum, bitfield};
 use pchan_bind::input::{InputEvent, PchanButton};
 
-use crate::{
-    Bus, Emu,
-    io::sio::{Peripheral, Sio0Port, TxWriteResult},
-};
+use crate::Emu;
+use crate::io::sio::{Peripheral, Sio0Port, TxWriteResult};
 
 use super::Sio0Rx;
 
@@ -162,8 +160,8 @@ impl DigitalSwitches {
     }
 }
 
-pub trait InputEvents: Bus {
-    fn send_input_event(&mut self, event: InputEvent, port: Sio0Port) {
+impl Emu {
+    pub fn send_input_event(&mut self, event: InputEvent, port: Sio0Port) {
         match event {
             InputEvent::Press(btn) => {
                 self.sio_mut()
@@ -184,5 +182,3 @@ pub trait InputEvents: Bus {
         };
     }
 }
-
-impl InputEvents for Emu {}

@@ -7,12 +7,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use glam::{I16Vec2, U8Vec2, U8Vec3, U16Vec2, UVec2, i16vec2, u8vec2, u16vec2};
+use pchan_emu::Emu;
 use pchan_emu::gpu::draw_call::{
     DrawCallCollection, DrawCallKind, DrawPolygon, DrawRect, GpuInternalDrawReg, RectSize, Shading,
 };
 use pchan_emu::gpu::{Conn, DrawPixels, GpuStatReg, IVramCoord, TextureColorMode, VramCoord};
-use pchan_emu::{Bus, Emu};
-use pchan_utils::Chan;
 use thiserror::Error;
 use tracing::Level;
 use wgpu::*;
@@ -346,7 +345,7 @@ impl Renderer {
     }
 
     pub fn connect_emu(&mut self, emu: &mut Emu) {
-        emu.gpu_mut().conn = self.conn.clone();
+        emu.gpu.conn = self.conn.clone();
     }
 
     pub fn start(self: Arc<Self>) {

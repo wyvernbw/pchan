@@ -1,16 +1,12 @@
 #![cfg(test)]
 
-use pchan_utils::hex;
-use pchan_utils::setup_tracing as st;
+use pchan_utils::{hex, setup_tracing as st};
 use pretty_assertions::assert_eq;
 use rstest::rstest;
 
 use crate::Emu;
-use crate::bootloader::Bootloader;
-use crate::cpu::ops::OpCode;
-use crate::cpu::ops::*;
+use crate::cpu::ops::{OpCode, *};
 use crate::dynarec_v2::emitters::DecodedOp;
-use crate::io::IO;
 
 #[rstest::fixture]
 fn setup_tracing() {

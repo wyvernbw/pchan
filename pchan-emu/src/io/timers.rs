@@ -1,10 +1,8 @@
 use arbitrary_int::prelude::*;
 use derive_more as d;
 
-use crate::{
-    Bus, Emu,
-    io::{CastIOFrom, CastIOInto, IO, UnhandledIO, irq::Interrupts},
-};
+use crate::Emu;
+use crate::io::{CastIOFrom, CastIOInto, UnhandledIO};
 
 use super::irq::Irq;
 
@@ -121,14 +119,14 @@ pub struct AdvanceTimerSummary {
     timer_0_new: u16,
 }
 
-pub trait Timers: Bus + IO + Interrupts {
-    fn init_timers(&mut self) {
+impl Emu {
+    fn timers_init(&mut self) {
         let timers = self.timers_mut();
         timers.timer_0.irq = Irq::Irq4Timer0;
         timers.timer_1.irq = Irq::Irq5Timer1;
         timers.timer_2.irq = Irq::Irq6Timer2;
     }
-    fn read_timers<T: Copy>(&self, address: u32) -> Result<T, UnhandledIO> {
+    pub fn timers_read<T: Copy>(&self, address: u32) -> Result<T, UnhandledIO> {
         let address = address & 0x1fffffff;
         match address {
             0x1f801100 => Ok(self.timers().timer_0.value.io_from_u32()),
@@ -144,7 +142,7 @@ pub trait Timers: Bus + IO + Interrupts {
         }
     }
 
-    fn write_timers<T: Copy>(&mut self, address: u32, value: T) -> Result<(), UnhandledIO> {
+    pub fn timers_write<T: Copy>(&mut self, address: u32, value: T) -> Result<(), UnhandledIO> {
         let address = address & 0x1fffffff;
         match address {
             0x1f801100 => {
@@ -188,25 +186,25 @@ pub trait Timers: Bus + IO + Interrupts {
         Ok(())
     }
 
-    fn run_timer_pipeline(&mut self) {
+    pub fn run_timer_pipeline(&mut self) {
         let timers = self.timers_mut();
         if timers.timer_0.mode.irq() {
             let irq = timers.timer_0.irq;
-            self.trigger_irq(irq);
+            self.irq_trigger(irq);
         }
         let timers = self.timers_mut();
         if timers.timer_1.mode.irq() {
             let irq = timers.timer_1.irq;
-            self.trigger_irq(irq);
+            self.irq_trigger(irq);
         }
         let timers = self.timers_mut();
         if timers.timer_2.mode.irq() {
             let irq = timers.timer_2.irq;
-            self.trigger_irq(irq);
+            self.irq_trigger(irq);
         }
     }
 
-    fn timers_advance_by_cpu(&mut self, cycles: u16) {
+    pub fn timers_advance_by_cpu(&mut self, cycles: u16) {
         let timers = self.timers_mut();
         if timers.timer_0.check_source([0x0, 0x2]) {
             timers.timer_0.tick_by(cycles);
@@ -222,8 +220,6 @@ pub trait Timers: Bus + IO + Interrupts {
         }
     }
 }
-
-impl Timers for Emu {}
 
 impl Timer {
     pub fn tick_by(&mut self, d_clock: u16) {

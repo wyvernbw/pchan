@@ -6,16 +6,11 @@ use derive_more as d;
 use heapless::Deque;
 use pchan_utils::hex;
 
-use crate::{
-    Bus, Emu,
-    io::{
-        CastIOFrom, CastIOInto, UnhandledIO,
-        evque::{EvCtx, PchanEventFn},
-        irq::{Interrupts, Irq},
-        sio::joypad::Joypad,
-    },
-    trace_todo,
-};
+use crate::io::evque::{EvCtx, PchanEventFn};
+use crate::io::irq::Irq;
+use crate::io::sio::joypad::Joypad;
+use crate::io::{CastIOFrom, CastIOInto, UnhandledIO};
+use crate::{Emu, trace_todo};
 
 use super::irq;
 
@@ -47,11 +42,11 @@ pub enum SioEvent {
 }
 
 impl SioEvent {
-    fn to_callback<T: Sio + ?Sized>(&self) -> PchanEventFn<T> {
+    fn to_callback(&self) -> PchanEventFn<Emu> {
         match self {
-            SioEvent::Sio0ProcTx => Sio::handle_ev_sio0_tx_proc,
-            SioEvent::Sio0Irq => Sio::handle_ev_sio0_irq,
-            SioEvent::Sio0Ack => Sio::handle_ev_sio0_ack,
+            SioEvent::Sio0ProcTx => Emu::handle_ev_sio0_tx_proc,
+            SioEvent::Sio0Irq => Emu::handle_ev_sio0_irq,
+            SioEvent::Sio0Ack => Emu::handle_ev_sio0_ack,
         }
     }
 }
@@ -113,9 +108,9 @@ pub trait Peripheral {
 #[derive(d::Deref, d::DerefMut, Debug, Default, Clone)]
 pub struct Sio0Rx(Deque<u8, 4>);
 
-pub trait Sio: Bus + Interrupts {
+impl Emu {
     #[pchan_macros::instrument(skip_all, fields(pc = %hex(self.cpu().pc)))]
-    fn write<T: Copy>(&mut self, address: u32, value: T) -> Result<(), UnhandledIO> {
+    pub fn sio_write<T: Copy>(&mut self, address: u32, value: T) -> Result<(), UnhandledIO> {
         let address = address & 0x1fffffff;
         let value = value.io_into_u32();
         match address {
@@ -169,7 +164,7 @@ pub trait Sio: Bus + Interrupts {
         // .inspect(|_| tracing::info!("w(sio): {}", hex(address)))
     }
     #[pchan_macros::instrument(skip_all, fields(pc = %hex(self.cpu().pc)))]
-    fn read<T: Copy>(&mut self, address: u32) -> Result<T, UnhandledIO> {
+    pub fn sio_read<T: Copy>(&mut self, address: u32) -> Result<T, UnhandledIO> {
         let address = address & 0x1fffffff;
         match address {
             // 1F801040h 1/4  JOY_DATA Joypad/Memory Card Data (R/W)
@@ -225,7 +220,7 @@ pub trait Sio: Bus + Interrupts {
                 self.sio_mut().sio0stat.with_rx_not_empty(!empty);
                 Ok(self.sio().sio0stat.io_from_u32())
             }
-            _ => Sio::read_pure(self, address),
+            _ => self.sio_read_pure(address),
         }
         // .inspect(|value| {
         //     tracing::info!(
@@ -236,7 +231,7 @@ pub trait Sio: Bus + Interrupts {
         //     )
         // })
     }
-    fn read_pure<T: Copy>(&self, address: u32) -> Result<T, UnhandledIO> {
+    pub fn sio_read_pure<T: Copy>(&self, address: u32) -> Result<T, UnhandledIO> {
         let address = address & 0x1fffffff;
         match address {
             0x1f801040 => Ok(0xcafebabeu32.io_from_u32::<T>()),
@@ -262,7 +257,7 @@ pub trait Sio: Bus + Interrupts {
         }
     }
 
-    fn run_sio_bdtimers(&mut self, d_clock: u64) {
+    pub fn run_sio_bdtimers(&mut self, d_clock: u64) {
         let sio = self.sio_mut();
         let bd = sio.sio0stat.bd_timer().as_u32();
         match bd.checked_sub(d_clock as u32) {
@@ -291,7 +286,7 @@ pub trait Sio: Bus + Interrupts {
     fn handle_ev_sio0_irq(&mut self, ctx: EvCtx) {
         self.sio_mut().irq_latch = false;
         let cycles = self.sio().sio_cycles();
-        self.trigger_irq(Irq::Irq7JoypadAndMemcard);
+        self.irq_trigger(Irq::Irq7JoypadAndMemcard);
         self.sio_schedule_event_from(SioEvent::Sio0Ack, ctx.clock, cycles as _);
     }
 
@@ -377,7 +372,7 @@ pub trait Sio: Bus + Interrupts {
         self.sio_mut().sio0_rx.push(value);
         let rx_len = 1usize << (self.sio().sio0ctrl.rx_irq_mode() as usize);
         if self.sio().sio0_rx.len() == rx_len && self.sio().sio0ctrl.rx_irq_on() {
-            self.trigger_irq(irq::Irq::Irq7JoypadAndMemcard);
+            self.irq_trigger(irq::Irq::Irq7JoypadAndMemcard);
         }
     }
 }
@@ -395,8 +390,6 @@ impl SioState {
         }
     }
 }
-
-impl Sio for Emu {}
 
 const fn sio_idx(addr: u32, base: u32, stride: u32) -> Option<usize> {
     let addr = addr - base;

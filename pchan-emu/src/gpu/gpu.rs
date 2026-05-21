@@ -11,16 +11,15 @@ use glam::{U8Vec2, U8Vec3, U16Vec2, U64Vec2, u64vec2};
 use heapless::Deque;
 use pchan_utils::{AsyncChan, hex};
 
+use crate::Emu;
 use crate::gpu::draw_call::{
     DrawCall, DrawCallCollection, DrawCallDecoder, DrawCallKind, DrawLineDecoder,
     DrawPolygonDecoder, DrawRectDecoder, Gp0SetDrawAreaCmd, Gp0SetDrawOffsetCmd, Gp0SetMaskBitCmd,
     GpuInternalDrawReg,
 };
-use crate::io::irq::{Interrupts, Irq};
-use crate::io::vblank::VBlank;
+use crate::io::irq::Irq;
 use crate::io::{CastIOFrom, CastIOInto, IOResult, UnhandledIO};
 use crate::memory::{kb, mb};
-use crate::{Bus, Emu};
 
 pub static VBLANK_COUNT: AtomicU64 = AtomicU64::new(0);
 
@@ -103,9 +102,9 @@ fn mask_bit(value: u16) -> bool {
     value & (1 << 15) != 0
 }
 
-pub trait Gpu: Bus + Interrupts {
+impl Emu {
     #[pchan_macros::instrument(level = "trace", skip(self), "gpu:r")]
-    fn read<T: Copy>(&mut self, address: u32) -> IOResult<T> {
+    pub fn gpu_read<T: Copy>(&mut self, address: u32) -> IOResult<T> {
         let address = address & 0x1fffffff;
         match address {
             0x1f801810 => {
@@ -139,7 +138,7 @@ pub trait Gpu: Bus + Interrupts {
             _ => Err(UnhandledIO(address)),
         }
     }
-    fn read_pure<T: Copy>(&self, address: u32) -> IOResult<T> {
+    pub fn gpu_read_pure<T: Copy>(&self, address: u32) -> IOResult<T> {
         let address = address & 0x1fffffff;
         match address {
             0x1f80_1814 => Ok(self.gpu().gpustat.io_from_u32()),
@@ -147,7 +146,7 @@ pub trait Gpu: Bus + Interrupts {
         }
     }
     #[pchan_macros::instrument(level = "trace", skip(self, value), "gpu:w")]
-    fn write<T: Copy>(&mut self, address: u32, value: T) -> Result<(), UnhandledIO> {
+    pub fn gpu_write<T: Copy>(&mut self, address: u32, value: T) -> Result<(), UnhandledIO> {
         let address = address & 0x1fffffff;
         // if size_of::<T>() != 4 {
         //     panic!(
@@ -159,18 +158,18 @@ pub trait Gpu: Bus + Interrupts {
 
         match address {
             0x1f80_1810 => {
-                self.gp0_cmd(GpuCmd::new_with_raw_value(value.io_into_u32_overwrite(0x0)));
+                self.gpu_gp0_cmd(GpuCmd::new_with_raw_value(value.io_into_u32_overwrite(0x0)));
                 Ok(())
             }
             0x1f80_1814 => {
-                self.gp1_cmd(GpuCmd::new_with_raw_value(value.io_into_u32_overwrite(0x0)));
+                self.gpu_gp1_cmd(GpuCmd::new_with_raw_value(value.io_into_u32_overwrite(0x0)));
                 Ok(())
             }
             _ => Err(UnhandledIO(address)),
         }
     }
 
-    fn gp0reduce(&mut self, cmd: GpuCmd) -> Gp0 {
+    pub fn gpu_gp0reduce(&mut self, cmd: GpuCmd) -> Gp0 {
         match cmd.cmd() {
             // nop
             0x0 | 0x4..=0x1e | 0xe0 | 0xe7..=0xef => Gp0::WaitingForCmd,
@@ -190,7 +189,7 @@ pub trait Gpu: Bus + Interrupts {
             }
             0x1f => {
                 self.gpu_mut().gpustat.set_irq(true);
-                self.trigger_irq(Irq::Irq1Gpu);
+                self.irq_trigger(Irq::Irq1Gpu);
                 Gp0::WaitingForCmd
             }
             0xa0..=0xbf => {
@@ -281,11 +280,11 @@ pub trait Gpu: Bus + Interrupts {
     }
 
     #[pchan_macros::instrument(level = "trace", skip_all)]
-    fn gp0_cmd(&mut self, cmd: GpuCmd) {
+    pub fn gpu_gp0_cmd(&mut self, cmd: GpuCmd) {
         let value = cmd.raw_value();
         tracing::trace!(gp0cmd = %hex(cmd));
         let gp0 = match &mut self.gpu_mut().gp0 {
-            Gp0::WaitingForCmd => self.gp0reduce(cmd),
+            Gp0::WaitingForCmd => self.gpu_gp0reduce(cmd),
             Gp0::CpRectCpuToVram(Gp0CpRect::RecvDest) => {
                 let dest: VramCoord = unsafe { transmute(value) };
                 let dest = dest.copy_cmd_pos_mask();
@@ -395,7 +394,7 @@ pub trait Gpu: Bus + Interrupts {
                     Err(draw_call) => {
                         tracing::trace!(?draw_call, "decoded");
                         self.gpu_mut().gpustat.set_ready_recv_cmd(true);
-                        self.issue_draw_call(DrawCallKind::Rect(draw_call));
+                        self.gpu_issue_draw_call(DrawCallKind::Rect(draw_call));
                         Gp0::WaitingForCmd
                     }
                 }
@@ -410,7 +409,7 @@ pub trait Gpu: Bus + Interrupts {
                     Err(draw_call) => {
                         tracing::trace!(?draw_call, "decoded");
                         self.gpu_mut().gpustat.set_ready_recv_cmd(true);
-                        self.issue_draw_call(DrawCallKind::Polygon(draw_call));
+                        self.gpu_issue_draw_call(DrawCallKind::Polygon(draw_call));
                         Gp0::WaitingForCmd
                     }
                 }
@@ -423,7 +422,7 @@ pub trait Gpu: Bus + Interrupts {
                     Err(draw_call) => {
                         tracing::trace!(?draw_call, "decoded");
                         self.gpu_mut().gpustat.set_ready_recv_cmd(true);
-                        self.issue_draw_call(DrawCallKind::Line(draw_call));
+                        self.gpu_issue_draw_call(DrawCallKind::Line(draw_call));
                         Gp0::WaitingForCmd
                     }
                 }
@@ -433,7 +432,7 @@ pub trait Gpu: Bus + Interrupts {
         self.gpu_mut().gp0 = gp0;
     }
 
-    fn gp1_cmd(&mut self, value: GpuCmd) {
+    pub fn gpu_gp1_cmd(&mut self, value: GpuCmd) {
         tracing::trace!(cmd = ?value.cmd());
         match value.cmd() {
             0x00 => {
@@ -524,7 +523,7 @@ pub trait Gpu: Bus + Interrupts {
         }
     }
 
-    fn create_draw_call(&self, kind: DrawCallKind) -> DrawCall {
+    pub fn gpu_create_draw_call(&self, kind: DrawCallKind) -> DrawCall {
         DrawCall {
             gpustat:  self.gpu().gpustat,
             inner:    kind,
@@ -532,16 +531,16 @@ pub trait Gpu: Bus + Interrupts {
         }
     }
 
-    fn issue_draw_call(&mut self, kind: DrawCallKind) {
-        let draw_call = self.create_draw_call(kind);
+    pub fn gpu_issue_draw_call(&mut self, kind: DrawCallKind) {
+        let draw_call = self.gpu_create_draw_call(kind);
         self.gpu_mut().draw_call_queue.push(draw_call);
     }
 
-    fn gpu_reconnect(&mut self, other: &impl Gpu) {
+    pub fn gpu_reconnect(&mut self, other: &Emu) {
         self.gpu_mut().conn = other.gpu().conn.clone();
     }
 
-    fn poll_draw_result(&mut self) {
+    pub fn gpu_poll_draw_result(&mut self) {
         if let Ok(Some(vram)) = self.gpu().conn.vram_out_chan.1.try_recv() {
             tracing::trace!("received gpu result (vram)");
             self.gpu_mut().vram = vram;
@@ -922,8 +921,6 @@ pub struct GpuCmd {
     #[bits(24..=31, r)]
     cmd:    u8,
 }
-
-impl Gpu for Emu {}
 
 ///
 /// # 1F801814h - GPUSTAT - GPU Status Register (R)
@@ -1400,7 +1397,7 @@ pub struct Display {
 /// are not absolute dot positions, but relative timings tied to HSYNC.
 ///
 /// see <https://psx-spx.consoledev.net/graphicsprocessingunitgpu/#gp106h-horizontal-display-range-on-screen>
-pub trait VideoEvents: Gpu + VBlank {
+impl Emu {
     fn cpu_cycles_to_video_cycles(&mut self, cycles: u64) -> u64 {
         // this might be based on the actual console hardware not on the
         // video mode you set in the gpu
@@ -1424,7 +1421,7 @@ pub trait VideoEvents: Gpu + VBlank {
     }
 
     /// returns start (topleft) and end (bottomright)
-    fn dp_coords(&self) -> (U16Vec2, U16Vec2) {
+    pub fn dp_coords(&self) -> (U16Vec2, U16Vec2) {
         let width = match self.gpu().gpustat.h_resolution_2() {
             HRes2::Standard => match self.gpu().gpustat.h_resolution_1() {
                 HRes1::Res256 => 256,
@@ -1442,7 +1439,7 @@ pub trait VideoEvents: Gpu + VBlank {
         (start, start + U16Vec2::new(width, height))
     }
 
-    fn run_video_io(&mut self, by_cpu_cycles: u64) {
+    pub fn run_video_io(&mut self, by_cpu_cycles: u64) {
         let cycles = self.cpu_cycles_to_video_cycles(by_cpu_cycles);
         self.gpu_mut().dp.update_ranges();
         self.run_video_events(cycles);
@@ -1481,8 +1478,6 @@ pub trait VideoEvents: Gpu + VBlank {
         }
     }
 }
-
-impl VideoEvents for Emu {}
 
 impl Display {
     const NTSC_TOTAL_VCYCLES_PER_LINE: u64 = 3413;

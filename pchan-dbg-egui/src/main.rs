@@ -1,28 +1,25 @@
 #![feature(try_blocks)]
 
-use egui_winit::winit::{
-    self,
-    application::ApplicationHandler,
-    event::WindowEvent,
-    event_loop::{ControlFlow, EventLoop, EventLoopProxy},
-    window::WindowAttributes,
-};
+use egui_winit::winit::application::ApplicationHandler;
+use egui_winit::winit::event::WindowEvent;
+use egui_winit::winit::event_loop::{ControlFlow, EventLoop, EventLoopProxy};
+use egui_winit::winit::window::WindowAttributes;
+use egui_winit::winit::{self};
 use miette::{Context, IntoDiagnostic, Result, bail};
 use pchan_audio::{AudioStream, AudioTask};
 use pchan_utils::{InitTracingArgs, default};
 use spin_sleep::SpinSleeper;
-use std::{
-    path::PathBuf,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-use egui::{Ui, Vec2, mutex::RwLock};
-use egui_wgpu::{
-    self, CallbackTrait, ScreenDescriptor,
-    wgpu::{self, Surface, TextureUsages, TextureViewDescriptor, wgt::CommandEncoderDescriptor},
-};
-use pchan_emu::{Emu, bootloader::Bootloader, dynarec_v2::PipelineV2, io::vblank::VBlank};
+use egui::mutex::RwLock;
+use egui::{Ui, Vec2};
+use egui_wgpu::wgpu::wgt::CommandEncoderDescriptor;
+use egui_wgpu::wgpu::{self, Surface, TextureUsages, TextureViewDescriptor};
+use egui_wgpu::{self, CallbackTrait, ScreenDescriptor};
+use pchan_emu::Emu;
+use pchan_emu::dynarec_v2::PipelineV2;
 
 fn main() -> Result<()> {
     pchan_utils::init_tracing(InitTracingArgs {

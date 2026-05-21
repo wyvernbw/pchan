@@ -11,9 +11,9 @@ use crate::io::cdrom::cdrom_cmds::{CdromResponse, Response, StatusCode};
 use crate::io::cdrom::cdrom_drive::CdromDrive;
 use crate::io::cdrom::cdrom_ver::CDRomVerPtr;
 use crate::io::evque::EvCtx;
-use crate::io::irq::{self, Interrupts};
+use crate::io::irq::{self};
 use crate::io::{CastIOFrom, CastIOInto, UnhandledIO};
-use crate::{Bus, Emu, trace_todo};
+use crate::{Emu, trace_todo};
 use arbitrary_int::prelude::*;
 use bitbybit::{bitenum, bitfield};
 use pchan_utils::hex;
@@ -90,8 +90,8 @@ enum DriveStatus {
 /// WARN pchan_emu::io::cdrom: todo(cdrom): read from response fifo
 /// WARN pchan_emu::io::cdrom::cdrom_cmds: todo(cdrom): unhandled cmd: 0x01
 /// ```
-pub trait CDRom: Bus + Interrupts {
-    fn write<T: Copy>(&mut self, address: u32, value: T) -> Result<(), UnhandledIO> {
+impl Emu {
+    pub fn cdrom_write<T: Copy>(&mut self, address: u32, value: T) -> Result<(), UnhandledIO> {
         let address = address & 0x1fffffff;
         let bank = self.cdrom().bank();
         let value = value.io_into_u32() as u8;
@@ -109,7 +109,7 @@ pub trait CDRom: Bus + Interrupts {
                         CdromResponse::Immediate(response) => {
                             self.cdrom_mut().result_push_many(response.data);
                             self.cdrom_mut().hint_status.set_intsts(response.int);
-                            self.trigger_irq(irq::Irq::Irq2CDRom);
+                            self.irq_trigger(irq::Irq::Irq2CDRom);
                             tracing::info!("HINT_STAT={}", hex(self.cdrom().hint_status));
                             tracing::info!("trigger cdrom irq!");
                         }
@@ -166,7 +166,7 @@ pub trait CDRom: Bus + Interrupts {
         }
     }
 
-    fn read<T>(&mut self, address: u32) -> Result<T, UnhandledIO> {
+    pub fn cdrom_read<T>(&mut self, address: u32) -> Result<T, UnhandledIO> {
         let address = address & 0x1fffffff;
         let bank = self.cdrom().bank();
         match (address, bank) {
@@ -198,15 +198,13 @@ pub trait CDRom: Bus + Interrupts {
         let hint_status = self.cdrom().hint_status.raw_value();
         let hint_mask = self.cdrom().hint_mask.raw_value();
         if hint_status & hint_mask != 0 {
-            self.trigger_irq(irq::Irq::Irq2CDRom);
+            self.irq_trigger(irq::Irq::Irq2CDRom);
         }
 
         tracing::info!("HINT_STAT={}", hex(self.cdrom().hint_status));
         tracing::info!("trigger cdrom irq!");
     }
 }
-
-impl CDRom for Emu {}
 
 /// # `0x1f801800` (write, all banks): ADDRESS
 ///

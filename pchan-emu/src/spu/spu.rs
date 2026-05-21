@@ -11,7 +11,7 @@ use pchan_utils::hex;
 
 use crate::Emu;
 use crate::io::evque::EvCtx;
-use crate::io::{CastIOFrom, CastIOInto, IO, IOResult, UnhandledIO};
+use crate::io::{CastIOFrom, CastIOInto, IOResult, UnhandledIO};
 use crate::memory::kb;
 use crate::spu::adpcm::{ADPCMCurrent, ADPCMHeader, ADPCMRepeat, ADPCMSampleRate, ADPCMStart};
 use crate::spu::adsr::{ADSRState, EnvelopePhase, apply_volume};
@@ -140,9 +140,9 @@ fn voice_idx(addr: u32, base: u32, stride: u32) -> Option<usize> {
     }
 }
 
-pub trait Spu: IO {
+impl Emu {
     #[pchan_macros::instrument(level = "trace", skip(self), "spu:r")]
-    fn read<T: Copy>(&mut self, address: u32) -> IOResult<T> {
+    pub fn spu_read<T: Copy>(&mut self, address: u32) -> IOResult<T> {
         let address = address & 0x1fffffff;
         // TODO add reads
         match address {
@@ -191,15 +191,15 @@ pub trait Spu: IO {
         }
     }
     #[pchan_macros::instrument(level = "trace", skip(self, value), "spu:w")]
-    fn write<T: Copy>(&mut self, address: u32, value: T) -> IOResult<()> {
+    pub fn spu_write<T: Copy>(&mut self, address: u32, value: T) -> IOResult<()> {
         if size_of::<T>() == 4 {
             let value = value.io_into_u32().to_le_bytes();
             let value = [
                 u16::from_le_bytes([value[0], value[1]]),
                 u16::from_le_bytes([value[2], value[3]]),
             ];
-            Spu::write(self, address, value[0])?;
-            Spu::write(self, address + 0x2, value[1])?;
+            self.spu_write(address, value[0])?;
+            self.spu_write(address + 0x2, value[1])?;
             return Ok(());
         }
 
@@ -321,7 +321,7 @@ pub trait Spu: IO {
         self.spu_mut().clock += dclock;
     }
 
-    fn handle_ev_spu_clock(&mut self, ctx: EvCtx) {
+    pub fn handle_ev_spu_clock(&mut self, ctx: EvCtx) {
         self.clock();
         self.evque_mut().schedule_from(
             Self::handle_ev_spu_clock,
@@ -374,8 +374,6 @@ pub trait Spu: IO {
         }
     }
 }
-
-impl Spu for Emu {}
 
 impl SpuState {
     fn key_on(&mut self, idx: usize) {

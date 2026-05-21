@@ -1,7 +1,8 @@
 #[cfg(test)]
 #[test]
 fn run() -> color_eyre::Result<()> {
-    use pchan_emu::{Emu, bootloader::Bootloader, dynarec_v2::PipelineV2};
+    use pchan_emu::Emu;
+    use pchan_emu::dynarec_v2::PipelineV2;
     use pchan_utils::setup_tracing;
 
     setup_tracing();

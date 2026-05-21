@@ -1,25 +1,16 @@
 use byteorder::{LE, ReadBytesExt};
 use pchan_macros::instrument;
 use pchan_utils::hex;
-use std::{
-    borrow::Cow,
-    fs,
-    io::{BufRead, Cursor, Read},
-    marker::PhantomData,
-    path::{Path, PathBuf},
-    string::FromUtf8Error,
-};
+use std::borrow::Cow;
+use std::fs;
+use std::io::{BufRead, Cursor, Read};
+use std::marker::PhantomData;
+use std::path::{Path, PathBuf};
+use std::string::FromUtf8Error;
 use thiserror::Error;
 
-use crate::{
-    Bus, cpu,
-    io::IO,
-    memory::{GUEST_MEM_MAP, MEM_MAP},
-};
-use crate::{
-    Emu,
-    memory::{buffer, from_kb, kb},
-};
+use crate::memory::{GUEST_MEM_MAP, MEM_MAP, buffer, from_kb, kb};
+use crate::{Emu, cpu};
 
 #[cfg(feature = "amidog-tests")]
 pub static AMIDOG_TESTS: &[u8] =
@@ -53,11 +44,11 @@ pub enum BootError {
     SideloadErr(#[from] ExeHeaderParseErr),
 }
 
-pub trait Bootloader: Bus + IO {
-    fn set_bios_path(&mut self, path: impl AsRef<Path>) {
+impl Emu {
+    pub fn set_bios_path(&mut self, path: impl AsRef<Path>) {
         self.bootloader_mut().bios_path = path.as_ref().to_path_buf();
     }
-    fn load_bios(&mut self) -> Result<(), BootError> {
+    pub fn load_bios(&mut self) -> Result<(), BootError> {
         let mut bios_file =
             fs::File::open(&self.bootloader().bios_path).map_err(BootError::BiosFileOpenError)?;
         let mut bios = buffer(kb(524));
@@ -80,14 +71,14 @@ pub trait Bootloader: Bus + IO {
         Ok(())
     }
 
-    fn run_sideloading(&mut self) -> Result<(), BootError> {
+    pub fn run_sideloading(&mut self) -> Result<(), BootError> {
         match self.cpu().pc {
             0x80030000 => self.trigger_sideload_exe(),
             _ => Ok(()),
         }
     }
 
-    fn sideload_exe(&mut self, exe: &[u8]) -> Result<(), BootError> {
+    pub fn sideload_exe(&mut self, exe: &[u8]) -> Result<(), BootError> {
         let exe = Exe::parse(exe)?.to_owned_code();
         tracing::info!("parsed executable");
         self.bootloader_mut().sideload = Some(exe);
@@ -123,8 +114,6 @@ pub trait Bootloader: Bus + IO {
         Ok(())
     }
 }
-
-impl Bootloader for Emu {}
 
 /// ```md
 ///  000h-007h ASCII ID "PS-X EXE"

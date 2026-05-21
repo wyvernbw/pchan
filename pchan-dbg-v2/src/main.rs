@@ -26,14 +26,11 @@ use edtui::{
 };
 use miette::{Context, IntoDiagnostic, Result, miette};
 use pchan_emu::Emu;
-use pchan_emu::bootloader::Bootloader;
 use pchan_emu::cpu::reg_str;
 use pchan_emu::debug::{Breakpoint, BreakpointKind};
 use pchan_emu::dynarec_v2::emitters::{DecodedOp, DynarecOp};
 use pchan_emu::dynarec_v2::{Dynarec, DynarecFunction, run_step};
-use pchan_emu::gpu::{Rgb5, VideoEvents};
-use pchan_emu::io::IO;
-use pchan_emu::io::vblank::VBlank;
+use pchan_emu::gpu::Rgb5;
 use pchan_gpu::Renderer;
 use pchan_utils::{InitTracingArgs, hex, hex_pref};
 use rat_imaginary::{ImageDimensions, ImageState, ImageWidget, PixelFormat};
@@ -1165,11 +1162,9 @@ fn draw_assembly(area: Rect, frame: &mut Frame<'_>, tui_state: &mut TuiState, st
                 .clone()
                 .step_by(0x4)
                 .map(|addr| {
-                    let value = IO::try_read_pure::<u32>(&state.emu, addr)
-                        .ok()
-                        .and_then(|value| {
-                            std::panic::catch_unwind(|| DecodedOp::decode([value])[0]).ok()
-                        });
+                    let value = state.emu.try_read_pure::<u32>(addr).ok().and_then(|value| {
+                        std::panic::catch_unwind(|| DecodedOp::decode([value])[0]).ok()
+                    });
                     let decoded_op = value
                         .unwrap_or(DecodedOp::Illegal(pchan_emu::dynarec_v2::emitters::Illegal));
                     (addr, decoded_op)
@@ -1343,7 +1338,7 @@ fn draw_mem(area: Rect, frame: &mut Frame, tui_state: &mut TuiState, state: &App
             row_idx = (row_idx + 1) % 2;
             let start = addr[0];
             let values = addr.map(|addr| {
-                let value = IO::try_read_pure::<u32>(&state.emu, addr).unwrap_or(0x0);
+                let value = state.emu.try_read_pure::<u32>(addr).unwrap_or(0x0);
                 let idx = (addr - start) >> 2;
                 let style = if (idx + row_idx) % 2 == 0 {
                     tui_state.theme.fg.darken(0.25)
@@ -1393,10 +1388,22 @@ fn draw_mem(area: Rect, frame: &mut Frame, tui_state: &mut TuiState, state: &App
         .render(sep_area, frame.buffer_mut());
 
     {
-        let value_u32 = IO::try_read_pure::<u32>(&state.emu, tui_state.mem_cursor).unwrap_or(0x0);
-        let value_u16 = IO::try_read_pure::<u16>(&state.emu, tui_state.mem_cursor).unwrap_or(0x0);
-        let value_u8 = IO::try_read_pure::<u8>(&state.emu, tui_state.mem_cursor).unwrap_or(0x0);
-        let ascii = IO::try_read_pure::<u32>(&state.emu, tui_state.mem_cursor).unwrap_or(0x0);
+        let value_u32 = state
+            .emu
+            .try_read_pure::<u32>(tui_state.mem_cursor)
+            .unwrap_or(0x0);
+        let value_u16 = state
+            .emu
+            .try_read_pure::<u16>(tui_state.mem_cursor)
+            .unwrap_or(0x0);
+        let value_u8 = state
+            .emu
+            .try_read_pure::<u8>(tui_state.mem_cursor)
+            .unwrap_or(0x0);
+        let ascii = state
+            .emu
+            .try_read_pure::<u32>(tui_state.mem_cursor)
+            .unwrap_or(0x0);
         let ascii = ascii
             .to_le_bytes()
             .map(|byte| char::from_u32(byte as u32).unwrap_or_default());

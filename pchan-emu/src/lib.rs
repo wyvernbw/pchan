@@ -21,6 +21,7 @@
 #![feature(const_try)]
 #![feature(explicit_tail_calls)]
 #![feature(const_destruct)]
+#![feature(arbitrary_self_types)]
 // allow unused variables in tests to supress the setup tracing warnings
 #![cfg_attr(test, allow(unused_variables))]
 
@@ -41,7 +42,7 @@ use crate::io::sio::SioState;
 use crate::io::timers::TimerState;
 use crate::io::tty::Tty;
 use crate::memory::MemoryState;
-use crate::spu::{Spu, SpuState};
+use crate::spu::SpuState;
 
 pub mod bindings;
 pub mod bootloader;
@@ -134,122 +135,93 @@ impl Emu {
 
 use pchan_utils::hex;
 
-pub trait Bus {
-    fn mem_mut(&mut self) -> &mut MemoryState;
-    fn mem(&self) -> &MemoryState;
-    fn cpu_mut(&mut self) -> &mut Cpu;
-    fn cpu(&self) -> &Cpu;
-    fn bootloader_mut(&mut self) -> &mut BootloaderState;
-    fn bootloader(&mut self) -> &BootloaderState;
-    fn gpu(&self) -> &GpuState;
-    fn gpu_mut(&mut self) -> &mut GpuState;
-    fn timers(&self) -> &TimerState;
-    fn timers_mut(&mut self) -> &mut TimerState;
-    fn dma(&self) -> &DmaState;
-    fn dma_mut(&mut self) -> &mut DmaState;
-    fn spu(&self) -> &SpuState;
-    fn spu_mut(&mut self) -> &mut SpuState;
-    fn cdrom(&self) -> &CDRomState;
-    fn cdrom_mut(&mut self) -> &mut CDRomState;
-    fn sio(&self) -> &SioState;
-    fn sio_mut(&mut self) -> &mut SioState;
-    fn irq_mut(&mut self) -> &mut IrqState;
-    fn irq(&self) -> &IrqState;
-    fn evque(&self) -> &Evque<Self>;
-    fn evque_mut(&mut self) -> &mut Evque<Self>;
-}
-
-impl Bus for Emu {
+impl Emu {
     #[inline(always)]
-    fn mem_mut(&mut self) -> &mut MemoryState {
+    pub fn mem_mut(&mut self) -> &mut MemoryState {
         &mut self.mem
     }
     #[inline(always)]
-    fn cpu(&self) -> &Cpu {
+    pub fn cpu(&self) -> &Cpu {
         &self.cpu
     }
     #[inline(always)]
-    fn mem(&self) -> &MemoryState {
+    pub fn mem(&self) -> &MemoryState {
         &self.mem
     }
     #[inline(always)]
-    fn cpu_mut(&mut self) -> &mut Cpu {
+    pub fn cpu_mut(&mut self) -> &mut Cpu {
         &mut self.cpu
     }
     #[inline(always)]
-    fn bootloader_mut(&mut self) -> &mut BootloaderState {
+    pub fn bootloader_mut(&mut self) -> &mut BootloaderState {
         &mut self.boot
     }
     #[inline(always)]
-    fn bootloader(&mut self) -> &BootloaderState {
+    pub fn bootloader(&mut self) -> &BootloaderState {
         &self.boot
     }
     #[inline(always)]
-    fn gpu_mut(&mut self) -> &mut GpuState {
+    pub fn gpu_mut(&mut self) -> &mut GpuState {
         &mut self.gpu
     }
     #[inline(always)]
-    fn gpu(&self) -> &GpuState {
+    pub fn gpu(&self) -> &GpuState {
         &self.gpu
     }
     #[inline(always)]
-    fn timers(&self) -> &TimerState {
+    pub fn timers(&self) -> &TimerState {
         &self.timers
     }
     #[inline(always)]
-    fn timers_mut(&mut self) -> &mut TimerState {
+    pub fn timers_mut(&mut self) -> &mut TimerState {
         &mut self.timers
     }
     #[inline(always)]
-    fn dma(&self) -> &DmaState {
+    pub fn dma(&self) -> &DmaState {
         &self.dma
     }
     #[inline(always)]
-    fn dma_mut(&mut self) -> &mut DmaState {
+    pub fn dma_mut(&mut self) -> &mut DmaState {
         &mut self.dma
     }
-
     #[inline(always)]
-    fn spu(&self) -> &SpuState {
+    pub fn spu(&self) -> &SpuState {
         &self.spu
     }
-
     #[inline(always)]
-    fn spu_mut(&mut self) -> &mut SpuState {
+    pub fn spu_mut(&mut self) -> &mut SpuState {
         &mut self.spu
     }
-
     #[inline(always)]
-    fn cdrom(&self) -> &CDRomState {
+    pub fn cdrom(&self) -> &CDRomState {
         &self.cdrom
     }
-
     #[inline(always)]
-    fn cdrom_mut(&mut self) -> &mut CDRomState {
+    pub fn cdrom_mut(&mut self) -> &mut CDRomState {
         &mut self.cdrom
     }
-
     #[inline(always)]
-    fn sio(&self) -> &SioState {
+    pub fn sio(&self) -> &SioState {
         &self.sio
     }
-
     #[inline(always)]
-    fn sio_mut(&mut self) -> &mut SioState {
+    pub fn sio_mut(&mut self) -> &mut SioState {
         &mut self.sio
     }
-    fn irq_mut(&mut self) -> &mut IrqState {
+    #[inline(always)]
+    pub fn irq_mut(&mut self) -> &mut IrqState {
         &mut self.irq
     }
-    fn irq(&self) -> &IrqState {
+    #[inline(always)]
+    pub fn irq(&self) -> &IrqState {
         &self.irq
     }
-
-    fn evque(&self) -> &Evque<Self> {
+    #[inline(always)]
+    pub fn evque(&self) -> &Evque<Self> {
         &self.evque
     }
-
-    fn evque_mut(&mut self) -> &mut Evque<Self> {
+    #[inline(always)]
+    pub fn evque_mut(&mut self) -> &mut Evque<Self> {
         &mut self.evque
     }
 }

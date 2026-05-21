@@ -1,17 +1,8 @@
 use arbitrary_int::prelude::*;
 use pchan_utils::hex;
 
-use crate::bootloader::Bootloader;
-use crate::cpu::exceptions::Exceptions;
-use crate::gpu::{Gpu, VideoEvents};
-use crate::io::dma::Dma;
-use crate::io::evque::EventQueue;
-use crate::io::irq::Interrupts;
-use crate::io::sio::Sio;
-use crate::io::timers::Timers;
-use crate::memory::{Extend, GUEST_MEM_MAP, MEM_MAP, ScratchpadMem};
-use crate::spu::Spu;
-use crate::{Bus, Emu, io::cdrom::CDRom, memory::fastmem::Fastmem};
+use crate::Emu;
+use crate::memory::{Extend, GUEST_MEM_MAP, MEM_MAP};
 
 #[path = "./cdrom/cdrom.rs"]
 pub mod cdrom;
@@ -76,24 +67,18 @@ impl Emu {
     }
 }
 
-pub trait IO: Bus {
-    fn try_read<T: Copy>(&mut self, address: u32) -> IOResult<T>;
-    fn try_write<T: Copy>(&mut self, address: u32, value: T) -> IOResult<()>;
-    fn read<T: Copy>(&mut self, address: u32) -> T;
-    fn write<T: Copy>(&mut self, address: u32, value: T);
-    fn try_read_pure<T: Copy>(&self, address: u32) -> IOResult<T>;
-    fn read_pure<T: Copy>(&self, address: u32) -> T;
-    fn write_many<T: Copy>(&mut self, mut address: u32, values: &[T]) {
+impl Emu {
+    pub fn write_many<T: Copy>(&mut self, mut address: u32, values: &[T]) {
         for value in values.iter().copied() {
             self.write(address, value);
             address += 0x4;
         }
     }
-    fn read_ext<T: Copy + Extend<E>, E>(&mut self, address: u32) -> T::Out {
+    pub fn read_ext<T: Copy + Extend<E>, E>(&mut self, address: u32) -> T::Out {
         let value = self.read::<T>(address);
         Extend::<E>::ext(value)
     }
-    fn write_ext<T, E>(&mut self, address: u32, value: T)
+    pub fn write_ext<T, E>(&mut self, address: u32, value: T)
     where
         T::Out: Copy,
         T: Extend<E>,
@@ -102,7 +87,7 @@ pub trait IO: Bus {
         self.write(address, value);
     }
     #[pchan_macros::instrument(level = "trace", skip_all)]
-    fn try_write32_unaligned_l(&mut self, address: u32, value: u32) -> IOResult<()> {
+    pub fn try_write32_unaligned_l(&mut self, address: u32, value: u32) -> IOResult<()> {
         let spill = address % size_of::<u32>() as u32;
         let aligned_address = address - spill;
         let read_value = self.try_read::<u32>(aligned_address)?;
@@ -122,7 +107,7 @@ pub trait IO: Bus {
         self.try_write(aligned_address, value)
     }
     #[pchan_macros::instrument(level = "trace", skip_all)]
-    fn try_write32_unaligned_r(&mut self, address: u32, value: u32) -> IOResult<()> {
+    pub fn try_write32_unaligned_r(&mut self, address: u32, value: u32) -> IOResult<()> {
         let shift = (address & 3) << 3;
         let aligned = address & !3;
         let read_value = self.try_read::<u32>(aligned)?;
@@ -138,7 +123,7 @@ pub trait IO: Bus {
     }
 
     #[pchan_macros::instrument(level = "trace", skip_all)]
-    fn try_read32_unaligned_l(&mut self, address: u32, overwrite: u32) -> IOResult<u32> {
+    pub fn try_read32_unaligned_l(&mut self, address: u32, overwrite: u32) -> IOResult<u32> {
         let shift = (address & 3) << 3;
         let aligned = address & !3;
         let read_value = self.try_read::<u32>(aligned)?;
@@ -152,7 +137,7 @@ pub trait IO: Bus {
     }
 
     #[pchan_macros::instrument(level = "trace", skip_all)]
-    fn try_read32_unaligned_r(&mut self, address: u32, overwrite: u32) -> IOResult<u32> {
+    pub fn try_read32_unaligned_r(&mut self, address: u32, overwrite: u32) -> IOResult<u32> {
         let shift = (address & 3) << 3;
         let aligned = address & !3;
         let read_value = self.try_read::<u32>(aligned)?;
@@ -163,24 +148,18 @@ pub trait IO: Bus {
 
         Ok(overwrite | value)
     }
-
-    fn write32_unaligned_l(&mut self, address: u32, value: u32);
-    fn write32_unaligned_r(&mut self, address: u32, value: u32);
-
-    fn read32_unaligned_l(&mut self, address: u32, overwrite: u32) -> u32;
-    fn read32_unaligned_r(&mut self, address: u32, overwrite: u32) -> u32;
 }
 
 pub type IOResult<T> = Result<T, UnhandledIO>;
 
-trait GenericIOFallback: Bus {
+impl Emu {
     #[pchan_macros::instrument(
         level = "trace",
         skip_all,
         fields(address = %hex(address))
         "generic:r"
     )]
-    fn read<T: Copy>(&self, address: u32) -> IOResult<T> {
+    fn generic_read<T: Copy>(&self, address: u32) -> IOResult<T> {
         let address = address & 0x1fffffff;
         match address {
             0x1f801000..0x1fa00000 => {
@@ -197,7 +176,7 @@ trait GenericIOFallback: Bus {
         fields(address = %hex(address), value = %hex(value.io_into_u32()))
         "generic:w"
     )]
-    fn write<T: Copy>(&mut self, address: u32, value: T) -> Result<(), UnhandledIO> {
+    fn generic_write<T: Copy>(&mut self, address: u32, value: T) -> Result<(), UnhandledIO> {
         let address = address & 0x1fffffff;
         match address {
             0x1f801000..0x1fa00000 => {
@@ -210,16 +189,14 @@ trait GenericIOFallback: Bus {
     }
 }
 
-impl GenericIOFallback for Emu {}
-
-trait CacheControl: Bus {
+impl Emu {
     #[pchan_macros::instrument(
         level = "trace",
         skip_all,
         fields(address = %hex(address))
         "cache_ctrl:r"
     )]
-    fn read<T: Copy>(&self, address: u32) -> IOResult<T> {
+    fn cache_ctrl_read<T: Copy>(&self, address: u32) -> IOResult<T> {
         match address {
             0xfffe0130 => Ok(self.mem().read_region(
                 MEM_MAP.cache_control,
@@ -235,7 +212,7 @@ trait CacheControl: Bus {
         fields(address = %hex(address), value = %hex(value.io_into_u32()))
         "cache_ctrl:w"
     )]
-    fn write<T: Copy>(&mut self, address: u32, value: T) -> IOResult<()> {
+    fn cache_ctrl_write<T: Copy>(&mut self, address: u32, value: T) -> IOResult<()> {
         match address {
             0xfffe0130 => {
                 self.mem_mut().write_region(
@@ -251,34 +228,32 @@ trait CacheControl: Bus {
     }
 }
 
-impl CacheControl for Emu {}
-
 #[derive(thiserror::Error, Debug, Clone, Copy)]
 #[error("unhandled io at address {}", hex(self.0))]
 pub struct UnhandledIO(pub u32);
 
-impl IO for Emu {
-    fn read<T: Copy>(&mut self, address: u32) -> T {
+impl Emu {
+    pub fn read<T: Copy>(&mut self, address: u32) -> T {
         match self.try_read(address) {
             Ok(value) => value,
             Err(err) => self.panic(&format!("{}", err)),
         }
     }
 
-    fn read_pure<T: Copy>(&self, address: u32) -> T {
+    pub fn read_pure<T: Copy>(&self, address: u32) -> T {
         match self.try_read_pure(address) {
             Ok(value) => value,
             Err(err) => self.panic(&format!("{}", err)),
         }
     }
 
-    fn write<T: Copy>(&mut self, address: u32, value: T) {
+    pub fn write<T: Copy>(&mut self, address: u32, value: T) {
         if let Err(err) = self.try_write(address, value) {
             self.panic(&format!("{}", err));
         }
     }
 
-    fn try_read<T: Copy>(&mut self, address: u32) -> IOResult<T> {
+    pub fn try_read<T: Copy>(&mut self, address: u32) -> IOResult<T> {
         #[cfg(feature = "debugger-ext")]
         {
             use crate::debug::BreakpointKind;
@@ -286,33 +261,33 @@ impl IO for Emu {
             self.dbg.break_on(address, BreakpointKind::READ);
         }
 
-        Fastmem::read::<T>(self, address)
-            .or_else(|_| ScratchpadMem::read(self, address))
-            .or_else(|_| Interrupts::read(self, address))
-            .or_else(|_| Gpu::read(self, address))
-            .or_else(|_| Spu::read(self, address))
-            .or_else(|_| Dma::read(self, address))
-            .or_else(|_| Timers::read_timers(self, address))
-            .or_else(|_| Sio::read::<T>(self, address))
-            .or_else(|_| CDRom::read::<T>(self, address))
-            .or_else(|_| GenericIOFallback::read::<T>(self, address))
-            .or_else(|_| CacheControl::read::<T>(self, address))
+        self.fastmem_read::<T>(address)
+            .or_else(|_| self.scratch_read(address))
+            .or_else(|_| self.irq_read(address))
+            .or_else(|_| self.gpu_read(address))
+            .or_else(|_| self.spu_read(address))
+            .or_else(|_| self.dma_read(address))
+            .or_else(|_| self.timers_read(address))
+            .or_else(|_| self.sio_read::<T>(address))
+            .or_else(|_| self.cdrom_read::<T>(address))
+            .or_else(|_| self.cache_ctrl_read::<T>(address))
+            .or_else(|_| self.generic_read::<T>(address))
     }
 
-    fn try_read_pure<T: Copy>(&self, address: u32) -> IOResult<T> {
-        Fastmem::read::<T>(self, address)
-            .or_else(|_| Sio::read_pure(self, address))
-            .or_else(|_| ScratchpadMem::read(self, address))
-            .or_else(|_| Interrupts::read(self, address))
-            .or_else(|_| Gpu::read_pure(self, address))
-            // TODO: Spu::read_pure
-            .or_else(|_| Dma::read(self, address))
-            .or_else(|_| Timers::read_timers(self, address))
-            .or_else(|_| GenericIOFallback::read::<T>(self, address))
-            .or_else(|_| CacheControl::read::<T>(self, address))
+    pub fn try_read_pure<T: Copy>(&self, address: u32) -> IOResult<T> {
+        self.fastmem_read::<T>(address)
+            .or_else(|_| self.scratch_read(address))
+            .or_else(|_| self.irq_read(address))
+            .or_else(|_| self.gpu_read_pure(address))
+            .or_else(|_| self.sio_read_pure::<T>(address))
+            // TODO: spu_read_pure
+            .or_else(|_| self.dma_read(address))
+            .or_else(|_| self.timers_read(address))
+            .or_else(|_| self.cache_ctrl_read::<T>(address))
+            .or_else(|_| self.generic_read::<T>(address))
     }
 
-    fn try_write<T: Copy>(&mut self, address: u32, value: T) -> IOResult<()> {
+    pub fn try_write<T: Copy>(&mut self, address: u32, value: T) -> IOResult<()> {
         #[cfg(feature = "debugger-ext")]
         {
             use crate::debug::BreakpointKind;
@@ -320,34 +295,34 @@ impl IO for Emu {
             self.dbg.break_on(address, BreakpointKind::WRITE);
         }
 
-        Fastmem::write::<T>(self, address, value)
-            .or_else(|_| ScratchpadMem::write(self, address, value))
-            .or_else(|_| Timers::write_timers(self, address, value))
-            .or_else(|_| Interrupts::write(self, address, value))
-            .or_else(|_| Gpu::write(self, address, value))
-            .or_else(|_| Spu::write(self, address, value))
-            .or_else(|_| Dma::write(self, address, value))
-            .or_else(|_| Sio::write::<T>(self, address, value))
-            .or_else(|_| CDRom::write::<T>(self, address, value))
-            .or_else(|_| GenericIOFallback::write::<T>(self, address, value))
-            .or_else(|_| CacheControl::write::<T>(self, address, value))
+        self.fastmem_write::<T>(address, value)
+            .or_else(|_| self.scratch_write(address, value))
+            .or_else(|_| self.timers_write(address, value))
+            .or_else(|_| self.irq_write(address, value))
+            .or_else(|_| self.gpu_write(address, value))
+            .or_else(|_| self.spu_write(address, value))
+            .or_else(|_| self.dma_write(address, value))
+            .or_else(|_| self.sio_write::<T>(address, value))
+            .or_else(|_| self.cdrom_write::<T>(address, value))
+            .or_else(|_| self.cache_ctrl_write::<T>(address, value))
+            .or_else(|_| self.generic_write::<T>(address, value))
     }
 
     #[pchan_macros::instrument(skip_all)]
-    fn write32_unaligned_l(&mut self, address: u32, value: u32) {
+    pub fn write32_unaligned_l(&mut self, address: u32, value: u32) {
         if let Err(err) = self.try_write32_unaligned_l(address, value) {
             self.panic(&format!("{}", err));
         }
     }
 
     #[pchan_macros::instrument(skip_all)]
-    fn write32_unaligned_r(&mut self, address: u32, value: u32) {
+    pub fn write32_unaligned_r(&mut self, address: u32, value: u32) {
         if let Err(err) = self.try_write32_unaligned_r(address, value) {
             self.panic(&format!("{}", err));
         }
     }
 
-    fn read32_unaligned_l(&mut self, address: u32, overwrite: u32) -> u32 {
+    pub fn read32_unaligned_l(&mut self, address: u32, overwrite: u32) -> u32 {
         match self.try_read32_unaligned_l(address, overwrite) {
             Err(err) => {
                 self.panic(&format!("{err}"));
@@ -356,7 +331,7 @@ impl IO for Emu {
         }
     }
 
-    fn read32_unaligned_r(&mut self, address: u32, overwrite: u32) -> u32 {
+    pub fn read32_unaligned_r(&mut self, address: u32, overwrite: u32) -> u32 {
         match self.try_read32_unaligned_r(address, overwrite) {
             Err(err) => {
                 self.panic(&format!("{err}"));

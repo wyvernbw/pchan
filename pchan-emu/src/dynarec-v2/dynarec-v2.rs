@@ -1,37 +1,24 @@
 use derive_more as d;
 use dynasm::dynasm;
-use dynasmrt::Assembler;
-use dynasmrt::DynasmApi;
-use dynasmrt::DynasmLabelApi;
-use dynasmrt::ExecutableBuffer;
+use dynasmrt::{Assembler, DynasmApi, DynasmLabelApi, ExecutableBuffer};
 use heapless::binary_heap::Min;
-use pchan_utils::default;
-use pchan_utils::hex;
+use pchan_utils::{default, hex};
 use smallbox::SmallBox;
 use smallvec::SmallVec;
 use std::cell::Cell;
 use std::ptr::NonNull;
 use std::simd::Simd;
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use thiserror::Error;
-use tracing::Instrument;
-use tracing::Level;
-use tracing::enabled;
+use tracing::{Instrument, Level, enabled};
 
-use crate::Emu;
-use crate::cpu::exceptions::Exceptions;
 use crate::cpu::ops::OpCode;
 use crate::cpu::reg_str;
-use crate::dynarec_v2::emitters::DecodedOp;
-use crate::dynarec_v2::emitters::DynarecOp;
-use crate::dynarec_v2::emitters::EmitCtx;
-use crate::dynarec_v2::emitters::EmitSummary;
+use crate::dynarec_v2::emitters::{DecodedOp, DynarecOp, EmitCtx, EmitSummary};
 use crate::dynarec_v2::regalloc::*;
-use crate::io::IO;
-use crate::max_simd_elements;
 use crate::memory::kb;
+use crate::{Emu, max_simd_elements};
 
 pub mod emitters;
 pub mod regalloc;
@@ -45,10 +32,8 @@ pub static CACHE_MISSES: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(feature = "fetch-channel")]
 pub mod fetch_map {
-    use std::{
-        collections::HashMap,
-        sync::{Arc, LazyLock, RwLock},
-    };
+    use std::collections::HashMap;
+    use std::sync::{Arc, LazyLock, RwLock};
 
     use crate::dynarec_v2::emitters::DecodedOp;
 

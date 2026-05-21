@@ -1,8 +1,6 @@
-use crate::{
-    Bus, Emu,
-    io::UnhandledIO,
-    memory::{MEM_MAP, kb},
-};
+use crate::Emu;
+use crate::io::UnhandledIO;
+use crate::memory::{MEM_MAP, kb};
 
 const PAGE_COUNT: usize = 0x10000;
 const PAGE_SIZE: usize = kb(64);
@@ -88,13 +86,8 @@ pub fn util_fast_map_address(address: u32) -> Option<u32> {
 
 pub type FastmemResult<T> = Result<T, UnhandledIO>;
 
-pub trait Fastmem: Bus {
-    fn read<T: Copy>(&self, address: u32) -> FastmemResult<T>;
-    fn write<T: Copy>(&mut self, address: u32, value: T) -> FastmemResult<()>;
-}
-
-impl Fastmem for Emu {
-    fn read<T: Copy>(&self, address: u32) -> FastmemResult<T> {
+impl Emu {
+    pub fn fastmem_read<T: Copy>(&self, address: u32) -> FastmemResult<T> {
         let page = address >> 16;
         let offset = address & 0x0000_FFFF;
 
@@ -112,7 +105,7 @@ impl Fastmem for Emu {
         }
     }
 
-    fn write<T: Copy>(&mut self, address: u32, value: T) -> FastmemResult<()> {
+    pub fn fastmem_write<T: Copy>(&mut self, address: u32, value: T) -> FastmemResult<()> {
         if self.cpu().isc() {
             return Ok(());
         }

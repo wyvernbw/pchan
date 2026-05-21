@@ -1,6 +1,7 @@
-use heapless::{BinaryHeap, binary_heap::Min};
+use heapless::BinaryHeap;
+use heapless::binary_heap::Min;
 
-use crate::Bus;
+use crate::Emu;
 
 /// `pchan` event queue
 #[derive(Debug, Clone)]
@@ -61,8 +62,8 @@ impl<T: ?Sized> PartialEq for PchanEvent<T> {
 
 impl<T: ?Sized> Eq for PchanEvent<T> {}
 
-pub trait EventQueue: Bus {
-    fn evque_advance(&mut self, d_clock: u64) {
+impl Emu {
+    pub fn evque_advance(&mut self, d_clock: u64) {
         self.evque_mut().clock = self.evque_mut().clock.wrapping_add(d_clock);
         let clock = self.cpu().cycles;
         while let Some(ev) = self.evque_mut().pop_next() {
@@ -77,8 +78,6 @@ pub trait EventQueue: Bus {
         }
     }
 }
-
-impl<T> EventQueue for T where T: Bus {}
 
 impl<T: ?Sized> Evque<T> {
     fn pop_next(&mut self) -> Option<PchanEvent<T>> {

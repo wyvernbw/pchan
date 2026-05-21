@@ -1,7 +1,8 @@
 use arbitrary_int::prelude::*;
 use bitbybit::{bitenum, bitfield};
 
-use crate::{Bus, Emu, cpu::Cop0StatusReg};
+use crate::Emu;
+use crate::cpu::Cop0StatusReg;
 
 #[bitfield(u32, debug)]
 pub struct CauseRegister {
@@ -54,18 +55,7 @@ pub enum Exception {
     Break     = 0x9,
 }
 
-pub trait Exceptions: Bus {
-    fn handle_exception(&mut self, exception: Exception);
-    extern "C" fn handle_rfe(&mut self);
-    extern "C" fn handle_break(&mut self);
-    extern "C" fn handle_syscall(&mut self, bd: bool);
-    fn run_exceptions_io(&mut self);
-    fn raise_exception(&mut self, exception: Exception);
-    fn raise_irq_exception(&mut self);
-    fn clear_irq(&mut self);
-}
-
-impl Exceptions for Emu {
+impl Emu {
     fn handle_exception(&mut self, exception: Exception) {
         let mut sr = Cop0StatusReg::new_with_raw_value(self.cpu().cop0.reg[12]);
         if !sr.iec() && exception == Exception::Interrupt {
@@ -101,7 +91,7 @@ impl Exceptions for Emu {
     }
 
     #[unsafe(no_mangle)]
-    extern "C" fn handle_rfe(&mut self) {
+    pub extern "C" fn handle_rfe(&mut self) {
         let mut sr = Cop0StatusReg::new_with_raw_value(self.cpu().cop0.reg[12]);
         sr.set_kuc(sr.kup());
         sr.set_iec(sr.iep());
@@ -111,12 +101,12 @@ impl Exceptions for Emu {
     }
 
     #[unsafe(no_mangle)]
-    extern "C" fn handle_break(&mut self) {
+    pub extern "C" fn handle_break(&mut self) {
         self.handle_exception(Exception::Break);
     }
 
     #[unsafe(no_mangle)]
-    extern "C" fn handle_syscall(&mut self, bd: bool) {
+    pub extern "C" fn handle_syscall(&mut self, bd: bool) {
         if bd {
             let cause = self.cpu().cop0.reg[13];
             let cause = CauseRegister::new_with_raw_value(cause);
@@ -128,7 +118,7 @@ impl Exceptions for Emu {
         self.handle_exception(Exception::Syscall);
     }
 
-    fn run_exceptions_io(&mut self) {
+    pub fn run_exceptions_io(&mut self) {
         let sr = self.cpu.cop0.status();
         let cause = self.cpu.cop0.cause();
         // index 2 = bit 10
@@ -139,13 +129,13 @@ impl Exceptions for Emu {
         }
     }
 
-    fn raise_exception(&mut self, exception: Exception) {
+    pub fn raise_exception(&mut self, exception: Exception) {
         self.cpu
             .cop0
             .update_cause(|cause| cause.with_excode(exception.raw_value()));
     }
 
-    fn raise_irq_exception(&mut self) {
+    pub fn raise_irq_exception(&mut self) {
         self.cpu.cop0.update_cause(|cause| {
             cause
                 .with_irq_pending(2, true)
@@ -153,7 +143,7 @@ impl Exceptions for Emu {
         });
     }
 
-    fn clear_irq(&mut self) {
+    pub fn clear_irq(&mut self) {
         self.cpu
             .cop0
             .update_cause(|cause| cause.with_irq_pending(2, false));

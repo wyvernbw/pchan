@@ -1,14 +1,9 @@
-use crate::Emu;
-use crate::cpu;
 use crate::cpu::*;
-use crate::dynarec_v2::DynEmitter;
-use crate::dynarec_v2::DynarecCache;
-use crate::dynarec_v2::Guest;
+use crate::dynarec_v2::{DynEmitter, DynarecCache, Guest};
+use crate::{Emu, cpu};
+use std::num::NonZeroU8;
 
 use crate::dynarec_v2::regalloc::AllocResult;
-#[cfg(test)]
-use crate::io::IO;
-use std::num::NonZeroU8;
 
 use arbitrary_int::traits::Integer;
 use enum_dispatch::enum_dispatch;
@@ -18,17 +13,13 @@ use pchan_utils::hex;
 use rstest::rstest;
 use smallbox::SmallBox;
 
-use crate::cpu::ops::*;
-use crate::cpu::ops::{HaltBlock, OpCode};
-use crate::dynarec_v2::Dynarec;
-use crate::dynarec_v2::LoadedReg;
-use crate::dynarec_v2::Reg;
+use crate::cpu::ops::{HaltBlock, OpCode, *};
+use crate::dynarec_v2::{Dynarec, LoadedReg, Reg};
 #[cfg(test)]
 use crate::memory;
 use crate::memory::ext;
 use dynasm::dynasm;
-use dynasmrt::DynasmApi;
-use dynasmrt::DynasmLabelApi;
+use dynasmrt::{DynasmApi, DynasmLabelApi};
 
 use super::ScheduledEmitter;
 
@@ -477,7 +468,9 @@ impl DynarecOp for Addiu {
 #[rstest]
 #[case(10, 2, 12)]
 fn test_addiu(#[case] a: u32, #[case] b: u32, #[case] expected: u32) -> color_eyre::Result<()> {
-    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2, io::IO};
+    use crate::Emu;
+    use crate::cpu::program;
+    use crate::dynarec_v2::PipelineV2;
     use pchan_utils::setup_tracing;
 
     setup_tracing();
@@ -499,7 +492,9 @@ fn test_addiu(#[case] a: u32, #[case] b: u32, #[case] expected: u32) -> color_ey
 #[cfg(test)]
 #[rstest]
 fn test_addiu_andi_loop() -> color_eyre::Result<()> {
-    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use crate::Emu;
+    use crate::cpu::program;
+    use crate::dynarec_v2::PipelineV2;
     use assert_hex::*;
     use pchan_utils::setup_tracing;
 
@@ -550,7 +545,9 @@ impl DynarecOp for HaltBlock {
 #[rstest]
 #[case(10, 2, 8)]
 fn test_subu(#[case] a: u32, #[case] b: u32, #[case] expected: u32) -> color_eyre::Result<()> {
-    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2, io::IO};
+    use crate::Emu;
+    use crate::cpu::program;
+    use crate::dynarec_v2::PipelineV2;
     use pchan_utils::setup_tracing;
 
     setup_tracing();
@@ -694,7 +691,10 @@ where
     T: Copy + std::fmt::Debug + PartialEq,
     T: const memory::Extend<ext::Zero, Out = u32>,
 {
-    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2, io::IO, memory::ext};
+    use crate::Emu;
+    use crate::cpu::program;
+    use crate::dynarec_v2::PipelineV2;
+    use crate::memory::ext;
     use pchan_utils::setup_tracing;
 
     setup_tracing();
@@ -726,7 +726,9 @@ where
 #[rstest]
 #[should_panic]
 fn test_weird_store() {
-    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use crate::Emu;
+    use crate::cpu::program;
+    use crate::dynarec_v2::PipelineV2;
     use pchan_utils::setup_tracing;
 
     setup_tracing();
@@ -810,11 +812,8 @@ mod test_unaligned_load_stores {
 
     use rstest::rstest;
 
-    use crate::cpu::{
-        SP,
-        ops::{OpCode, lui, lwl, lwr, ori, swl, swr},
-        program,
-    };
+    use crate::cpu::ops::{OpCode, lui, lwl, lwr, ori, swl, swr};
+    use crate::cpu::{SP, program};
 
     const fn load_par_program_one_imm(imm: i16) -> [u32; 2] {
         program([lwl(9, SP, imm), lwr(10, SP, imm)])
@@ -839,8 +838,8 @@ mod test_unaligned_load_stores {
         #[case] t1: u32,
         #[case] t2: u32,
     ) -> color_eyre::Result<()> {
-        use crate::io::IO;
-        use crate::{Emu, dynarec_v2::PipelineV2};
+        use crate::Emu;
+        use crate::dynarec_v2::PipelineV2;
         use assert_hex::assert_eq_hex;
         use pchan_utils::setup_tracing;
 
@@ -881,8 +880,8 @@ mod test_unaligned_load_stores {
         #[case] prog: [u32; N],
         #[case] t1: u32,
     ) -> color_eyre::Result<()> {
-        use crate::io::IO;
-        use crate::{Emu, dynarec_v2::PipelineV2};
+        use crate::Emu;
+        use crate::dynarec_v2::PipelineV2;
         use assert_hex::assert_eq_hex;
         use pchan_utils::setup_tracing;
 
@@ -938,8 +937,8 @@ mod test_unaligned_load_stores {
         #[case] prog: [u32; N],
         #[case] word: u32,
     ) -> color_eyre::Result<()> {
-        use crate::io::IO;
-        use crate::{Emu, dynarec_v2::PipelineV2};
+        use crate::Emu;
+        use crate::dynarec_v2::PipelineV2;
         use assert_hex::assert_eq_hex;
         use pchan_utils::setup_tracing;
 
@@ -1138,7 +1137,9 @@ fn test_loads(
     #[case] instr: impl Fn(u8, u8, i16) -> OpCode,
     #[case] expected: u32,
 ) -> color_eyre::Result<()> {
-    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use crate::Emu;
+    use crate::cpu::program;
+    use crate::dynarec_v2::PipelineV2;
     use pchan_utils::setup_tracing;
 
     setup_tracing();
@@ -1170,7 +1171,9 @@ fn test_partial_loads(
     #[case] immediate: i16,
     #[case] expected: u32,
 ) -> color_eyre::Result<()> {
-    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use crate::Emu;
+    use crate::cpu::program;
+    use crate::dynarec_v2::PipelineV2;
     use assert_hex::*;
     use pchan_utils::setup_tracing;
 
@@ -1197,7 +1200,9 @@ fn test_partial_loads(
 #[cfg(test)]
 #[rstest]
 fn test_weird_load_01() -> color_eyre::Result<()> {
-    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use crate::Emu;
+    use crate::cpu::program;
+    use crate::dynarec_v2::PipelineV2;
     use assert_hex::*;
     use pchan_utils::setup_tracing;
 
@@ -1240,7 +1245,9 @@ fn test_weird_load_01() -> color_eyre::Result<()> {
 #[case::lhu(lhu)]
 #[case::lw(lw)]
 fn test_load_delay(#[case] instr: impl Fn(u8, u8, i16) -> OpCode) -> color_eyre::Result<()> {
-    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use crate::Emu;
+    use crate::cpu::program;
+    use crate::dynarec_v2::PipelineV2;
     use pchan_utils::setup_tracing;
 
     setup_tracing();
@@ -1648,7 +1655,9 @@ fn test_alu_reg(
     #[case] a: (Guest, u32),
     #[case] b: (Guest, u32),
 ) -> color_eyre::Result<()> {
-    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use crate::Emu;
+    use crate::cpu::program;
+    use crate::dynarec_v2::PipelineV2;
     use pchan_utils::setup_tracing;
 
     setup_tracing();
@@ -1733,7 +1742,9 @@ impl DynarecOp for Sll {
 #[rstest]
 #[cfg(test)]
 fn test_sll_case0() -> color_eyre::Result<()> {
-    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use crate::Emu;
+    use crate::cpu::program;
+    use crate::dynarec_v2::PipelineV2;
     use assert_hex::*;
     use pchan_utils::setup_tracing;
 
@@ -1968,7 +1979,9 @@ fn test_alu_imm<I: Into<i16>>(
     #[case] a: (Guest, u32),
     #[case] b: I,
 ) -> color_eyre::Result<()> {
-    use crate::{Emu, cpu::program, dynarec_v2::run_step};
+    use crate::Emu;
+    use crate::cpu::program;
+    use crate::dynarec_v2::run_step;
     use pchan_utils::setup_tracing;
 
     setup_tracing();
@@ -2020,7 +2033,9 @@ fn test_lui(
     #[case] imm: i16,
     #[case] expected: u32,
 ) -> color_eyre::Result<()> {
-    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use crate::Emu;
+    use crate::cpu::program;
+    use crate::dynarec_v2::PipelineV2;
     use pchan_utils::setup_tracing;
 
     setup_tracing();
@@ -2108,7 +2123,9 @@ impl DynarecOp for J {
 #[rstest]
 #[case(0x0, 0x0000_1000)]
 fn test_j(#[case] initial_pc: u32, #[case] jump_imm: u32) -> color_eyre::Result<()> {
-    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use crate::Emu;
+    use crate::cpu::program;
+    use crate::dynarec_v2::PipelineV2;
     use pchan_utils::setup_tracing;
 
     setup_tracing();
@@ -2160,7 +2177,9 @@ impl DynarecOp for Jal {
 #[rstest]
 #[case(0x0, 0x0000_1000)]
 fn test_jal(#[case] initial_pc: u32, #[case] jump_imm: u32) -> color_eyre::Result<()> {
-    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use crate::Emu;
+    use crate::cpu::program;
+    use crate::dynarec_v2::PipelineV2;
     use pchan_utils::setup_tracing;
 
     setup_tracing();
@@ -2227,7 +2246,9 @@ impl DynarecOp for Jr {
 #[rstest]
 #[case(0x0, (9, 0x0000_1000))]
 fn test_jr(#[case] initial_pc: u32, #[case] rs: (Guest, u32)) -> color_eyre::Result<()> {
-    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use crate::Emu;
+    use crate::cpu::program;
+    use crate::dynarec_v2::PipelineV2;
     use pchan_utils::setup_tracing;
 
     setup_tracing();
@@ -2250,7 +2271,9 @@ fn test_jr(#[case] initial_pc: u32, #[case] rs: (Guest, u32)) -> color_eyre::Res
 #[cfg(test)]
 #[rstest]
 fn test_jr_delay_slot() -> color_eyre::Result<()> {
-    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use crate::Emu;
+    use crate::cpu::program;
+    use crate::dynarec_v2::PipelineV2;
     use assert_hex::*;
     use pchan_utils::setup_tracing;
 
@@ -2331,7 +2354,9 @@ fn test_jalr(
     #[case] rs: (Guest, u32),
     #[case] rd: Guest,
 ) -> color_eyre::Result<()> {
-    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use crate::Emu;
+    use crate::cpu::program;
+    use crate::dynarec_v2::PipelineV2;
     use pchan_utils::setup_tracing;
 
     setup_tracing();
@@ -2540,7 +2565,9 @@ fn test_branch(
     #[case] offset: i16,
     #[case] expected_pc: u32,
 ) -> color_eyre::Result<()> {
-    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use crate::Emu;
+    use crate::cpu::program;
+    use crate::dynarec_v2::PipelineV2;
     use pchan_utils::setup_tracing;
 
     setup_tracing();
@@ -2733,7 +2760,9 @@ fn test_branch_zero(
     #[case] offset: i16,
     #[case] expected_pc: u32,
 ) -> color_eyre::Result<()> {
-    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use crate::Emu;
+    use crate::cpu::program;
+    use crate::dynarec_v2::PipelineV2;
     use pchan_utils::setup_tracing;
 
     setup_tracing();
@@ -2808,7 +2837,9 @@ impl DynarecOp for Ctcn {
 #[case(2, 5, 10)]
 #[case(2, 31, 10)] // really pushing it
 fn test_mtcn(#[case] cop: u8, #[case] rd: u8, #[case] rt: u8) -> color_eyre::Result<()> {
-    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use crate::Emu;
+    use crate::cpu::program;
+    use crate::dynarec_v2::PipelineV2;
     use pchan_utils::setup_tracing;
 
     setup_tracing();
@@ -2833,7 +2864,9 @@ fn test_mtcn(#[case] cop: u8, #[case] rd: u8, #[case] rt: u8) -> color_eyre::Res
 #[case(2, 5, 10)]
 #[case(2, 31, 10)]
 fn test_ctcn(#[case] cop: u8, #[case] rd: u8, #[case] rt: u8) -> color_eyre::Result<()> {
-    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use crate::Emu;
+    use crate::cpu::program;
+    use crate::dynarec_v2::PipelineV2;
     use pchan_utils::setup_tracing;
 
     setup_tracing();
@@ -2855,7 +2888,9 @@ fn test_ctcn(#[case] cop: u8, #[case] rd: u8, #[case] rt: u8) -> color_eyre::Res
 #[cfg(test)]
 #[rstest]
 fn test_mtcn_enable_isc() -> color_eyre::Result<()> {
-    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use crate::Emu;
+    use crate::cpu::program;
+    use crate::dynarec_v2::PipelineV2;
     use pchan_utils::setup_tracing;
 
     setup_tracing();
@@ -2878,8 +2913,9 @@ fn test_mtcn_enable_isc() -> color_eyre::Result<()> {
 #[cfg(test)]
 #[rstest]
 fn test_mtcn_enable_irq() -> color_eyre::Result<()> {
-    use crate::cpu::exceptions::Exceptions;
-    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use crate::Emu;
+    use crate::cpu::program;
+    use crate::dynarec_v2::PipelineV2;
     use pchan_utils::setup_tracing;
 
     setup_tracing();
@@ -2925,7 +2961,9 @@ impl DynarecOp for Nop {
 #[cfg(test)]
 #[rstest]
 fn test_store_loop() -> color_eyre::Result<()> {
-    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use crate::Emu;
+    use crate::cpu::program;
+    use crate::dynarec_v2::PipelineV2;
     use pchan_utils::setup_tracing;
 
     setup_tracing();
@@ -3311,7 +3349,9 @@ pub fn test_mul_div(
     #[case] rt: (Guest, u32),
     #[case] expected: u64,
 ) -> color_eyre::Result<()> {
-    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use crate::Emu;
+    use crate::cpu::program;
+    use crate::dynarec_v2::PipelineV2;
     use pchan_utils::setup_tracing;
 
     setup_tracing();
@@ -3387,7 +3427,9 @@ pub fn test_mfhilo(
     #[case] hilo: u64,
     #[case] expected: u32,
 ) -> color_eyre::Result<()> {
-    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use crate::Emu;
+    use crate::cpu::program;
+    use crate::dynarec_v2::PipelineV2;
     use pchan_utils::setup_tracing;
 
     setup_tracing();
@@ -3443,7 +3485,9 @@ impl DynarecOp for Rfe {
 #[cfg(test)]
 #[rstest]
 pub fn test_load_0xbfc01a78() -> color_eyre::Result<()> {
-    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use crate::Emu;
+    use crate::cpu::program;
+    use crate::dynarec_v2::PipelineV2;
     use pchan_utils::setup_tracing;
 
     setup_tracing();
@@ -3506,7 +3550,9 @@ pub fn test_mthilo(
     #[case] (rs, rs_value): (u8, u32),
     #[case] expected: u64,
 ) -> color_eyre::Result<()> {
-    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use crate::Emu;
+    use crate::cpu::program;
+    use crate::dynarec_v2::PipelineV2;
     use pchan_utils::setup_tracing;
 
     setup_tracing();
@@ -3527,7 +3573,9 @@ pub fn test_mthilo(
 #[cfg(test)]
 #[rstest]
 pub fn test_mthi_mfhi() -> color_eyre::Result<()> {
-    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use crate::Emu;
+    use crate::cpu::program;
+    use crate::dynarec_v2::PipelineV2;
     use pchan_utils::setup_tracing;
 
     setup_tracing();
@@ -3581,7 +3629,9 @@ pub fn test_mthi_mfhi() -> color_eyre::Result<()> {
 #[cfg(test)]
 #[rstest]
 fn test_branch_and_store() -> color_eyre::Result<()> {
-    use crate::{Emu, cpu::program, dynarec_v2::PipelineV2};
+    use crate::Emu;
+    use crate::cpu::program;
+    use crate::dynarec_v2::PipelineV2;
     use assert_hex::*;
     use pchan_utils::setup_tracing;
 
@@ -3611,7 +3661,9 @@ fn test_branch_and_store() -> color_eyre::Result<()> {
 #[cfg(test)]
 #[rstest]
 fn test_0x8004f454_move_in_jump_delay() -> color_eyre::Result<()> {
-    use crate::{Emu, cpu::program, dynarec_v2::run_step};
+    use crate::Emu;
+    use crate::cpu::program;
+    use crate::dynarec_v2::run_step;
     use assert_hex::*;
     use pchan_utils::setup_tracing;
 

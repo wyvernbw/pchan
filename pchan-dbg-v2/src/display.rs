@@ -1,7 +1,5 @@
-use pchan_emu::gpu::VideoEvents;
 use pchan_gpu::Renderer;
-use wgpu::TextureViewDescriptor;
-use wgpu::*;
+use wgpu::{TextureViewDescriptor, *};
 
 use crate::AppState;
 

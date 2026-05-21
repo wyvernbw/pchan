@@ -1,13 +1,11 @@
-use crate::{
-    Emu,
-    gpu::{DrawEvenOdd, Gpu, VBLANK_COUNT},
-    io::{Interrupts, irq::Irq},
-};
+use crate::Emu;
+use crate::gpu::{DrawEvenOdd, VBLANK_COUNT};
+use crate::io::irq::Irq;
 
 pub const CPU_FREQ: u32 = 33_868_800;
 pub const NTSC_CYCLES: u32 = CPU_FREQ / 60;
 
-pub trait VBlank: Interrupts + Gpu {
+impl Emu {
     #[deprecated]
     fn run_poll_vblank(&mut self) {
         let even_odd = self.gpu().gpustat.even_odd_in_vblank();
@@ -20,7 +18,7 @@ pub trait VBlank: Interrupts + Gpu {
                 .gpustat
                 .set_even_odd_in_vblank(DrawEvenOdd::EvenOrVBlank);
             self.gpu_mut().flush_draw_calls();
-            self.trigger_irq(Irq::Irq0Vblank);
+            self.irq_trigger(Irq::Irq0Vblank);
 
             self.gpu_mut().flip_even_odd(Some(even_odd));
 
@@ -28,13 +26,13 @@ pub trait VBlank: Interrupts + Gpu {
         }
     }
 
-    fn run_vblank(&mut self) {
+    pub fn run_vblank(&mut self) {
         let even_odd = self.gpu().gpustat.even_odd_in_vblank();
         self.gpu_mut()
             .gpustat
             .set_even_odd_in_vblank(DrawEvenOdd::EvenOrVBlank);
         self.gpu_mut().flush_draw_calls();
-        self.trigger_irq(Irq::Irq0Vblank);
+        self.irq_trigger(Irq::Irq0Vblank);
         self.gpu_mut().vblank_signal = true;
 
         self.gpu_mut().flip_even_odd(Some(even_odd));
@@ -42,11 +40,9 @@ pub trait VBlank: Interrupts + Gpu {
         VBLANK_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
-    fn consume_vblank_signal(&mut self) -> bool {
+    pub fn consume_vblank_signal(&mut self) -> bool {
         let signal = self.gpu().vblank_signal;
         self.gpu_mut().vblank_signal = false;
         signal
     }
 }
-
-impl VBlank for Emu {}

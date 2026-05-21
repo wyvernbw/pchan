@@ -3,11 +3,8 @@ use bitbybit::{bitenum, bitfield};
 use derive_more as d;
 use pchan_utils::hex;
 
-use crate::{
-    Bus, Emu,
-    cpu::exceptions::Exceptions,
-    io::{CastIOFrom, CastIOInto, IO, IOResult, UnhandledIO},
-};
+use crate::Emu;
+use crate::io::{CastIOFrom, CastIOInto, IOResult, UnhandledIO};
 
 #[derive(Debug, Clone, Copy, Hash, Default)]
 pub struct IrqState {
@@ -56,7 +53,7 @@ pub enum Irq {
 }
 
 impl IrqState {
-    pub fn trigger_irq(&mut self, irq: Irq) {
+    pub fn irq_trigger(&mut self, irq: Irq) {
         let old_stat = self.i_stat;
         self.i_stat.set_irq_flag(irq as usize, true);
 
@@ -73,9 +70,9 @@ impl IrqState {
     }
 }
 
-pub trait Interrupts: Bus + IO + Exceptions {
-    fn trigger_irq(&mut self, irq: Irq) {
-        self.irq_mut().trigger_irq(irq);
+impl Emu {
+    pub fn irq_trigger(&mut self, irq: Irq) {
+        self.irq_mut().irq_trigger(irq);
         self.run_irq_io();
     }
     #[pchan_macros::instrument(
@@ -83,7 +80,7 @@ pub trait Interrupts: Bus + IO + Exceptions {
         skip_all,
         fields(address=%hex(address))
     )]
-    fn read<T: Copy>(&self, address: u32) -> IOResult<T> {
+    pub fn irq_read<T: Copy>(&self, address: u32) -> IOResult<T> {
         match address {
             0x1f801070 => Ok(self.irq().i_stat.io_from_u32()),
             0x1f801074 => Ok(self.irq().i_mask.io_from_u32()),
@@ -100,7 +97,7 @@ pub trait Interrupts: Bus + IO + Exceptions {
             value=%hex(value.io_into_u32())
         )
     )]
-    fn write<T: Copy>(&mut self, address: u32, value: T) -> IOResult<()> {
+    pub fn irq_write<T: Copy>(&mut self, address: u32, value: T) -> IOResult<()> {
         match address {
             0x1f801070 => {
                 let irq = self.irq_mut();
@@ -127,11 +124,11 @@ pub trait Interrupts: Bus + IO + Exceptions {
         }
     }
 
-    fn handle_ev_irq(&mut self, _: usize, _: u64) {
+    pub fn handle_ev_irq(&mut self, _: usize, _: u64) {
         self.run_irq_io();
     }
 
-    fn run_irq_io(&mut self) {
+    pub fn run_irq_io(&mut self) {
         if self.irq().i_stat.irq_flags_combined().as_u32()
             & self.irq().i_mask.irq_flags_combined().as_u32()
             != 0
@@ -140,5 +137,3 @@ pub trait Interrupts: Bus + IO + Exceptions {
         }
     }
 }
-
-impl Interrupts for Emu {}

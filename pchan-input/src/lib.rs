@@ -1,15 +1,12 @@
-use std::collections::{HashMap, HashSet, hash_map::Entry};
+use std::collections::hash_map::Entry;
+use std::collections::{HashMap, HashSet};
 
 use pchan_bind::input::{InputEvent, PchanButton};
-use pchan_emu::{
-    Bus, Emu,
-    io::sio::{Sio0Port, joypad::InputEvents},
-};
-use sdl2::{
-    EventPump,
-    controller::{Axis, Button as SdlButton, GameController},
-    event::Event,
-};
+use pchan_emu::Emu;
+use pchan_emu::io::sio::Sio0Port;
+use sdl2::EventPump;
+use sdl2::controller::{Axis, Button as SdlButton, GameController};
+use sdl2::event::Event;
 
 pub struct Input {
     events:      EventPump,

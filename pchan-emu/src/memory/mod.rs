@@ -1,10 +1,7 @@
 use pchan_utils::hex;
 
-use crate::io::CastIOInto;
-use crate::{
-    Bus, Emu,
-    io::{IOResult, UnhandledIO},
-};
+use crate::Emu;
+use crate::io::{CastIOInto, IOResult, UnhandledIO};
 
 pub mod fastmem;
 
@@ -100,14 +97,14 @@ impl MemoryState {
     }
 }
 
-pub trait ScratchpadMem: Bus {
+impl Emu {
     #[pchan_macros::instrument(
         level = "trace",
         skip_all,
         fields(address = %hex(address))
         "scratchpad:r"
     )]
-    fn read<T: Copy>(&self, address: u32) -> IOResult<T> {
+    pub fn scratch_read<T: Copy>(&self, address: u32) -> IOResult<T> {
         match address {
             // scratchpad is not mapped in kseg1
             0xbf800000..0xbf800400 => Err(UnhandledIO(address)),
@@ -125,7 +122,7 @@ pub trait ScratchpadMem: Bus {
         fields(address = %hex(address), value = %hex(value.io_into_u32()))
         "scratchpad:w"
     )]
-    fn write<T: Copy>(&mut self, address: u32, value: T) -> IOResult<()> {
+    pub fn scratch_write<T: Copy>(&mut self, address: u32, value: T) -> IOResult<()> {
         match address {
             // scratchpad is not mapped in kseg1
             0xbf800000..0xbf801000 => Err(UnhandledIO(address)),
@@ -138,8 +135,6 @@ pub trait ScratchpadMem: Bus {
         }
     }
 }
-
-impl ScratchpadMem for Emu {}
 
 pub struct Sign;
 pub struct Zero;
@@ -224,9 +219,7 @@ impl const Extend<Zero> for i16 {
 }
 
 pub mod ext {
-    pub use super::NoExt;
-    pub use super::Sign;
-    pub use super::Zero;
+    pub use super::{NoExt, Sign, Zero};
 
     use super::Extend;
 
