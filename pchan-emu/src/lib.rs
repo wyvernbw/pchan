@@ -20,6 +20,7 @@
 #![feature(portable_simd)]
 #![feature(const_try)]
 #![feature(explicit_tail_calls)]
+#![feature(const_destruct)]
 // allow unused variables in tests to supress the setup tracing warnings
 #![cfg_attr(test, allow(unused_variables))]
 
@@ -28,18 +29,19 @@ use std::mem::offset_of;
 #[cfg(feature = "debugger-ext")]
 use crate::debug::DebuggerState;
 
-use crate::{
-    bootloader::BootloaderState,
-    cpu::Cpu,
-    dynarec_v2::DynarecCache,
-    gpu::GpuState,
-    io::{
-        cdrom::CDRomState, dma::DmaState, evque::Evque, irq::IrqState, sio::SioState,
-        timers::TimerState, tty::Tty,
-    },
-    memory::MemoryState,
-    spu::{Spu, SpuState},
-};
+use crate::bootloader::BootloaderState;
+use crate::cpu::Cpu;
+use crate::dynarec_v2::DynarecCache;
+use crate::gpu::GpuState;
+use crate::io::cdrom::CDRomState;
+use crate::io::dma::DmaState;
+use crate::io::evque::Evque;
+use crate::io::irq::IrqState;
+use crate::io::sio::SioState;
+use crate::io::timers::TimerState;
+use crate::io::tty::Tty;
+use crate::memory::MemoryState;
+use crate::spu::{Spu, SpuState};
 
 pub mod bindings;
 pub mod bootloader;

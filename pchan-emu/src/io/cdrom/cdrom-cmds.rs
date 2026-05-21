@@ -1,6 +1,7 @@
 use crate::cpu::Cpu;
+use crate::io::cdrom::cdrom_format::{Bcd, Mss};
 use crate::io::cdrom::{CDRomState, DriveStatus};
-use bitbybit::bitfield;
+use bitbybit::*;
 use pchan_utils::hex;
 use smallvec::{SmallVec, smallvec};
 
@@ -57,13 +58,14 @@ impl Default for StatusCode {
     }
 }
 
+pub type ResponseList = SmallVec<[CdromResponse; 2]>;
+
 impl CDRomState {
     fn drain_params(&mut self) -> impl Iterator<Item = u8> {
         std::iter::from_fn(|| self.param_fifo.pop_front())
     }
-    pub fn send_cmd(&mut self, cmd: u8) -> SmallVec<[CdromResponse; 2]> {
+    pub fn send_cmd(&mut self, cmd: u8) -> ResponseList {
         self.status.set_busy_status(true);
-        let arena = &mut self.responses;
 
         fn diskerr(data: &[u8]) -> SmallVec<[CdromResponse; 2]> {
             smallvec![CdromResponse::Immediate(Response {
@@ -76,10 +78,7 @@ impl CDRomState {
             0x01 => {
                 tracing::info!("0x01 nop");
                 self.status.set_busy_status(false);
-                smallvec![CdromResponse::Immediate(Response {
-                    int:  HInt::Int3Ack,
-                    data: smallvec![self.status_code.raw_value()],
-                })]
+                smallvec![CdromResponse::Immediate(self.int3_status())]
             }
             0x19 => {
                 tracing::info!("0x19 test command");
@@ -91,10 +90,7 @@ impl CDRomState {
                     // 20h INT3(yy,mm,dd,ver) Get cdrom BIOS date/version (yy,mm,dd,ver)
                     0x20 => {
                         self.status.set_busy_status(false);
-                        smallvec![CdromResponse::Immediate(Response {
-                            int:  HInt::Int3Ack,
-                            data: SmallVec::from_slice(self.ver.as_slice()),
-                        })]
+                        smallvec![CdromResponse::Immediate(self.int3_status())]
                     }
 
                     _ => {
@@ -140,10 +136,7 @@ impl CDRomState {
                     DriveStatus::LicensedMode2 => {
                         self.status.set_busy_status(false);
                         smallvec![
-                            CdromResponse::Immediate(Response {
-                                int:  HInt::Int3Ack,
-                                data: smallvec![self.status_code.raw_value()],
-                            }),
+                            CdromResponse::Immediate(self.int3_status()),
                             CdromResponse::Immediate(Response {
                                 int:  HInt::Int2Complete,
                                 data: smallvec![0x02, 0x00, 0x20, 0x00, 0x53, 0x43, 0x45, 0x49],
@@ -156,11 +149,8 @@ impl CDRomState {
             0x1e => {
                 self.status.set_busy_status(false);
                 tracing::info!("ReadTOC INT3(stat) --> INT2(stat)");
-                let res1 = arena.insert(Response {
-                    int:  HInt::Int3Ack,
-                    data: smallvec![self.status_code.raw_value()],
-                });
-                let res2 = arena.insert(Response {
+                let res1 = self.responses.insert(self.int3_status());
+                let res2 = self.responses.insert(Response {
                     int:  HInt::Int2Complete,
                     data: smallvec![self.status_code.raw_value()],
                 });
@@ -169,9 +159,117 @@ impl CDRomState {
                     CdromResponse::InCycles(Cpu::CLOCK as u64, res2),
                 ]
             }
+            0x02 => self.setloc_cmd(),
+            0x15 => self.seekl_cmd(),
+            0x0e => self.setmode_cmd(),
             cmd => {
                 todo!("todo(cdrom): unhandled cmd: {}", hex(cmd));
             }
         }
     }
+
+    fn int3_status(&self) -> Response {
+        Response {
+            int:  HInt::Int3Ack,
+            data: smallvec![self.status_code.raw_value()],
+        }
+    }
+    fn int2_status(&self) -> Response {
+        Response {
+            int:  HInt::Int2Complete,
+            data: smallvec![self.status_code.raw_value()],
+        }
+    }
+
+    fn get_param<T: From<u8>>(&mut self) -> T {
+        self.param_fifo.pop_front().unwrap_or_default().into()
+    }
+
+    /// Setloc - Command 02h,amm,ass,asect --> INT3(stat)
+    fn setloc_cmd(&mut self) -> ResponseList {
+        self.status.set_busy_status(false);
+
+        let min = self.get_param::<Bcd>();
+        let sec = self.get_param::<Bcd>();
+        let sect = self.get_param::<Bcd>();
+
+        self.drive.setloc(Mss::new(min, sec, sect));
+        let res = CdromResponse::Immediate(self.int3_status());
+        smallvec![res]
+    }
+
+    /// SeekL - Command 15h --> INT3(stat) --> INT2(stat)
+    fn seekl_cmd(&mut self) -> ResponseList {
+        self.status.set_busy_status(false);
+        let res1 = self.int3_status();
+        let res2 = self.responses.insert(self.int2_status());
+        smallvec![
+            CdromResponse::Immediate(res1),
+            CdromResponse::InCycles(100, res2)
+        ]
+    }
+
+    /// Setmode - Command 0Eh,mode --> INT3(stat)
+    fn setmode_cmd(&mut self) -> ResponseList {
+        self.status.set_busy_status(false);
+        let res = self.int3_status();
+        let setmode = self.get_param::<SetMode>();
+        self.drive.setmode(setmode);
+        smallvec![CdromResponse::Immediate(res)]
+    }
+
+    /// ReadN - Command 06h --> INT3(stat) --> INT1(stat) --> datablock
+    fn readn_cmd(&mut self) -> ResponseList {
+        self.status.set_busy_status(false);
+        self.drive.readn();
+        smallvec![CdromResponse::Immediate(self.int3_status())]
+    }
+}
+
+/// ```plaintext
+///  7   Speed       (0=Normal speed, 1=Double speed)
+///  6   XA-ADPCM    (0=Off, 1=Send XA-ADPCM sectors to SPU Audio Input)
+///  5   Sector Size (0=800h=DataOnly, 1=924h=WholeSectorExceptSyncBytes)
+///  4   Ignore Bit  (0=Normal, 1=Ignore Sector Size and Setloc position)
+///  3   XA-Filter   (0=Off, 1=Process only XA-ADPCM sectors that match Setfilter)
+///  2   Report      (0=Off, 1=Enable Report-Interrupts for Audio Play)
+///  1   AutoPause   (0=Off, 1=Auto Pause upon End of Track) ;for Audio Play
+///  0   CDDA        (0=Off, 1=Allow to Read CD-DA Sectors; ignore missing EDC)
+/// ```
+#[bitfield(u8)]
+pub struct SetMode {
+    #[bit(0, rw)]
+    cdda:       bool,
+    #[bit(1, rw)]
+    autopause:  bool,
+    #[bit(2, rw)]
+    report:     bool,
+    #[bit(3, rw)]
+    xa_filter:  bool,
+    #[bit(4, rw)]
+    ignore_bit: bool,
+    #[bit(5, rw)]
+    sect_size:  SetModeSectSize,
+    #[bit(6, rw)]
+    xa_adpcm:   bool,
+    #[bit(7, rw)]
+    speed:      SetModeSpeed,
+}
+
+impl const From<u8> for SetMode {
+    fn from(value: u8) -> Self {
+        SetMode::new_with_raw_value(value)
+    }
+}
+
+#[bitenum(u1, exhaustive = true)]
+pub enum SetModeSectSize {
+    DataOnly0x800 = 0x0,
+    Whole0x924    = 0x1,
+}
+
+#[bitenum(u1, exhaustive = true)]
+enum SetModeSpeed {
+    Normal = 0x0,
+    Double = 0x1,
 }

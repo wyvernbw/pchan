@@ -5,6 +5,12 @@ name = "pchan"
 version = "0.1.0"
 edition = "2024"
 
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
+nursery = "warn"
+cargo = "deny"
+
 [dependencies]
 const-hex = { workspace = true, features = ["alloc"] }
 pchan-macros = { workspace = true }

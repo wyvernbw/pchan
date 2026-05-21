@@ -5,40 +5,22 @@ use std::sync::atomic::AtomicU64;
 use std::time::Instant;
 
 use arbitrary_int::prelude::*;
-use bitbybit::bitenum;
-use bitbybit::bitfield;
+use bitbybit::{bitenum, bitfield};
 use derive_more as d;
-use glam::U8Vec2;
-use glam::U8Vec3;
-use glam::U16Vec2;
-use glam::U64Vec2;
-use glam::u64vec2;
+use glam::{U8Vec2, U8Vec3, U16Vec2, U64Vec2, u64vec2};
 use heapless::Deque;
-use pchan_utils::AsyncChan;
-use pchan_utils::hex;
+use pchan_utils::{AsyncChan, hex};
 
-use crate::Bus;
-use crate::Emu;
-use crate::gpu::draw_call::DrawCall;
-use crate::gpu::draw_call::DrawCallCollection;
-use crate::gpu::draw_call::DrawCallDecoder;
-use crate::gpu::draw_call::DrawCallKind;
-use crate::gpu::draw_call::DrawLineDecoder;
-use crate::gpu::draw_call::DrawPolygonDecoder;
-use crate::gpu::draw_call::DrawRectDecoder;
-use crate::gpu::draw_call::Gp0SetDrawAreaCmd;
-use crate::gpu::draw_call::Gp0SetDrawOffsetCmd;
-use crate::gpu::draw_call::Gp0SetMaskBitCmd;
-use crate::gpu::draw_call::GpuInternalDrawReg;
-use crate::io::CastIOFrom;
-use crate::io::CastIOInto;
-use crate::io::IOResult;
-use crate::io::UnhandledIO;
-use crate::io::irq::Interrupts;
-use crate::io::irq::Irq;
+use crate::gpu::draw_call::{
+    DrawCall, DrawCallCollection, DrawCallDecoder, DrawCallKind, DrawLineDecoder,
+    DrawPolygonDecoder, DrawRectDecoder, Gp0SetDrawAreaCmd, Gp0SetDrawOffsetCmd, Gp0SetMaskBitCmd,
+    GpuInternalDrawReg,
+};
+use crate::io::irq::{Interrupts, Irq};
 use crate::io::vblank::VBlank;
-use crate::memory::kb;
-use crate::memory::mb;
+use crate::io::{CastIOFrom, CastIOInto, IOResult, UnhandledIO};
+use crate::memory::{kb, mb};
+use crate::{Bus, Emu};
 
 pub static VBLANK_COUNT: AtomicU64 = AtomicU64::new(0);
 
@@ -1417,7 +1399,7 @@ pub struct Display {
 /// These cycles are *not* relative to the resolution, the way dot clocks are, meaning they
 /// are not absolute dot positions, but relative timings tied to HSYNC.
 ///
-/// see [https://psx-spx.consoledev.net/graphicsprocessingunitgpu/#gp106h-horizontal-display-range-on-screen]
+/// see <https://psx-spx.consoledev.net/graphicsprocessingunitgpu/#gp106h-horizontal-display-range-on-screen>
 pub trait VideoEvents: Gpu + VBlank {
     fn cpu_cycles_to_video_cycles(&mut self, cycles: u64) -> u64 {
         // this might be based on the actual console hardware not on the

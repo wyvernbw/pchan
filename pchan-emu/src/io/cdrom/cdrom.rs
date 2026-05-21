@@ -1,7 +1,14 @@
+#[path = "./cdrom-cmds.rs"]
 mod cdrom_cmds;
+#[path = "./cdrom-drive.rs"]
+mod cdrom_drive;
+#[path = "./cdrom-format.rs"]
+mod cdrom_format;
+#[path = "./cdrom-ver.rs"]
 mod cdrom_ver;
 
 use crate::io::cdrom::cdrom_cmds::{CdromResponse, Response, StatusCode};
+use crate::io::cdrom::cdrom_drive::CdromDrive;
 use crate::io::cdrom::cdrom_ver::CDRomVerPtr;
 use crate::io::evque::EvCtx;
 use crate::io::irq::{self, Interrupts};
@@ -24,6 +31,8 @@ pub struct CDRomState {
     status_code:  StatusCode,
     drive_status: DriveStatus,
     responses:    Slab<Response>,
+
+    drive: CdromDrive,
 }
 
 #[derive(Default, derive_more::Debug, Clone)]
