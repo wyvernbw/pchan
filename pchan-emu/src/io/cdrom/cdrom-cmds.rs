@@ -13,6 +13,12 @@ pub struct Response {
     pub data: SmallVec<[u8; 8]>,
 }
 
+impl Response {
+    pub fn new(int: HInt, data: SmallVec<[u8; 8]>) -> Self {
+        Self { int, data }
+    }
+}
+
 pub type ResponseId = usize;
 
 #[derive(Debug, Clone)]
@@ -105,7 +111,7 @@ impl CDRomState {
             // 0x1a INT3(stat) --> INT2/5 (stat,flags,type,atip,"SCEx")
             0x1a => {
                 tracing::info!("0x1a INT3(stat) -> INT2/5(...)");
-                match self.drive_status {
+                match self.drive.drive_status {
                     DriveStatus::LidOpen => {
                         self.status.set_busy_status(false);
                         diskerr(&[0x11, 0x80])
@@ -152,7 +158,7 @@ impl CDRomState {
                 let res1 = self.responses.insert(self.int3_status());
                 let res2 = self.responses.insert(Response {
                     int:  HInt::Int2Complete,
-                    data: smallvec![self.status_code.raw_value()],
+                    data: smallvec![self.drive.status_code.raw_value()],
                 });
                 smallvec![
                     CdromResponse::InCycles(105, res1),
@@ -162,6 +168,7 @@ impl CDRomState {
             0x02 => self.setloc_cmd(),
             0x15 => self.seekl_cmd(),
             0x0e => self.setmode_cmd(),
+            0x06 => self.readn_cmd(),
             cmd => {
                 todo!("todo(cdrom): unhandled cmd: {}", hex(cmd));
             }
@@ -171,13 +178,13 @@ impl CDRomState {
     fn int3_status(&self) -> Response {
         Response {
             int:  HInt::Int3Ack,
-            data: smallvec![self.status_code.raw_value()],
+            data: smallvec![self.drive.status_code.raw_value()],
         }
     }
     fn int2_status(&self) -> Response {
         Response {
             int:  HInt::Int2Complete,
-            data: smallvec![self.status_code.raw_value()],
+            data: smallvec![self.drive.status_code.raw_value()],
         }
     }
 
@@ -236,7 +243,8 @@ impl CDRomState {
 ///  1   AutoPause   (0=Off, 1=Auto Pause upon End of Track) ;for Audio Play
 ///  0   CDDA        (0=Off, 1=Allow to Read CD-DA Sectors; ignore missing EDC)
 /// ```
-#[bitfield(u8)]
+#[bitfield(u8, debug)]
+#[derive(Default)]
 pub struct SetMode {
     #[bit(0, rw)]
     cdda:       bool,
@@ -263,12 +271,14 @@ impl const From<u8> for SetMode {
 }
 
 #[bitenum(u1, exhaustive = true)]
+#[derive(Debug)]
 pub enum SetModeSectSize {
     DataOnly0x800 = 0x0,
     Whole0x924    = 0x1,
 }
 
 #[bitenum(u1, exhaustive = true)]
+#[derive(Debug)]
 enum SetModeSpeed {
     Normal = 0x0,
     Double = 0x1,

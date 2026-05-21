@@ -22,6 +22,7 @@
 #![feature(explicit_tail_calls)]
 #![feature(const_destruct)]
 #![feature(arbitrary_self_types)]
+#![feature(allocator_api)]
 // allow unused variables in tests to supress the setup tracing warnings
 #![cfg_attr(test, allow(unused_variables))]
 

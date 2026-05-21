@@ -7,10 +7,10 @@ mod cdrom_format;
 #[path = "./cdrom-ver.rs"]
 mod cdrom_ver;
 
-use crate::io::cdrom::cdrom_cmds::{CdromResponse, Response, StatusCode};
+use crate::io::cdrom::cdrom_cmds::{CdromResponse, Response};
 use crate::io::cdrom::cdrom_drive::CdromDrive;
 use crate::io::cdrom::cdrom_ver::CDRomVerPtr;
-use crate::io::evque::EvCtx;
+use crate::io::evque::{EvCtx, Evque};
 use crate::io::irq::{self};
 use crate::io::{CastIOFrom, CastIOInto, UnhandledIO};
 use crate::{Emu, trace_todo};
@@ -24,13 +24,13 @@ pub struct CDRomState {
     status:      CDRomStatusReg,
     hint_status: CDRomHIntSts,
     hint_mask:   CDRomHIntMask,
+    request:     CDRomReqRegister,
     param_fifo:  heapless::Deque<u8, 16>,
     result_fifo: heapless::Deque<u8, 16>,
+    data_fifo:   heapless::Deque<u8, 16>,
     ver:         CDRomVerPtr,
 
-    status_code:  StatusCode,
-    drive_status: DriveStatus,
-    responses:    Slab<Response>,
+    responses: Slab<Response>,
 
     drive: CdromDrive,
 }
@@ -107,11 +107,17 @@ impl Emu {
                     match response {
                         CdromResponse::None => {}
                         CdromResponse::Immediate(response) => {
+                            // FIXME: dedup this code
                             self.cdrom_mut().result_push_many(response.data);
                             self.cdrom_mut().hint_status.set_intsts(response.int);
                             self.irq_trigger(irq::Irq::Irq2CDRom);
                             tracing::info!("HINT_STAT={}", hex(self.cdrom().hint_status));
                             tracing::info!("trigger cdrom irq!");
+
+                            self.cdrom.drive.run(&mut CdromScheduler {
+                                evque:     &mut self.evque,
+                                responses: &mut self.cdrom.responses,
+                            });
                         }
                         CdromResponse::InCycles(in_cycles, id) => {
                             self.evque_mut().schedule(
@@ -150,7 +156,16 @@ impl Emu {
                 trace_todo!("todo(cdrom): write to cd audio volume for right-cd-out to left-spu-in")
             }
 
-            (0x1f801803, 0) => trace_todo!("todo(cdrom): write to request register"),
+            (0x1f801803, 0) => {
+                let req = CDRomReqRegister::new_with_raw_value(value);
+                self.cdrom.request = req;
+                if self.cdrom.request.bfrd() {
+                    self.cdrom
+                        .drive
+                        .request_data(&mut self.cdrom.status, &mut self.cdrom.data_fifo);
+                }
+                Ok(())
+            }
             (0x1f801803, 1) => {
                 let hclrctl = CDRomHClrCtl::new_with_raw_value(value);
                 self.cdrom_mut().write_h_clr_ctl(hclrctl);
@@ -203,6 +218,24 @@ impl Emu {
 
         tracing::info!("HINT_STAT={}", hex(self.cdrom().hint_status));
         tracing::info!("trigger cdrom irq!");
+
+        self.cdrom.drive.run(&mut CdromScheduler {
+            evque:     &mut self.evque,
+            responses: &mut self.cdrom.responses,
+        });
+    }
+}
+
+struct CdromScheduler<'a> {
+    evque:     &'a mut Evque<Emu>,
+    responses: &'a mut Slab<Response>,
+}
+
+impl<'a> CdromScheduler<'a> {
+    fn schedule(&mut self, in_cycles: u64, res: Response) {
+        let res = self.responses.insert(res);
+        self.evque
+            .schedule(Emu::handle_ev_cdrom_response, res, in_cycles);
     }
 }
 
@@ -351,6 +384,21 @@ struct CDRomHClrCtl {
     clr_param_fifo: bool,
     #[bit(7, r)]
     reset_decoder:  bool,
+}
+
+/// # 0x1f801803 (write, bank 0): HCHPCTL
+///
+/// ```plaintext
+///   0-4 -    Reserved                                    (should be 0)
+///   5   SMEN Sound map (manual XA-ADPCM playback) enable
+///   6   BFWR Request sector buffer write                 (1=prepare for writes to WRDATA)
+///   7   BFRD Request sector buffer read                  (1=prepare for reads from RDDATA)
+/// ```
+#[bitfield(u8, debug)]
+#[derive(Default)]
+struct CDRomReqRegister {
+    #[bit(7, rw)]
+    bfrd: bool,
 }
 
 impl CDRomState {
