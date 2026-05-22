@@ -174,6 +174,7 @@ pub enum DecodedOp {
     Sw(Sw),
     Swr(Swr),
     Lwcn(Lwcn),
+    Swcn(Swcn),
     Addiu(Addiu),
     Slti(Slti),
     Sltiu(Sltiu),
@@ -183,6 +184,7 @@ pub enum DecodedOp {
     Lui(Lui),
     Rfe(Rfe),
     Mfcn(Mfcn),
+    Cfcn(Cfcn),
     Mtcn(Mtcn),
     Ctcn(Ctcn),
     Lb(Lb),
@@ -292,7 +294,7 @@ impl DecodedOp {
                 (0x10..=0x13, 0x0, _, 0x0) => {
                     Self::Mfcn(Mfcn::new(fields.cop().value() as _, rt, rd))
                 }
-                (0x10..=0x13, 0x2, _, 0x0) => todo!("cfcn"),
+                (0x10..=0x13, 0x2, _, 0x0) => Self::Cfcn(Cfcn::new(fields.cop().value(), rt, rd)),
                 (0x10..=0x13, 0x4, _, 0x0) => {
                     Self::Mtcn(Mtcn::new(fields.cop().value() as _, rt, rd))
                 }
@@ -303,7 +305,12 @@ impl DecodedOp {
                     n => unimplemented!("ctc{n}"),
                 },
                 (0x10..=0x13, 0x10..=0x1F, _, _) => {
-                    todo!("cop{} imm25 {}", fields.cop(), hex(fields.imm26().value()))
+                    tracing::warn!(
+                        "not yet implemented: cop{} imm25 {}",
+                        fields.cop(),
+                        hex(fields.imm26().value())
+                    );
+                    DecodedOp::Nop(Nop)
                 }
                 (0x14..=0x1F, _, _, _) => Self::illegal(),
                 (0x20, _, _, _) => Self::Lb(Lb::new(rt, rs, fields.imm16())),
@@ -325,7 +332,9 @@ impl DecodedOp {
                     Self::Lwcn(Lwcn::new(fields.cop().as_u8(), rt, rs, fields.imm16()))
                 }
                 (0x34..=0x37, _, _, _) => Self::illegal(),
-                (0x38..=0x3B, _, _, _) => todo!("swcn"),
+                (0x38..=0x3B, _, _, _) => {
+                    Self::Swcn(Swcn::new(fields.cop().as_u8(), rt, rs, fields.imm16()))
+                }
                 (0x3C..=0x3F, _, _, _) => Self::illegal(),
                 _ => Self::illegal(),
             }
@@ -3172,6 +3181,29 @@ impl DynarecOp for Mfcn {
     }
 }
 
+impl DynarecOp for Cfcn {
+    #[allow(clippy::useless_conversion)]
+    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+        if self.rt == 0 {
+            return EmitSummary::default();
+        }
+        let rt = ctx.dynarec.alloc_reg(self.rt);
+
+        #[cfg(target_arch = "aarch64")]
+        dynasm!(
+            ctx.dynarec.asm
+            ; .arch aarch64
+            ; ldr W(*rt), [x0, Cpu::cop_reg_offset(self.cop, self.rd) as _]
+        );
+
+        ctx.dynarec.mark_dirty(self.rt);
+
+        rt.restore(ctx.dynarec);
+
+        EmitSummary::default()
+    }
+}
+
 impl DynarecOp for Div {
     #[allow(clippy::useless_conversion)]
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
@@ -3765,4 +3797,49 @@ fn test_lwcn(#[case] cop: u8, #[case] rt: u8, #[case] rs: u8) -> color_eyre::Res
     }
 
     Ok(())
+}
+
+impl DynarecOp for Swcn {
+    #[allow(clippy::useless_conversion)]
+    fn emit<'a>(&self, mut ctx: EmitCtx<'a>) -> EmitSummary {
+        // FIXME: with gte nopped out, this helps games boot
+        // remove once fixed.
+        if false {
+            let s1 = ctx.alloc_scratch();
+            let Self { cop, rt, rs, imm16 } = *self;
+            ctx.dynarec.emit_load_temp_reg(rs, Reg::W(1));
+
+            dynasm!(
+                ctx.dynarec.asm
+                ; .arch aarch64
+                ;; ctx.dynarec.emit_add_imm16(EmitAddImm16Args { dest: Reg::W(1), base: Reg::W(1), offset: imm16, temp: None })
+                ; str w1, [x0, #s1]
+            );
+
+            ctx.schedule_in(1, move |ctx| {
+                dynasm!(
+                    ctx.dynarec.asm
+                    ; .arch aarch64
+                    ; ldr w1, [x0, #s1]
+                    ; ldr w2, [x0, Cpu::cop_reg_offset(cop, rt) as _]
+                    ;; let saved = ctx.dynarec.emit_save_volatile_registers()
+                    ; ldr x3, ->write32v2
+                    ; blr x3
+                    ;; ctx.dynarec.emit_restore_saved_registers(saved.into_iter())
+
+                );
+                EmitSummary::default()
+            });
+        }
+
+        EmitSummary::default()
+    }
+
+    fn cycles(&self) -> u16 {
+        3
+    }
+
+    fn hazard(&self) -> u16 {
+        1
+    }
 }

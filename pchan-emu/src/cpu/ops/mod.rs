@@ -310,9 +310,28 @@ pub fn lwc(n: u8) -> impl Fn(u8, u8, i16) -> OpCode {
 }
 
 #[derive(Encode, Debug, Clone, Copy, Hash, PartialEq, Eq, d::Display)]
+#[encode(opcode = 0x38, cop = self.cop)]
+#[display("swc{} ${}, ${}, {}", self.cop, reg_str(self.rt), reg_str(self.rs), hex(self.imm16))]
+pub struct Swcn {
+    pub cop:   u8,
+    pub rt:    u8,
+    pub rs:    u8,
+    pub imm16: i16,
+}
+
+#[derive(Encode, Debug, Clone, Copy, Hash, PartialEq, Eq, d::Display)]
 #[encode(opcode = 0x10, rs = 0x00, funct = 0x00, cop = self.cop)]
 #[display("mfc{} ${}, $r{}", self.cop, reg_str(self.rt), self.rd)]
 pub struct Mfcn {
+    pub cop: u8,
+    pub rt:  u8,
+    pub rd:  u8,
+}
+
+#[derive(Encode, Debug, Clone, Copy, Hash, PartialEq, Eq, d::Display)]
+#[encode(opcode = 0x10, rs = 0b00010, funct = 0x00, cop = self.cop)]
+#[display("cfc{} ${}, $r{}", self.cop, reg_str(self.rt), self.rd)]
+pub struct Cfcn {
     pub cop: u8,
     pub rt:  u8,
     pub rd:  u8,
