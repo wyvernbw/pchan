@@ -15,6 +15,7 @@ pub struct DmaState {
     dicr: Dicr,
     // TODO: dma channels
     dma2: DmaChannel,
+    dma3: DmaChannel,
     dma6: DmaChannel,
 
     events: Slab<DmaEvent>,
@@ -26,6 +27,7 @@ impl Default for DmaState {
             dpcr:   Dpcr::new_with_raw_value(0x07654321),
             dicr:   Dicr::default(),
             dma2:   DmaChannel::default(),
+            dma3:   DmaChannel::default(),
             dma6:   DmaChannel::default(),
             // queue: DmaQueue::default(),
             events: Slab::with_capacity(1024),
@@ -36,6 +38,7 @@ impl Default for DmaState {
 ///
 /// # DMA Register Summary
 ///
+/// ```plaintext
 ///   1F80108xh DMA0 channel 0  MDECin  (RAM to MDEC)
 ///   1F80109xh DMA1 channel 1  MDECout (MDEC to RAM)
 ///   1F8010Axh DMA2 channel 2  GPU (lists + image data)
@@ -45,6 +48,7 @@ impl Default for DmaState {
 ///   1F8010Exh DMA6 channel 6  OTC (reverse clear OT) (GPU related)
 ///   1F8010F0h DPCR - DMA Control register
 ///   1F8010F4h DICR - DMA Interrupt register
+/// ```
 ///
 /// These ports control DMA at the CPU-side. In most cases, you'll additionally
 /// need to initialize an address (and transfer direction, transfer enabled, etc.)
@@ -94,32 +98,16 @@ impl Emu {
             0x1f801090..=0x1f80109f => trace_todo!("write at dma1 (MDECout)"),
 
             // dma 2
-            0x1f8010a0..0x1f8010a4 => {
-                self.dma_mut().dma2.io_set_madr(value);
-                tracing::debug!("write at dma2madr (gpu madr): {:#?}", self.dma().dma2.madr);
-                Ok(())
-            }
-            0x1f8010a4 => {
-                self.dma_mut().dma2.io_set_bcr(value);
-                tracing::debug!("write at dma2bcr (gpu bcr): {:#?}", self.dma().dma2.bcr);
-                Ok(())
-            }
-            0x1f8010a8 => {
-                let chcr = DmaChcr::new_with_raw_value(value.io_into_u32());
-                self.dma_mut().dma2.chcr = chcr;
-                tracing::debug!("write at dma2chcr (gpu chcr): {:#?}", chcr);
-                match self.dma().dma2.chcr.transfer() {
-                    Transfer::StoppedCompleted => {}
-                    Transfer::StartBusy => {
-                        self.dma_schedule(
-                            self.create_dma_event(self.dma().dma2, DmaTransportKind::Gpu),
-                        );
-                    }
-                }
-                Ok(())
-            }
+            0x1f8010a0 => Dma2Gpu::write_madr(self, value),
+            0x1f8010a4 => Dma2Gpu::write_bcr(self, value),
+            0x1f8010a8 => Dma2Gpu::write_chcr(self, value),
 
-            0x1f8010b0..=0x1f8010bf => trace_todo!("write at dma3 (cdrom)"),
+            // dma 3
+            0x1f8010b0 => Dma3Cdrom::write_madr(self, value),
+            0x1f8010b4 => Dma3Cdrom::write_bcr(self, value),
+            0x1f8010b8 => Dma3Cdrom::write_chcr(self, value),
+
+            // 0x1f8010b0..=0x1f8010bf => trace_todo!("write at dma3 (cdrom)"),
             0x1f8010c0..=0x1f8010cf => trace_todo!("write at dma4 (spu)"),
             0x1f8010d0..=0x1f8010df => trace_todo!("write at dma5 (pio)"),
 
@@ -194,6 +182,7 @@ impl Emu {
             DmaTransportKind::Gpu => {
                 self.dma2_write_data(event);
             }
+            DmaTransportKind::Cdrom => todo!(),
         }
         self.dma_irq_raise_complete(idx as usize);
     }
@@ -250,7 +239,7 @@ impl Emu {
         }
     }
 
-    fn dma2_write_data(&mut self, event: DmaEvent) {
+    fn dma_write_data<T: Transfer>(&mut self, event: DmaEvent, transfer: &mut T) {
         let channel = event.init_chan;
         let direction = channel.chcr.direction();
         let sync_mode = channel.chcr.sync_mode();
@@ -268,17 +257,10 @@ impl Emu {
                     for _ in 0..len {
                         match direction {
                             TransferDir::DeviceToRam => {
-                                let value = self.gpu_read::<u32>(0x1f801810).unwrap();
-                                self.fastmem_write(addr, value).unwrap();
+                                transfer.read(self, addr);
                             }
                             TransferDir::RamToDevice => {
-                                let value = self.fastmem_read(addr).unwrap();
-                                // flushing the queue here is not ideal, as real dma
-                                // would hang until the gpu has capacity for more
-                                // commands. but our commands do not take actual
-                                // time to execute
-                                self.gpu_gp0_cmd(value);
-                                tracing::trace!("dma2(slice): {}", hex(value));
+                                transfer.write(self, addr);
                             }
                         }
                         addr += 0x4;
@@ -320,19 +302,21 @@ impl Emu {
                     }
                 }
             }
-            SyncMode::Burst => match direction {
-                TransferDir::DeviceToRam => todo!(),
-                TransferDir::RamToDevice => {
-                    let mut addr = channel.madr.addr().as_u32();
-                    for _ in 0..channel.bcr.s0_word_count() {
-                        let value = self.fastmem_read(addr).unwrap();
-                        self.gpu_gp0_cmd(value);
-                        tracing::trace!("dma2(burst): {}", hex(value));
-                        addr += 0x4;
+            SyncMode::Burst => {
+                let mut addr = channel.madr.addr().as_u32();
+                for _ in 0..channel.bcr.s0_word_count() {
+                    match direction {
+                        TransferDir::DeviceToRam => {
+                            transfer.read(self, addr);
+                        }
+                        TransferDir::RamToDevice => {
+                            transfer.write(self, addr);
+                        }
                     }
-                    self.dma_mut().dma2.set_complete();
+                    addr += 0x4;
                 }
-            },
+                self.dma_mut().dma2.set_complete();
+            }
             SyncMode::LinkedList => {
                 let mut addr = channel.madr.addr().as_u32();
                 let mut visited = heapless::index_set::FnvIndexSet::<u32, 2048>::new();
@@ -350,27 +334,14 @@ impl Emu {
                     let len = header.len();
                     for idx in 0..len {
                         let addr = addr + idx as u32 * 0x4 + 0x4;
-                        let cmd = self.read::<u32>(addr);
-                        tracing::trace!(addr = %hex(addr), "dma2 push: {}", hex(cmd),);
-                        self.gpu_gp0_cmd(GpuCmd::new_with_raw_value(cmd));
+                        transfer.write(self, addr);
                     }
                     visited.insert(addr).expect(
                         "bug: dma2 linked list traversal visited set capacity is too small.",
                     );
                     addr = header.next().as_u32();
 
-                    // // cycle detected, reschedule later
-                    // //
-                    // // rescheduling here adds a backpressure so the cpu has the chance to execute
-                    // // and break chains in the cycle
-                    // //
-                    // // we might want to allow the chain to run for a few more cycles
-                    // if visited.contains(&addr) {
-                    //     let mut channel = channel;
-                    //     channel.madr.set_addr(u24::new(addr));
-                    //     self.dma_schedule(self.create_dma_event(channel, DmaTransportKind::Gpu));
-                    //     return;
-                    // }
+                    // TODO: cycle detection
 
                     count += 1;
                     if header.is_end_marker() {
@@ -383,6 +354,14 @@ impl Emu {
             }
             SyncMode::Reserved => todo!(),
         }
+    }
+
+    fn dma2_write_data(&mut self, event: DmaEvent) {
+        self.dma_write_data(event, &mut Dma2Gpu);
+    }
+
+    fn dma3_write_data(&mut self, event: DmaEvent) {
+        self.dma_write_data(event, &mut Dma3Cdrom);
     }
 
     fn dma6_write_data(&mut self, event: DmaEvent) {
@@ -410,6 +389,83 @@ impl Emu {
         self.fastmem_write(addr, end_node)
             .expect("dma6 otc write must go to ram!");
         self.dma_mut().dma6.set_complete();
+    }
+}
+
+trait Transfer {
+    const TRANSPORT_KIND: DmaTransportKind;
+
+    /// ram to device
+    fn write(&mut self, emu: &mut Emu, address: u32);
+    /// device to ram
+    fn read(&mut self, emu: &mut Emu, address: u32);
+    fn channel(emu: &mut Emu) -> &mut DmaChannel;
+
+    fn write_madr<T: Copy>(emu: &mut Emu, value: T) -> IOResult<()> {
+        Self::channel(emu).io_set_madr(value);
+        Ok(())
+    }
+
+    fn write_bcr<T: Copy>(emu: &mut Emu, value: T) -> IOResult<()> {
+        Self::channel(emu).io_set_bcr(value);
+        Ok(())
+    }
+
+    fn write_chcr<T: Copy>(emu: &mut Emu, value: T) -> IOResult<()> {
+        let dma = Self::channel(emu);
+        let chcr = DmaChcr::new_with_raw_value(value.io_into_u32());
+        dma.chcr = chcr;
+        match dma.chcr.transfer() {
+            TransferState::StoppedCompleted => {}
+            TransferState::StartBusy => {
+                let dma = *dma;
+                emu.dma_schedule(emu.create_dma_event(dma, Self::TRANSPORT_KIND));
+            }
+        };
+        Ok(())
+    }
+}
+
+struct Dma2Gpu;
+
+impl Transfer for Dma2Gpu {
+    const TRANSPORT_KIND: DmaTransportKind = DmaTransportKind::Gpu;
+
+    fn write(&mut self, emu: &mut Emu, address: u32) {
+        let cmd = emu
+            .fastmem_read::<GpuCmd>(address)
+            .expect("address outside of ram/bios");
+        emu.gpu_gp0_cmd(cmd);
+    }
+
+    fn read(&mut self, emu: &mut Emu, address: u32) {
+        let value = emu.gpu_read::<u32>(0x1f801810).unwrap();
+        _ = emu.fastmem_write(address, value);
+    }
+
+    fn channel(emu: &mut Emu) -> &mut DmaChannel {
+        &mut emu.dma.dma2
+    }
+}
+
+struct Dma3Cdrom;
+
+impl Transfer for Dma3Cdrom {
+    const TRANSPORT_KIND: DmaTransportKind = DmaTransportKind::Gpu;
+
+    fn write(&mut self, emu: &mut Emu, address: u32) {
+        let value = emu.cdrom_read_data::<4>();
+        let value = u32::from_le_bytes(value);
+        _ = emu.fastmem_write(address, value);
+        tracing::debug!("copied byte {} to memory at {}", hex(value), hex(address));
+    }
+
+    fn read(&mut self, emu: &mut Emu, address: u32) {
+        todo!()
+    }
+
+    fn channel(emu: &mut Emu) -> &mut DmaChannel {
+        &mut emu.dma.dma3
     }
 }
 
@@ -607,7 +663,7 @@ pub struct DmaChcr {
     chop_cpu_size: u3,
     // unused: 23
     #[bit(24, rw)]
-    transfer:      Transfer,
+    transfer:      TransferState,
     // unused: 25..=27
     #[bit(28, rw)]
     force_start:   bool,
@@ -644,7 +700,7 @@ pub enum SyncMode {
 
 #[bitenum(u1, exhaustive = true)]
 #[derive(Debug)]
-pub enum Transfer {
+pub enum TransferState {
     StoppedCompleted = 0x0,
     StartBusy        = 0x1,
 }
@@ -657,7 +713,7 @@ pub struct DmaChannel {
 }
 
 impl DmaChannel {
-    fn transfer(&self) -> Transfer {
+    fn transfer(&self) -> TransferState {
         self.chcr.transfer()
     }
     fn io_set_madr<T: Copy>(&mut self, value: T) {
@@ -681,6 +737,7 @@ pub struct DmaEvent {
 pub enum DmaTransportKind {
     Otc,
     Gpu,
+    Cdrom,
 }
 
 impl DmaTransportKind {
@@ -688,6 +745,7 @@ impl DmaTransportKind {
         match self {
             DmaTransportKind::Otc => 6,
             DmaTransportKind::Gpu => 2,
+            DmaTransportKind::Cdrom => 3,
         }
     }
 }
@@ -745,7 +803,7 @@ impl DmaChannel {
     }
 
     fn set_complete(&mut self) {
-        self.chcr.set_transfer(Transfer::StoppedCompleted);
+        self.chcr.set_transfer(TransferState::StoppedCompleted);
     }
 }
 

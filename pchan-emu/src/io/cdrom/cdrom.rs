@@ -27,6 +27,7 @@ pub struct CDRomState {
     request:     CDRomReqRegister,
     param_fifo:  heapless::Deque<u8, 16>,
     result_fifo: heapless::Deque<u8, 16>,
+    data_last:   u8,
     data_fifo:   heapless::Deque<u8, 16>,
     ver:         CDRomVerPtr,
 
@@ -223,6 +224,20 @@ impl Emu {
             evque:     &mut self.evque,
             responses: &mut self.cdrom.responses,
         });
+    }
+
+    pub fn cdrom_read_data<const BYTES: usize>(&mut self) -> [u8; BYTES] {
+        let mut buf = [0u8; BYTES];
+        for byte in buf.iter_mut() {
+            let value = self
+                .cdrom
+                .data_fifo
+                .pop_back()
+                .unwrap_or(self.cdrom.data_last);
+            self.cdrom.data_last = value;
+            *byte = value;
+        }
+        buf
     }
 }
 
