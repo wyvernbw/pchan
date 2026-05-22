@@ -64,19 +64,25 @@ impl CdromDrive {
         self.drive_state = DriveState::ReadN;
     }
 
+    pub fn pause(&mut self) {
+        tracing::info!("pause drive");
+        self.drive_state = DriveState::Idle;
+        self.status_code.reset_state();
+    }
+
     pub fn run(&mut self, scheduler: &mut CdromScheduler<'_>) {
+        tracing::info!(drive = ?self.drive_state, "run");
         match self.drive_state {
             DriveState::Idle => {}
             DriveState::ReadN => {
-                scheduler.schedule(
-                    100,
-                    Response::new(
-                        super::HInt::Int1DataReady,
-                        smallvec![self.status_code.raw_value()],
-                    ),
-                );
+                self.status_code.reset_state();
+                self.status_code.set_read(true);
                 scheduler.evque.schedule(
                     |emu, _| {
+                        emu.cdrom_send_response(Response::new(
+                            super::HInt::Int1DataReady,
+                            smallvec![emu.cdrom.drive.status_code.raw_value()],
+                        ));
                         emu.cdrom
                             .drive
                             .request_data(&mut emu.cdrom.status, &mut emu.cdrom.data_fifo);

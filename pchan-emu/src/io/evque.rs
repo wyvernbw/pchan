@@ -7,7 +7,7 @@ use crate::Emu;
 #[derive(Debug, Clone)]
 pub struct Evque<T: ?Sized> {
     clock: u64,
-    queue: BinaryHeap<PchanEvent<T>, Min, 128>,
+    queue: Box<BinaryHeap<PchanEvent<T>, Min, 512>>,
 }
 
 pub struct EvCtx {
@@ -36,7 +36,7 @@ pub struct PchanEvent<T: ?Sized> {
 impl<T> Default for Evque<T> {
     fn default() -> Self {
         Self {
-            queue: BinaryHeap::new(),
+            queue: Box::new(BinaryHeap::new()),
             clock: 0,
         }
     }

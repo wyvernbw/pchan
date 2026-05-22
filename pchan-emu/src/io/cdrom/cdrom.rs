@@ -196,26 +196,27 @@ impl Emu {
 
             (0x1f801802, _) => trace_todo!(0u32, "todo(cdrom): read from data fifo"),
 
-            (0x1f801803, 0 | 2) => {
-                trace_todo!(0u32, "todo(cdrom): read from cd irq on/off register")
-            }
+            (0x1f801803, 0 | 2) => Ok(self.cdrom.hint_mask.io_from_u32()),
             (0x1f801803, 1 | 3) => Ok(self.cdrom().hint_status.io_from_u32()),
             _ => Err(UnhandledIO(address)),
+        }
+    }
+
+    pub fn cdrom_send_response(&mut self, response: Response) {
+        self.cdrom_mut().result_push_many(response.data);
+        self.cdrom_mut().hint_status.set_intsts(response.int);
+        self.cdrom_mut().status.set_busy_status(false);
+        let hint_status = self.cdrom().hint_status.raw_value();
+        let hint_mask = self.cdrom().hint_mask.raw_value();
+        if hint_status & hint_mask != 0 {
+            self.irq_trigger(irq::Irq::Irq2CDRom);
         }
     }
 
     #[tracing::instrument(skip_all)]
     fn handle_ev_cdrom_response(&mut self, ctx: EvCtx) {
         let response = self.cdrom_mut().responses.remove(ctx.id);
-        self.cdrom_mut().result_push_many(response.data);
-        self.cdrom_mut().hint_status.set_intsts(response.int);
-        self.cdrom_mut().status.set_busy_status(false);
-
-        let hint_status = self.cdrom().hint_status.raw_value();
-        let hint_mask = self.cdrom().hint_mask.raw_value();
-        if hint_status & hint_mask != 0 {
-            self.irq_trigger(irq::Irq::Irq2CDRom);
-        }
+        self.cdrom_send_response(response);
 
         tracing::info!("HINT_STAT={}", hex(self.cdrom().hint_status));
         tracing::info!("trigger cdrom irq!");

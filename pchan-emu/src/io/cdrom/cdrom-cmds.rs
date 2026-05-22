@@ -58,6 +58,14 @@ pub struct StatusCode {
     play:        bool,
 }
 
+impl StatusCode {
+    pub fn reset_state(&mut self) {
+        self.set_read(false);
+        self.set_seek(false);
+        self.set_play(false);
+    }
+}
+
 impl Default for StatusCode {
     fn default() -> Self {
         Self::ZERO
@@ -169,6 +177,7 @@ impl CDRomState {
             0x15 => self.seekl_cmd(),
             0x0e => self.setmode_cmd(),
             0x06 => self.readn_cmd(),
+            0x09 => self.pause_cmd(),
             cmd => {
                 todo!("todo(cdrom): unhandled cmd: {}", hex(cmd));
             }
@@ -230,6 +239,19 @@ impl CDRomState {
         self.status.set_busy_status(false);
         self.drive.readn();
         smallvec![CdromResponse::Immediate(self.int3_status())]
+    }
+
+    /// Pause - Command 09h --> INT3(stat) --> INT2(stat)
+    fn pause_cmd(&mut self) -> ResponseList {
+        tracing::info!("pause drive");
+        self.status.set_busy_status(false);
+        let current_stat = self.int3_status();
+        self.drive.pause();
+        let res2 = self.responses.insert(self.int2_status());
+        smallvec![
+            CdromResponse::Immediate(current_stat),
+            CdromResponse::InCycles(220, res2)
+        ]
     }
 }
 
