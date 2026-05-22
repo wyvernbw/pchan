@@ -173,6 +173,7 @@ pub enum DecodedOp {
     Swl(Swl),
     Sw(Sw),
     Swr(Swr),
+    Lwcn(Lwcn),
     Addiu(Addiu),
     Slti(Slti),
     Sltiu(Sltiu),
@@ -320,7 +321,9 @@ impl DecodedOp {
                 (0x2C..=0x2D, _, _, _) => Self::illegal(),
                 (0x2E, _, _, _) => Self::Swr(Swr::new(rt, rs, fields.imm16())),
                 (0x2F, _, _, _) => Self::illegal(),
-                (0x30..=0x33, _, _, _) => todo!("lwcn"),
+                (0x30..=0x33, _, _, _) => {
+                    Self::Lwcn(Lwcn::new(fields.cop().as_u8(), rt, rs, fields.imm16()))
+                }
                 (0x34..=0x37, _, _, _) => Self::illegal(),
                 (0x38..=0x3B, _, _, _) => todo!("swcn"),
                 (0x3C..=0x3F, _, _, _) => Self::illegal(),
@@ -3690,6 +3693,76 @@ fn test_0x8004f454_move_in_jump_delay() -> color_eyre::Result<()> {
     run_step(&mut emu, Box::default());
 
     assert_eq_hex!(emu.cpu.gpr[5], 0x12);
+
+    Ok(())
+}
+
+impl DynarecOp for Lwcn {
+    #[allow(clippy::useless_conversion)]
+    fn emit<'a>(&self, mut ctx: EmitCtx<'a>) -> EmitSummary {
+        let s1 = ctx.alloc_scratch();
+        ctx.dynarec.emit_load_temp_reg(self.rs, Reg::W(1));
+        dynasm!(
+            ctx.dynarec.asm
+            ; .arch aarch64
+            ;; ctx.dynarec.emit_add_imm16(EmitAddImm16Args { dest: Reg::W(1), base: Reg::W(1), offset: self.imm16, temp: None })
+            ; str w1, [x0, #s1]
+        );
+        let cop = self.cop;
+        let rt = self.rt;
+        ctx.schedule_in(1, move |ctx| {
+            dynasm!(
+                ctx.dynarec.asm
+                ; .arch aarch64
+                // ; ldr w1, [sp], #16
+                ;; let saved = ctx.dynarec.emit_save_volatile_registers()
+                ; ldr w1, [x0, #s1]
+                ; ldr x3, ->read32v2
+                ; blr x3
+                ; mov w1, w0
+                ;; ctx.dynarec.emit_restore_saved_registers(saved.into_iter())
+                ; str w1, [x0, Cpu::cop_reg_offset(cop, rt) as _]
+            );
+            EmitSummary::default()
+        });
+
+        EmitSummary::default()
+    }
+
+    fn cycles(&self) -> u16 {
+        3
+    }
+
+    fn hazard(&self) -> u16 {
+        1
+    }
+}
+
+#[cfg(test)]
+#[rstest]
+#[case(0, 5, 10)]
+#[case(2, 5, 10)]
+#[case(2, 31, 10)]
+fn test_lwcn(#[case] cop: u8, #[case] rt: u8, #[case] rs: u8) -> color_eyre::Result<()> {
+    use crate::Emu;
+    use crate::cpu::program;
+    use crate::dynarec_v2::PipelineV2;
+    use pchan_utils::setup_tracing;
+
+    setup_tracing();
+    let mut emu = Emu::default();
+    emu.cpu.gpr[rs as usize] = 0x100;
+    emu.write(0x100, 0xcafebabe_u32);
+
+    emu.write_many(0x0, &program([lwcn(cop, rt, rs, 0x0), OpCode::HALT]));
+
+    PipelineV2::new(&emu).run_once(&mut emu)?;
+    tracing::info!(?emu.cpu);
+    match cop {
+        0 => assert_eq!(emu.cpu.cop0.reg[rt as usize], 0xcafebabe),
+        2 => assert_eq!(emu.cpu.cop2.reg[rt as usize], 0xcafebabe),
+        _ => panic!("get out"),
+    }
 
     Ok(())
 }
