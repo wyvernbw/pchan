@@ -8,7 +8,7 @@ mod cdrom_format;
 mod cdrom_ver;
 
 use crate::io::cdrom::cdrom_cmds::{CdromResponse, Response};
-use crate::io::cdrom::cdrom_drive::CdromDrive;
+use crate::io::cdrom::cdrom_drive::{CdromDrive, Disc};
 use crate::io::cdrom::cdrom_ver::CDRomVerPtr;
 use crate::io::evque::{EvCtx, Evque};
 use crate::io::irq::{self};
@@ -41,9 +41,9 @@ enum DriveStatus {
     LidOpen,
     SpinUp,
     DetectBusy,
+    #[default]
     NoDisk,
     AudioDisk,
-    #[default]
     LicensedMode2,
 }
 
@@ -202,7 +202,7 @@ impl Emu {
         }
     }
 
-    pub fn cdrom_send_response(&mut self, response: Response) {
+    fn cdrom_send_response(&mut self, response: Response) {
         self.cdrom_mut().result_push_many(response.data);
         self.cdrom_mut().hint_status.set_intsts(response.int);
         self.cdrom_mut().status.set_busy_status(false);

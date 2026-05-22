@@ -152,12 +152,19 @@ async fn run_app(env: &EnvVars) -> Result<()> {
     pchan_bind::bind_audio(&mut audio, &mut emu);
     let stream = audio.start()?;
     std::mem::forget(stream);
-    if let Some(exe_path) = &env.exe_path {
+    if let Some(exe_path) = &env.args.exe {
         let mut exe = fs::File::open(exe_path).into_diagnostic()?;
         let mut buf = vec![];
         exe.read_to_end(&mut buf).into_diagnostic()?;
         tracing::info!("exe: read {} bytes", buf.len());
         emu.sideload_exe(&buf).into_diagnostic()?;
+    }
+    if let Some(disc_path) = &env.args.disc {
+        let pipe = emu
+            .open_disc(disc_path, env.args.stream)
+            .into_diagnostic()?;
+        emu.advance_open_disc(disc_path, pipe, env.args.stream)
+            .into_diagnostic()?;
     }
 
     let mut state = AppState {

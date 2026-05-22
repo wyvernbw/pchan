@@ -1,11 +1,14 @@
+use std::fs;
 use std::io::{BufReader, Read, Seek};
+use std::path::{Path, PathBuf};
 
 use heapless::Deque;
 use smallvec::smallvec;
 
+use crate::Emu;
 use crate::cpu::Cpu;
 use crate::io::cdrom::cdrom_cmds::{Response, SetMode, StatusCode};
-use crate::io::cdrom::cdrom_format::{CdromCursor, CueFormat, Mss};
+use crate::io::cdrom::cdrom_format::{CdromCursor, CueFormat, CueFormatParseErr, Mss};
 use crate::io::cdrom::{CDRomStatusReg, CdromScheduler, DriveStatus};
 
 #[derive(Default, derive_more::Debug)]
@@ -17,18 +20,21 @@ pub struct CdromDrive {
     drive_state:      DriveState,
     disc:             Option<Disc>,
     host_disc_err:    Option<std::io::Error>,
+
+    open_disc_state: Option<OpenDiscFSM>,
 }
 
 impl Clone for CdromDrive {
     fn clone(&self) -> Self {
         Self {
-            cursor:        self.cursor,
-            status_code:   self.status_code,
-            drive_status:  self.drive_status.clone(),
-            mode:          self.mode,
-            drive_state:   self.drive_state.clone(),
-            disc:          None,
-            host_disc_err: None,
+            cursor:          self.cursor,
+            status_code:     self.status_code,
+            drive_status:    self.drive_status.clone(),
+            mode:            self.mode,
+            drive_state:     self.drive_state.clone(),
+            disc:            None,
+            host_disc_err:   None,
+            open_disc_state: None,
         }
     }
 }
@@ -120,7 +126,7 @@ impl CdromDrive {
 }
 
 #[derive(derive_more::Debug)]
-enum DiscReader {
+pub enum DiscReader {
     Streamed(StreamedDiskReader),
     InMemory(InMemoryDiskReader),
 }
@@ -136,7 +142,7 @@ trait DiscFile: Read + Seek {}
 impl<T> DiscFile for T where T: Read + Seek {}
 
 #[derive(derive_more::Debug)]
-struct StreamedDiskReader {
+pub struct StreamedDiskReader {
     #[debug(skip)]
     reader: BufReader<Box<dyn DiscFile>>,
     cursor: CdromCursor,
@@ -192,7 +198,7 @@ impl StreamedDiskReader {
 }
 
 #[derive(derive_more::Debug)]
-enum Disc {
+pub enum Disc {
     CueBin(CueFormat, DiscReader),
     Raw(DiscReader),
 }
@@ -216,6 +222,100 @@ impl Disc {
         match self {
             Disc::CueBin(cue_format, disc_reader) => disc_reader.readn(mode),
             Disc::Raw(disc_reader) => todo!(),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum OpenDiscFSM {
+    NeedBin(CueFormat),
+    Done,
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum OpenDiscErr {
+    #[error("fs: {0}")]
+    IOErr(#[from] std::io::Error),
+    #[error(transparent)]
+    CueParseErr(#[from] CueFormatParseErr),
+    #[error("invalid path: {0}")]
+    InvalidPath(PathBuf),
+}
+
+impl Emu {
+    pub fn open_disc(
+        &mut self,
+        path: impl AsRef<Path>,
+        streamed: bool,
+    ) -> Result<OpenDiscFSM, OpenDiscErr> {
+        let path = path.as_ref();
+        match path.extension().map(|e| e.to_string_lossy()).as_deref() {
+            Some("cue" | "CUE") => {
+                let mut format = fs::File::open(path)?;
+                let mut buf = String::new();
+                let n = format.read_to_string(&mut buf)?;
+                let buf = &buf[..n];
+                let cue = buf.parse::<CueFormat>()?;
+                Ok(OpenDiscFSM::NeedBin(cue))
+            }
+            _ => self
+                .cdrom
+                .drive
+                .open_disc_bin(path, streamed)
+                .map(|_| OpenDiscFSM::Done),
+        }
+    }
+
+    pub fn advance_open_disc(
+        &mut self,
+        original_path: impl AsRef<Path>,
+        fsm: OpenDiscFSM,
+        streamed: bool,
+    ) -> Result<(), OpenDiscErr> {
+        match fsm {
+            OpenDiscFSM::NeedBin(cue_format) => {
+                let bin_name = &cue_format.filename;
+                let original_path = original_path.as_ref();
+                let path = original_path
+                    .parent()
+                    .ok_or_else(|| OpenDiscErr::InvalidPath(original_path.to_owned()))?
+                    .to_owned();
+                let path = path.join(bin_name);
+                let reader = self.cdrom.drive.open_disc_bin(path, streamed)?;
+                self.cdrom.drive.disc = Some(Disc::CueBin(cue_format, reader));
+                Ok(())
+            }
+            OpenDiscFSM::Done => Ok(()),
+        }
+    }
+}
+
+impl CdromDrive {
+    fn open_disc_bin(
+        &mut self,
+        path: impl AsRef<Path>,
+        streamed: bool,
+    ) -> Result<DiscReader, OpenDiscErr> {
+        // TODO: detect audio CD
+        self.drive_status = DriveStatus::LicensedMode2;
+        match streamed {
+            true => {
+                let file = fs::File::open(path)?;
+                Ok(DiscReader::Streamed(StreamedDiskReader {
+                    reader: BufReader::new(Box::new(file)),
+                    cursor: CdromCursor::default(),
+                }))
+            }
+            false => {
+                let mut file = fs::File::open(path)?;
+                let mut buf = Vec::new();
+                let n = file.read_to_end(&mut buf)?;
+                buf.truncate(n);
+                Ok(DiscReader::InMemory(InMemoryDiskReader {
+                    buf:    buf.into_boxed_slice(),
+                    cursor: CdromCursor::default(),
+                }))
+            }
         }
     }
 }
