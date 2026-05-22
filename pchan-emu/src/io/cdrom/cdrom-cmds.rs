@@ -178,6 +178,7 @@ impl CDRomState {
             0x0e => self.setmode_cmd(),
             0x06 => self.readn_cmd(),
             0x09 => self.pause_cmd(),
+            0x0a => self.init_cmd(),
             cmd => {
                 todo!("todo(cdrom): unhandled cmd: {}", hex(cmd));
             }
@@ -251,6 +252,19 @@ impl CDRomState {
         smallvec![
             CdromResponse::Immediate(current_stat),
             CdromResponse::InCycles(220, res2)
+        ]
+    }
+
+    /// Init - Command 0Ah --> INT3(stat) --> INT2(stat)
+    fn init_cmd(&mut self) -> ResponseList {
+        self.status.set_busy_status(false);
+        self.drive.mode = SetMode::new_with_raw_value(0x20);
+        self.drive.status_code.set_spindle_mot(true);
+        let res1 = self.responses.insert(self.int3_status());
+        let res2 = self.responses.insert(self.int2_status());
+        smallvec![
+            CdromResponse::InCycles(0x0013cce, res1),
+            CdromResponse::InCycles(0x00fffff, res2),
         ]
     }
 }

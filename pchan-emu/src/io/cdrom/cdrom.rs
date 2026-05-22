@@ -130,7 +130,6 @@ impl Emu {
                     }
                 }
                 self.cdrom_mut().param_fifo.clear();
-                tracing::info!("cdrom = {:#?}", self.cdrom());
                 Ok(())
             }
             (0x1f801801, 1) => Ok(()), // unused
@@ -420,7 +419,6 @@ struct CDRomReqRegister {
 impl CDRomState {
     fn write_h_clr_ctl(&mut self, hclrctl: CDRomHClrCtl) {
         let hintsts = &mut self.hint_status;
-        tracing::info!("cdrom: write hardware clear ctl: {hclrctl:#?}");
 
         {
             let intsts = hintsts.intsts().raw_value();
