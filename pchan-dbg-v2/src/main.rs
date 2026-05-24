@@ -192,7 +192,6 @@ async fn run_app(env: &EnvVars) -> Result<()> {
             }
 
             if tui_state.emu_running || tui_state.emu_run_once {
-                tui_state.emu_run_once = false;
                 state.dynarec = run_step(&mut state.emu, state.dynarec);
                 tui_state.mips_cursor = state.emu.cpu.pc;
                 tui_state.exec_history.push_back(state.emu.cpu.pc);
@@ -207,6 +206,13 @@ async fn run_app(env: &EnvVars) -> Result<()> {
                         draw_app(frame, &mut tui_state, &state);
                     })
                     .unwrap();
+                }
+                if tui_state.emu_run_once {
+                    term.draw(|frame| {
+                        draw_app(frame, &mut tui_state, &state);
+                    })
+                    .unwrap();
+                    tui_state.emu_run_once = false;
                 }
             }
 

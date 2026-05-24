@@ -128,7 +128,7 @@ impl Emu {
                     }
                     Gp0::CpRectCpuToVram(_) => {}
                     _ => {
-                        tracing::warn!("read from gp0read, but no copy command initiated");
+                        // tracing::warn!("read from gp0read, but no copy command initiated");
                         self.gpu_mut().gpustat.set_ready_recv_cmd(true);
                     }
                 }

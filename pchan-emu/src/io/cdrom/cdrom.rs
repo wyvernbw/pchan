@@ -8,7 +8,7 @@ mod cdrom_format;
 mod cdrom_ver;
 
 use crate::io::cdrom::cdrom_cmds::{CdromResponse, Response};
-use crate::io::cdrom::cdrom_drive::{CdromDrive, Disc};
+use crate::io::cdrom::cdrom_drive::{CdromDrive, CommandState, Disc};
 use crate::io::cdrom::cdrom_ver::CDRomVerPtr;
 use crate::io::evque::{EvCtx, Evque};
 use crate::io::irq::{self};
@@ -92,6 +92,7 @@ enum DriveStatus {
 /// WARN pchan_emu::io::cdrom::cdrom_cmds: todo(cdrom): unhandled cmd: 0x01
 /// ```
 impl Emu {
+    #[pchan_macros::pchan_instrument_write]
     pub fn cdrom_write<T: Copy>(&mut self, address: u32, value: T) -> Result<(), UnhandledIO> {
         let address = address & 0x1fffffff;
         let bank = self.cdrom().bank();
@@ -108,12 +109,8 @@ impl Emu {
                     match response {
                         CdromResponse::None => {}
                         CdromResponse::Immediate(response) => {
-                            // FIXME: dedup this code
-                            self.cdrom_mut().result_push_many(response.data);
-                            self.cdrom_mut().hint_status.set_intsts(response.int);
-                            self.irq_trigger(irq::Irq::Irq2CDRom);
-                            tracing::info!("HINT_STAT={}", hex(self.cdrom().hint_status));
-                            tracing::info!("trigger cdrom irq!");
+                            // DONE: dedup this code
+                            self.cdrom_send_response(response);
 
                             self.cdrom.drive.run(&mut CdromScheduler {
                                 evque:     &mut self.evque,
@@ -179,14 +176,20 @@ impl Emu {
             }
             _ => Err(UnhandledIO(address)),
         }
+        .inspect(|_| tracing::info!("w(cdrom) @ {}:{}", hex(address), bank))
     }
 
+    #[pchan_macros::pchan_instrument_read]
     pub fn cdrom_read<T>(&mut self, address: u32) -> Result<T, UnhandledIO> {
         let address = address & 0x1fffffff;
         let bank = self.cdrom().bank();
         match (address, bank) {
             (0x1f801800, _) => Ok(self.cdrom().status.io_from_u32()),
-            (0x1f801801, _) => match self.cdrom_mut().result_pop() {
+            (0x1f801801, _) => match self
+                .cdrom_mut()
+                .result_pop()
+                .inspect(|value| tracing::info!("cdrom: return response {}", hex(*value)))
+            {
                 Some(value) => Ok(value.io_from_u32()),
                 // technically this is not correct, see psx spx
                 // its probably fine doe
@@ -199,6 +202,7 @@ impl Emu {
             (0x1f801803, 1 | 3) => Ok(self.cdrom().hint_status.io_from_u32()),
             _ => Err(UnhandledIO(address)),
         }
+        .inspect(|_| tracing::info!("r(cdrom) @ {}:{}", hex(address), bank))
     }
 
     fn cdrom_send_response(&mut self, response: Response) {
@@ -214,7 +218,19 @@ impl Emu {
 
     #[tracing::instrument(skip_all)]
     fn handle_ev_cdrom_response(&mut self, ctx: EvCtx) {
+        match &self.cdrom.drive.command_state {
+            CommandState::Idle => return,
+            CommandState::Responding(responses) => {
+                if !responses.contains(&ctx.id) {
+                    return;
+                }
+            }
+        }
+
         let response = self.cdrom_mut().responses.remove(ctx.id);
+        if response.done {
+            self.cdrom.drive.set_command_state(CommandState::Idle);
+        }
         self.cdrom_send_response(response);
 
         tracing::info!("HINT_STAT={}", hex(self.cdrom().hint_status));
@@ -427,9 +443,10 @@ impl CDRomState {
             let new_intsts = HInt::new_with_raw_value(new_intsts);
             hintsts.set_intsts(new_intsts);
 
-            if hclrctl.clrint() != HInt::Int0NoInt {
-                self.result_fifo.clear();
-            }
+            // if hclrctl.clrint() != HInt::Int0NoInt {
+            //     self.result_fifo.clear();
+            //     self.status.set_result_rready(false);
+            // }
         }
 
         if hclrctl.clr_buf_empty() {
@@ -466,6 +483,7 @@ impl CDRomState {
     fn result_push(&mut self, result: u8) {
         match self.result_fifo.push_back(result) {
             Ok(()) => {
+                tracing::info!("cdrom.response: pushed {}", hex(result));
                 self.status.set_result_rready(true);
             }
             Err(result) => {
@@ -480,6 +498,7 @@ impl CDRomState {
             self.result_push(res);
         }
     }
+    #[pchan_macros::instrument(skip_all, ret)]
     fn result_pop(&mut self) -> Option<u8> {
         let res = self.result_fifo.pop_front();
         if self.result_fifo.is_empty() {

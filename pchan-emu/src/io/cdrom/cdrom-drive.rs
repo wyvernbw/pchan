@@ -3,7 +3,7 @@ use std::io::{BufReader, Read, Seek};
 use std::path::{Path, PathBuf};
 
 use heapless::Deque;
-use smallvec::smallvec;
+use smallvec::{SmallVec, smallvec};
 
 use crate::Emu;
 use crate::cpu::Cpu;
@@ -13,13 +13,14 @@ use crate::io::cdrom::{CDRomStatusReg, CdromScheduler, DriveStatus};
 
 #[derive(Default, derive_more::Debug)]
 pub struct CdromDrive {
-    pub cursor:       CdromCursor,
-    pub status_code:  StatusCode,
-    pub drive_status: DriveStatus,
-    pub mode:         SetMode,
-    drive_state:      DriveState,
-    disc:             Option<Disc>,
-    host_disc_err:    Option<std::io::Error>,
+    pub cursor:        CdromCursor,
+    pub status_code:   StatusCode,
+    pub drive_status:  DriveStatus,
+    pub mode:          SetMode,
+    drive_state:       DriveState,
+    pub command_state: CommandState,
+    disc:              Option<Disc>,
+    host_disc_err:     Option<std::io::Error>,
 
     open_disc_state: Option<OpenDiscFSM>,
 }
@@ -32,6 +33,7 @@ impl Clone for CdromDrive {
             drive_status:    self.drive_status.clone(),
             mode:            self.mode,
             drive_state:     self.drive_state.clone(),
+            command_state:   self.command_state.clone(),
             disc:            None,
             host_disc_err:   None,
             open_disc_state: None,
@@ -44,6 +46,13 @@ enum DriveState {
     #[default]
     Idle,
     ReadN,
+}
+
+#[derive(Default, derive_more::Debug, Clone)]
+pub(super) enum CommandState {
+    #[default]
+    Idle,
+    Responding(SmallVec<[usize; 2]>),
 }
 
 const CYCLES_PER_BYTE: u64 = Cpu::CLOCK as u64 / (2048 * 75);
@@ -88,6 +97,7 @@ impl CdromDrive {
                         emu.cdrom_send_response(Response::new(
                             super::HInt::Int1DataReady,
                             smallvec![emu.cdrom.drive.status_code.raw_value()],
+                            false,
                         ));
                         emu.cdrom
                             .drive
@@ -122,6 +132,17 @@ impl CdromDrive {
                 tracing::warn!("cdrom byte dropped");
             }
         }
+    }
+
+    pub(super) fn set_command_state(&mut self, state: CommandState) {
+        self.command_state = state;
+    }
+}
+
+impl CommandState {
+    pub(super) fn responding(res: impl IntoIterator<Item = usize>) -> Self {
+        let res = SmallVec::from_iter(res);
+        Self::Responding(res)
     }
 }
 
