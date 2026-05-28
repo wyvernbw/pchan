@@ -3533,6 +3533,9 @@ pub fn test_mfhilo(
 }
 
 impl DynarecOp for Syscall {
+    fn boundary(&self) -> Boundary {
+        Boundary::Soft
+    }
     #[allow(clippy::useless_conversion)]
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
         #[cfg(target_arch = "aarch64")]

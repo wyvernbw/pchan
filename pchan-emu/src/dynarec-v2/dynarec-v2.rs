@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use thiserror::Error;
 use tracing::{Instrument, Level, enabled};
 
+use crate::cpu::exceptions::Exception;
 use crate::cpu::ops::OpCode;
 use crate::cpu::reg_str;
 use crate::dynarec_v2::emitters::{DecodedOp, DynarecOp, EmitCtx, EmitSummary};
@@ -151,8 +152,15 @@ impl DynarecBlock {
             emu.dbg.break_on(emu.cpu.pc, BreakpointKind::EXECUTE);
         }
 
+        emu.cpu.drain_jump_queue();
+        if emu.cpu.pc % 0x4 != 0 {
+            emu.raise_exception(Exception::AdEl);
+        }
         emu.run_io();
         emu.cpu.drain_jump_queue();
+        if emu.cpu.pc % 0x4 != 0 {
+            emu.raise_exception(Exception::AdEl);
+        }
         emu.cpu.cop0.set_bd(false);
 
         debug_assert_eq!(emu.cpu.gpr[0], 0);

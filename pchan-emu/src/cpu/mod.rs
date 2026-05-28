@@ -27,6 +27,7 @@ pub struct Cpu {
     pub vblank_timer: u32,
     pub cycles:       u64,
     pub jump_queue:   Option<u32>,
+    pub exc_pending:  bool,
 }
 
 use std::fmt;

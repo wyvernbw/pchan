@@ -51,8 +51,10 @@ pub struct CauseRegister {
 #[derive(Debug, PartialEq, Eq)]
 pub enum Exception {
     Interrupt = 0x0,
+    AdEl      = 0x4,
     Syscall   = 0x8,
     Break     = 0x9,
+    RI        = 0xa,
 }
 
 impl Emu {
@@ -88,6 +90,7 @@ impl Emu {
         };
         self.cpu_mut().pc = new_pc;
         self.cpu_mut().enqueue_jump(new_pc);
+        self.cpu.exc_pending = false;
     }
 
     #[unsafe(no_mangle)]
@@ -102,7 +105,7 @@ impl Emu {
 
     #[unsafe(no_mangle)]
     pub extern "C" fn handle_break(&mut self) {
-        self.handle_exception(Exception::Break);
+        self.raise_exception(Exception::Break);
     }
 
     #[unsafe(no_mangle)]
@@ -115,7 +118,7 @@ impl Emu {
 
             panic!("found bd!")
         }
-        self.handle_exception(Exception::Syscall);
+        self.raise_exception(Exception::Syscall);
     }
 
     pub fn run_exceptions_io(&mut self) {
@@ -126,10 +129,16 @@ impl Emu {
             // let excode = Exception::new_with_raw_value(cause.excode())
             //     .expect("unknown exception not yet implemented.");
             self.handle_exception(Exception::Interrupt);
+        } else if cause.excode().as_u8() != Exception::Interrupt as u8 && self.cpu.exc_pending {
+            self.cpu.exc_pending = false;
+            self.handle_exception(
+                Exception::new_with_raw_value(cause.excode().as_()).expect("unsupported excode"),
+            );
         }
     }
 
     pub fn raise_exception(&mut self, exception: Exception) {
+        self.cpu.exc_pending = true;
         self.cpu
             .cop0
             .update_cause(|cause| cause.with_excode(exception.raw_value()));
