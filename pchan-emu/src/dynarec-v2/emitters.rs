@@ -158,6 +158,7 @@ pub enum DecodedOp {
     Xor(Xor),
     Bltz(Bltz),
     Bgez(Bgez),
+    Bltzal(Bltzal),
     J(J),
     Jal(Jal),
     Blez(Blez),
@@ -274,8 +275,8 @@ impl DecodedOp {
                 (0x0, _, _, 0x2C..) => Self::illegal(),
                 (0x1, _, 0x0, _) => Self::Bltz(Bltz::new(rs, fields.imm16())),
                 (0x1, _, 0x1, _) => Self::Bgez(Bgez::new(rs, fields.imm16())),
-                (0x1, _, 0x10, _) => todo!("bltzal"),
-                (0x1, _, 0x11, _) => todo!("bgezal"),
+                (0x1, _, 0x10, _) => Self::Bltzal(Bltzal::new(rs, fields.imm16())),
+                // (0x1, _, 0x11, _) => todo!("bgezal"),
                 // * TODO: bltz and bgez dupes * //
                 (0x2, _, _, _) => Self::J(J::new(fields.imm26().value())),
                 (0x3, _, _, _) => Self::Jal(Jal::new(fields.imm26().value())),
@@ -2606,17 +2607,23 @@ fn test_branch(
 /// );
 /// ```
 #[allow(clippy::useless_conversion)]
-#[cfg(target_arch = "aarch64")]
 fn emit_branch_zero(
     mut ctx: EmitCtx,
     rs: u8,
     imm: i16,
     selector: impl Fn(&mut EmitCtx) + 'static,
+    link: bool,
 ) -> EmitSummary {
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        compile_error!("emit_branch_zero: not implemented on arch");
+    }
+
     let s1 = ctx.alloc_scratch();
     let rs = ctx.dynarec.emit_load_reg(rs);
 
     // calculate branch value
+    #[cfg(target_arch = "aarch64")]
     dynasm!(
         ctx.dynarec.asm
         ; .arch aarch64
@@ -2625,6 +2632,24 @@ fn emit_branch_zero(
 
     let branch_dest = (ctx.pc + 0x4).wrapping_add_signed(ext::sign(imm) << 2);
     ctx.schedule_in(1, move |mut ctx| {
+        if link {
+            let return_dest = ctx.pc + 0x4;
+            let ra = ctx.dynarec.alloc_reg(RA);
+
+            #[cfg(target_arch = "aarch64")]
+            dynasm!(
+                ctx.dynarec.asm
+                ; .arch aarch64
+                ; movz w1, return_dest >> 16, LSL #16
+                ; movk w1, return_dest & 0x0000_ffff
+                ; mov W(*ra), w1
+            );
+
+            ctx.dynarec.mark_dirty(RA);
+            ra.restore(ctx.dynarec);
+        }
+
+        #[cfg(target_arch = "aarch64")]
         dynasm!(
             ctx.dynarec.asm
             ; .arch aarch64
@@ -2659,13 +2684,19 @@ impl DynarecOp for Bltz {
     }
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
         #[cfg(target_arch = "aarch64")]
-        emit_branch_zero(ctx, self.rs, self.imm16, move |ctx| {
-            dynasm!(
-                ctx.dynarec.asm
-                ; .arch aarch64
-                ; csel w2, w3, w2, lt
-            )
-        })
+        emit_branch_zero(
+            ctx,
+            self.rs,
+            self.imm16,
+            move |ctx| {
+                dynasm!(
+                    ctx.dynarec.asm
+                    ; .arch aarch64
+                    ; csel w2, w3, w2, lt
+                )
+            },
+            false,
+        )
     }
 }
 
@@ -2681,13 +2712,19 @@ impl DynarecOp for Bgez {
     }
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
         #[cfg(target_arch = "aarch64")]
-        emit_branch_zero(ctx, self.rs, self.imm16, move |ctx| {
-            dynasm!(
-                ctx.dynarec.asm
-                ; .arch aarch64
-                ; csel w2, w3, w2, ge
-            )
-        })
+        emit_branch_zero(
+            ctx,
+            self.rs,
+            self.imm16,
+            move |ctx| {
+                dynasm!(
+                    ctx.dynarec.asm
+                    ; .arch aarch64
+                    ; csel w2, w3, w2, ge
+                )
+            },
+            false,
+        )
     }
 }
 
@@ -2703,13 +2740,19 @@ impl DynarecOp for Blez {
     }
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
         #[cfg(target_arch = "aarch64")]
-        emit_branch_zero(ctx, self.rs, self.imm16, move |ctx| {
-            dynasm!(
-                ctx.dynarec.asm
-                ; .arch aarch64
-                ; csel w2, w3, w2, le
-            )
-        })
+        emit_branch_zero(
+            ctx,
+            self.rs,
+            self.imm16,
+            move |ctx| {
+                dynasm!(
+                    ctx.dynarec.asm
+                    ; .arch aarch64
+                    ; csel w2, w3, w2, le
+                )
+            },
+            false,
+        )
     }
 }
 
@@ -2725,13 +2768,19 @@ impl DynarecOp for Bgtz {
     }
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
         #[cfg(target_arch = "aarch64")]
-        emit_branch_zero(ctx, self.rs, self.imm16, move |ctx| {
-            dynasm!(
-                ctx.dynarec.asm
-                ; .arch aarch64
-                ; csel w2, w3, w2, gt
-            )
-        })
+        emit_branch_zero(
+            ctx,
+            self.rs,
+            self.imm16,
+            move |ctx| {
+                dynasm!(
+                    ctx.dynarec.asm
+                    ; .arch aarch64
+                    ; csel w2, w3, w2, gt
+                )
+            },
+            false,
+        )
     }
 }
 
@@ -3804,7 +3853,7 @@ impl DynarecOp for Swcn {
     fn emit<'a>(&self, mut ctx: EmitCtx<'a>) -> EmitSummary {
         // FIXME: with gte nopped out, this helps games boot
         // remove once fixed.
-        if false {
+        if true {
             let s1 = ctx.alloc_scratch();
             let Self { cop, rt, rs, imm16 } = *self;
             ctx.dynarec.emit_load_temp_reg(rs, Reg::W(1));
@@ -3842,4 +3891,55 @@ impl DynarecOp for Swcn {
     fn hazard(&self) -> u16 {
         1
     }
+}
+
+impl DynarecOp for Bltzal {
+    fn cycles(&self) -> u16 {
+        3
+    }
+    fn hazard(&self) -> u16 {
+        2
+    }
+    fn boundary(&self) -> Boundary {
+        Boundary::Soft
+    }
+    #[allow(clippy::useless_conversion)]
+    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+        #[cfg(target_arch = "aarch64")]
+        emit_branch_zero(
+            ctx,
+            self.rs,
+            self.imm16,
+            move |ctx| {
+                dynasm!(
+                    ctx.dynarec.asm
+                    ; .arch aarch64
+                    ; csel w2, w3, w2, lt
+                )
+            },
+            true,
+        )
+    }
+}
+
+#[cfg(test)]
+#[rstest]
+fn test_bltzal() {
+    use crate::Emu;
+    use crate::cpu::program;
+    use assert_hex::*;
+    use pchan_utils::setup_tracing;
+
+    setup_tracing();
+    let mut emu = Emu::default();
+    emu.cpu.pc = 0x0;
+    emu.write_many(
+        0x0,
+        &program([addiu(8, 0, -10), bltzal(8, 0x100), OpCode::HALT]),
+    );
+    crate::dynarec_v2::run_step(&mut emu, Box::default());
+    tracing::info!(?emu.cpu);
+    assert_eq_hex!(emu.cpu.gpr[8] as i32, -10);
+    assert_eq_hex!(emu.cpu["$ra"], 0x8);
+    assert_eq_hex!(emu.cpu.pc, 0x408);
 }

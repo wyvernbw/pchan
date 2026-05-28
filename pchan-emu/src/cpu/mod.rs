@@ -1,17 +1,14 @@
-use std::{
-    fmt::Display,
-    mem::offset_of,
-    ops::{Index, IndexMut},
-};
+use std::fmt::Display;
+use std::mem::offset_of;
+use std::ops::{Index, IndexMut};
 
 use bitbybit::{bitenum, bitfield};
 use derive_more as d;
 use pchan_utils::{array, hex};
 
-use crate::{
-    cpu::{exceptions::CauseRegister, ops::OpCode},
-    io::irq::IrqState,
-};
+use crate::cpu::exceptions::CauseRegister;
+use crate::cpu::ops::OpCode;
+use crate::io::irq::IrqState;
 
 pub mod ops;
 
@@ -346,6 +343,7 @@ impl Index<&'static str> for Cpu {
     fn index(&self, index: &'static str) -> &Self::Output {
         match index {
             "$sp" => &self.gpr[29],
+            "$ra" => &self.gpr[RA as usize],
             _ => panic!("unknown register {index}"),
         }
     }

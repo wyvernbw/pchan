@@ -160,6 +160,14 @@ pub struct Bltz {
 }
 
 #[derive(Encode, Debug, Clone, Copy, Hash, PartialEq, Eq, d::Display)]
+#[encode(opcode = 0x01, rt = 0b10000)]
+#[display("bltzal ${}, {}", reg_str(self.rs), hex(self.imm16))]
+pub struct Bltzal {
+    pub rs:    u8,
+    pub imm16: i16,
+}
+
+#[derive(Encode, Debug, Clone, Copy, Hash, PartialEq, Eq, d::Display)]
 #[encode(opcode = 0x05, order = "rs_rt")]
 #[display("bne ${}, ${}, {}", reg_str(self.rs), reg_str(self.rt), hex(self.imm16 * 4 + 4))]
 pub struct Bne {
