@@ -159,6 +159,7 @@ pub enum DecodedOp {
     Bltz(Bltz),
     Bgez(Bgez),
     Bltzal(Bltzal),
+    Bgezal(Bgezal),
     J(J),
     Jal(Jal),
     Blez(Blez),
@@ -276,7 +277,7 @@ impl DecodedOp {
                 (0x1, _, 0x0, _) => Self::Bltz(Bltz::new(rs, fields.imm16())),
                 (0x1, _, 0x1, _) => Self::Bgez(Bgez::new(rs, fields.imm16())),
                 (0x1, _, 0x10, _) => Self::Bltzal(Bltzal::new(rs, fields.imm16())),
-                // (0x1, _, 0x11, _) => todo!("bgezal"),
+                (0x1, _, 0x11, _) => Self::Bgezal(Bgezal::new(rs, fields.imm16())),
                 // * TODO: bltz and bgez dupes * //
                 (0x2, _, _, _) => Self::J(J::new(fields.imm26().value())),
                 (0x3, _, _, _) => Self::Jal(Jal::new(fields.imm26().value())),
@@ -3922,24 +3923,68 @@ impl DynarecOp for Bltzal {
     }
 }
 
+impl DynarecOp for Bgezal {
+    fn cycles(&self) -> u16 {
+        3
+    }
+    fn hazard(&self) -> u16 {
+        2
+    }
+    fn boundary(&self) -> Boundary {
+        Boundary::Soft
+    }
+    fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
+        #[cfg(target_arch = "aarch64")]
+        emit_branch_zero(
+            ctx,
+            self.rs,
+            self.imm16,
+            move |ctx| {
+                dynasm!(
+                    ctx.dynarec.asm
+                    ; .arch aarch64
+                    ; csel w2, w3, w2, ge
+                )
+            },
+            true,
+        )
+    }
+}
+
 #[cfg(test)]
 #[rstest]
-fn test_bltzal() {
+fn test_bltzal_bgezal() {
     use crate::Emu;
     use crate::cpu::program;
     use assert_hex::*;
     use pchan_utils::setup_tracing;
 
     setup_tracing();
-    let mut emu = Emu::default();
-    emu.cpu.pc = 0x0;
-    emu.write_many(
-        0x0,
-        &program([addiu(8, 0, -10), bltzal(8, 0x100), OpCode::HALT]),
-    );
-    crate::dynarec_v2::run_step(&mut emu, Box::default());
-    tracing::info!(?emu.cpu);
-    assert_eq_hex!(emu.cpu.gpr[8] as i32, -10);
-    assert_eq_hex!(emu.cpu["$ra"], 0x8);
-    assert_eq_hex!(emu.cpu.pc, 0x408);
+    {
+        let mut emu = Emu::default();
+        emu.cpu.pc = 0x0;
+        emu.write_many(
+            0x0,
+            &program([addiu(8, 0, -10), bltzal(8, 0x100), OpCode::HALT]),
+        );
+        crate::dynarec_v2::run_step(&mut emu, Box::default());
+        tracing::info!(?emu.cpu);
+        assert_eq_hex!(emu.cpu.gpr[8] as i32, -10);
+        assert_eq_hex!(emu.cpu["$ra"], 0x8);
+        assert_eq_hex!(emu.cpu.pc, 0x408);
+    }
+
+    {
+        let mut emu = Emu::default();
+        emu.cpu.pc = 0x0;
+        emu.write_many(
+            0x0,
+            &program([addiu(8, 0, 10), bgezal(8, 0x100), OpCode::HALT]),
+        );
+        crate::dynarec_v2::run_step(&mut emu, Box::default());
+        tracing::info!(?emu.cpu);
+        assert_eq_hex!(emu.cpu.gpr[8] as i32, 10);
+        assert_eq_hex!(emu.cpu["$ra"], 0x8);
+        assert_eq_hex!(emu.cpu.pc, 0x408);
+    }
 }

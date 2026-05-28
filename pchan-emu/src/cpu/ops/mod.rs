@@ -129,15 +129,23 @@ pub struct Beq {
 
 #[derive(Encode, Debug, Clone, Copy, Hash, PartialEq, Eq, d::Display)]
 #[encode(opcode = 0x1, rt = 0x1)]
-#[display("bgez ${}, {}", reg_str(self.rs), hex(self.imm16))]
+#[display("bgez ${}, {}", reg_str(self.rs), hex(self.imm16 * 4 + 4))]
 pub struct Bgez {
     pub rs:    u8,
     pub imm16: i16,
 }
 
 #[derive(Encode, Debug, Clone, Copy, Hash, PartialEq, Eq, d::Display)]
+#[encode(opcode = 0x1, rt = 0b10001)]
+#[display("bgezal ${}, {}", reg_str(self.rs), hex(self.imm16 * 4 + 4))]
+pub struct Bgezal {
+    pub rs:    u8,
+    pub imm16: i16,
+}
+
+#[derive(Encode, Debug, Clone, Copy, Hash, PartialEq, Eq, d::Display)]
 #[encode(opcode = 0x07)]
-#[display("bgtz ${}, {}", reg_str(self.rs), hex(self.imm16))]
+#[display("bgtz ${}, {}", reg_str(self.rs), hex(self.imm16 * 4 + 4))]
 pub struct Bgtz {
     pub rs:    u8,
     pub imm16: i16,
@@ -145,7 +153,7 @@ pub struct Bgtz {
 
 #[derive(Encode, Debug, Clone, Copy, Hash, PartialEq, Eq, d::Display)]
 #[encode(opcode = 0x06)]
-#[display("blez ${}, {}", reg_str(self.rs), hex(self.imm16))]
+#[display("blez ${}, {}", reg_str(self.rs), hex(self.imm16 * 4 + 4))]
 pub struct Blez {
     pub rs:    u8,
     pub imm16: i16,
@@ -153,7 +161,7 @@ pub struct Blez {
 
 #[derive(Encode, Debug, Clone, Copy, Hash, PartialEq, Eq, d::Display)]
 #[encode(opcode = 0x01, rt = 0x0)]
-#[display("bltz ${}, {}", reg_str(self.rs), hex(self.imm16))]
+#[display("bltz ${}, {}", reg_str(self.rs), hex(self.imm16 * 4 + 4))]
 pub struct Bltz {
     pub rs:    u8,
     pub imm16: i16,
@@ -161,7 +169,7 @@ pub struct Bltz {
 
 #[derive(Encode, Debug, Clone, Copy, Hash, PartialEq, Eq, d::Display)]
 #[encode(opcode = 0x01, rt = 0b10000)]
-#[display("bltzal ${}, {}", reg_str(self.rs), hex(self.imm16))]
+#[display("bltzal ${}, {}", reg_str(self.rs), hex(self.imm16 * 4 + 4))]
 pub struct Bltzal {
     pub rs:    u8,
     pub imm16: i16,
