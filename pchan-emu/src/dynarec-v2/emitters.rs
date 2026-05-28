@@ -3857,7 +3857,7 @@ impl DynarecOp for Swcn {
     fn emit<'a>(&self, mut ctx: EmitCtx<'a>) -> EmitSummary {
         // FIXME: with gte nopped out, this helps games boot
         // remove once fixed.
-        if true {
+        if false {
             let s1 = ctx.alloc_scratch();
             let Self { cop, rt, rs, imm16 } = *self;
             ctx.dynarec.emit_load_temp_reg(rs, Reg::W(1));

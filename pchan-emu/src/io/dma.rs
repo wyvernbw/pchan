@@ -182,7 +182,9 @@ impl Emu {
             DmaTransportKind::Gpu => {
                 self.dma2_write_data(event);
             }
-            DmaTransportKind::Cdrom => todo!(),
+            DmaTransportKind::Cdrom => {
+                self.dma3_write_data(event);
+            }
         }
         self.dma_irq_raise_complete(idx as usize);
     }
@@ -210,7 +212,7 @@ impl Emu {
     fn create_dma_event(&self, channel: DmaChannel, kind: DmaTransportKind) -> DmaEvent {
         match channel.chcr.sync_mode() {
             SyncMode::Burst => DmaEvent {
-                in_cycles: channel.burst_cycles(),
+                in_cycles: channel.burst_cycles(kind),
                 init_chan: channel,
                 slice:     None,
                 dma_t:     kind,
@@ -451,17 +453,17 @@ impl Transfer for Dma2Gpu {
 struct Dma3Cdrom;
 
 impl Transfer for Dma3Cdrom {
-    const TRANSPORT_KIND: DmaTransportKind = DmaTransportKind::Gpu;
+    const TRANSPORT_KIND: DmaTransportKind = DmaTransportKind::Cdrom;
 
     fn write(&mut self, emu: &mut Emu, address: u32) {
+        todo!()
+    }
+
+    fn read(&mut self, emu: &mut Emu, address: u32) {
         let value = emu.cdrom_read_data::<4>();
         let value = u32::from_le_bytes(value);
         _ = emu.fastmem_write(address, value);
         tracing::debug!("copied byte {} to memory at {}", hex(value), hex(address));
-    }
-
-    fn read(&mut self, emu: &mut Emu, address: u32) {
-        todo!()
     }
 
     fn channel(emu: &mut Emu) -> &mut DmaChannel {
@@ -763,7 +765,7 @@ impl DmaEvent {
     fn cycles(&self, emu: &Emu) -> u64 {
         let sync_mode = self.init_chan.chcr.sync_mode();
         match sync_mode {
-            SyncMode::Burst => self.init_chan.burst_cycles(),
+            SyncMode::Burst => self.init_chan.burst_cycles(self.dma_t),
             SyncMode::Slice => self.init_chan.slice_cycles(),
             SyncMode::LinkedList => self.init_chan.linked_list_cycles(emu),
             SyncMode::Reserved => u64::MAX,
@@ -798,8 +800,11 @@ impl DmaChannel {
         self.bcr.s1_block_size() as u64
     }
 
-    fn burst_cycles(&self) -> u64 {
-        self.bcr.s0_word_count() as u64
+    fn burst_cycles(&self, dma_t: DmaTransportKind) -> u64 {
+        match dma_t {
+            DmaTransportKind::Otc | DmaTransportKind::Gpu => self.bcr.s0_word_count() as u64,
+            DmaTransportKind::Cdrom => self.bcr.s0_word_count() as u64 * 24,
+        }
     }
 
     fn set_complete(&mut self) {
