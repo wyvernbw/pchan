@@ -105,7 +105,7 @@ impl Emu {
 
     #[unsafe(no_mangle)]
     pub extern "C" fn handle_break(&mut self) {
-        self.raise_exception(Exception::Break);
+        self.handle_exception(Exception::Break);
     }
 
     #[unsafe(no_mangle)]
@@ -118,7 +118,7 @@ impl Emu {
 
             panic!("found bd!")
         }
-        self.raise_exception(Exception::Syscall);
+        self.handle_exception(Exception::Syscall);
     }
 
     pub fn run_exceptions_io(&mut self) {
