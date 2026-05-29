@@ -7,6 +7,8 @@ mod cdrom_format;
 #[path = "./cdrom-ver.rs"]
 mod cdrom_ver;
 
+use std::collections::VecDeque;
+
 use crate::io::cdrom::cdrom_cmds::{CdromResponse, Response};
 use crate::io::cdrom::cdrom_drive::{CdromDrive, CommandState, Disc};
 use crate::io::cdrom::cdrom_ver::CDRomVerPtr;
@@ -28,7 +30,7 @@ pub struct CDRomState {
     param_fifo:  heapless::Deque<u8, 16>,
     result_fifo: heapless::Deque<u8, 16>,
     data_last:   u8,
-    data_fifo:   heapless::Deque<u8, 16>,
+    data_fifo:   VecDeque<u8>,
     ver:         CDRomVerPtr,
 
     responses: Slab<Response>,
@@ -57,40 +59,6 @@ enum DriveStatus {
 /// - [x] W CD cmd reg
 /// - [x] R CD Irq flag
 /// - [x] R res fifo
-///
-/// log #0:
-///
-/// ```log
-/// WARN pchan_emu::io::cdrom: todo(cdrom): write to status reg
-/// WARN pchan_emu::io::cdrom: todo(cdrom): write to request register
-/// WARN pchan_emu::io::cdrom: todo(cdrom): write to status reg
-/// WARN pchan_emu::io::cdrom: todo(cdrom): write to param fifo
-/// ```
-///
-/// log #1:
-///
-/// ```log
-/// WARN pchan_emu::io::cdrom: todo(cdrom): write to cd irq flag register
-/// WARN pchan_emu::io::cdrom: todo(cdrom): write to irq on/off register
-/// ```
-///
-/// log #2:
-///
-/// ```log
-///  WARN pchan_emu::io::cdrom: todo(cdrom): write to param fifo
-///  WARN pchan_emu::io::cdrom: todo(cdrom): write to cd command register
-/// ````
-///
-/// log #3:
-/// ```log
-///  WARN pchan_emu::io::cdrom: todo(cdrom): read from cd irq flag register
-/// ```
-///
-/// log #4:
-/// ```log
-/// WARN pchan_emu::io::cdrom: todo(cdrom): read from response fifo
-/// WARN pchan_emu::io::cdrom::cdrom_cmds: todo(cdrom): unhandled cmd: 0x01
-/// ```
 impl Emu {
     #[pchan_macros::pchan_instrument_write]
     pub fn cdrom_write<T: Copy>(&mut self, address: u32, value: T) -> Result<(), UnhandledIO> {
@@ -208,12 +176,25 @@ impl Emu {
     fn cdrom_send_response(&mut self, response: Response) {
         self.cdrom_mut().result_push_many(response.data);
         self.cdrom_mut().hint_status.set_intsts(response.int);
-        self.cdrom_mut().status.set_busy_status(false);
         let hint_status = self.cdrom().hint_status.raw_value();
         let hint_mask = self.cdrom().hint_mask.raw_value();
         if hint_status & hint_mask != 0 {
-            self.irq_trigger(irq::Irq::Irq2CDRom);
+            self.cdrom_schedule_irq();
+        } else {
+            tracing::info!("cdrom: response irq masked out")
         }
+        if response.done {
+            self.cdrom.drive.set_command_state(CommandState::Idle);
+            self.cdrom_mut().status.set_busy_status(false);
+        }
+    }
+
+    fn cdrom_schedule_irq(&mut self) {
+        self.evque_mut().schedule(Self::irq_trigger_cdrom, 0, 1000);
+    }
+
+    fn irq_trigger_cdrom(&mut self, _: EvCtx) {
+        self.irq_trigger(irq::Irq::Irq2CDRom);
     }
 
     #[tracing::instrument(skip_all)]
@@ -228,9 +209,6 @@ impl Emu {
         }
 
         let response = self.cdrom_mut().responses.remove(ctx.id);
-        if response.done {
-            self.cdrom.drive.set_command_state(CommandState::Idle);
-        }
         self.cdrom_send_response(response);
 
         tracing::info!("HINT_STAT={}", hex(self.cdrom().hint_status));

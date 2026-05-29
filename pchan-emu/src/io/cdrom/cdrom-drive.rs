@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::fs;
 use std::io::{BufReader, Read, Seek};
 use std::path::{Path, PathBuf};
@@ -56,6 +57,7 @@ pub(super) enum CommandState {
 }
 
 const CYCLES_PER_BYTE: u64 = Cpu::CLOCK as u64 / (2048 * 75);
+const CYCLES_PER_WORD: u64 = CYCLES_PER_BYTE * 4;
 
 impl CdromDrive {
     pub fn setloc<T>(&mut self, mss: Mss<T>)
@@ -114,7 +116,7 @@ impl CdromDrive {
         }
     }
 
-    pub fn request_data(&mut self, status: &mut CDRomStatusReg, result_fifo: &mut Deque<u8, 16>) {
+    pub fn request_data(&mut self, status: &mut CDRomStatusReg, result_fifo: &mut VecDeque<u8>) {
         status.set_data_req(true);
         if let Some(disc) = &mut self.disc {
             let (n, bytes) = match disc.readn::<1>(self.mode) {
@@ -127,10 +129,7 @@ impl CdromDrive {
             if n == 0 {
                 return;
             }
-            let res = result_fifo.push_back(bytes[0]);
-            if res.is_err() {
-                tracing::warn!("cdrom byte dropped");
-            }
+            result_fifo.push_back(bytes[0]);
         }
     }
 

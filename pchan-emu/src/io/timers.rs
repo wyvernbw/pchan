@@ -222,9 +222,11 @@ impl Emu {
     pub fn timers_advance_by_cpu(&mut self, cycles: u16) {
         let timers = self.timers_mut();
         // FIXME: add dotclock source
-        // if timers.timer_0.check_source([0x0, 0x2]) {
-        timers.timer_0.tick_by(cycles);
-        // }
+        if timers.timer_0.check_source([0x0, 0x2]) {
+            timers.timer_0.tick_by(cycles);
+        } else {
+            todo!()
+        }
         if timers.timer_1.check_source([0x0, 0x2]) {
             timers.timer_1.tick_by(cycles);
         }

@@ -82,6 +82,7 @@ impl CDRomState {
     }
     pub fn send_cmd(&mut self, cmd: u8) -> ResponseList {
         self.status.set_busy_status(true);
+        self.result_fifo.clear();
 
         fn diskerr(data: &[u8]) -> SmallVec<[CdromResponse; 2]> {
             smallvec![CdromResponse::Immediate(Response {
@@ -225,13 +226,16 @@ impl CDRomState {
     /// SeekL - Command 15h --> INT3(stat) --> INT2(stat)
     fn seekl_cmd(&mut self) -> ResponseList {
         tracing::info!("seekl");
-        let res1 = self.int3_status(false);
+        let res1 = self.responses.insert(self.int3_status(false));
+        self.drive.status_code.reset_state();
+        self.drive.status_code.set_seek(true);
+        self.drive.status_code.set_spindle_mot(false);
         let res2 = self.responses.insert(self.int2_status(true));
         self.drive
-            .set_command_state(CommandState::responding([res2]));
+            .set_command_state(CommandState::responding([res1, res2]));
         smallvec![
-            CdromResponse::Immediate(res1),
-            CdromResponse::InCycles(100, res2)
+            CdromResponse::InCycles(0x000c4e1, res1),
+            CdromResponse::InCycles(0x000c4e1 * 3, res2)
         ]
     }
 
