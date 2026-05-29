@@ -253,6 +253,7 @@ impl Emu {
         }
     }
 
+    // #[pchan_macros::instrument(skip_all, fields(pc = %hex(self.cpu.pc)))]
     pub fn try_read<T: Copy>(&mut self, address: u32) -> IOResult<T> {
         #[cfg(feature = "debugger-ext")]
         {
@@ -261,17 +262,28 @@ impl Emu {
             self.dbg.break_on(address, BreakpointKind::READ);
         }
 
+        let inspect_read = |msg: &str, res: IOResult<T>| {
+            #[cfg(feature = "trace")]
+            {
+                res.inspect(|_| tracing::info!("{msg}: {}", hex(address)))
+            }
+            #[cfg(not(feature = "trace"))]
+            {
+                res
+            }
+        };
+
         self.fastmem_read::<T>(address)
-            .or_else(|_| self.scratch_read(address))
-            .or_else(|_| self.irq_read(address))
-            .or_else(|_| self.gpu_read(address))
-            .or_else(|_| self.spu_read(address))
-            .or_else(|_| self.dma_read(address))
-            .or_else(|_| self.timers_read(address))
-            .or_else(|_| self.sio_read::<T>(address))
-            .or_else(|_| self.cdrom_read::<T>(address))
-            .or_else(|_| self.cache_ctrl_read::<T>(address))
-            .or_else(|_| self.generic_read::<T>(address))
+            .or_else(|_| inspect_read("r(scratch)", self.scratch_read(address)))
+            .or_else(|_| inspect_read("r(irq)", self.irq_read(address)))
+            .or_else(|_| inspect_read("r(gpu)", self.gpu_read(address)))
+            .or_else(|_| inspect_read("r(spu)", self.spu_read(address)))
+            .or_else(|_| inspect_read("r(dma)", self.dma_read(address)))
+            .or_else(|_| inspect_read("r(timers)", self.timers_read(address)))
+            .or_else(|_| inspect_read("r(sio)", self.sio_read::<T>(address)))
+            .or_else(|_| inspect_read("r(cdrom)", self.cdrom_read::<T>(address)))
+            .or_else(|_| inspect_read("r(cache_ctrl)", self.cache_ctrl_read::<T>(address)))
+            .or_else(|_| inspect_read("r(unknown)", self.generic_read::<T>(address)))
     }
 
     pub fn try_read_pure<T: Copy>(&self, address: u32) -> IOResult<T> {

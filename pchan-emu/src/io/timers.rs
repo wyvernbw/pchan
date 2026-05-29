@@ -1,4 +1,5 @@
 use arbitrary_int::prelude::*;
+use bitbybit::bitenum;
 use derive_more as d;
 
 use crate::Emu;
@@ -86,11 +87,19 @@ pub struct TimerCounterMode {
     source: u2,
 
     #[bit(10, rw)]
-    irq:              bool,
+    irq:              IrqFlag,
     #[bit(11, rw)]
     reached_target:   bool,
     #[bit(12, rw)]
     reached_overflow: bool,
+}
+
+#[bitenum(u1, exhaustive = true)]
+#[derive(Debug, Default, PartialEq, Eq)]
+enum IrqFlag {
+    Y = 0x0,
+    #[default]
+    N = 0x1,
 }
 
 #[bitbybit::bitenum(u1, exhaustive = true)]
@@ -150,8 +159,10 @@ impl Emu {
                     TimerCounterValue::new_with_raw_value(value.io_into_u32());
             }
             0x1f801104 => {
-                self.timers_mut().timer_0.mode =
-                    TimerCounterMode::new_with_raw_value(value.io_into_u32());
+                self.timers
+                    .timer_0
+                    .mode
+                    .write(TimerCounterMode::new_with_raw_value(value.io_into_u32()));
             }
             0x1f801108 => {
                 self.timers_mut().timer_0.target =
@@ -162,8 +173,10 @@ impl Emu {
                     TimerCounterValue::new_with_raw_value(value.io_into_u32());
             }
             0x1f801114 => {
-                self.timers_mut().timer_1.mode =
-                    TimerCounterMode::new_with_raw_value(value.io_into_u32());
+                self.timers
+                    .timer_1
+                    .mode
+                    .write(TimerCounterMode::new_with_raw_value(value.io_into_u32()));
             }
             0x1f801118 => {
                 self.timers_mut().timer_1.target =
@@ -174,8 +187,10 @@ impl Emu {
                     TimerCounterValue::new_with_raw_value(value.io_into_u32());
             }
             0x1f801124 => {
-                self.timers_mut().timer_2.mode =
-                    TimerCounterMode::new_with_raw_value(value.io_into_u32());
+                self.timers
+                    .timer_2
+                    .mode
+                    .write(TimerCounterMode::new_with_raw_value(value.io_into_u32()));
             }
             0x1f801128 => {
                 self.timers_mut().timer_2.value =
@@ -188,17 +203,17 @@ impl Emu {
 
     pub fn run_timer_pipeline(&mut self) {
         let timers = self.timers_mut();
-        if timers.timer_0.mode.irq() {
+        if timers.timer_0.mode.irq() == IrqFlag::Y {
             let irq = timers.timer_0.irq;
             self.irq_trigger(irq);
         }
         let timers = self.timers_mut();
-        if timers.timer_1.mode.irq() {
+        if timers.timer_1.mode.irq() == IrqFlag::Y {
             let irq = timers.timer_1.irq;
             self.irq_trigger(irq);
         }
         let timers = self.timers_mut();
-        if timers.timer_2.mode.irq() {
+        if timers.timer_2.mode.irq() == IrqFlag::Y {
             let irq = timers.timer_2.irq;
             self.irq_trigger(irq);
         }
@@ -206,9 +221,10 @@ impl Emu {
 
     pub fn timers_advance_by_cpu(&mut self, cycles: u16) {
         let timers = self.timers_mut();
-        if timers.timer_0.check_source([0x0, 0x2]) {
-            timers.timer_0.tick_by(cycles);
-        }
+        // FIXME: add dotclock source
+        // if timers.timer_0.check_source([0x0, 0x2]) {
+        timers.timer_0.tick_by(cycles);
+        // }
         if timers.timer_1.check_source([0x0, 0x2]) {
             timers.timer_1.tick_by(cycles);
         }
@@ -235,18 +251,18 @@ impl Timer {
         if self.overflowed {
             self.mode.set_reached_overflow(true);
             if self.mode.irq_on_overflow() {
-                self.mode.set_irq(true);
+                self.mode.set_irq(IrqFlag::Y);
             }
         }
 
         if self.mode.irq_on_overflow() && self.overflowed {
-            self.mode.set_irq(true);
+            self.mode.set_irq(IrqFlag::Y);
             if self.mode.reset_mode() == TimerResetMode::OnOverflow {
                 self.value.set_value(0);
             }
         }
         if self.mode.irq_on_target() && self.hit_target {
-            self.mode.set_irq(true);
+            self.mode.set_irq(IrqFlag::Y);
             if self.mode.reset_mode() == TimerResetMode::OnTarget {
                 self.value.set_value(0);
             }
@@ -264,5 +280,12 @@ impl TimerState {
         if self.timer_1.check_source([1, 3]) {
             self.timer_1.tick_by(1);
         }
+    }
+}
+
+impl TimerCounterMode {
+    fn write(&mut self, value: TimerCounterMode) {
+        *self = value;
+        self.set_irq(IrqFlag::N);
     }
 }

@@ -153,7 +153,7 @@ impl Emu {
 
                 // writing 1 to irq flag resets it to 0
                 let irq_flags = irq_flags & !new_irq_flags;
-                tracing::trace!("read at dicr: dma_irq_flags: {irq_flags:b}");
+                tracing::info!("write at dicr: dma_irq_flags: {irq_flags:b}");
 
                 let new_dicr = new_dicr.with_combined_irq_flags(irq_flags);
 
@@ -174,7 +174,6 @@ impl Emu {
 
     fn handle_dma_event(&mut self, ctx: EvCtx) {
         let event = self.dma_mut().events.remove(ctx.id);
-        let idx = event.dma_t.idx();
         match event.dma_t {
             DmaTransportKind::Otc => {
                 self.dma6_write_data(event);
@@ -186,12 +185,11 @@ impl Emu {
                 self.dma3_write_data(event);
             }
         }
-        self.dma_irq_raise_complete(idx as usize);
     }
 
     fn dma_irq_raise_complete(&mut self, idx: usize) {
         let dicr = &mut self.dma_mut().dicr;
-        if dicr.irq_mask(idx) && dicr.master_on() {
+        if dicr.irq_mask(idx) && dicr.master_chan_irq() {
             dicr.set_irq_flag(idx, true);
         }
         let old_master_irq = dicr.master_irq();
@@ -205,7 +203,7 @@ impl Emu {
     fn update_dicr_master_irq_flag(&mut self) {
         let dicr = &mut self.dma_mut().dicr;
         let new_master_irq =
-            dicr.bus_error() || (dicr.master_on() && dicr.combined_irq_flags().as_u8() > 0);
+            dicr.bus_error() || (dicr.master_chan_irq() && dicr.combined_irq_flags().as_u8() > 0);
         dicr.set_master_irq(new_master_irq);
     }
 
@@ -242,10 +240,11 @@ impl Emu {
     }
 
     fn dma_write_data<T: Transfer>(&mut self, event: DmaEvent, transfer: &mut T) {
-        let channel = event.init_chan;
-        let direction = channel.chcr.direction();
-        let sync_mode = channel.chcr.sync_mode();
+        let init_chan = event.init_chan;
+        let direction = init_chan.chcr.direction();
+        let sync_mode = init_chan.chcr.sync_mode();
         let clock = self.cpu().cycles;
+        let idx = event.dma_t.idx() as usize;
         match sync_mode {
             SyncMode::Slice => {
                 let mut current_event = Some(event);
@@ -254,8 +253,8 @@ impl Emu {
                         .slice
                         .expect("event with sync mode slice has no slice state. this is a bug.");
                     let mut addr = slice.addr;
-                    self.dma_mut().dma2.madr.set_addr(addr.as_());
-                    let len = channel.bcr.s1_block_size();
+                    T::channel(self).madr.set_addr(addr.as_());
+                    let len = init_chan.bcr.s1_block_size();
                     for _ in 0..len {
                         match direction {
                             TransferDir::DeviceToRam => {
@@ -267,20 +266,33 @@ impl Emu {
                         }
                         addr += 0x4;
                     }
+
                     // do not mark as done until final event is reached
                     tracing::debug!(
                         "dma event.{} [{}/{}]",
-                        hex(channel.madr.addr().as_u32()),
+                        hex(init_chan.madr.addr().as_u32()),
                         slice.idx,
-                        channel.bcr.s1_block_count()
+                        init_chan.bcr.s1_block_count()
                     );
-                    if slice.idx >= channel.bcr.s1_block_count() as u32 - 1 {
-                        tracing::info!("dma event.{} finished", hex(channel.madr.addr().as_u32()));
-                        self.dma_mut().dma2.set_complete();
+
+                    if slice.idx >= init_chan.bcr.s1_block_count() as u32 - 1 {
+                        tracing::info!(
+                            "dma event.{} finished",
+                            hex(init_chan.madr.addr().as_u32())
+                        );
+
+                        T::channel(self).set_complete();
+                        self.dma_irq_raise_complete(idx);
+
                         break;
                     } else {
-                        let bcr = &mut self.dma_mut().dma2.bcr;
+                        let bcr = &mut T::channel(self).bcr;
                         bcr.set_s1_block_count(bcr.s1_block_count() - 1);
+
+                        if let DmaIrqMode::OnChunk = self.dma.dicr.irq_mode(idx) {
+                            T::channel(self).set_complete();
+                            self.dma_irq_raise_complete(idx);
+                        }
 
                         let cycles_per_step = event.init_chan.slice_cycles();
                         let addr_step = event.init_chan.bcr.s1_block_size();
@@ -295,18 +307,20 @@ impl Emu {
                             slice:     Some(slice),
                             dma_t:     event.dma_t,
                         };
+
                         if upcoming < clock {
                             current_event = Some(next_event);
                         } else {
                             self.dma_schedule(next_event);
+
                             break;
                         }
                     }
                 }
             }
             SyncMode::Burst => {
-                let mut addr = channel.madr.addr().as_u32();
-                for _ in 0..channel.bcr.s0_word_count() {
+                let mut addr = init_chan.madr.addr().as_u32();
+                for _ in 0..init_chan.bcr.s0_word_count() {
                     match direction {
                         TransferDir::DeviceToRam => {
                             transfer.read(self, addr);
@@ -317,17 +331,17 @@ impl Emu {
                     }
                     addr += 0x4;
                 }
-                self.dma_mut().dma2.set_complete();
+                T::channel(self).set_complete();
+                self.dma_irq_raise_complete(idx);
             }
             SyncMode::LinkedList => {
-                let mut addr = channel.madr.addr().as_u32();
+                let mut addr = init_chan.madr.addr().as_u32();
                 let mut visited = heapless::index_set::FnvIndexSet::<u32, 2048>::new();
                 let mut count = 0;
-                tracing::trace!("start gp0 linked list traversal");
                 loop {
                     if count >= 1024 + 128 {
                         panic!(
-                            "infinite loop detected, dma 2: {channel:#?}\ndpcr: {:#?}",
+                            "infinite loop detected, dma n: {init_chan:#?}\ndpcr: {:#?}",
                             self.dma().dpcr
                         );
                     }
@@ -339,7 +353,7 @@ impl Emu {
                         transfer.write(self, addr);
                     }
                     visited.insert(addr).expect(
-                        "bug: dma2 linked list traversal visited set capacity is too small.",
+                        "bug: dma linked list traversal visited set capacity is too small.",
                     );
                     addr = header.next().as_u32();
 
@@ -347,11 +361,12 @@ impl Emu {
 
                     count += 1;
                     if header.is_end_marker() {
-                        self.dma_mut().dma2.madr.set_addr(DmaNodeHeader::END.as_());
+                        T::channel(self).madr.set_addr(DmaNodeHeader::END.as_());
                         break;
                     }
                 }
-                self.dma_mut().dma2.set_complete();
+                T::channel(self).set_complete();
+                self.dma_irq_raise_complete(idx);
                 tracing::trace!("end gp0 linked list traversal");
             }
             SyncMode::Reserved => todo!(),
@@ -550,17 +565,17 @@ pub struct Dpcr {
 #[derive(Debug, Default)]
 pub struct Dicr {
     #[bit(0, rw)]
-    irq_mode:  [DmaIrqMode; 7],
+    irq_mode:        [DmaIrqMode; 7],
     #[bits(7..=14)]
-    _padding:  u8,
+    _padding:        u8,
     #[bit(15, rw)]
-    bus_error: bool,
+    bus_error:       bool,
     #[bit(16, rw)]
-    irq_mask:  [bool; 7],
+    irq_mask:        [bool; 7],
     #[bit(23, rw)]
-    master_on: bool,
+    master_chan_irq: bool,
     #[bit(24, rw)]
-    irq_flag:  [bool; 7],
+    irq_flag:        [bool; 7],
 
     #[bits(24..=30, rw)]
     combined_irq_flags: u7,
