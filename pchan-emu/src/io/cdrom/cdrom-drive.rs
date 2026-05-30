@@ -8,9 +8,13 @@ use smallvec::{SmallVec, smallvec};
 
 use crate::Emu;
 use crate::cpu::Cpu;
-use crate::io::cdrom::cdrom_cmds::{Response, SetMode, StatusCode};
-use crate::io::cdrom::cdrom_format::{CdromCursor, CueFormat, CueFormatParseErr, Mss};
+use crate::io::cdrom::cdrom_cmds::{Response, SetMode, SetModeSpeed, StatusCode};
+use crate::io::cdrom::cdrom_format::{
+    CdromCursor, CueFormat, CueFormatParseErr, Mss, SECTOR_USER_SIZE,
+};
 use crate::io::cdrom::{CDRomStatusReg, CdromScheduler, DriveStatus};
+
+use super::cdrom_cmds::SetModeSectSize;
 
 #[derive(Default, derive_more::Debug)]
 pub struct CdromDrive {
@@ -56,7 +60,8 @@ pub(super) enum CommandState {
     Responding(SmallVec<[usize; 2]>),
 }
 
-const CYCLES_PER_BYTE: u64 = Cpu::CLOCK as u64 / (2048 * 75);
+const CYCLES_PER_BYTE: u64 = Cpu::CLOCK as u64 / (SECTOR_USER_SIZE as u64 * 75);
+const CYCLES_PER_BYTE_2X: u64 = CYCLES_PER_BYTE / 2;
 const CYCLES_PER_WORD: u64 = CYCLES_PER_BYTE * 4;
 
 impl CdromDrive {
@@ -65,6 +70,7 @@ impl CdromDrive {
         u8: const From<T>,
     {
         self.cursor = CdromCursor::from_mss(mss);
+        tracing::info!("setloc at {:?}", self.cursor);
         if let Some(disc) = &mut self.disc {
             let res = disc.seek(self.cursor);
             self.host_disc_err = res.err();
@@ -72,8 +78,11 @@ impl CdromDrive {
     }
 
     pub fn setmode(&mut self, setmode: SetMode) {
-        if !setmode.ignore_bit() {
-            self.mode.set_sect_size(setmode.sect_size());
+        let old_mode = self.mode;
+        self.mode = setmode;
+
+        if setmode.ignore_bit() {
+            self.mode.set_sect_size(old_mode.sect_size());
         }
     }
 
@@ -88,14 +97,15 @@ impl CdromDrive {
     }
 
     pub fn run(&mut self, scheduler: &mut CdromScheduler<'_>) {
-        tracing::info!(drive = ?self.drive_state, "run");
         match self.drive_state {
             DriveState::Idle => {}
             DriveState::ReadN => {
                 self.status_code.reset_state();
                 self.status_code.set_read(true);
+                let cycles_per_sector = self.sector_cycles();
                 scheduler.evque.schedule(
                     |emu, _| {
+                        tracing::info!("readn callback");
                         emu.cdrom_send_response(Response::new(
                             super::HInt::Int1DataReady,
                             smallvec![emu.cdrom.drive.status_code.raw_value()],
@@ -110,7 +120,7 @@ impl CdromDrive {
                         });
                     },
                     0,
-                    CYCLES_PER_BYTE,
+                    cycles_per_sector,
                 );
             }
         }
@@ -119,7 +129,7 @@ impl CdromDrive {
     pub fn request_data(&mut self, status: &mut CDRomStatusReg, result_fifo: &mut VecDeque<u8>) {
         status.set_data_req(true);
         if let Some(disc) = &mut self.disc {
-            let (n, bytes) = match disc.readn::<1>(self.mode) {
+            let (n, bytes) = match disc.readn::<SECTOR_USER_SIZE>(self.mode) {
                 Ok(res) => res,
                 Err(err) => {
                     self.host_disc_err = Some(err);
@@ -129,12 +139,24 @@ impl CdromDrive {
             if n == 0 {
                 return;
             }
-            result_fifo.push_back(bytes[0]);
+            let sector = match self.mode.sect_size() {
+                SetModeSectSize::DataOnly0x800 => &bytes[0x18..0x18 + 0x800],
+                SetModeSectSize::Whole0x924 => &bytes[..],
+            };
+            result_fifo.extend(sector);
         }
     }
 
     pub(super) fn set_command_state(&mut self, state: CommandState) {
         self.command_state = state;
+    }
+
+    fn sector_cycles(&self) -> u64 {
+        let mult = match self.mode.speed() {
+            SetModeSpeed::Normal => CYCLES_PER_BYTE,
+            SetModeSpeed::Double => CYCLES_PER_BYTE_2X,
+        };
+        self.mode.sect_size().len() as u64 * mult
     }
 }
 
@@ -207,12 +229,12 @@ impl StreamedDiskReader {
         &mut self,
         mode: SetMode,
     ) -> std::io::Result<(usize, [u8; BYTES])> {
-        let idx = self.cursor.lba_to_bytes() + self.cursor.byte;
+        tracing::info!("readn\t{}", self.cursor.to_mss::<u8>());
         let mut buf = [0u8; BYTES];
-        self.seek(idx as u64)?;
         let n = self.reader.read(&mut buf)?;
 
         self.cursor.advance_by(BYTES as u32, mode.sect_size());
+        self.reader.seek(std::io::SeekFrom::Current(BYTES as i64))?;
         Ok((n, buf))
     }
 }
@@ -231,7 +253,8 @@ impl Disc {
             }
             Disc::Raw(disc_reader) => (0, disc_reader),
         };
-        let byte = padding + to.lba_to_bytes();
+        let byte = padding + to.to_byte();
+        reader.update_cursor(to);
         reader.seek(byte as u64)
     }
 

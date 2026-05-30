@@ -231,6 +231,9 @@ impl Emu {
             self.cdrom.data_last = value;
             *byte = value;
         }
+        if self.cdrom.data_fifo.is_empty() {
+            self.cdrom.status.set_data_req(false);
+        }
         buf
     }
 }

@@ -211,14 +211,15 @@ impl CDRomState {
 
     /// Setloc - Command 02h,amm,ass,asect --> INT3(stat)
     fn setloc_cmd(&mut self) -> ResponseList {
-        tracing::info!("setloc");
         self.status.set_busy_status(false);
 
         let min = self.get_param::<Bcd>();
         let sec = self.get_param::<Bcd>();
         let sect = self.get_param::<Bcd>();
 
-        self.drive.setloc(Mss::new(min, sec, sect));
+        let mss = Mss::new(min, sec, sect);
+        tracing::info!(?mss, "setloc");
+        self.drive.setloc(mss);
         let res = CdromResponse::Immediate(self.int3_status(true));
         smallvec![res]
     }
@@ -227,15 +228,16 @@ impl CDRomState {
     fn seekl_cmd(&mut self) -> ResponseList {
         tracing::info!("seekl");
         let res1 = self.responses.insert(self.int3_status(false));
+        self.drive.status_code.set_spindle_mot(true);
         self.drive.status_code.reset_state();
         self.drive.status_code.set_seek(true);
-        self.drive.status_code.set_spindle_mot(false);
         let res2 = self.responses.insert(self.int2_status(true));
         self.drive
             .set_command_state(CommandState::responding([res1, res2]));
+        const SEEK_TIME: u64 = Cpu::CLOCK as u64 / 75;
         smallvec![
             CdromResponse::InCycles(0x000c4e1, res1),
-            CdromResponse::InCycles(0x000c4e1 * 3, res2)
+            CdromResponse::InCycles(SEEK_TIME, res2)
         ]
     }
 
@@ -251,8 +253,8 @@ impl CDRomState {
 
     /// ReadN - Command 06h --> INT3(stat) --> INT1(stat) --> datablock
     fn readn_cmd(&mut self) -> ResponseList {
-        tracing::info!("readn");
-        self.status.set_busy_status(false);
+        tracing::info!("readn start");
+        self.drive.status_code.set_spindle_mot(true);
         self.drive.readn();
         smallvec![CdromResponse::Immediate(self.int3_status(true))]
     }
@@ -335,9 +337,18 @@ pub enum SetModeSectSize {
     Whole0x924    = 0x1,
 }
 
+impl SetModeSectSize {
+    pub const fn len(self) -> usize {
+        match self {
+            SetModeSectSize::DataOnly0x800 => 0x800,
+            SetModeSectSize::Whole0x924 => 0x924,
+        }
+    }
+}
+
 #[bitenum(u1, exhaustive = true)]
 #[derive(Debug)]
-enum SetModeSpeed {
+pub enum SetModeSpeed {
     Normal = 0x0,
     Double = 0x1,
 }

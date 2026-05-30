@@ -6,7 +6,7 @@ use bitbybit::*;
 
 use crate::io::cdrom::cdrom_cmds::SetModeSectSize;
 
-#[bitfield(u8)]
+#[bitfield(u8, debug)]
 pub struct Bcd {
     /// the least significant digit
     #[bits(0..=3, rw)]
@@ -41,7 +41,8 @@ pub struct CdromCursor {
 }
 
 /// (minute, second, sector) tuple
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, derive_more::Display)]
+#[display("{min:02}:{sec:02}:{sect:02}")]
 pub struct Mss<T> {
     pub min:  T,
     pub sec:  T,
@@ -54,45 +55,50 @@ impl<T> Mss<T> {
     }
 }
 
+pub const SECTOR_USER_SIZE: usize = 0x930;
+
 impl CdromCursor {
     pub const fn from_mss<T: [const] Into<u8> + [const] Destruct>(mss: Mss<T>) -> Self {
         let min = mss.min.into() as u32;
         let sec = mss.sec.into() as u32;
         let sect = mss.sect.into() as u32;
         Self {
-            lba:  min * (60 * 75) + sec * 75 + sect,
+            lba:  (min * (60 * 75) + sec * 75 + sect).saturating_sub(150),
             byte: 0,
         }
     }
 
-    pub const fn lba_to_bytes(&self) -> u32 {
-        self.lba * 0x924
+    pub fn to_mss<T: From<u8>>(self) -> Mss<T> {
+        let lba = self.lba + 150;
+
+        let sect = (lba % 75) as u8;
+        let sec = (lba / 75 % 60) as u8;
+        let min = (lba / 75 / 60) as u8;
+
+        Mss {
+            min:  T::from(min),
+            sec:  T::from(sec),
+            sect: T::from(sect),
+        }
+    }
+
+    pub const fn to_byte(self) -> u32 {
+        self.lba * 0x924 + self.byte
     }
 
     pub const fn advance_by(&mut self, mut by_bytes: u32, sect_size: SetModeSectSize) {
-        match sect_size {
-            SetModeSectSize::DataOnly0x800 => {
-                let pad = 0x924 - 0x800;
-                let mut to_end = 0x924 - self.byte;
-                while by_bytes > to_end {
-                    by_bytes -= to_end;
-                    self.byte = pad;
-                    self.lba += 1;
-                    to_end = 0x924;
-                }
-                self.byte += by_bytes
-            }
-            SetModeSectSize::Whole0x924 => {
-                let mut to_end = 0x924 - self.byte;
-                while by_bytes > to_end {
-                    by_bytes -= to_end;
-                    self.byte = 0x0;
-                    self.lba += 1;
-                    to_end = 0x924;
-                }
-                self.byte += by_bytes
-            }
+        let (pad, end) = match sect_size {
+            SetModeSectSize::DataOnly0x800 => (0x18, 0x18 + 0x800),
+            SetModeSectSize::Whole0x924 => (0x0c, SECTOR_USER_SIZE),
         };
+        let mut to_end = end as u32 - self.byte;
+        while by_bytes >= to_end {
+            by_bytes -= to_end;
+            self.byte = pad;
+            self.lba += 1;
+            to_end = end as u32;
+        }
+        self.byte += by_bytes;
     }
 }
 
