@@ -1,8 +1,8 @@
 use pchan_utils::hex;
 
+use crate::cpu::RA;
 use crate::cpu::exceptions::Exception;
 use crate::cpu::ops::*;
-use crate::cpu::{RA, reg_str};
 use crate::dynarec_v2::emitters::{DecodedOp, DynarecOp};
 use crate::memory::ext;
 use crate::{Emu, gpu};
@@ -33,21 +33,6 @@ enum MemOpSize {
 #[derive(derive_more::Debug, Clone, PartialEq, Eq)]
 enum DelaySlot {
     Nop,
-    StoreWord {
-        value:   u32,
-        #[debug("{}", hex(*address))]
-        address: u32,
-    },
-    StoreHalf {
-        value:   u16,
-        #[debug("{}", hex(*address))]
-        address: u32,
-    },
-    StoreByte {
-        value:   u8,
-        #[debug("{}", hex(*address))]
-        address: u32,
-    },
     Lwl {
         register: u8,
         #[debug("{}", hex(*address))]
@@ -57,16 +42,6 @@ enum DelaySlot {
         register: u8,
         #[debug("{}", hex(*address))]
         address:  u32,
-    },
-    Swl {
-        value:   u32,
-        #[debug("{}", hex(*address))]
-        address: u32,
-    },
-    Swr {
-        value:   u32,
-        #[debug("{}", hex(*address))]
-        address: u32,
     },
     SetReg {
         reg:   u8,
@@ -112,7 +87,6 @@ impl Interpreter {
 
         let in_delay_slot = self.in_delay_slot;
         let op = self.next_op;
-        tracing::trace!(pc=%hex(op.0), op = %op.1);
         self.next_op = (
             emu.cpu.pc,
             DecodedOp::new(
@@ -121,11 +95,10 @@ impl Interpreter {
             ),
         );
         emu.cpu.pc = emu.cpu.pc.wrapping_add(0x4);
+        tracing::trace!(pc=%hex(op.0), op = %op.1);
         emu.cpu.drain_jump_queue();
 
-        // tracing::info!(?self.delay_queue, "b");
         self.run_delay_slots(emu);
-        // tracing::info!(?self.delay_queue, "a");
         let delay_slot = emu.run_op(self, op.1);
         if in_delay_slot {
             self.in_delay_slot = false;
@@ -155,20 +128,20 @@ impl Interpreter {
         }
 
         #[cfg(test)]
-        if matches!(op.1, DecodedOp::HaltBlock(_)) {
+        if matches!(self.next_op.1, DecodedOp::HaltBlock(_)) {
             return InterpreterResult::Exception;
         }
 
-        InterpreterResult::Exception
-        // InterpreterResult::None
+        // InterpreterResult::Exception
+        InterpreterResult::None
     }
 }
 
 impl Emu {
-    fn set_reg(&mut self, idx: u8, value: u32) {
+    pub(super) fn set_reg(&mut self, idx: u8, value: u32) {
         self.cpu.gpr[idx as usize] = value;
     }
-    fn get_reg(&self, idx: u8) -> u32 {
+    pub(super) fn get_reg(&self, idx: u8) -> u32 {
         self.cpu.gpr[idx as usize]
     }
     fn set_cop(&mut self, cop: u8, idx: u8, value: u32) {
@@ -196,9 +169,6 @@ impl Emu {
         // tracing::info!(delay_slot = ?op);
         match op {
             DelaySlot::Nop => {}
-            DelaySlot::StoreWord { value, address } => self.write(address, value),
-            DelaySlot::StoreHalf { value, address } => self.write(address, value),
-            DelaySlot::StoreByte { value, address } => self.write(address, value),
             DelaySlot::Lwl { register, address } => {
                 let overwrite = self.get_reg(register);
                 let value = self.read32_unaligned_l(address, overwrite);
@@ -208,12 +178,6 @@ impl Emu {
                 let overwrite = self.get_reg(register);
                 let value = self.read32_unaligned_r(address, overwrite);
                 self.set_reg(register, value);
-            }
-            DelaySlot::Swl { value, address } => {
-                self.write32_unaligned_l(address, value);
-            }
-            DelaySlot::Swr { value, address } => {
-                self.write32_unaligned_r(address, value);
             }
             DelaySlot::SetReg { reg, value } => {
                 self.set_reg(reg, value);
@@ -448,27 +412,32 @@ impl Emu {
             DecodedOp::Sb(sb) => {
                 let value = self.get_reg(sb.rt) as u8;
                 let address = self.get_reg(sb.rs).wrapping_add_signed(sb.imm16 as i32);
-                Some(DelaySlot::StoreByte { value, address })
+                self.write(address, value);
+                None
             }
             DecodedOp::Sh(sh) => {
                 let value = self.get_reg(sh.rt) as u16;
                 let address = self.get_reg(sh.rs).wrapping_add_signed(sh.imm16 as i32);
-                Some(DelaySlot::StoreHalf { value, address })
+                self.write(address, value);
+                None
             }
             DecodedOp::Swl(swl) => {
                 let value = self.get_reg(swl.rt);
                 let address = self.get_reg(swl.rs).wrapping_add_signed(swl.imm16 as i32);
-                Some(DelaySlot::Swl { value, address })
+                self.write32_unaligned_l(address, value);
+                None
             }
             DecodedOp::Sw(sw) => {
                 let value = self.get_reg(sw.rt);
                 let address = self.get_reg(sw.rs).wrapping_add_signed(sw.imm16 as i32);
-                Some(DelaySlot::StoreWord { value, address })
+                self.write(address, value);
+                None
             }
             DecodedOp::Swr(swr) => {
                 let value = self.get_reg(swr.rt);
                 let address = self.get_reg(swr.rs).wrapping_add_signed(swr.imm16 as i32);
-                Some(DelaySlot::Swr { value, address })
+                self.write32_unaligned_r(address, value);
+                None
             }
             DecodedOp::Lwcn(lwcn) => {
                 let address = self.get_reg(lwcn.rs).wrapping_add_signed(lwcn.imm16 as i32);
@@ -613,6 +582,8 @@ impl Emu {
     }
 
     fn branch(&mut self, interp: &mut Interpreter, offset: i16) {
+        tracing::info!(pc = %hex(self.cpu.pc));
+        tracing::info!(imm16 = %hex(offset));
         if interp.in_delay_slot {
             return;
         }
@@ -621,6 +592,7 @@ impl Emu {
             .pc
             .wrapping_add_signed((offset as i32) << 2)
             .wrapping_sub(4);
+        tracing::info!(new_pc = %hex(self.cpu.pc));
         interp.in_delay_slot = true;
     }
 
@@ -729,9 +701,9 @@ mod interp_tests {
         use crate::Emu;
         use crate::cpu::interp::{Interpreter, InterpreterResult};
         use crate::cpu::program;
-        use crate::dynarec_v2::PipelineV2;
+
         use assert_hex::*;
-        use pchan_utils::{hex, setup_tracing};
+        use pchan_utils::setup_tracing;
 
         setup_tracing();
         let mut emu = Emu::default();

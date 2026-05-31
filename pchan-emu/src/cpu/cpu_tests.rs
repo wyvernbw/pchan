@@ -322,3 +322,143 @@ fn test_alu_imm<I: Into<i16>>(
 
     Ok(())
 }
+
+#[cfg(test)]
+#[rstest]
+#[case(0, 5, 10)]
+#[case(2, 5, 10)]
+#[case(2, 31, 10)] // really pushing it
+fn test_mtcn(
+    #[values(dynarec(), interp())] mut runner: Runner,
+    #[case] cop: u8,
+    #[case] rd: u8,
+    #[case] rt: u8,
+) -> color_eyre::Result<()> {
+    use crate::Emu;
+    use crate::cpu::program;
+    use pchan_utils::setup_tracing;
+
+    setup_tracing();
+    let mut emu = Emu::default();
+    emu.cpu.gpr[rt as usize] = 69;
+
+    emu.write_many(
+        0x0,
+        &program([mtcn(cop, rt, rd), nop(), nop(), OpCode::HALT]),
+    );
+
+    runner.execute(&mut emu);
+    tracing::info!(?emu.cpu);
+    match cop {
+        0 => assert_eq!(emu.cpu.cop0.reg[rd as usize], 69),
+        2 => assert_eq!(emu.cpu.cop2.reg[rd as usize], 69),
+        _ => panic!("get out"),
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+#[rstest]
+#[case(2, 5, 10)]
+#[case(2, 31, 10)]
+fn test_ctcn(
+    #[values(dynarec(), interp())] mut runner: Runner,
+    #[case] cop: u8,
+    #[case] rd: u8,
+    #[case] rt: u8,
+) -> color_eyre::Result<()> {
+    use crate::Emu;
+    use crate::cpu::program;
+    use pchan_utils::setup_tracing;
+
+    setup_tracing();
+    let mut emu = Emu::default();
+    emu.cpu.gpr[rt as usize] = 69;
+
+    emu.write_many(
+        0x0,
+        &program([ctcn(cop, rt, rd), nop(), nop(), OpCode::HALT]),
+    );
+
+    runner.execute(&mut emu);
+    tracing::info!(?emu.cpu);
+    match cop {
+        2 => assert_eq!(emu.cpu.cop2.reg[rd as usize + 32], 69),
+        _ => panic!("get out"),
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+#[rstest]
+fn test_mtcn_enable_isc(
+    #[values(dynarec(), interp())] mut runner: Runner,
+) -> color_eyre::Result<()> {
+    use crate::Emu;
+    use crate::cpu::program;
+    use pchan_utils::setup_tracing;
+
+    setup_tracing();
+    let mut emu = Emu::default();
+
+    emu.write_many(
+        0x0,
+        &program([lui(9, 0x0001), mtcn(0, 9, 12), nop(), nop(), OpCode::HALT]),
+    );
+
+    runner.execute(&mut emu);
+    tracing::info!(?emu.cpu);
+
+    assert_eq!(emu.cpu.cop0.reg[12], 0x0001_0000);
+    assert!(emu.cpu.isc());
+
+    Ok(())
+}
+
+#[cfg(test)]
+#[rstest]
+fn test_mtcn_enable_irq(
+    #[values(dynarec(), interp())] mut runner: Runner,
+) -> color_eyre::Result<()> {
+    use crate::Emu;
+    use crate::cpu::program;
+    use pchan_utils::{hex, setup_tracing};
+
+    setup_tracing();
+    let mut emu = Emu::default();
+
+    emu.write_many(
+        0x0,
+        &program([
+            addiu(9, 9, 0x0401),
+            mtcn(0, 9, 12),
+            nop(),
+            nop(),
+            OpCode::HALT,
+        ]),
+    );
+
+    runner.execute(&mut emu);
+    tracing::info!(?emu.cpu);
+
+    assert_eq!(emu.cpu.cop0.reg[12], 0x0000_0401);
+    assert!(emu.cpu.cop0.status().iec());
+    assert!(emu.cpu.cop0.status().irq_mask(2));
+
+    emu.raise_irq_exception();
+    tracing::info!(irq_mask = %hex(emu.cpu.cop0.status().irq_mask_combined()));
+    tracing::info!(irq_pending  = %hex(emu.cpu.cop0.cause().irq_pending_combined()));
+    tracing::info!(iec = emu.cpu.cop0.status().iec());
+
+    {
+        let sr = emu.cpu.cop0.status();
+        let cause = emu.cpu.cop0.cause();
+        assert!(cause.irq_pending_combined() & sr.irq_mask_combined() != 0 && sr.iec());
+    }
+
+    emu.run_io();
+
+    Ok(())
+}
