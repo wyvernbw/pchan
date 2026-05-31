@@ -23,6 +23,7 @@
 #![feature(const_destruct)]
 #![feature(arbitrary_self_types)]
 #![feature(allocator_api)]
+#![feature(alloc_slice_into_array)]
 // allow unused variables in tests to supress the setup tracing warnings
 #![cfg_attr(test, allow(unused_variables))]
 
@@ -59,6 +60,7 @@ pub mod gpu;
 #[path = "./io/io.rs"]
 pub mod io;
 pub mod memory;
+pub mod run;
 #[path = "./spu/spu.rs"]
 pub mod spu;
 

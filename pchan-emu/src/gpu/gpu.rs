@@ -1480,7 +1480,7 @@ impl Emu {
 }
 
 impl Display {
-    const NTSC_TOTAL_VCYCLES_PER_LINE: u64 = 3413;
+    pub const NTSC_TOTAL_VCYCLES_PER_LINE: u64 = 3413;
     const NTSC_TOTAL_LINES: u64 = 263;
     const NTSC_ACTIVE_H_START: u64 = 488;
     const NTSC_ACTIVE_H_END: u64 = 3288;

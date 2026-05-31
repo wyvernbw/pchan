@@ -4,10 +4,10 @@ use crate::dynarec_v2::{Dynarec, run_step};
 
 #[derive(Debug)]
 pub struct Runner {
-    interpreter: Interpreter,
-    dynarec:     Option<Box<Dynarec>>,
-    mode:        RunnerMode,
-    config:      RunnerConfig,
+    interpreter:     Interpreter,
+    dynarec:         Option<Box<Dynarec>>,
+    pub(crate) mode: RunnerMode,
+    pub config:      RunnerConfig,
 }
 
 impl Default for Runner {
@@ -36,6 +36,11 @@ pub struct RunnerConfig {
 impl Runner {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn with_config(mut self, config: RunnerConfig) -> Self {
+        self.config = config;
+        self
     }
 
     pub fn execute(&mut self, emu: &mut Emu) {

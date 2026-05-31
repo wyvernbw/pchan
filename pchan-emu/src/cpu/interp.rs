@@ -144,7 +144,7 @@ impl Emu {
     pub(super) fn get_reg(&self, idx: u8) -> u32 {
         self.cpu.gpr[idx as usize]
     }
-    fn set_cop(&mut self, cop: u8, idx: u8, value: u32) {
+    pub(super) fn set_cop(&mut self, cop: u8, idx: u8, value: u32) {
         let idx = idx as usize;
         match cop {
             0 => {
@@ -156,7 +156,7 @@ impl Emu {
             _ => panic!("invalid cop: {cop}"),
         }
     }
-    fn get_cop(&self, cop: u8, idx: u8) -> u32 {
+    pub(super) fn get_cop(&self, cop: u8, idx: u8) -> u32 {
         let idx = idx as usize;
         match cop {
             0 => self.cpu.cop0.reg[idx],
@@ -582,8 +582,6 @@ impl Emu {
     }
 
     fn branch(&mut self, interp: &mut Interpreter, offset: i16) {
-        tracing::info!(pc = %hex(self.cpu.pc));
-        tracing::info!(imm16 = %hex(offset));
         if interp.in_delay_slot {
             return;
         }
@@ -592,7 +590,6 @@ impl Emu {
             .pc
             .wrapping_add_signed((offset as i32) << 2)
             .wrapping_sub(4);
-        tracing::info!(new_pc = %hex(self.cpu.pc));
         interp.in_delay_slot = true;
     }
 

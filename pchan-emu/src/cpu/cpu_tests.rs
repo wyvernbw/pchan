@@ -1,7 +1,8 @@
+#![cfg(test)]
+
 use crate::Emu;
 use crate::cpu::ops::*;
 use crate::cpu::program;
-#[cfg(test)]
 use crate::dynarec_v2::regalloc::Guest;
 use pchan_utils::setup_tracing;
 use rstest::{fixture, rstest};
@@ -187,7 +188,6 @@ pub fn test_la(#[values(dynarec(), interp())] mut runner: Runner) {
     assert_eq!(emu.get_reg(8), 0x0c80)
 }
 
-#[cfg(test)]
 #[rstest]
 #[case::subu_01(subu, (12, 93), (10, 100), (11, 7))]
 #[case::subu_02(subu, (12, 100), (10, 100), (0, 0))]
@@ -261,7 +261,6 @@ fn test_alu_reg(
     Ok(())
 }
 
-#[cfg(test)]
 #[rstest]
 #[case::sll_01(sll, (12, 0b10100), (10, 0b101), 2)]
 #[case::sll_02(sll, (12, 0b101), (10, 0b101), 0)]
@@ -323,7 +322,6 @@ fn test_alu_imm<I: Into<i16>>(
     Ok(())
 }
 
-#[cfg(test)]
 #[rstest]
 #[case(0, 5, 10)]
 #[case(2, 5, 10)]
@@ -358,7 +356,35 @@ fn test_mtcn(
     Ok(())
 }
 
-#[cfg(test)]
+#[rstest]
+#[case(0, 5, 10)]
+#[case(2, 5, 10)]
+#[case(2, 31, 10)] // really pushing it
+fn test_mfcn(
+    #[values(dynarec(), interp())] mut runner: Runner,
+    #[case] cop: u8,
+    #[case] rd: u8,
+    #[case] rt: u8,
+) -> color_eyre::Result<()> {
+    use crate::Emu;
+    use crate::cpu::program;
+    use pchan_utils::setup_tracing;
+
+    setup_tracing();
+    let mut emu = Emu::default();
+    emu.set_cop(cop, rd, 69);
+
+    emu.write_many(
+        0x0,
+        &program([mfcn(cop, rt, rd), nop(), nop(), OpCode::HALT]),
+    );
+
+    runner.execute(&mut emu);
+    tracing::info!(?emu.cpu);
+    assert_eq!(emu.get_reg(rt), 69);
+
+    Ok(())
+}
 #[rstest]
 #[case(2, 5, 10)]
 #[case(2, 31, 10)]
@@ -391,7 +417,6 @@ fn test_ctcn(
     Ok(())
 }
 
-#[cfg(test)]
 #[rstest]
 fn test_mtcn_enable_isc(
     #[values(dynarec(), interp())] mut runner: Runner,
@@ -417,7 +442,6 @@ fn test_mtcn_enable_isc(
     Ok(())
 }
 
-#[cfg(test)]
 #[rstest]
 fn test_mtcn_enable_irq(
     #[values(dynarec(), interp())] mut runner: Runner,
@@ -459,6 +483,137 @@ fn test_mtcn_enable_irq(
     }
 
     emu.run_io();
+
+    Ok(())
+}
+
+#[rstest]
+#[case(mthi, (9, 0xdeadbeef), 0xdeadbeef_00000000)]
+#[case(mtlo, (9, 0xdeadbeef), 0x00000000_deadbeef)]
+pub fn test_mthilo(
+    #[values(dynarec(), interp())] mut runner: Runner,
+    #[case] instr: impl Fn(u8) -> OpCode,
+    #[case] (rs, rs_value): (u8, u32),
+    #[case] expected: u64,
+) -> color_eyre::Result<()> {
+    use crate::Emu;
+    use crate::cpu::program;
+    use pchan_utils::{hex, setup_tracing};
+
+    setup_tracing();
+    let mut emu = Emu::default();
+
+    if rs != 0 {
+        emu.cpu.gpr[rs as usize] = rs_value;
+    }
+    emu.write_many(0x0, &program([instr(rs), nop(), nop(), OpCode::HALT]));
+    runner.execute(&mut emu);
+
+    tracing::info!(?emu.cpu);
+    tracing::info!(hilo = %hex(emu.cpu.hilo));
+    assert_eq!(emu.cpu.hilo, expected);
+    Ok(())
+}
+
+/// Note: After accessing the lo/hi registers, there seems to be a strange rule
+/// that one should not touch the lo/hi registers in the next 2 cycles or so... not
+/// yet understood if/when/how that rule applies...?
+#[cfg(false)]
+#[rstest]
+pub fn test_mthi_mfhi(#[values(dynarec(), interp())] mut runner: Runner) -> color_eyre::Result<()> {
+    use pchan_utils::hex;
+
+    use crate::Emu;
+    use crate::cpu::program;
+
+    setup_tracing();
+    let mut emu = Emu::default();
+
+    emu.write_many(
+        0x0,
+        &program([
+            addiu(9, 0, 69),
+            mthi(9),
+            nop(),
+            mfhi(10),
+            nop(),
+            nop(),
+            OpCode::HALT,
+        ]),
+    );
+    runner.execute(&mut emu);
+
+    tracing::info!(?emu.cpu);
+    tracing::info!(hilo = %hex(emu.cpu.hilo));
+    assert_ne!(emu.cpu.hilo, 0);
+    assert_ne!(emu.cpu.gpr[10], 69);
+    assert_eq!(emu.cpu.gpr[10], 0);
+
+    // correct version:
+
+    let mut emu = Emu::default();
+
+    emu.write_many(
+        0x0,
+        &program([
+            addiu(9, 0, 69),
+            mthi(9),
+            nop(),
+            nop(),
+            mfhi(10),
+            nop(),
+            nop(),
+            OpCode::HALT,
+        ]),
+    );
+    runner.execute(&mut emu);
+
+    tracing::info!(?emu.cpu);
+    tracing::info!(hilo = %hex(emu.cpu.hilo));
+    assert_ne!(emu.cpu.hilo, 0);
+    assert_eq!(emu.cpu.gpr[10], 69);
+
+    Ok(())
+}
+
+#[rstest]
+#[case(0x0, 0x0000_1000)]
+fn test_j(
+    #[values(dynarec(), interp())] mut runner: Runner,
+    #[case] initial_pc: u32,
+    #[case] jump_imm: u32,
+) -> color_eyre::Result<()> {
+    use crate::Emu;
+    use crate::cpu::program;
+    use pchan_utils::setup_tracing;
+
+    setup_tracing();
+    let mut emu = Emu::default();
+    emu.cpu.pc = initial_pc;
+    emu.write_many(
+        initial_pc,
+        &program([
+            j(jump_imm as _),
+            addiu(9, 0, 69),
+            addiu(9, 0, 420),
+            OpCode::HALT,
+            nop(),
+            nop(),
+        ]),
+    );
+    let new_pc = (jump_imm << 2) + (emu.cpu.pc & 0xf0000000);
+    emu.write(new_pc, OpCode::HALT);
+    runner.execute(&mut emu);
+    tracing::info!(?emu.cpu);
+    assert_eq!(emu.cpu.gpr[9], 69);
+    match runner.config.force_mode.unwrap() {
+        RunnerMode::Dynarec => {
+            assert_eq!(emu.cpu.pc, new_pc);
+        }
+        RunnerMode::Interpreter => {
+            assert_eq!(emu.cpu.pc, new_pc + 4);
+        }
+    };
 
     Ok(())
 }

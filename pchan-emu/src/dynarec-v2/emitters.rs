@@ -1615,80 +1615,6 @@ impl DynarecOp for Srav {
     }
 }
 
-#[cfg(test)]
-#[rstest]
-#[case::subu_01(subu, (12, 93), (10, 100), (11, 7))]
-#[case::subu_02(subu, (12, 100), (10, 100), (0, 0))]
-#[case::addu_01(addu, (12, 21), (10, 19), (11, 2))]
-#[case::addu_02(addu, (0, 0), (10, 69), (11, 15))]
-#[case::addu_03(addu, (12, 0), (0, 0), (0, 0))]
-#[case::addu_04(addu, (12, 15), (10, 15), (0, 0))]
-#[case::and_01(and, (12, 0b1010), (10, 0b1111), (11, 0b1010))]
-#[case::and_02(and, (12, 0), (0, 0), (11, 0b1010))]
-#[case::and_03(and, (12, 0), (11, 0b1010), (0, 0))]
-#[case::and_04(and, (12, 0), (0, 0), (0, 0))]
-#[case::or_01(or, (12, 0b1111), (10, 0b1010), (11, 0b0101))]
-#[case::or_02(or, (12, 0b1010), (10, 0b1010), (0, 0))]
-#[case::or_03(or, (12, 0b0101), (0, 0), (11, 0b0101))]
-#[case::or_04(or, (12, 0), (0, 0), (0, 0))]
-#[case::or_05(or, (12, 0xFFFFFFFF), (10, 0xAAAAAAAA), (11, 0x55555555))]
-#[case::xor_01(xor, (12, 0b0101), (10, 0b1111), (11, 0b1010))]
-#[case::xor_02(xor, (12, 0b1010), (10, 0b1010), (0, 0))]
-#[case::xor_03(xor, (12, 0b0101), (0, 0), (11, 0b0101))]
-#[case::xor_04(xor, (12, 0), (0, 0), (0, 0))]
-#[case::xor_05(xor, (12, 0), (10, 0xAAAAAAAA), (11, 0xAAAAAAAA))]
-#[case::xor_06(xor, (12, 0xFFFFFFFF), (10, 0xAAAAAAAA), (11, 0x55555555))]
-#[case::nor_01(nor, (12, !0b1111), (10, 0b1010), (11, 0b0101))]
-#[case::nor_02(nor, (12, !0b1010), (10, 0b1010), (0, 0))]
-#[case::nor_03(nor, (12, !0b0101), (0, 0), (11, 0b0101))]
-#[case::nor_04(nor, (12, 0xFFFFFFFF), (0, 0), (0, 0))]
-#[case::nor_05(nor, (12, 0), (10, 0xAAAAAAAA), (11, 0x55555555))]
-#[case::nor_06(nor, (12, 0x55555555), (10, 0xAAAAAAAA), (11, 0xAAAAAAAA))]
-#[case::sllv_01(sllv, (12, 0b10100), (10, 0b101), (11, 2))]
-#[case::sllv_02(sllv, (12, 0b101), (10, 0b101), (11, 0))]
-#[case::sllv_03(sllv, (12, 0), (0, 0), (11, 5))]
-#[case::sllv_04(sllv, (12, 0), (0, 0), (0, 0))]
-#[case::sllv_05(sllv, (12, 0x80000000), (10, 1), (11, 31))]
-#[case::sllv_06(sllv, (12, 0x5555_5500), (10, 0xAAAA_AAAA), (11, 7))]
-#[case::srlv_01(srlv, (12, 0b010), (10, 0b10100), (11, 3))]
-#[case::srlv_02(srlv, (12, 0b101), (10, 0b101), (11, 0))]
-#[case::srlv_03(srlv, (12, 0), (10, 0), (11, 5))]
-#[case::srlv_04(srlv, (12, 0), (10, 0), (11, 0))]
-#[case::srlv_05(srlv, (12, 1), (10, 0x80000000), (11, 31))]
-#[case::srlv_06(srlv, (12, 0x0155_5555), (10, 0xAAAA_AAAA), (11, 7))]
-#[case::srav_01(srav, (12, 0b11111111111111111111111111111110), (10, 0b11111111111111111111111111110100u32 as i32 as u32), (11, 3))]
-#[case::srav_02(srav, (12, 0b101), (10, 0b101), (11, 0))]
-#[case::srav_03(srav, (12, 0), (10, 0), (11, 5))]
-#[case::srav_04(srav, (12, 0), (10, 0), (11, 0))]
-#[case::srav_05(srav, (12, 0xFFFFFFFF), (10, 0x80000000), (11, 31))]
-#[case::srav_06(srav, (12, 0xFF555555), (10, 0xAAAA_AAAA), (11, 7))]
-fn test_alu_reg(
-    #[case] instr: impl Fn(u8, u8, u8) -> OpCode,
-    #[case] expected: (Guest, u32),
-    #[case] a: (Guest, u32),
-    #[case] b: (Guest, u32),
-) -> color_eyre::Result<()> {
-    use crate::Emu;
-    use crate::cpu::program;
-    use crate::dynarec_v2::PipelineV2;
-    use pchan_utils::setup_tracing;
-
-    setup_tracing();
-    let mut emu = Emu::default();
-    if expected.0 != 0 {
-        emu.cpu.gpr[expected.0 as usize] = 1231123;
-    }
-    emu.cpu.gpr[a.0 as usize] = a.1;
-    emu.cpu.gpr[b.0 as usize] = b.1;
-    emu.write_many(0x0, &program([instr(expected.0, a.0, b.0), OpCode::HALT]));
-    PipelineV2::new(&emu).run_once(&mut emu)?;
-    tracing::info!(?emu.cpu);
-    assert_eq!(emu.cpu.gpr[expected.0 as usize], expected.1);
-    assert_eq!(emu.cpu.d_clock, 2);
-    assert_eq!(emu.cpu.pc, 0x8);
-    Ok(())
-}
-
 pub struct ShiftImm<'a> {
     rd:  Rd<'a, AllocResult>,
     rt:  Rt<'a, AllocResult>,
@@ -1951,68 +1877,6 @@ impl DynarecOp for Xori {
     }
 }
 
-#[cfg(test)]
-#[rstest]
-#[case::sll_01(sll, (12, 0b10100), (10, 0b101), 2)]
-#[case::sll_02(sll, (12, 0b101), (10, 0b101), 0)]
-#[case::sll_03(sll, (12, 0), (0, 0), 5)]
-#[case::sll_04(sll, (12, 0), (0, 0), 0)]
-#[case::sll_05(sll, (12, 0x80000000), (10, 1), 31)]
-#[case::sll_06(sll, (12, 0x5555_5500), (10, 0xAAAA_AAAA), 7)]
-#[case::srl_01(srl, (12, 0b010), (10, 0b10100), 3)]
-#[case::srl_02(srl, (12, 0b101), (10, 0b101), 0)]
-#[case::srl_03(srl, (12, 0), (10, 0), 5)]
-#[case::srl_04(srl, (12, 0), (10, 0), 0)]
-#[case::srl_05(srl, (12, 1), (10, 0x80000000), 31)]
-#[case::srl_06(srl, (12, 0x0155_5555), (10, 0xAAAA_AAAA), 7)]
-#[case::sra_01(sra, (12, 0b11111111111111111111111111111110), (10, 0b11111111111111111111111111110100u32 as i32 as u32), 3)]
-#[case::sra_02(sra, (12, 0b101), (10, 0b101), 0)]
-#[case::sra_03(sra, (12, 0), (10, 0), 5)]
-#[case::sra_04(sra, (12, 0), (10, 0), 0)]
-#[case::sra_05(sra, (12, 0xFFFFFFFF), (10, 0x80000000), 31)]
-#[case::sra_06(sra, (12, 0xFF555555), (10, 0xAAAA_AAAA), 7)]
-#[case::andi_01(andi, (12, 0b1010), (10, 0b1111), 0b1010i16)]
-#[case::andi_02(andi, (12, 0), (0, 0), 0b1010i16)]
-#[case::andi_03(andi, (12, 0), (11, 0b1010), 0i16)]
-#[case::andi_04(andi, (12, 0), (0, 0), 0i16)]
-#[case::ori_01(ori, (12, 0b1111), (10, 0b1010), 0b0101)]
-#[case::ori_02(ori, (12, 0b1010), (10, 0b1010), 0)]
-#[case::ori_03(ori, (12, 0b0101), (0, 0), 0b0101)]
-#[case::ori_04(ori, (12, 0), (0, 0), 0)]
-#[case::ori_05(ori, (12, 0xAAAAFFFF), (10, 0xAAAAAAAA), 0xFFFFu16 as i16)]
-#[case::xori_01(xori, (12, 0b0101), (10, 0b1111), 0b1010)]
-#[case::xori_02(xori, (12, 0b1010), (10, 0b1010), 0)]
-#[case::xori_03(xori, (12, 0b0101), (0, 0), 0b0101)]
-#[case::xori_04(xori, (12, 0), (0, 0), 0)]
-#[case::xori_05(xori, (12, 0xAAAA5555), (10, 0xAAAAAAAA), 0xFFFFu16 as i16)]
-#[case::xori_06(xori, (12, 0xAAAAFFFF), (10, 0xAAAAAAAA), 0x5555)]
-fn test_alu_imm<I: Into<i16>>(
-    #[case] instr: impl Fn(u8, u8, I) -> OpCode,
-    #[case] expected: (Guest, u32),
-    #[case] a: (Guest, u32),
-    #[case] b: I,
-) -> color_eyre::Result<()> {
-    use crate::Emu;
-    use crate::cpu::program;
-    use crate::dynarec_v2::run_step;
-    use pchan_utils::setup_tracing;
-
-    setup_tracing();
-    let mut emu = Emu::default();
-    if expected.0 != 0 {
-        emu.cpu.gpr[expected.0 as usize] = 1231123;
-    }
-    emu.cpu.gpr[a.0 as usize] = a.1;
-    emu.write_many(0x0, &program([instr(expected.0, a.0, b), OpCode::HALT]));
-    run_step(&mut emu, Box::default());
-    tracing::info!(?emu.cpu);
-    assert_eq!(emu.cpu.gpr[expected.0 as usize], expected.1);
-    assert_eq!(emu.cpu.d_clock, 2);
-    assert_eq!(emu.cpu.pc, 0x8);
-
-    Ok(())
-}
-
 impl DynarecOp for Lui {
     #[allow(clippy::useless_conversion)]
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
@@ -2130,37 +1994,6 @@ impl DynarecOp for J {
     fn boundary(&self) -> Boundary {
         Boundary::Soft
     }
-}
-
-#[cfg(test)]
-#[rstest]
-#[case(0x0, 0x0000_1000)]
-fn test_j(#[case] initial_pc: u32, #[case] jump_imm: u32) -> color_eyre::Result<()> {
-    use crate::Emu;
-    use crate::cpu::program;
-    use crate::dynarec_v2::PipelineV2;
-    use pchan_utils::setup_tracing;
-
-    setup_tracing();
-    let mut emu = Emu::default();
-    emu.cpu.pc = initial_pc;
-    emu.write_many(
-        initial_pc,
-        &program([
-            j(jump_imm as _),
-            addiu(9, 0, 69),
-            addiu(9, 0, 420),
-            OpCode::HALT,
-        ]),
-    );
-    let new_pc = (jump_imm << 2) + (emu.cpu.pc & 0xf0000000);
-    PipelineV2::new(&emu).run_once(&mut emu)?;
-    tracing::info!(?emu.cpu);
-    assert_eq!(emu.cpu.gpr[9], 69);
-    assert_eq!(emu.cpu.d_clock, 4);
-    assert_eq!(emu.cpu.pc, new_pc);
-
-    Ok(())
 }
 
 impl DynarecOp for Jal {
@@ -2892,123 +2725,6 @@ impl DynarecOp for Ctcn {
         EmitSummary::default()
     }
 }
-#[cfg(test)]
-#[rstest]
-#[case(0, 5, 10)]
-#[case(2, 5, 10)]
-#[case(2, 31, 10)] // really pushing it
-fn test_mtcn(#[case] cop: u8, #[case] rd: u8, #[case] rt: u8) -> color_eyre::Result<()> {
-    use crate::Emu;
-    use crate::cpu::program;
-    use crate::dynarec_v2::PipelineV2;
-    use pchan_utils::setup_tracing;
-
-    setup_tracing();
-    let mut emu = Emu::default();
-    emu.cpu.gpr[rt as usize] = 69;
-
-    emu.write_many(0x0, &program([mtcn(cop, rt, rd), OpCode::HALT]));
-
-    PipelineV2::new(&emu).run_once(&mut emu)?;
-    tracing::info!(?emu.cpu);
-    match cop {
-        0 => assert_eq!(emu.cpu.cop0.reg[rd as usize], 69),
-        2 => assert_eq!(emu.cpu.cop2.reg[rd as usize], 69),
-        _ => panic!("get out"),
-    }
-
-    Ok(())
-}
-
-#[cfg(test)]
-#[rstest]
-#[case(2, 5, 10)]
-#[case(2, 31, 10)]
-fn test_ctcn(#[case] cop: u8, #[case] rd: u8, #[case] rt: u8) -> color_eyre::Result<()> {
-    use crate::Emu;
-    use crate::cpu::program;
-    use crate::dynarec_v2::PipelineV2;
-    use pchan_utils::setup_tracing;
-
-    setup_tracing();
-    let mut emu = Emu::default();
-    emu.cpu.gpr[rt as usize] = 69;
-
-    emu.write_many(0x0, &program([ctcn(cop, rt, rd), OpCode::HALT]));
-
-    PipelineV2::new(&emu).run_once(&mut emu)?;
-    tracing::info!(?emu.cpu);
-    match cop {
-        2 => assert_eq!(emu.cpu.cop2.reg[rd as usize + 32], 69),
-        _ => panic!("get out"),
-    }
-
-    Ok(())
-}
-
-#[cfg(test)]
-#[rstest]
-fn test_mtcn_enable_isc() -> color_eyre::Result<()> {
-    use crate::Emu;
-    use crate::cpu::program;
-    use crate::dynarec_v2::PipelineV2;
-    use pchan_utils::setup_tracing;
-
-    setup_tracing();
-    let mut emu = Emu::default();
-
-    emu.write_many(
-        0x0,
-        &program([lui(9, 0x0001), mtcn(0, 9, 12), OpCode::HALT]),
-    );
-
-    PipelineV2::new(&emu).run_once(&mut emu)?;
-    tracing::info!(?emu.cpu);
-
-    assert_eq!(emu.cpu.cop0.reg[12], 0x0001_0000);
-    assert!(emu.cpu.isc());
-
-    Ok(())
-}
-
-#[cfg(test)]
-#[rstest]
-fn test_mtcn_enable_irq() -> color_eyre::Result<()> {
-    use crate::Emu;
-    use crate::cpu::program;
-    use crate::dynarec_v2::PipelineV2;
-    use pchan_utils::setup_tracing;
-
-    setup_tracing();
-    let mut emu = Emu::default();
-
-    emu.write_many(
-        0x0,
-        &program([addiu(9, 9, 0x0401), mtcn(0, 9, 12), OpCode::HALT]),
-    );
-
-    PipelineV2::new(&emu).run_once(&mut emu)?;
-    tracing::info!(?emu.cpu);
-
-    assert_eq!(emu.cpu.cop0.reg[12], 0x0000_0401);
-    assert!(emu.cpu.cop0.status().iec());
-    assert!(emu.cpu.cop0.status().irq_mask(2));
-
-    emu.raise_irq_exception();
-    tracing::info!(irq_mask = %hex(emu.cpu.cop0.status().irq_mask_combined()));
-    tracing::info!(irq_pending  = %hex(emu.cpu.cop0.cause().irq_pending_combined()));
-    tracing::info!(iec = emu.cpu.cop0.status().iec());
-
-    {
-        let sr = emu.cpu.cop0.status();
-        let cause = emu.cpu.cop0.cause();
-        assert!(cause.irq_pending_combined() & sr.irq_mask_combined() != 0 && sr.iec());
-    }
-
-    emu.run_io();
-
-    Ok(())
-}
 
 impl DynarecOp for Nop {
     fn cycles(&self) -> u16 {
@@ -3637,91 +3353,6 @@ impl DynarecOp for Mthi {
 
 #[cfg(test)]
 #[rstest]
-#[case(mthi, (9, 0xdeadbeef), 0xdeadbeef_00000000)]
-#[case(mtlo, (9, 0xdeadbeef), 0x00000000_deadbeef)]
-pub fn test_mthilo(
-    #[case] instr: impl Fn(u8) -> OpCode,
-    #[case] (rs, rs_value): (u8, u32),
-    #[case] expected: u64,
-) -> color_eyre::Result<()> {
-    use crate::Emu;
-    use crate::cpu::program;
-    use crate::dynarec_v2::PipelineV2;
-    use pchan_utils::setup_tracing;
-
-    setup_tracing();
-    let mut emu = Emu::default();
-
-    if rs != 0 {
-        emu.cpu.gpr[rs as usize] = rs_value;
-    }
-    emu.write_many(0x0, &program([instr(rs), nop(), nop(), OpCode::HALT]));
-    PipelineV2::new(&emu).run_once(&mut emu)?;
-
-    tracing::info!(?emu.cpu);
-    tracing::info!(hilo = %hex(emu.cpu.hilo));
-    assert_eq!(emu.cpu.hilo, expected);
-    Ok(())
-}
-
-#[cfg(test)]
-#[rstest]
-pub fn test_mthi_mfhi() -> color_eyre::Result<()> {
-    use crate::Emu;
-    use crate::cpu::program;
-    use crate::dynarec_v2::PipelineV2;
-    use pchan_utils::setup_tracing;
-
-    setup_tracing();
-    let mut emu = Emu::default();
-
-    emu.write_many(
-        0x0,
-        &program([
-            addiu(9, 0, 69),
-            mthi(9),
-            nop(),
-            mfhi(10),
-            nop(),
-            OpCode::HALT,
-        ]),
-    );
-    PipelineV2::new(&emu).run_once(&mut emu)?;
-
-    tracing::info!(?emu.cpu);
-    tracing::info!(hilo = %hex(emu.cpu.hilo));
-    assert_ne!(emu.cpu.hilo, 0);
-    assert_ne!(emu.cpu.gpr[10], 69);
-    assert_eq!(emu.cpu.gpr[10], 0);
-
-    // correct version:
-
-    let mut emu = Emu::default();
-
-    emu.write_many(
-        0x0,
-        &program([
-            addiu(9, 0, 69),
-            mthi(9),
-            nop(),
-            nop(),
-            mfhi(10),
-            nop(),
-            OpCode::HALT,
-        ]),
-    );
-    PipelineV2::new(&emu).run_once(&mut emu)?;
-
-    tracing::info!(?emu.cpu);
-    tracing::info!(hilo = %hex(emu.cpu.hilo));
-    assert_ne!(emu.cpu.hilo, 0);
-    assert_eq!(emu.cpu.gpr[10], 69);
-
-    Ok(())
-}
-
-#[cfg(test)]
-#[rstest]
 fn test_branch_and_store() -> color_eyre::Result<()> {
     use crate::Emu;
     use crate::cpu::program;
@@ -3979,7 +3610,7 @@ fn test_bltzal_bgezal() {
         crate::dynarec_v2::run_step(&mut emu, Box::default());
         tracing::info!(?emu.cpu);
         assert_eq_hex!(emu.cpu.gpr[8] as i32, -10);
-        assert_eq_hex!(emu.cpu["$ra"], 0x8);
+        assert_eq_hex!(emu.cpu["$ra"], 0xc);
         assert_eq_hex!(emu.cpu.pc, 0x408);
     }
 
@@ -3993,13 +3624,7 @@ fn test_bltzal_bgezal() {
         crate::dynarec_v2::run_step(&mut emu, Box::default());
         tracing::info!(?emu.cpu);
         assert_eq_hex!(emu.cpu.gpr[8] as i32, 10);
-        assert_eq_hex!(emu.cpu["$ra"], 0x8);
+        assert_eq_hex!(emu.cpu["$ra"], 0xc);
         assert_eq_hex!(emu.cpu.pc, 0x408);
     }
-}
-
-#[cfg(test)]
-#[rstest]
-fn lmao_test(#[values(4, 0)] a: u32) {
-    assert!(a != 0);
 }

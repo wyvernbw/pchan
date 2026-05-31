@@ -6,6 +6,7 @@ use pchan_utils::{default, hex};
 use smallbox::SmallBox;
 use smallvec::SmallVec;
 use std::cell::Cell;
+use std::collections::HashSet;
 use std::ptr::NonNull;
 use std::simd::Simd;
 use std::sync::Arc;
@@ -30,6 +31,12 @@ pub static BLOCKS_COMPILED: AtomicU64 = AtomicU64::new(0);
 pub static BLOCKS_EXECUTED: AtomicU64 = AtomicU64::new(0);
 pub static CACHE_HITS: AtomicU64 = AtomicU64::new(0);
 pub static CACHE_MISSES: AtomicU64 = AtomicU64::new(0);
+
+pub fn cache_hitrate() -> f32 {
+    let hits = CACHE_HITS.load(Ordering::Relaxed) as f32;
+    let misses = CACHE_MISSES.load(Ordering::Relaxed) as f32;
+    hits / (hits + misses)
+}
 
 #[cfg(feature = "fetch-channel")]
 pub mod fetch_map {
@@ -1072,43 +1079,29 @@ fn fetch_and_compile_single_threaded(
 }
 
 const CACHE_LEN: usize = (kb(2048) + kb(512)) >> 2;
-const CACHE_SHIFT: usize = 9;
-const PAGE_COUNT: usize = CACHE_LEN >> CACHE_SHIFT;
-const PAGE_LEN: usize = CACHE_LEN / PAGE_COUNT;
+const PAGE_COUNT: usize = CACHE_LEN / PAGE_LEN;
+const PAGE_LEN: usize = kb(16);
 
 /// # DynarecCache
 ///
 /// maps the entire psx ram and bios losslessly into a a flat, paged, ~320kb buffer
 #[derive(derive_more::Debug, Clone)]
 pub struct DynarecCache {
-    buf: Box<[CachePage]>,
+    blocks:   Box<[Option<DynarecBlock>; PAGE_LEN * PAGE_COUNT]>,
+    metadata: [CachePage; PAGE_COUNT],
 }
 
 #[derive(derive_more::Debug, Clone)]
 struct CachePage {
-    page:    [Option<DynarecBlock>; PAGE_LEN],
-    cleared: bool,
-}
-
-impl std::ops::Index<usize> for CachePage {
-    type Output = Option<DynarecBlock>;
-
-    fn index(&self, index: usize) -> &Self::Output {
-        &self.page[index]
-    }
-}
-
-impl std::ops::IndexMut<usize> for CachePage {
-    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
-        &mut self.page[index]
-    }
+    inserted: HashSet<usize>,
+    cleared:  bool,
 }
 
 impl Default for CachePage {
     fn default() -> Self {
         Self {
-            page:    [const { None }; PAGE_LEN],
-            cleared: true,
+            cleared:  true,
+            inserted: HashSet::new(),
         }
     }
 }
@@ -1116,43 +1109,53 @@ impl Default for CachePage {
 impl Default for DynarecCache {
     fn default() -> Self {
         Self {
-            buf: vec![CachePage::default(); PAGE_COUNT].into_boxed_slice(),
+            metadata: core::array::from_fn(|_| CachePage::default()),
+            blocks:   vec![None; PAGE_LEN * PAGE_COUNT].into_array().unwrap(),
         }
     }
 }
 
 impl DynarecCache {
     const PROB: Option<usize> = Self::map_addr_to_idx(0x8004f434);
+    const RAM_END: usize = Self::map_addr_to_idx(0x200000).unwrap();
+    const BIOS_START: usize = Self::map_addr_to_idx(0xbfc0_0000).unwrap();
+
+    fn block_mut(&mut self, page_idx: usize, element_idx: usize) -> &mut Option<DynarecBlock> {
+        &mut self.blocks[page_idx * PAGE_LEN + element_idx]
+    }
+    fn block(&self, page_idx: usize, element_idx: usize) -> &Option<DynarecBlock> {
+        &self.blocks[page_idx * PAGE_LEN + element_idx]
+    }
+
     const fn map_addr_to_idx(address: u32) -> Option<usize> {
         match address & 0x1fff_ffff {
             // align by 4
             // ram
-            addr @ 0..0x200000 => Some((addr as usize) >> 2),
+            addr @ 0..0x200000 => Some(((addr as usize) >> 2) / PAGE_LEN),
             // bios
-            addr @ 0x1fc00000.. => Some((addr as usize - 0x1fc00000 + kb(2048)) >> 2),
+            addr @ 0x1fc00000.. => Some(((addr as usize - 0x1fc00000 + kb(2048)) >> 2) / PAGE_LEN),
             _ => None,
         }
     }
     const fn map_addr(address: u32) -> Option<(usize, usize)> {
-        let idx = Self::map_addr_to_idx(address)?;
-        let page_idx = idx >> CACHE_SHIFT;
-        let page_start = (page_idx) << CACHE_SHIFT;
-        let element_idx = idx - page_start;
-        Some((page_idx, element_idx))
+        let page_idx = Self::map_addr_to_idx(address)?;
+        let element_idx = (address & 0xffff) >> 2;
+        Some((page_idx, element_idx as usize))
     }
     pub fn remove(&mut self, at: u32) -> Option<DynarecBlock> {
         Self::map_addr(at)
-            .map(|(page_idx, element_idx)| &mut self.buf[page_idx][element_idx])
+            .map(|(page_idx, element_idx)| self.block_mut(page_idx, element_idx))
             .and_then(|block| block.take())
     }
     pub fn get(&self, at: u32) -> Option<&DynarecBlock> {
         Self::map_addr(at)
-            .and_then(|(page_idx, element_idx)| self.buf[page_idx][element_idx].as_ref())
+            .and_then(|(page_idx, element_idx)| self.block(page_idx, element_idx).as_ref())
     }
     pub fn insert(&mut self, at: u32, value: DynarecBlock) -> bool {
         if let Some((page_idx, element_idx)) = Self::map_addr(at) {
-            self.buf[page_idx][element_idx] = Some(value);
-            self.buf[page_idx].cleared = false;
+            *self.block_mut(page_idx, element_idx) = Some(value);
+            self.metadata[page_idx].cleared = false;
+            self.metadata[page_idx].inserted.insert(element_idx);
             true
         } else {
             false
@@ -1160,12 +1163,15 @@ impl DynarecCache {
     }
     pub fn invalidate(&mut self, at: u32) {
         if let Some((page_idx, _)) = Self::map_addr(at) {
-            for page_idx in page_idx..page_idx + 1 {
-                if self.buf[page_idx].cleared {
-                    return;
-                }
-                self.buf[page_idx] = CachePage::default();
+            if self.metadata[page_idx].cleared {
+                return;
             }
+            let page_blocks = &self.metadata[page_idx].inserted;
+            for block in page_blocks {
+                self.blocks[page_idx * PAGE_LEN + *block] = None;
+            }
+            self.metadata[page_idx].cleared = true;
+            self.metadata[page_idx].inserted.clear();
         }
     }
     #[unsafe(no_mangle)]
