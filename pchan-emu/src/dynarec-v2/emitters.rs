@@ -250,8 +250,7 @@ impl DecodedOp {
                 (0x0, _, _, 0xA) => Self::illegal(),
                 (0x0, _, _, 0xB) => Self::illegal(),
                 (0x0, _, _, 0xC) => Self::Syscall(Syscall),
-                // (0x0, _, _, 0xD) => todo!("brk"),
-                (0x0, _, _, 0xD) => Self::illegal(), // TODO: brk
+                (0x0, _, _, 0xD) => Self::Nop(Nop), // brk
                 (0x0, _, _, 0xE) => Self::illegal(),
                 (0x0, _, _, 0xF) => Self::illegal(),
                 (0x0, _, _, 0x10) => Self::Mfhi(Mfhi::new(rd)),
@@ -2634,7 +2633,7 @@ fn emit_branch_zero(
     let branch_dest = (ctx.pc + 0x4).wrapping_add_signed(ext::sign(imm) << 2);
     ctx.schedule_in(1, move |mut ctx| {
         if link {
-            let return_dest = ctx.pc + 0x4;
+            let return_dest = ctx.pc + 0x8;
             let ra = ctx.dynarec.alloc_reg(RA);
 
             #[cfg(target_arch = "aarch64")]
@@ -3258,12 +3257,19 @@ impl DynarecOp for Div {
     #[allow(clippy::useless_conversion)]
     fn emit<'a>(&self, ctx: EmitCtx<'a>) -> EmitSummary {
         match (self.rs, self.rt) {
-            (0, _) => {
+            (_, 0) => {
                 let rt = ctx.dynarec.emit_load_reg(self.rt);
                 #[cfg(target_arch = "aarch64")]
                 dynasm!(
                     ctx.dynarec.asm
                     ; stp wzr, W(*rt), [x0, Emu::HILO_OFFSET as _]
+                );
+            }
+            (0, _) => {
+                #[cfg(target_arch = "aarch64")]
+                dynasm!(
+                    ctx.dynarec.asm
+                    ; str xzr, [x0, Emu::HILO_OFFSET as _]
                 );
             }
             (_, _) => {
@@ -3418,7 +3424,7 @@ impl DynarecOp for Mult {
 #[cfg(test)]
 #[rstest]
 #[case::div(div, (8, 10), (9, 2), 0x00000000_00000005)]
-#[case::div(div, (0, 0), (8, 3), 0x00000003_00000000)]
+#[case::div(div, (0, 0), (8, 3), 0x00000000_00000000)]
 #[case::div(div, (8, 2), (9, 0), 0x00000002_ffffffff)]
 #[case::div(div, (8, -2i32 as u32), (9, 0), 0xfffffffe_00000001)]
 #[case::div(div, (8, -10i32 as u32), (9, 2), 0x00000000_fffffffb)]
@@ -3990,4 +3996,10 @@ fn test_bltzal_bgezal() {
         assert_eq_hex!(emu.cpu["$ra"], 0x8);
         assert_eq_hex!(emu.cpu.pc, 0x408);
     }
+}
+
+#[cfg(test)]
+#[rstest]
+fn lmao_test(#[values(4, 0)] a: u32) {
+    assert!(a != 0);
 }
