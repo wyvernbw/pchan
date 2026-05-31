@@ -116,13 +116,12 @@ impl Interpreter {
 
         let d_clock = op.1.cycles() as u64;
         emu.cpu.d_clock += d_clock as u32;
-        if emu.cpu.d_clock > 100 {
-            emu.run_io();
-            emu.cpu.d_clock = 0;
-        }
+        emu.run_io();
         if emu.cpu.d_clock as u64 > gpu::Display::NTSC_TOTAL_VCYCLES_PER_LINE {
+            emu.cpu.d_clock = 0;
             return InterpreterResult::Hblank;
         }
+        emu.cpu.d_clock = 0;
         if emu.gpu.vblank_signal {
             return InterpreterResult::Vblank;
         }
@@ -226,7 +225,7 @@ impl Emu {
                 None
             }
             DecodedOp::Jalr(jalr) => {
-                self.link_return_in(jalr.rd);
+                self.link_return_in(interp, jalr.rd);
                 self.jump(interp, self.get_reg(jalr.rs));
                 None
             }
@@ -287,7 +286,7 @@ impl Emu {
                 let rs = self.get_reg(divu.rs);
                 let rt = self.get_reg(divu.rt);
                 let (hi, lo) = match (rs, rt) {
-                    (0.., 0) => (rs, u32::MAX),
+                    (_, 0) => (rs, u32::MAX),
                     _ => (rs % rt, rs / rt),
                 };
                 let hi = hi as u64;
@@ -338,14 +337,14 @@ impl Emu {
                 None
             }
             DecodedOp::Bltzal(bltzal) => {
-                self.link_return();
+                self.link_return(interp);
                 if (self.get_reg(bltzal.rs) as i32) < 0 {
                     self.branch(interp, bltzal.imm16);
                 }
                 None
             }
             DecodedOp::Bgezal(bgezal) => {
-                self.link_return();
+                self.link_return(interp);
                 if (self.get_reg(bgezal.rs) as i32) >= 0 {
                     self.branch(interp, bgezal.imm16);
                 }
@@ -356,7 +355,7 @@ impl Emu {
                 None
             }
             DecodedOp::Jal(jal) => {
-                self.link_return();
+                self.link_return(interp);
                 self.jump(interp, (self.cpu.pc & 0xf000_0000) + (jal.imm26 << 2));
                 None
             }
@@ -564,8 +563,6 @@ impl Emu {
             DecodedOp::Lw(lw) => {
                 let address = self.get_reg(lw.rs).wrapping_add_signed(lw.imm16 as i32);
                 let value = self.read::<u32>(address);
-                // tracing::info!("${}={}", reg_str(lw.rs), hex(self.get_reg(lw.rs)));
-                // tracing::info!("{}(${})={}", hex(lw.imm16), reg_str(lw.rs), address);
                 Some(DelaySlot::SetReg { value, reg: lw.rt })
             }
         };
@@ -574,17 +571,11 @@ impl Emu {
     }
 
     fn jump(&mut self, interp: &mut Interpreter, addr: u32) {
-        if interp.in_delay_slot {
-            return;
-        }
         self.cpu.pc = addr;
         interp.in_delay_slot = true;
     }
 
     fn branch(&mut self, interp: &mut Interpreter, offset: i16) {
-        if interp.in_delay_slot {
-            return;
-        }
         self.cpu.pc = self
             .cpu
             .pc
@@ -593,11 +584,11 @@ impl Emu {
         interp.in_delay_slot = true;
     }
 
-    fn link_return(&mut self) {
-        self.link_return_in(RA);
+    fn link_return(&mut self, interp: &mut Interpreter) {
+        self.link_return_in(interp, RA);
     }
 
-    fn link_return_in(&mut self, reg: u8) {
+    fn link_return_in(&mut self, interp: &mut Interpreter, reg: u8) {
         self.set_reg(reg, self.cpu.pc);
     }
 }
@@ -625,6 +616,7 @@ mod interp_tests {
                 nop(),
                 lw(9, 0, 0x100),
                 nop(),
+                nop(),
                 OpCode::HALT,
             ]),
         );
@@ -643,11 +635,12 @@ mod interp_tests {
                 sw(8, 0, 0x100),
                 lw(9, 0, 0x100),
                 nop(),
+                nop(),
                 OpCode::HALT,
             ]),
         );
         runner.execute(&mut emu);
-        assert_eq!(emu.get_reg(9), 0)
+        assert_eq!(emu.get_reg(9), 69)
     }
     #[rstest]
     fn load_delay_03() {
@@ -667,6 +660,7 @@ mod interp_tests {
                 lw(9, 0, 0x100),
                 nop(),
                 lw(9, 9, 0x100),
+                nop(),
                 nop(),
                 OpCode::HALT,
             ]),
@@ -715,7 +709,6 @@ mod interp_tests {
         while let InterpreterResult::None = interp.run_instruction(&mut emu) {}
 
         assert_eq_hex!(emu.cpu.hilo, expected);
-        assert_eq_hex!(emu.cpu.pc, 12);
         Ok(())
     }
 

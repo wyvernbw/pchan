@@ -256,7 +256,6 @@ fn test_alu_reg(
     runner.execute(&mut emu);
     tracing::info!(?emu.cpu);
     assert_eq!(emu.cpu.gpr[expected.0 as usize], expected.1);
-    assert_eq!(emu.cpu.d_clock, 2);
     assert_eq!(emu.cpu.pc, 0x8);
     Ok(())
 }
@@ -316,7 +315,6 @@ fn test_alu_imm<I: Into<i16>>(
     runner.execute(&mut emu);
     tracing::info!(?emu.cpu);
     assert_eq!(emu.cpu.gpr[expected.0 as usize], expected.1);
-    assert_eq!(emu.cpu.d_clock, 2);
     assert_eq!(emu.cpu.pc, 0x8);
 
     Ok(())
@@ -616,4 +614,177 @@ fn test_j(
     };
 
     Ok(())
+}
+
+#[rstest]
+fn test_branch_and_store(
+    #[values(dynarec(), interp())] mut runner: Runner,
+) -> color_eyre::Result<()> {
+    use crate::Emu;
+    use crate::cpu::program;
+    use assert_hex::*;
+    use pchan_utils::setup_tracing;
+
+    setup_tracing();
+    let mut emu = Emu::default();
+
+    emu.write_many(
+        0x0,
+        &program([
+            addiu(7, 7, 0x200),
+            addiu(8, 8, 0x12),
+            beq(9, 0, 0x2),
+            sw(8, 7, 0),
+            nop(),
+            nop(),
+            OpCode::HALT,
+        ]),
+    );
+
+    runner.execute(&mut emu);
+
+    assert_eq_hex!(emu.read::<u32>(0x200), 0x12);
+
+    Ok(())
+}
+
+#[rstest]
+fn test_0x8004f454_move_in_jump_delay(
+    #[values(dynarec(), interp())] mut runner: Runner,
+) -> color_eyre::Result<()> {
+    use crate::cpu::program;
+    use crate::{Emu, cpu};
+    use assert_hex::*;
+    use pchan_utils::setup_tracing;
+
+    setup_tracing();
+    let mut emu = Emu::default();
+
+    emu.cpu.gpr[cpu::SP as usize] = 0x801ffd50;
+    emu.cpu.gpr[4] = 0x12;
+    emu.cpu.pc = 0x4;
+    emu.write_many(
+        0x0,
+        &program([
+            OpCode::HALT,
+            addiu(cpu::SP, cpu::SP, 0x4),
+            sw(16, cpu::SP, 0x0018),
+            addu(16, 0, 4),
+            sw(cpu::RA, cpu::SP, 0x001c),
+            addiu(3, 16, 0x001c),
+            addu(4, 3, 0),
+            sw(3, cpu::SP, 0x0024),
+            jal(0x0),
+            addu(5, 0, 16),
+        ]),
+    );
+
+    runner.execute(&mut emu);
+
+    assert_eq_hex!(emu.cpu.gpr[5], 0x12);
+
+    Ok(())
+}
+
+#[rstest]
+fn test_weird_load_01(#[values(dynarec(), interp())] mut runner: Runner) -> color_eyre::Result<()> {
+    use crate::Emu;
+    use crate::cpu::program;
+    use assert_hex::*;
+    use pchan_utils::setup_tracing;
+
+    setup_tracing();
+    let mut emu = Emu::default();
+    emu.cpu.gpr[10] = 0xf;
+    emu.cpu.gpr[11] = 0x801ffed0;
+    emu.write::<u32>(0x801ffcd8, 0x0d);
+    emu.write::<u32>(0x801ffcd9, 0x0);
+    emu.write::<u32>(0x801ffcda, 0x0);
+    emu.write::<u32>(0x801ffcdb, 0x0);
+    // 0x801ffc78 + 0x62
+    emu.write_many(
+        0x0,
+        &program([
+            lui(11, 0x801f_u16 as i16),
+            ori(11, 11, 0xfc78_u16 as i16),
+            lh(10, 11, 0x62),
+            nop(),
+            nop(),
+            OpCode::HALT,
+        ]),
+    );
+
+    runner.execute(&mut emu);
+
+    tracing::info!("finished running");
+    tracing::info!(?emu.cpu);
+
+    assert_eq_hex!(emu.cpu.gpr[10], 0x0000);
+
+    tracing::info!("returning from test...");
+    Ok(())
+}
+
+#[rstest]
+#[case(0, 5, 10)]
+#[case(2, 5, 10)]
+#[case(2, 31, 10)]
+fn test_lwcn(
+    #[values(dynarec(), interp())] mut runner: Runner,
+    #[case] cop: u8,
+    #[case] rt: u8,
+    #[case] rs: u8,
+) -> color_eyre::Result<()> {
+    use crate::Emu;
+    use crate::cpu::program;
+    use pchan_utils::setup_tracing;
+
+    setup_tracing();
+    let mut emu = Emu::default();
+    emu.cpu.gpr[rs as usize] = 0x100;
+    emu.write(0x100, 0xcafebabe_u32);
+
+    emu.write_many(
+        0x0,
+        &program([lwcn(cop, rt, rs, 0x0), nop(), nop(), OpCode::HALT]),
+    );
+
+    runner.execute(&mut emu);
+    tracing::info!(?emu.cpu);
+    assert_eq!(emu.get_cop(cop, rt), 0xcafebabe);
+
+    Ok(())
+}
+
+// FIXME: on interpreter, consecutive branches are additive ;-;
+#[rstest]
+fn test_branch_in_branch_delay_slot(#[values(dynarec(), interp())] mut runner: Runner) {
+    use crate::cpu::program;
+    use pchan_utils::setup_tracing;
+
+    setup_tracing();
+    let mut emu = Emu::default();
+    emu.cpu.pc = 0x4;
+    emu.write_many(
+        0x0,
+        &program([OpCode::HALT, nop(), beq(0, 0, -3), beq(0, 0, 10)]),
+    );
+    emu.write(56, OpCode::HALT);
+
+    runner.execute(&mut emu);
+    tracing::info!(?emu.cpu);
+    assert_eq!(emu.cpu.pc, 56);
+
+    let mut emu = Emu::default();
+    emu.cpu.pc = 0x4;
+    emu.write_many(
+        0x0,
+        &program([OpCode::HALT, nop(), beq(0, 0, -3), jal(0x100)]),
+    );
+    emu.write(0x100 << 2, OpCode::HALT);
+
+    runner.execute(&mut emu);
+    tracing::info!(?emu.cpu);
+    assert_eq!(emu.cpu.pc, 0x100 << 2);
+    assert_ne!(emu.cpu["$ra"], 0x0, "should have saved $ra");
 }
