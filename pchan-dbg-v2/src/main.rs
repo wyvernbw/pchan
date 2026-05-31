@@ -10,6 +10,7 @@ pub mod lipgloss_colors;
 pub mod widgets;
 
 use arbitrary_int::prelude::*;
+use pchan_emu::run::Runner;
 use pchan_input::Input;
 use std::collections::VecDeque;
 use std::fs;
@@ -29,7 +30,7 @@ use pchan_emu::Emu;
 use pchan_emu::cpu::reg_str;
 use pchan_emu::debug::{Breakpoint, BreakpointKind};
 use pchan_emu::dynarec_v2::emitters::{DecodedOp, DynarecOp};
-use pchan_emu::dynarec_v2::{Dynarec, DynarecFunction, run_step};
+use pchan_emu::dynarec_v2::{Dynarec, DynarecFunction, cache_hitrate, run_step};
 use pchan_emu::gpu::Rgb5;
 use pchan_gpu::Renderer;
 use pchan_utils::{InitTracingArgs, hex, hex_pref};
@@ -179,7 +180,7 @@ async fn run_app(env: &EnvVars) -> Result<()> {
     state.gpu.clone().start();
 
     run(|term| {
-        // let pipe = PipelineV2::new(&state.emu);
+        let mut runner = Runner::new();
         let mut frame_time_sample_time = Duration::ZERO;
         let mut frame_time_samples = VecDeque::with_capacity(32);
         let mut frame_time_sum = 0u128;
@@ -192,7 +193,8 @@ async fn run_app(env: &EnvVars) -> Result<()> {
             }
 
             if tui_state.emu_running || tui_state.emu_run_once {
-                state.dynarec = run_step(&mut state.emu, state.dynarec);
+                // state.dynarec = run_step(&mut state.emu, state.dynarec);
+                runner.execute(&mut state.emu);
                 tui_state.mips_cursor = state.emu.cpu.pc;
                 tui_state.exec_history.push_back(state.emu.cpu.pc);
                 if tui_state.exec_history.len() > 100 {
@@ -632,7 +634,7 @@ fn handle_event(state: &mut AppState, tui_state: &mut TuiState, ev: &event::Even
                                             .emu
                                             .dbg
                                             .breakpoints
-                                            .insert(breakpoint.address, breakpoint);
+                                            .insert(breakpoint.address & 0x1fff_ffff, breakpoint);
                                     }
                                     Err(err) => {
                                         tui_state.add_breakpoint_pane.error = Some(err);

@@ -42,7 +42,7 @@ impl BreakpointKind {
 
 impl DebuggerState {
     pub fn break_on(&mut self, addr: u32, kind: BreakpointKind) {
-        if let Some(brk) = self.breakpoints.get(&addr) {
+        if let Some(brk) = self.breakpoints.get(&(addr & 0x1fff_ffff)) {
             if !brk.enabled {
                 return;
             }

@@ -10,6 +10,7 @@ use crate::cpu::exceptions::CauseRegister;
 use crate::cpu::ops::OpCode;
 use crate::io::irq::IrqState;
 
+pub mod interp;
 pub mod ops;
 
 #[derive(Default, derive_more::Debug, Clone, Hash)]
