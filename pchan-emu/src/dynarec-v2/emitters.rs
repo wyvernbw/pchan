@@ -1,5 +1,5 @@
 use crate::cpu::*;
-use crate::dynarec_v2::{DynEmitter, DynarecCache, Guest};
+use crate::dynarec_v2::{DynEmitter, Guest};
 use crate::{Emu, cpu};
 use std::num::NonZeroU8;
 
@@ -26,7 +26,6 @@ use super::ScheduledEmitter;
 #[derive(Debug)]
 pub struct EmitCtx<'a> {
     pub dynarec:        &'a mut Dynarec,
-    pub cache:          &'a DynarecCache,
     pub pc:             u32,
     pub d_clock:        u32,
     pub delay_slot:     bool,
@@ -53,7 +52,6 @@ impl<'a> EmitCtx<'a> {
         while let Some(emitter) = self.dynarec.scheduler.queue.pop() {
             emitter.emitter.call((EmitCtx {
                 dynarec:        self.dynarec,
-                cache:          self.cache,
                 pc:             emitter.schedule,
                 d_clock:        self.d_clock,
                 delay_slot:     self.delay_slot,

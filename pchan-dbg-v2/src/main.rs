@@ -10,7 +10,7 @@ pub mod lipgloss_colors;
 pub mod widgets;
 
 use arbitrary_int::prelude::*;
-use pchan_emu::run::Runner;
+use pchan_emu::run::{Runner, RunnerConfig, RunnerMode};
 use pchan_input::Input;
 use std::collections::VecDeque;
 use std::fs;
@@ -180,7 +180,9 @@ async fn run_app(env: &EnvVars) -> Result<()> {
     state.gpu.clone().start();
 
     run(|term| {
-        let mut runner = Runner::new();
+        let mut runner = Runner::new().with_config(RunnerConfig {
+            force_mode: Some(RunnerMode::Dynarec),
+        });
         let mut frame_time_sample_time = Duration::ZERO;
         let mut frame_time_samples = VecDeque::with_capacity(32);
         let mut frame_time_sum = 0u128;
