@@ -496,6 +496,7 @@ impl Emu {
             }
             0x08 => {
                 let cmd = DisplayModeCmd::new_with_raw_value(value.raw_value);
+                tracing::debug!(pc = %hex(self.cpu.pc), cmd=%hex(cmd), "GP1(08h) display_mode = {cmd:#?}");
                 let gpustat = &mut self.gpu_mut().gpustat;
                 gpustat.set_h_resolution_1(cmd.hres_1());
                 gpustat.set_v_resolution(cmd.vres());
@@ -1262,7 +1263,7 @@ pub struct Gp0TexWindowCmd {
 /// 7     Flip screen horizontally    (0=Off, 1=On, v1 only)       ;GPUSTAT.14
 /// 8-23  Not used (zero)
 ///
-#[bitfield(u32)]
+#[bitfield(u32, debug)]
 pub struct DisplayModeCmd {
     #[bits(0..=1, rw)]
     hres_1:              HRes1,
@@ -1281,6 +1282,7 @@ pub struct DisplayModeCmd {
 }
 
 #[bitenum(u2, exhaustive = true)]
+#[derive(Debug)]
 pub enum HRes1 {
     Res256,
     Res320,
@@ -1289,18 +1291,21 @@ pub enum HRes1 {
 }
 
 #[bitenum(u1, exhaustive = true)]
+#[derive(Debug)]
 pub enum HRes2 {
     Standard,
     Res368,
 }
 
 #[bitenum(u1, exhaustive = true)]
+#[derive(Debug)]
 pub enum VRes {
     Res240,
     Res480,
 }
 
 #[bitenum(u1, exhaustive = true)]
+#[derive(Debug)]
 pub enum DisplayColorDepth {
     Depth15Bit,
     Depth24Bit,

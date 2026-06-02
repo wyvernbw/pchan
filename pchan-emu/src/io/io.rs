@@ -48,7 +48,7 @@ impl Emu {
         while d_clock > 0 {
             self.timers_advance_by_cpu(d_clock.min(u16::MAX as u64) as u16);
             self.run_timer_pipeline();
-            d_clock = d_clock.saturating_sub(u64::MAX);
+            d_clock = d_clock.saturating_sub(u16::MAX as u64);
         }
 
         self.run_io_kernel_functions();

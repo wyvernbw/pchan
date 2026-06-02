@@ -2,6 +2,7 @@ use std::collections::VecDeque;
 use std::fs;
 use std::io::{BufReader, Read, Seek};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use heapless::Deque;
 use smallvec::{SmallVec, smallvec};
@@ -180,8 +181,8 @@ pub struct InMemoryDiskReader {
     cursor: CdromCursor,
 }
 
-trait DiscFile: Read + Seek {}
-impl<T> DiscFile for T where T: Read + Seek {}
+trait DiscFile: Read + Seek + Send + Sync {}
+impl<T> DiscFile for T where T: Read + Seek + Send + Sync {}
 
 #[derive(derive_more::Debug)]
 pub struct StreamedDiskReader {
