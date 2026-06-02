@@ -756,8 +756,9 @@ fn test_lwcn(
     Ok(())
 }
 
-// FIXME: on interpreter, consecutive branches are additive ;-;
+// DONE: on interpreter, consecutive branches are additive ;-;
 #[rstest]
+// #[cfg(false)]
 fn test_branch_in_branch_delay_slot(#[values(dynarec(), interp())] mut runner: Runner) {
     use crate::cpu::program;
     use pchan_utils::setup_tracing;
@@ -787,4 +788,205 @@ fn test_branch_in_branch_delay_slot(#[values(dynarec(), interp())] mut runner: R
     tracing::info!(?emu.cpu);
     assert_eq!(emu.cpu.pc, 0x100 << 2);
     assert_ne!(emu.cpu["$ra"], 0x0, "should have saved $ra");
+}
+
+mod test_unaligned_load_stores {
+    //! Tests for the `lwl`, `lwr`, `swl` and `swr` instructions.
+    //!
+    //! The tests assume the following memory setup:
+    //! - `[0x0($sp)] = 0x0`
+    //! - `[0x1($sp)] = 0x1`
+    //! - `[0x2($sp)] = 0x2`
+    //! - etc.
+    //!
+    //! # Load tests
+    //!
+    //! Load tests will be of the form:
+    //!
+    //! ```asm
+    //! lwl $t1,imm($sp)
+    //! lwr $t2,imm($sp)
+    //! ```
+
+    use rstest::rstest;
+
+    use crate::cpu::cpu_tests::{dynarec, interp};
+    use crate::cpu::ops::{OpCode, lui, lwl, lwr, nop, ori, swl, swr};
+    use crate::cpu::{SP, program};
+    use crate::run::Runner;
+
+    const fn load_par_program_one_imm(imm: i16) -> [u32; 4] {
+        program([lwl(9, SP, imm), lwr(10, SP, imm), nop(), nop()])
+    }
+
+    const fn load_seq_program_one_imm(imm: i16) -> [u32; 4] {
+        program([lwl(9, SP, imm), lwr(9, SP, imm), nop(), nop()])
+    }
+
+    const fn load_seq_two_imm(a: i16, b: i16) -> [u32; 4] {
+        program([lwl(9, SP, a), lwr(9, SP, b), nop(), nop()])
+    }
+
+    #[rstest]
+    #[case(load_par_program_one_imm(0x0), 0x00ff_ffff, 0x0302_0100)]
+    #[case(load_par_program_one_imm(0x1), 0x0100_ffff, 0xff03_0201)]
+    #[case(load_par_program_one_imm(0x2), 0x0201_00ff, 0xffff_0302)]
+    #[case(load_par_program_one_imm(0x3), 0x0302_0100, 0xffff_ff03)]
+    #[case(load_par_program_one_imm(0x4), 0x04ff_ffff, 0x0706_0504)]
+    fn test_par_lwl_lwr<const N: usize>(
+        #[values(dynarec(), interp())] mut runner: Runner,
+        #[case] prog: [u32; N],
+        #[case] t1: u32,
+        #[case] t2: u32,
+    ) -> color_eyre::Result<()> {
+        use crate::Emu;
+        use assert_hex::assert_eq_hex;
+        use pchan_utils::setup_tracing;
+
+        setup_tracing();
+        let mut emu = Emu::default();
+        emu.cpu["$sp"] = 0x8000_00f0;
+        emu.cpu.gpr[9] = 0xffff_ffff;
+        emu.cpu.gpr[10] = 0xffff_ffff;
+        for i in 0x0..0x10 {
+            emu.write(emu.cpu["$sp"] + i, i);
+        }
+        let prog = [prog.as_slice(), [OpCode::HALT.raw_value()].as_slice()].concat();
+        emu.write_many(0x0, &prog);
+
+        runner.execute(&mut emu);
+
+        tracing::info!("finished running");
+        tracing::info!(?emu.cpu);
+
+        assert_eq_hex!(emu.cpu.gpr[9], t1);
+        assert_eq_hex!(emu.cpu.gpr[10], t2);
+
+        Ok(())
+    }
+
+    #[rstest]
+    #[case(load_seq_program_one_imm(0x0), 0x0302_0100)]
+    #[case(load_seq_program_one_imm(0x1), 0x0103_0201)]
+    #[case(load_seq_program_one_imm(0x2), 0x0201_0302)]
+    #[case(load_seq_program_one_imm(0x3), 0x0302_0103)]
+    #[case(load_seq_program_one_imm(0x4), 0x0706_0504)]
+    // ulw
+    #[case(load_seq_two_imm(0x3, 0x0), 0x0302_0100)]
+    #[case(load_seq_two_imm(0x4, 0x1), 0x0403_0201)]
+    #[case(load_seq_two_imm(0x5, 0x2), 0x0504_0302)]
+    #[case(load_seq_two_imm(0x6, 0x3), 0x0605_0403)]
+    fn test_seq_lwl_lwr<const N: usize>(
+        #[values(dynarec(), interp())] mut runner: Runner,
+        #[case] prog: [u32; N],
+        #[case] t1: u32,
+    ) -> color_eyre::Result<()> {
+        use crate::Emu;
+        use crate::dynarec_v2::PipelineV2;
+        use assert_hex::assert_eq_hex;
+        use pchan_utils::setup_tracing;
+
+        setup_tracing();
+        let mut emu = Emu::default();
+        emu.cpu["$sp"] = 0x8000_00f0;
+        emu.cpu.gpr[9] = 0xffff_ffff;
+        for i in 0x0..0x10 {
+            emu.write(emu.cpu["$sp"] + i, i);
+        }
+        let prog = [prog.as_slice(), [OpCode::HALT.raw_value()].as_slice()].concat();
+        emu.write_many(0x0, &prog);
+
+        runner.execute(&mut emu);
+
+        tracing::info!("finished running");
+        tracing::info!(?emu.cpu);
+
+        assert_eq_hex!(emu.cpu.gpr[9], t1);
+
+        Ok(())
+    }
+
+    fn single_write_program(imm: i16, op: impl const Fn(u8, u8, i16) -> OpCode) -> [u32; 3] {
+        program([lui(9, 0x0302), ori(9, 9, 0x0100), op(9, SP, imm)])
+    }
+
+    fn two_writes_program(imm: i16) -> [u32; 4] {
+        program([
+            lui(9, 0x0302),
+            ori(9, 9, 0x0100),
+            swl(9, SP, imm),
+            swr(9, SP, imm),
+        ])
+    }
+
+    #[rstest]
+    #[case(single_write_program(0x0, swl), 0xffff_ff03)]
+    #[case(single_write_program(0x1, swl), 0xffff_0302)]
+    #[case(single_write_program(0x2, swl), 0xff03_0201)]
+    #[case(single_write_program(0x3, swl), 0x0302_0100)]
+    #[case(single_write_program(0x4, swl), 0xffff_ffff)]
+    #[case(single_write_program(0x0, swr), 0x0302_0100)]
+    #[case(single_write_program(0x1, swr), 0x0201_00ff)]
+    #[case(single_write_program(0x2, swr), 0x0100_ffff)]
+    #[case(single_write_program(0x3, swr), 0x00ff_ffff)]
+    #[case(single_write_program(0x4, swr), 0xffff_ffff)]
+    #[case(two_writes_program(0x0), 0x0302_0100)]
+    #[case(two_writes_program(0x1), 0x0201_0002)]
+    #[case(two_writes_program(0x2), 0x0100_0201)]
+    #[case(two_writes_program(0x3), 0x0002_0100)]
+    fn test_single_write<const N: usize>(
+        #[values(dynarec(), interp())] mut runner: Runner,
+        #[case] prog: [u32; N],
+        #[case] word: u32,
+    ) -> color_eyre::Result<()> {
+        use crate::Emu;
+        use assert_hex::assert_eq_hex;
+        use pchan_utils::setup_tracing;
+
+        setup_tracing();
+        let mut emu = Emu::default();
+        emu.cpu["$sp"] = 0x8000_00f0;
+        for i in 0x0..0x10 {
+            emu.write::<u8>(emu.cpu["$sp"] + i, 0xff);
+        }
+        let prog = [prog.as_slice(), [OpCode::HALT.raw_value()].as_slice()].concat();
+        emu.write_many(0x0, &prog);
+
+        runner.execute(&mut emu);
+
+        tracing::info!("finished running");
+        tracing::info!(?emu.cpu);
+
+        let written = emu.read::<u32>(emu.cpu["$sp"]);
+        assert_eq_hex!(written, word);
+
+        Ok(())
+    }
+}
+
+// bios 0x8004f7d0
+#[rstest]
+fn load_and_compare(#[values(dynarec(), interp())] mut runner: Runner) {
+    use crate::cpu::program;
+    setup_tracing();
+
+    let mut emu = Emu::default();
+    emu.cpu.pc = 0x0;
+    emu.set_reg(10, 420); // poison
+    emu.write(0x100, 420);
+    emu.write_many(
+        0x0,
+        &program([
+            addiu(9, 0, 69),
+            lh(8, 0, 0x100),
+            nop(),
+            slt(10, 8, 9),
+            sw(10, 0, 0x100),
+            nop(),
+            nop(),
+            OpCode::HALT,
+        ]),
+    );
+    runner.execute(&mut emu);
+    assert_eq!(emu.read::<u32>(0x100), 0)
 }
