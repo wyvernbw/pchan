@@ -1,11 +1,11 @@
 use pchan_utils::hex;
 
+use crate::Emu;
 use crate::cpu::RA;
 use crate::cpu::exceptions::Exception;
 use crate::cpu::ops::*;
 use crate::dynarec_v2::emitters::{DecodedOp, DynarecOp};
 use crate::memory::ext;
-use crate::{Emu, gpu};
 
 #[derive(Debug, Clone)]
 pub struct Interpreter {
@@ -78,14 +78,21 @@ impl Interpreter {
         debug_assert!(self.delay_queue[1] == DelaySlot::Nop);
     }
 
-    pub fn run_instruction(&mut self, emu: &mut Emu) -> InterpreterResult {
+    pub fn run_instruction(&mut self, emu: &mut Emu) -> (InterpreterResult, u32, DecodedOp) {
         if !emu.cpu.pc.is_multiple_of(0x4) {
             emu.raise_exception(Exception::AdEl);
             emu.run_io();
-            return InterpreterResult::Exception;
+            return (
+                InterpreterResult::Exception,
+                emu.cpu.pc,
+                DecodedOp::Nop(Nop),
+            );
         }
 
         let in_delay_slot = self.in_delay_slot;
+        if in_delay_slot {
+            emu.cpu.cop0.set_bd(true);
+        }
         let op = self.next_op;
         self.next_op = (
             emu.cpu.pc,
@@ -96,10 +103,14 @@ impl Interpreter {
         );
         emu.cpu.pc = emu.cpu.pc.wrapping_add(0x4);
         tracing::trace!(pc=%hex(op.0), op = %op.1);
-        emu.cpu.drain_jump_queue();
 
         self.run_delay_slots(emu);
-        let delay_slot = emu.run_op(self, op.1);
+        let delay_slot = emu.run_op(self, op.0, op.1);
+        let d_clock = op.1.cycles() as u64;
+        emu.cpu.d_clock += d_clock as u32;
+        emu.run_io();
+        emu.cpu.d_clock = 0;
+        emu.cpu.drain_jump_queue();
         if in_delay_slot {
             self.in_delay_slot = false;
         }
@@ -111,28 +122,20 @@ impl Interpreter {
         Self::debugger_exec(emu);
         #[cfg(feature = "debugger-ext")]
         if emu.dbg.stopped_on.is_some() {
-            return InterpreterResult::Exception;
+            return (InterpreterResult::Exception, op.0, op.1);
         }
 
-        let d_clock = op.1.cycles() as u64;
-        emu.cpu.d_clock += d_clock as u32;
-        emu.run_io();
-        if emu.cpu.d_clock as u64 > gpu::Display::NTSC_TOTAL_VCYCLES_PER_LINE {
-            emu.cpu.d_clock = 0;
-            return InterpreterResult::Hblank;
-        }
-        emu.cpu.d_clock = 0;
         if emu.gpu.vblank_signal {
-            return InterpreterResult::Vblank;
+            return (InterpreterResult::Vblank, op.0, op.1);
         }
 
         #[cfg(test)]
         if matches!(self.next_op.1, DecodedOp::HaltBlock(_)) {
-            return InterpreterResult::Exception;
+            return (InterpreterResult::Exception, op.0, op.1);
         }
 
-        // InterpreterResult::Exception
-        InterpreterResult::None
+        (InterpreterResult::Exception, op.0, op.1)
+        // InterpreterResult::None
     }
 }
 
@@ -187,7 +190,7 @@ impl Emu {
         }
         self.set_reg(0, 0);
     }
-    fn run_op(&mut self, interp: &mut Interpreter, op: DecodedOp) -> Option<DelaySlot> {
+    fn run_op(&mut self, interp: &mut Interpreter, op_pc: u32, op: DecodedOp) -> Option<DelaySlot> {
         let res = match op {
             DecodedOp::Nop(_) => None,
             DecodedOp::Illegal(_) => None,
@@ -225,13 +228,16 @@ impl Emu {
                 None
             }
             DecodedOp::Jalr(jalr) => {
-                self.link_return_in(interp, jalr.rd);
+                self.link_return_in(interp, op_pc, jalr.rd);
                 self.jump(interp, self.get_reg(jalr.rs));
                 None
             }
             DecodedOp::Syscall(_) => {
                 self.handle_syscall(false);
-                interp.in_delay_slot = true;
+                // interp.in_delay_slot = true;
+                if interp.in_delay_slot {
+                    todo!("syscall in delay slot!!!");
+                }
                 None
             }
             DecodedOp::Mfhi(mfhi) => {
@@ -326,27 +332,27 @@ impl Emu {
             }
             DecodedOp::Bltz(bltz) => {
                 if (self.get_reg(bltz.rs) as i32) < 0 {
-                    self.branch(interp, bltz.imm16);
+                    self.branch(interp, op_pc, bltz.imm16);
                 }
                 None
             }
             DecodedOp::Bgez(bgez) => {
                 if (self.get_reg(bgez.rs) as i32) >= 0 {
-                    self.branch(interp, bgez.imm16);
+                    self.branch(interp, op_pc, bgez.imm16);
                 }
                 None
             }
             DecodedOp::Bltzal(bltzal) => {
-                self.link_return(interp);
+                self.link_return(interp, op_pc);
                 if (self.get_reg(bltzal.rs) as i32) < 0 {
-                    self.branch(interp, bltzal.imm16);
+                    self.branch(interp, op_pc, bltzal.imm16);
                 }
                 None
             }
             DecodedOp::Bgezal(bgezal) => {
-                self.link_return(interp);
+                self.link_return(interp, op_pc);
                 if (self.get_reg(bgezal.rs) as i32) >= 0 {
-                    self.branch(interp, bgezal.imm16);
+                    self.branch(interp, op_pc, bgezal.imm16);
                 }
                 None
             }
@@ -355,19 +361,19 @@ impl Emu {
                 None
             }
             DecodedOp::Jal(jal) => {
-                self.link_return(interp);
+                self.link_return(interp, op_pc);
                 self.jump(interp, (self.cpu.pc & 0xf000_0000) + (jal.imm26 << 2));
                 None
             }
             DecodedOp::Blez(blez) => {
                 if (self.get_reg(blez.rs) as i32) <= 0 {
-                    self.branch(interp, blez.imm16);
+                    self.branch(interp, op_pc, blez.imm16);
                 }
                 None
             }
             DecodedOp::Bgtz(bgtz) => {
                 if (self.get_reg(bgtz.rs) as i32) > 0 {
-                    self.branch(interp, bgtz.imm16);
+                    self.branch(interp, op_pc, bgtz.imm16);
                 }
                 None
             }
@@ -395,7 +401,7 @@ impl Emu {
                 let rs = self.get_reg(beq.rs);
                 let rt = self.get_reg(beq.rt);
                 if rs == rt {
-                    self.branch(interp, beq.imm16);
+                    self.branch(interp, op_pc, beq.imm16);
                 }
                 None
             }
@@ -403,7 +409,7 @@ impl Emu {
                 let rs = self.get_reg(bne.rs);
                 let rt = self.get_reg(bne.rt);
                 if rs != rt {
-                    self.branch(interp, bne.imm16);
+                    self.branch(interp, op_pc, bne.imm16);
                 }
                 None
             }
@@ -447,7 +453,7 @@ impl Emu {
                     value,
                 })
             }
-            DecodedOp::Swcn(swcn) => {
+            DecodedOp::Swcn(_swcn) => {
                 // let address = self.get_reg(swcn.rs).wrapping_add_signed(swcn.imm16 as i32);
                 // let value = self.get_cop(swcn.cop, swcn.rt);
                 // Some(DelaySlot::StoreWord { value, address })
@@ -528,7 +534,7 @@ impl Emu {
             }
             DecodedOp::Lb(lb) => {
                 let address = self.get_reg(lb.rs).wrapping_add_signed(lb.imm16 as i32);
-                let value = ext::sign(self.read::<u8>(address)) as u32;
+                let value = ext::sign(self.read::<i8>(address)) as u32;
                 Some(DelaySlot::SetReg { value, reg: lb.rt })
             }
             DecodedOp::Lbu(lbu) => {
@@ -538,7 +544,7 @@ impl Emu {
             }
             DecodedOp::Lh(lh) => {
                 let address = self.get_reg(lh.rs).wrapping_add_signed(lh.imm16 as i32);
-                let value = ext::sign(self.read::<u16>(address)) as u32;
+                let value = ext::sign(self.read::<i16>(address)) as u32;
                 Some(DelaySlot::SetReg { value, reg: lh.rt })
             }
             DecodedOp::Lhu(lhu) => {
@@ -575,21 +581,20 @@ impl Emu {
         interp.in_delay_slot = true;
     }
 
-    fn branch(&mut self, interp: &mut Interpreter, offset: i16) {
-        self.cpu.pc = self
-            .cpu
-            .pc
-            .wrapping_add_signed((offset as i32) << 2)
-            .wrapping_sub(4);
+    fn branch(&mut self, interp: &mut Interpreter, base: u32, offset: i16) {
+        let dest = base
+            .wrapping_add(4)
+            .wrapping_add_signed((offset as i32) << 2);
+        self.cpu.pc = dest;
         interp.in_delay_slot = true;
     }
 
-    fn link_return(&mut self, interp: &mut Interpreter) {
-        self.link_return_in(interp, RA);
+    fn link_return(&mut self, interp: &mut Interpreter, op_pc: u32) {
+        self.link_return_in(interp, op_pc, RA);
     }
 
-    fn link_return_in(&mut self, interp: &mut Interpreter, reg: u8) {
-        self.set_reg(reg, self.cpu.pc);
+    fn link_return_in(&mut self, _: &mut Interpreter, op_pc: u32, reg: u8) {
+        self.set_reg(reg, op_pc + 8);
     }
 }
 
@@ -706,7 +711,7 @@ mod interp_tests {
 
         emu.write_many(0x0, &program([instr(rs.0, rt.0), OpCode::HALT]));
         let mut interp = Interpreter::default();
-        while let InterpreterResult::None = interp.run_instruction(&mut emu) {}
+        while let (InterpreterResult::None, _, _) = interp.run_instruction(&mut emu) {}
 
         assert_eq_hex!(emu.cpu.hilo, expected);
         Ok(())
