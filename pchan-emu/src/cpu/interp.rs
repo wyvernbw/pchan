@@ -63,7 +63,7 @@ pub enum InterpreterResult {
 }
 
 impl Interpreter {
-    fn debugger_exec(emu: &mut Emu) {
+    fn debugger_exec(#[allow(unused_variables)] emu: &mut Emu) {
         #[cfg(feature = "debugger-ext")]
         {
             use crate::debug::BreakpointKind;

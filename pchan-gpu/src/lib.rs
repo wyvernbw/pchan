@@ -1,5 +1,6 @@
 #![feature(duration_millis_float)]
 
+pub use glam;
 pub(crate) mod render_pass;
 
 use std::mem::offset_of;
@@ -18,7 +19,6 @@ use wgpu::*;
 
 #[derive(Debug)]
 pub struct Renderer {
-    pub instance: Instance,
     pub adapter: Adapter,
     pub device: Device,
     pub queue: Queue,
@@ -26,6 +26,7 @@ pub struct Renderer {
     pipeline_layout: PipelineLayout,
     render_pipeline: RenderPipeline,
     pub display_pipeline: RenderPipeline,
+    display_format: TextureFormat,
     pub render_texture: Texture,
     pub render_view: TextureView,
     render_bind_group: BindGroup,
@@ -42,12 +43,25 @@ pub enum UpdateUniforms {
     Display(DisplayUniforms),
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct DisplayUniforms {
     pub dp_start: U16Vec2,
     pub dp_res: U16Vec2,
     pub screen_rect: U16Vec2,
     pub dp_debug: bool,
+    pub dp_srgb: bool,
+}
+
+impl Default for DisplayUniforms {
+    fn default() -> Self {
+        Self {
+            dp_start: Default::default(),
+            dp_res: Default::default(),
+            screen_rect: Default::default(),
+            dp_debug: Default::default(),
+            dp_srgb: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -62,33 +76,12 @@ pub enum InitError {
 }
 
 impl Renderer {
-    pub async fn try_new() -> Result<Self, InitError> {
-        let instance = Instance::new(InstanceDescriptor {
-            backends: Backends::PRIMARY,
-            flags: InstanceFlags::from_env_or_default(),
-            memory_budget_thresholds: MemoryBudgetThresholds::default(),
-            backend_options: BackendOptions::from_env_or_default(),
-            display: None,
-        });
-
-        let adapter = instance
-            .request_adapter(&RequestAdapterOptions {
-                power_preference: PowerPreference::HighPerformance,
-                force_fallback_adapter: false,
-                compatible_surface: None,
-            })
-            .await?;
-
-        let (device, queue) = adapter
-            .request_device(&DeviceDescriptor {
-                label: None,
-                required_features: Features::default(),
-                required_limits: Limits::defaults(),
-                experimental_features: ExperimentalFeatures::disabled(),
-                memory_hints: MemoryHints::Performance,
-                trace: Trace::Off,
-            })
-            .await?;
+    pub async fn from_wgpu(
+        adapter: Adapter,
+        device: Device,
+        queue: Queue,
+        display_format: TextureFormat,
+    ) -> Result<Self, InitError> {
         let shader_module = device.create_shader_module(include_wgsl!("../shaders/psx-gp0.wgsl"));
 
         // output render texture
@@ -246,11 +239,11 @@ impl Renderer {
                 module: &shader_module,
                 entry_point: None,
                 compilation_options: PipelineCompilationOptions::default(),
-                buffers: &[VertexBufferLayout {
+                buffers: &[Some(VertexBufferLayout {
                     array_stride: size_of::<Vertex>() as u64, // 8
                     step_mode: VertexStepMode::Vertex,
                     attributes: Vertex::desc(),
-                }],
+                })],
             },
             primitive: PrimitiveState {
                 topology: PrimitiveTopology::TriangleList,
@@ -286,11 +279,11 @@ impl Renderer {
                 module: &display_shader,
                 entry_point: None,
                 compilation_options: PipelineCompilationOptions::default(),
-                buffers: &[VertexBufferLayout {
+                buffers: &[Some(VertexBufferLayout {
                     array_stride: 0,
                     step_mode: VertexStepMode::Vertex,
                     attributes: &[],
-                }],
+                })],
             },
             primitive: PrimitiveState {
                 topology: PrimitiveTopology::TriangleList,
@@ -308,7 +301,7 @@ impl Renderer {
                 entry_point: None,
                 compilation_options: PipelineCompilationOptions::default(),
                 targets: &[Some(ColorTargetState {
-                    format: TextureFormat::Bgra8UnormSrgb,
+                    format: display_format,
                     blend: None,
                     write_mask: ColorWrites::all(),
                 })],
@@ -318,7 +311,6 @@ impl Renderer {
         });
 
         Ok(Self {
-            instance,
             adapter,
             device,
             queue,
@@ -337,7 +329,39 @@ impl Renderer {
             display_bind_group,
             display_uniform_buffer,
             display_uniforms: Mutex::new(DisplayUniforms::default()),
+            display_format,
         })
+    }
+
+    pub async fn try_new() -> Result<Self, InitError> {
+        let instance = Instance::new(InstanceDescriptor {
+            backends: Backends::PRIMARY,
+            flags: InstanceFlags::from_env_or_default(),
+            memory_budget_thresholds: MemoryBudgetThresholds::default(),
+            backend_options: BackendOptions::from_env_or_default(),
+            display: None,
+        });
+
+        let adapter = instance
+            .request_adapter(&RequestAdapterOptions {
+                power_preference: PowerPreference::HighPerformance,
+                force_fallback_adapter: false,
+                compatible_surface: None,
+                ..Default::default()
+            })
+            .await?;
+
+        let (device, queue) = adapter
+            .request_device(&DeviceDescriptor {
+                label: None,
+                required_features: Features::default(),
+                required_limits: Limits::defaults(),
+                experimental_features: ExperimentalFeatures::disabled(),
+                memory_hints: MemoryHints::Performance,
+                trace: Trace::Off,
+            })
+            .await?;
+        Self::from_wgpu(adapter, device, queue, TextureFormat::Bgra8UnormSrgb).await
     }
 
     pub async fn new() -> Self {
@@ -350,7 +374,7 @@ impl Renderer {
 
     pub fn start(self: Arc<Self>) {
         std::thread::spawn(move || {
-            smol::block_on(async {
+            pchan_executor::block_on(async {
                 tracing::info!("started gpu renderer task");
                 loop {
                     tracing::trace!("waiting for draw calls...");
@@ -773,7 +797,7 @@ fn ensure_vertex_order(vertex_buf: &mut [Vertex], indices: [usize; 3]) {
     }
 }
 
-pub type DisplayUniformData = (UVec2, UVec2, UVec2, u64);
+pub type DisplayUniformData = (UVec2, UVec2, UVec2, u32, u32);
 
 impl DisplayUniforms {
     pub const DATASIZE: usize = size_of::<DisplayUniformData>();
@@ -783,12 +807,14 @@ impl DisplayUniforms {
             dp_res,
             screen_rect,
             dp_debug,
+            dp_srgb,
         } = self;
         (
             dp_start.as_uvec2(),
             dp_res.as_uvec2(),
             screen_rect.as_uvec2(),
-            *dp_debug as u64,
+            *dp_debug as u32,
+            *dp_srgb as u32,
         )
     }
 }

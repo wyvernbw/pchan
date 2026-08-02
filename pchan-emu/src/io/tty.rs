@@ -1,4 +1,5 @@
-use std::{str::Utf8Error, sync::Arc};
+use std::str::Utf8Error;
+use std::sync::Arc;
 
 use thiserror::Error;
 
@@ -60,7 +61,7 @@ impl Tty {
                 print!("{}", string);
             }
             TtyMode::Tracing => {
-                tracing::info!("{}", string.trim());
+                tracing::info!(name: "psx-tty", "{}", string.trim());
             }
             TtyMode::Channeled(tx) => {
                 tx.send(string.to_owned().into())?;

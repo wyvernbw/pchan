@@ -819,7 +819,7 @@ impl VramCoord {
     }
 }
 
-impl const From<u32> for VramCoord {
+const impl From<u32> for VramCoord {
     fn from(value: u32) -> Self {
         unsafe { transmute(value) }
     }

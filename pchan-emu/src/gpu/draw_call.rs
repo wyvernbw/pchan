@@ -1,20 +1,11 @@
 use std::mem::transmute;
 
-use crate::gpu::DrawPixels;
-use crate::gpu::GpuStatReg;
-use crate::gpu::IVramCoord;
-use crate::gpu::TexpageCmd;
-use crate::gpu::VramCoord;
+use crate::gpu::{DrawPixels, GpuStatReg, IVramCoord, TexpageCmd, VramCoord};
 use crate::io::CastIOInto;
 use arbitrary_int::prelude::*;
-use bitbybit::bitenum;
-use bitbybit::bitfield;
-use glam::I16Vec2;
-use glam::U8Vec2;
-use glam::U8Vec3;
-use glam::U16Vec2;
+use bitbybit::{bitenum, bitfield};
+use glam::{I16Vec2, U8Vec2, U8Vec3, U16Vec2};
 use smallvec::SmallVec;
-use tracing::Level;
 
 #[derive(Debug, Clone)]
 pub struct DrawCallCollection {
@@ -190,7 +181,7 @@ pub trait DrawCallDecoder: Sized {
 impl DrawCallDecoder for DrawRectDecoder {
     type Output = DrawRect;
 
-    #[pchan_macros::instrument(level = Level::TRACE, skip_all, ret)]
+    #[pchan_macros::instrument(level = tracing::Level::TRACE, skip_all, ret)]
     fn advance<T: Copy>(self, value: T) -> Result<Self, DrawRect> {
         match self {
             DrawRectDecoder::Color { color } => {

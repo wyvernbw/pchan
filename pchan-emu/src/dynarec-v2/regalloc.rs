@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 
-use bitvec::{prelude as bv, view::BitView};
+use bitvec::prelude as bv;
+use bitvec::view::BitView;
 use bv::Lsb0;
 use derive_more as de;
 use pchan_utils::array;
@@ -376,7 +377,7 @@ impl Reg {
 }
 
 #[cfg(target_arch = "aarch64")]
-impl const From<Reg> for u8 {
+const impl From<Reg> for u8 {
     fn from(value: Reg) -> Self {
         match value {
             Reg::W(reg) => reg,

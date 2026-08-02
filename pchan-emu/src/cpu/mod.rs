@@ -8,7 +8,6 @@ use pchan_utils::{array, hex};
 
 use crate::cpu::exceptions::CauseRegister;
 use crate::cpu::ops::OpCode;
-use crate::io::irq::IrqState;
 
 #[cfg(test)]
 mod cpu_tests;

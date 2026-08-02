@@ -4,14 +4,14 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-wgpu = "29.0.3"
+wgpu = "30.0.0"
 thiserror = "2.0.18"
 pchan-emu = {workspace = true}
 pchan-macros = { workspace = true }
 pchan-utils = { workspace = true }
 tracing = { workspace = true }
 glam = "0.32.1"
-smol.workspace = true
+pchan-executor.workspace = true
 kanal.workspace = true
 heapless = "0.9.3"
 bitbybit.workspace = true

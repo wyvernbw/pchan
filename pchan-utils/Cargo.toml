@@ -3,8 +3,12 @@ name = "pchan-utils"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+tracing-subscriber = ["dep:tracing-subscriber"]
+default = ["tracing-subscriber"]
+
 [dependencies]
-tracing-subscriber = { workspace = true }
+tracing-subscriber = { workspace = true, optional = true }
 derive_more = { version = "2.1.1", features = ["full"] }
 tracing = { workspace = true }
 const-hex.workspace = true

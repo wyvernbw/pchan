@@ -226,9 +226,10 @@ impl ExeHeader {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(derive_more::Debug, Clone)]
 pub struct Exe<'a, B> {
     header: ExeHeader,
+    #[debug(skip)]
     code:   B,
     _life:  PhantomData<&'a ()>,
 }

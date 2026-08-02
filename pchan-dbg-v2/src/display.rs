@@ -61,7 +61,7 @@ pub(crate) fn draw_display(state: &AppState, dp: &mut DisplayState) -> Vec<u8> {
     let gpu = &state.gpu;
     let window_surface_view = dp.output_tex.create_view(&TextureViewDescriptor {
         label:             None,
-        format:            None,
+        format:            Some(TextureFormat::Bgra8UnormSrgb),
         dimension:         None,
         aspect:            wgpu::TextureAspect::All,
         base_mip_level:    0,

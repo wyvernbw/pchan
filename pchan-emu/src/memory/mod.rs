@@ -145,7 +145,7 @@ pub const trait Extend<E> {
     fn ext(self) -> Self::Out;
 }
 
-impl<T> const Extend<NoExt> for T {
+const impl<T> Extend<NoExt> for T {
     type Out = Self;
 
     #[inline(always)]
@@ -154,7 +154,7 @@ impl<T> const Extend<NoExt> for T {
     }
 }
 
-impl const Extend<Sign> for u8 {
+const impl Extend<Sign> for u8 {
     type Out = i32;
     #[inline(always)]
     fn ext(self) -> Self::Out {
@@ -162,7 +162,7 @@ impl const Extend<Sign> for u8 {
     }
 }
 
-impl const Extend<Zero> for u8 {
+const impl Extend<Zero> for u8 {
     type Out = u32;
     #[inline(always)]
     fn ext(self) -> Self::Out {
@@ -170,7 +170,7 @@ impl const Extend<Zero> for u8 {
     }
 }
 
-impl const Extend<Sign> for u16 {
+const impl Extend<Sign> for u16 {
     type Out = i32;
     #[inline(always)]
     fn ext(self) -> Self::Out {
@@ -178,7 +178,7 @@ impl const Extend<Sign> for u16 {
     }
 }
 
-impl const Extend<Zero> for u16 {
+const impl Extend<Zero> for u16 {
     type Out = u32;
     #[inline(always)]
     fn ext(self) -> Self::Out {
@@ -186,7 +186,7 @@ impl const Extend<Zero> for u16 {
     }
 }
 
-impl const Extend<Sign> for i8 {
+const impl Extend<Sign> for i8 {
     type Out = i32;
     #[inline(always)]
     fn ext(self) -> Self::Out {
@@ -194,7 +194,7 @@ impl const Extend<Sign> for i8 {
     }
 }
 
-impl const Extend<Zero> for i8 {
+const impl Extend<Zero> for i8 {
     type Out = u32;
     #[inline(always)]
     fn ext(self) -> Self::Out {
@@ -202,7 +202,7 @@ impl const Extend<Zero> for i8 {
     }
 }
 
-impl const Extend<Sign> for i16 {
+const impl Extend<Sign> for i16 {
     type Out = i32;
     #[inline(always)]
     fn ext(self) -> Self::Out {
@@ -210,7 +210,7 @@ impl const Extend<Sign> for i16 {
     }
 }
 
-impl const Extend<Zero> for i16 {
+const impl Extend<Zero> for i16 {
     type Out = u32;
     #[inline(always)]
     fn ext(self) -> Self::Out {

@@ -152,7 +152,7 @@ impl<'a> RenderPass<'a> {
         render_pass.draw(0..self.scene.vertex_buf.len() as u32, 0..1);
     }
 
-    pub async fn finish(mut self, vram: &mut [u16]) {
+    pub async fn finish(mut self, vram: &mut [u16]) -> Result<(), MapRangeError> {
         let output_buffer = self.renderer.device.create_buffer(&BufferDescriptor {
             label: Some("output"),
             size: mb(1) as u64,
@@ -187,11 +187,11 @@ impl<'a> RenderPass<'a> {
             res.unwrap();
         });
         let device = self.renderer.device.clone();
-        smol::unblock(move || {
+        pchan_executor::unblock(move || {
             _ = device.poll(PollType::wait_indefinitely());
         })
         .await;
-        let buf = &output_buffer.get_mapped_range(..)[..];
+        let buf = &&output_buffer.get_mapped_range(..)?[..];
 
         for y in 0..512usize {
             for x in 0..1024usize {
@@ -201,5 +201,7 @@ impl<'a> RenderPass<'a> {
                 vram[vram_addr] = pixel;
             }
         }
+
+        Ok(())
     }
 }

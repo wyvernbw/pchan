@@ -182,6 +182,7 @@ async fn run_app(env: &EnvVars) -> Result<()> {
     run(|term| {
         let mut runner = Runner::new().with_config(RunnerConfig {
             force_mode: Some(RunnerMode::Dynarec),
+            // force_mode: None,
         });
         let mut frame_time_sample_time = Duration::ZERO;
         let mut frame_time_samples = VecDeque::with_capacity(32);

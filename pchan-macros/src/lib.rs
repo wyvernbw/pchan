@@ -106,7 +106,7 @@ pub fn encoding(item: TokenStream) -> TokenStream {
     };
 
     let into_impl = quote! {
-        impl const Into<OpCode> for #ident {
+        const impl Into<OpCode> for #ident {
             fn into(self: Self) -> OpCode {
                 OpCode::default()
                     #set_prime_op

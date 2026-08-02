@@ -228,9 +228,9 @@ impl Emu {
     }
 }
 
-#[derive(thiserror::Error, Debug, Clone, Copy)]
+#[derive(thiserror::Error, derive_more::Debug, Clone, Copy)]
 #[error("unhandled io at address {}", hex(self.0))]
-pub struct UnhandledIO(pub u32);
+pub struct UnhandledIO(#[debug("{}", hex(self.0))] pub u32);
 
 impl Emu {
     pub fn read<T: Copy>(&mut self, address: u32) -> T {

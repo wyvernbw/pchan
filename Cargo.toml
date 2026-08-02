@@ -11,13 +11,6 @@ pedantic = "warn"
 nursery = "warn"
 cargo = "deny"
 
-[dependencies]
-const-hex = { workspace = true, features = ["alloc"] }
-pchan-macros = { workspace = true }
-pchan-utils = { workspace = true }
-tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
-
 [workspace]
 resolver = "3"
 members = [
@@ -29,7 +22,9 @@ members = [
     "pchan-audio",
     "pchan-dbg-egui",
     "pchan-dbg-v2",
-    "pchan-input"
+    "pchan-egui-experimental",
+    "pchan-input",
+    "pchan-executor"
 ]
 
 [workspace.dependencies]
@@ -40,10 +35,11 @@ const-hex = { version = "1.19.0", features = ["nightly", "portable-simd"] }
 pchan-emu = { path = "./pchan-emu" }
 pchan-gpu = { path = "./pchan-gpu" }
 pchan-macros = { path = "./pchan-macros" }
-pchan-utils = { path = "./pchan-utils" }
+pchan-utils = { path = "./pchan-utils", default-features = false }
 pchan-bind = { path = "./pchan-bind" }
 pchan-audio = { path = "./pchan-audio" }
 pchan-input = { path = "./pchan-input" }
+pchan-executor = { path = "./pchan-executor" }
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 kanal = "0.1.1"
 

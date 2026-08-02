@@ -22,7 +22,6 @@
 #![feature(explicit_tail_calls)]
 #![feature(const_destruct)]
 #![feature(arbitrary_self_types)]
-#![feature(allocator_api)]
 #![feature(alloc_slice_into_array)]
 // allow unused variables in tests to supress the setup tracing warnings
 #![cfg_attr(test, allow(unused_variables))]
@@ -122,6 +121,7 @@ impl Emu {
     }
 
     pub fn panic(&self, panic_msg: &str) -> ! {
+        self.dma.dump_cdrom_data();
         panic!(
             "emulator panicked at pc={} with:\n{panic_msg}\n\nstate = {:#?}",
             hex(self.cpu.pc),

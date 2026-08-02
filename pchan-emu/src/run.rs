@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use kanal::Sender;
@@ -23,6 +24,7 @@ pub struct Runner {
     #[debug(skip)]
     actor_tx:        Caching<Arc<SharedRb<Heap<CompileActorMsg>>>, true, false>,
     own_dynarec:     Dynarec,
+    actor_handle:    ActorHandle,
 }
 
 #[derive(Default, Debug, Clone, Copy)]
@@ -35,6 +37,11 @@ pub enum RunnerMode {
 #[derive(Default, Debug, Clone, Copy)]
 pub struct RunnerConfig {
     pub force_mode: Option<RunnerMode>,
+}
+
+#[derive(Debug, Clone)]
+struct ActorHandle {
+    currently_compiling: Arc<AtomicU32>,
 }
 
 #[derive(Debug)]
@@ -72,8 +79,12 @@ impl Runner {
         let rb = HeapRb::<CompileActorMsg>::new(mb(32));
         let (prod, cons) = rb.split();
         let transport_2 = transport.clone();
+        let actor_handle = ActorHandle {
+            currently_compiling: Arc::new(AtomicU32::new(u32::MAX)),
+        };
+        let ah = actor_handle.clone();
         std::thread::spawn(move || {
-            Self::compile_actor(cons, transport_2.out_chan.0);
+            Self::compile_actor(cons, transport_2.out_chan.0, ah);
         });
         Self {
             interpreter: Interpreter::default(),
@@ -82,6 +93,7 @@ impl Runner {
             transport,
             actor_tx: prod,
             own_dynarec: Dynarec::default(),
+            actor_handle,
         }
     }
 
@@ -92,13 +104,13 @@ impl Runner {
 
     pub fn execute(&mut self, emu: &mut Emu) {
         match self.config.force_mode {
-            Some(RunnerMode::Interpreter) => {
+            Some(RunnerMode::Interpreter) => loop {
                 let (result, _, _) = self.interpreter.run_instruction(emu);
                 match result {
                     InterpreterResult::None => {}
                     _ => return,
                 }
-            }
+            },
             Some(RunnerMode::Dynarec) => {
                 run_step(emu, &mut self.own_dynarec);
             }
@@ -107,9 +119,11 @@ impl Runner {
                     self.transport.out_chan.1.try_recv()
                 {
                     tracing::info!("got compiled block: {}", hex(block.pc));
+                    self.mode = RunnerMode::Dynarec;
+                    block(emu, false);
                     emu.dynarec_cache.insert(block.pc, block);
+                    continue;
                 }
-
                 match self.mode {
                     RunnerMode::Dynarec => {
                         let pc = emu.cpu.pc;
@@ -126,12 +140,31 @@ impl Runner {
                     }
                     RunnerMode::Interpreter => {
                         let (result, pc, op) = self.interpreter.run_instruction(emu);
-                        if let Some(block) = emu.dynarec_cache.remove(pc) {
-                            self.mode = RunnerMode::Dynarec;
-                            block(emu, false);
-                            emu.dynarec_cache.insert(pc, block);
-                            continue;
-                        };
+
+                        if self
+                            .actor_handle
+                            .currently_compiling
+                            .load(Ordering::Acquire)
+                            == pc
+                        {
+                            if let Ok(CompileActorResponse::Compiled(Ok(block))) =
+                                self.transport.out_chan.1.recv()
+                            {
+                                tracing::info!("SYNC got compiled block: {}", hex(block.pc));
+                                self.mode = RunnerMode::Dynarec;
+                                block(emu, false);
+                                emu.dynarec_cache.insert(block.pc, block);
+                                continue;
+                            }
+                        } else {
+                            if let Some(block) = emu.dynarec_cache.remove(pc) {
+                                self.mode = RunnerMode::Dynarec;
+                                block(emu, false);
+                                emu.dynarec_cache.insert(pc, block);
+                                continue;
+                            };
+                        }
+
                         self.actor_tx.try_push(CompileActorMsg::Op(pc, op)).unwrap();
                         match result {
                             InterpreterResult::None => {}
@@ -148,6 +181,7 @@ impl Runner {
     fn compile_actor(
         mut rx: Caching<Arc<SharedRb<Heap<CompileActorMsg>>>, false, true>,
         tx: Sender<CompileActorResponse>,
+        handle: ActorHandle,
     ) {
         enum ActorState {
             Idle,
@@ -242,6 +276,7 @@ impl Runner {
                             dynarec.reset();
                             dynarec.emit_block_prelude();
                             let compile_state = CompileState::new(pc);
+                            handle.currently_compiling.store(pc, Ordering::Release);
                             state = compile_state.advance(&mut dynarec, op);
                         }
                         ActorState::Compiling(compile_state) => {
@@ -284,6 +319,9 @@ impl Runner {
                                     });
                             tx.send(CompileActorResponse::Compiled(func))
                                 .expect("channel closed");
+                            handle
+                                .currently_compiling
+                                .store(u32::MAX, Ordering::Release);
                         }
                     }
                 }

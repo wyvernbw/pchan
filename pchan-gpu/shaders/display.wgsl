@@ -13,7 +13,8 @@ struct DisplayUniforms {
     display_area_pos: vec2<u32>,
     resolution: vec2<u32>,
     screen_rect: vec2<u32>,
-    debug_display: u32
+    debug_display: u32,
+    srgb: u32
 }
 
 @group(0) @binding(2)
@@ -93,9 +94,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     var col = read_16bit(uv);
     var out = rgb5_split_color(col);
-    out.r = srgb_to_linear(out.r);
-    out.g = srgb_to_linear(out.g);
-    out.b = srgb_to_linear(out.b);
+    if display.srgb != 0 {
+        out.r = srgb_to_linear(out.r);
+        out.g = srgb_to_linear(out.g);
+        out.b = srgb_to_linear(out.b);
+    }
 
     return vec4<f32>(out, 1.0);
 }

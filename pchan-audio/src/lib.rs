@@ -1,7 +1,5 @@
-use cpal::{
-    Device, SampleFormat, Stream, SupportedStreamConfig,
-    traits::{DeviceTrait, HostTrait, StreamTrait},
-};
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::{Device, SampleFormat, Stream, SupportedStreamConfig};
 use miette::{Context, IntoDiagnostic, Result, bail};
 use pchan_bind::{AudioConsumer, BindAudioConsumer};
 use ringbuf::traits::*;
@@ -61,7 +59,7 @@ impl AudioTask {
         let mut last_samples = [0.0, 0.0];
         let stream = self.device.build_output_stream(
             &self.config.config(),
-            move |data: &mut [f32], info| {
+            move |data: &mut [f32], _info| {
                 if config.channels() > 2 {
                     panic!("unsupported audio config: device has more than 2 channels");
                 }

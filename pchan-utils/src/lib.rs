@@ -1,19 +1,160 @@
 #![feature(generic_const_exprs)]
 #![allow(incomplete_features)]
 
-use std::{
-    backtrace::Backtrace,
-    sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard},
-};
+use std::backtrace::Backtrace;
+use std::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use kanal::{AsyncReceiver, AsyncSender, Receiver, Sender};
-use tracing_subscriber::{
-    EnvFilter, Layer,
-    fmt::{self, format::FmtSpan},
-    util::SubscriberInitExt,
-};
 
-use tracing_subscriber::layer::SubscriberExt;
+#[cfg(feature = "tracing-subscriber")]
+pub mod trace_utils {
+    use std::backtrace::Backtrace;
+
+    use tracing_subscriber::fmt::format::FmtSpan;
+    use tracing_subscriber::fmt::{self};
+    use tracing_subscriber::util::SubscriberInitExt;
+    use tracing_subscriber::{EnvFilter, Layer};
+
+    use tracing_subscriber::layer::SubscriberExt;
+
+    #[cfg_attr(test, rstest::fixture)]
+    pub fn setup_tracing() {
+        _ = tracing_subscriber::registry()
+            .with(
+                fmt::layer()
+                    .with_ansi(true)
+                    .with_file(false)
+                    .without_time()
+                    .with_test_writer()
+                    .with_line_number(false), // .with_span_events(FmtSpan::CLOSE),
+            )
+            .with(
+                fmt::layer()
+                    .with_ansi(false)
+                    .with_file(false)
+                    .without_time()
+                    .with_writer(std::fs::File::create("pchan.log").unwrap())
+                    .with_line_number(false), // .with_span_events(FmtSpan::CLOSE),
+            )
+            .with(
+                fmt::layer()
+                    .with_ansi(true)
+                    .with_span_events(FmtSpan::CLOSE)
+                    .with_filter(
+                        EnvFilter::from_default_env()
+                            // .add_directive("off".parse().unwrap())
+                            .add_directive("pchan_emu[fn]=trace".parse().unwrap()),
+                    ),
+            )
+            .with(
+                EnvFilter::builder()
+                    .with_env_var("PCHAN_LOG")
+                    .with_default_directive("info".parse().unwrap())
+                    .from_env_lossy()
+                    .add_directive("cranelift_jit::backend=off".parse().unwrap()),
+            )
+            .try_init();
+
+        std::panic::set_hook(Box::new(|info| {
+            let (file, line, column) = info
+                .location()
+                .map(|loc| (loc.file(), loc.line(), loc.column()))
+                .unwrap_or_default();
+            tracing::error!(
+                src.file = file,
+                src.line = line,
+                src.column = column,
+                panic = %info.payload_as_str().unwrap_or_default()
+            );
+            let bt = Backtrace::capture();
+            tracing::error!("backtrace: \n\n{}", bt);
+        }));
+    }
+
+    pub struct InitTracingArgs {
+        pub stdout:     bool,
+        pub file:       bool,
+        pub panic_hook: bool,
+    }
+
+    impl Default for InitTracingArgs {
+        fn default() -> Self {
+            Self {
+                stdout:     true,
+                file:       true,
+                panic_hook: true,
+            }
+        }
+    }
+
+    pub fn init_tracing(
+        InitTracingArgs {
+            stdout,
+            file,
+            panic_hook,
+        }: InitTracingArgs,
+    ) {
+        let stdout_layer = stdout.then(|| {
+            fmt::layer()
+                .with_ansi(true)
+                .with_file(false)
+                .without_time()
+                .with_test_writer()
+                .with_line_number(false)
+                .with_writer(std::io::stdout)
+        });
+
+        let file_layer = file.then(|| {
+            fmt::layer()
+                .with_ansi(false)
+                .with_file(false)
+                .without_time()
+                .with_writer(std::fs::File::create("pchan.log").unwrap())
+                .with_line_number(false)
+        });
+
+        let span_layer = fmt::layer()
+            .with_ansi(true)
+            .with_span_events(FmtSpan::CLOSE)
+            .with_filter(
+                EnvFilter::from_default_env().add_directive("pchan_emu[fn]=trace".parse().unwrap()),
+            );
+
+        let env_filter = EnvFilter::builder()
+            .with_env_var("PCHAN_LOG")
+            .with_default_directive("info".parse().unwrap())
+            .from_env_lossy();
+
+        _ = tracing_subscriber::registry()
+            .with(stdout_layer)
+            .with(file_layer)
+            .with(span_layer)
+            .with(env_filter)
+            .try_init();
+
+        if panic_hook {
+            let old_hook = std::panic::take_hook();
+            std::panic::set_hook(Box::new(move |info| {
+                old_hook(info);
+                let (file, line, column) = info
+                    .location()
+                    .map(|loc| (loc.file(), loc.line(), loc.column()))
+                    .unwrap_or_default();
+                tracing::error!(
+                    src.file = file,
+                    src.line = line,
+                    src.column = column,
+                    panic = %info.payload_as_str().unwrap_or_default()
+                );
+                let bt = Backtrace::capture();
+                tracing::error!("backtrace: \n\n{}", bt);
+            }));
+        }
+    }
+}
+
+#[cfg(feature = "tracing-subscriber")]
+pub use trace_utils::*;
 
 pub fn default_const<T: Default>() -> T {
     T::default()
@@ -43,141 +184,6 @@ pub const MAX_SIMD_WIDTH: usize = max_simd_width_bytes();
 
 pub type Chan<T> = (Sender<T>, Receiver<T>);
 pub type AsyncChan<T> = (AsyncSender<T>, AsyncReceiver<T>);
-
-#[cfg_attr(test, rstest::fixture)]
-pub fn setup_tracing() {
-    _ = tracing_subscriber::registry()
-        .with(
-            fmt::layer()
-                .with_ansi(true)
-                .with_file(false)
-                .without_time()
-                .with_test_writer()
-                .with_line_number(false), // .with_span_events(FmtSpan::CLOSE),
-        )
-        .with(
-            fmt::layer()
-                .with_ansi(false)
-                .with_file(false)
-                .without_time()
-                .with_writer(std::fs::File::create("pchan.log").unwrap())
-                .with_line_number(false), // .with_span_events(FmtSpan::CLOSE),
-        )
-        .with(
-            fmt::layer()
-                .with_ansi(true)
-                .with_span_events(FmtSpan::CLOSE)
-                .with_filter(
-                    EnvFilter::from_default_env()
-                        // .add_directive("off".parse().unwrap())
-                        .add_directive("pchan_emu[fn]=trace".parse().unwrap()),
-                ),
-        )
-        .with(
-            EnvFilter::builder()
-                .with_env_var("PCHAN_LOG")
-                .with_default_directive("info".parse().unwrap())
-                .from_env_lossy()
-                .add_directive("cranelift_jit::backend=off".parse().unwrap()),
-        )
-        .try_init();
-
-    std::panic::set_hook(Box::new(|info| {
-        let (file, line, column) = info
-            .location()
-            .map(|loc| (loc.file(), loc.line(), loc.column()))
-            .unwrap_or_default();
-        tracing::error!(
-            src.file = file,
-            src.line = line,
-            src.column = column,
-            panic = %info.payload_as_str().unwrap_or_default()
-        );
-        let bt = Backtrace::capture();
-        tracing::error!("backtrace: \n\n{}", bt);
-    }));
-}
-
-pub struct InitTracingArgs {
-    pub stdout:     bool,
-    pub file:       bool,
-    pub panic_hook: bool,
-}
-
-impl Default for InitTracingArgs {
-    fn default() -> Self {
-        Self {
-            stdout:     true,
-            file:       true,
-            panic_hook: true,
-        }
-    }
-}
-
-pub fn init_tracing(
-    InitTracingArgs {
-        stdout,
-        file,
-        panic_hook,
-    }: InitTracingArgs,
-) {
-    let stdout_layer = stdout.then(|| {
-        fmt::layer()
-            .with_ansi(true)
-            .with_file(false)
-            .without_time()
-            .with_test_writer()
-            .with_line_number(false)
-            .with_writer(std::io::stdout)
-    });
-
-    let file_layer = file.then(|| {
-        fmt::layer()
-            .with_ansi(false)
-            .with_file(false)
-            .without_time()
-            .with_writer(std::fs::File::create("pchan.log").unwrap())
-            .with_line_number(false)
-    });
-
-    let span_layer = fmt::layer()
-        .with_ansi(true)
-        .with_span_events(FmtSpan::CLOSE)
-        .with_filter(
-            EnvFilter::from_default_env().add_directive("pchan_emu[fn]=trace".parse().unwrap()),
-        );
-
-    let env_filter = EnvFilter::builder()
-        .with_env_var("PCHAN_LOG")
-        .with_default_directive("info".parse().unwrap())
-        .from_env_lossy();
-
-    _ = tracing_subscriber::registry()
-        .with(stdout_layer)
-        .with(file_layer)
-        .with(span_layer)
-        .with(env_filter)
-        .try_init();
-
-    if panic_hook {
-        let old_hook = std::panic::take_hook();
-        std::panic::set_hook(Box::new(move |info| {
-            old_hook(info);
-            let (file, line, column) = info
-                .location()
-                .map(|loc| (loc.file(), loc.line(), loc.column()))
-                .unwrap_or_default();
-            tracing::error!(
-                src.file = file,
-                src.line = line,
-                src.column = column,
-                panic = %info.payload_as_str().unwrap_or_default()
-            );
-            let bt = Backtrace::capture();
-            tracing::error!("backtrace: \n\n{}", bt);
-        }));
-    }
-}
 
 #[macro_export]
 macro_rules! array {

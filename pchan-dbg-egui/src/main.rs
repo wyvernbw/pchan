@@ -63,7 +63,7 @@ impl PchanDbgEgui {
         pchan_bind::bind_audio(&mut audio_task, &mut pchan_emu);
         let audio_stream = audio_task.start()?;
 
-        let mut pchan_rd = smol::block_on(pchan_gpu::Renderer::new());
+        let mut pchan_rd = pchan_executor::block_on(pchan_gpu::Renderer::new());
         pchan_rd.connect_emu(&mut pchan_emu);
         let pchan_rd = Arc::new(pchan_rd);
         let pchan_emu = Arc::new(RwLock::new(pchan_emu));
