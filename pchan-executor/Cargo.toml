@@ -1,0 +1,9 @@
+[package]
+name = "pchan-executor"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+
+[dev-dependencies]
+smol.workspace = true
