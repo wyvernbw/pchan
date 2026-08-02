@@ -1,0 +1,33 @@
+[package]
+name = "pchan-egui-experimental"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+fontdb = "0.24.0"
+miette = { version = "7.6.0", features = ["fancy-no-backtrace"] }
+pchan-audio.workspace = true
+pchan-bind.workspace = true
+pchan-emu.workspace = true
+pchan-gpu.workspace = true
+pchan-utils = { workspace = true, features = ["tracing-subscriber"] }
+pchan-executor.workspace = true 
+rfd = "0.17.2"
+ringbuf = "0.5.1"
+ttf-parser = "0.25.1"
+
+[dependencies.eframe]
+version = "*"
+git = "https://github.com/wyvernbw/egui.git"
+branch = "wyvernbw/eframe-optional-links"
+default-features = false
+features = [
+  "accesskit",
+  "default_fonts",
+  "wayland", # Required for Linux support (including CI!)
+  "web_screen_reader",
+  "wgpu",
+  "x11",
+  "persistence"
+]
+
