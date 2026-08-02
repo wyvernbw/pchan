@@ -9,7 +9,7 @@ use pchan_macros::{pchan_instrument_read, pchan_instrument_write};
 use pchan_utils::hex;
 use slab::Slab;
 
-#[derive(Debug, Clone)]
+#[derive(derive_more::Debug, Clone)]
 pub struct DmaState {
     dpcr: Dpcr,
     dicr: Dicr,
@@ -18,20 +18,35 @@ pub struct DmaState {
     dma3: DmaChannel,
     dma6: DmaChannel,
 
-    events: Slab<DmaEvent>,
+    // events: Slab<DmaEvent>,
+    ongoing_transfer: Option<DmaEvent>,
+
+    #[debug(skip)]
+    debug_cdrom_data: Vec<u8>,
 }
 
 impl Default for DmaState {
     fn default() -> Self {
         Self {
-            dpcr:   Dpcr::new_with_raw_value(0x07654321),
-            dicr:   Dicr::default(),
-            dma2:   DmaChannel::default(),
-            dma3:   DmaChannel::default(),
-            dma6:   DmaChannel::default(),
+            dpcr:             Dpcr::new_with_raw_value(0x07654321),
+            dicr:             Dicr::default(),
+            dma2:             DmaChannel::default(),
+            dma3:             DmaChannel::default(),
+            dma6:             DmaChannel::default(),
             // queue: DmaQueue::default(),
-            events: Slab::with_capacity(1024),
+            // events:           Slab::with_capacity(1024),
+            debug_cdrom_data: vec![],
+            ongoing_transfer: None,
         }
+    }
+}
+
+impl DmaState {
+    pub fn dump_cdrom_data(&self) {
+        use std::io::Write;
+
+        let mut f = std::fs::File::create("read_from_cdrom.bin").unwrap();
+        _ = f.write(&self.debug_cdrom_data);
     }
 }
 
@@ -131,7 +146,7 @@ impl Emu {
                 tracing::trace!("write at dma6chcr (otc chcr): {:#?}", chcr);
 
                 if chcr.raw_value() == 0x11000002 {
-                    self.dma_schedule(
+                    self.dma_start_transfer(
                         self.create_dma_event(self.dma().dma6, DmaTransportKind::Otc),
                     );
                     tracing::trace!("dma6 scheduled");
@@ -151,9 +166,12 @@ impl Emu {
                 let irq_flags = dicr.combined_irq_flags();
                 let new_irq_flags = new_dicr.combined_irq_flags();
 
+                let old_irq_flags = irq_flags;
                 // writing 1 to irq flag resets it to 0
                 let irq_flags = irq_flags & !new_irq_flags;
-                tracing::info!("write at dicr: dma_irq_flags: {irq_flags:b}");
+                tracing::info!(
+                    "write at dicr: dma_irq_flags: {old_irq_flags:08b} -> {irq_flags:08b}"
+                );
 
                 let new_dicr = new_dicr.with_combined_irq_flags(irq_flags);
 
@@ -165,15 +183,36 @@ impl Emu {
         }
     }
 
-    fn dma_schedule(&mut self, event: DmaEvent) {
-        tracing::debug!("dma: schedulde dma event: {:#?}", event);
-        let id = self.dma_mut().events.insert(event);
-        self.evque_mut()
-            .schedule(Self::handle_dma_event, id, event.in_cycles);
+    fn dma_start_transfer(&mut self, event: DmaEvent) {
+        match self.dma.ongoing_transfer {
+            Some(old) => {
+                tracing::debug!("dma stall: already transfering");
+                let clock = old.cycles(self);
+                self.handle_dma_event(old);
+                // self.cpu.d_clock = clock as u32;
+                // self.run_io();
+                self.dma.ongoing_transfer = None;
+
+                become self.dma_start_transfer(event);
+            }
+            None => {
+                tracing::debug!("dma: schedulde dma event: {:#?}", event);
+                self.dma.ongoing_transfer = Some(event);
+                self.evque_mut().schedule(
+                    |emu, _| {
+                        if let Some(transfer) = emu.dma.ongoing_transfer.take() {
+                            emu.handle_dma_event(transfer);
+                        }
+                    },
+                    0,
+                    event.in_cycles,
+                );
+            }
+        };
     }
 
-    fn handle_dma_event(&mut self, ctx: EvCtx) {
-        let event = self.dma_mut().events.remove(ctx.id);
+    fn handle_dma_event(&mut self, event: DmaEvent) {
+        tracing::debug!("dma proc");
         match event.dma_t {
             DmaTransportKind::Otc => {
                 self.dma6_write_data(event);
@@ -311,7 +350,7 @@ impl Emu {
                         if upcoming < clock {
                             current_event = Some(next_event);
                         } else {
-                            self.dma_schedule(next_event);
+                            self.dma_start_transfer(next_event);
 
                             break;
                         }
@@ -436,7 +475,7 @@ trait Transfer {
             TransferState::StoppedCompleted => {}
             TransferState::StartBusy => {
                 let dma = *dma;
-                emu.dma_schedule(emu.create_dma_event(dma, Self::TRANSPORT_KIND));
+                emu.dma_start_transfer(emu.create_dma_event(dma, Self::TRANSPORT_KIND));
             }
         };
         Ok(())
@@ -470,12 +509,13 @@ struct Dma3Cdrom;
 impl Transfer for Dma3Cdrom {
     const TRANSPORT_KIND: DmaTransportKind = DmaTransportKind::Cdrom;
 
-    fn write(&mut self, emu: &mut Emu, address: u32) {
+    fn write(&mut self, _emu: &mut Emu, _address: u32) {
         todo!()
     }
 
     fn read(&mut self, emu: &mut Emu, address: u32) {
         let value = emu.cdrom_read_data::<4>();
+        emu.dma.debug_cdrom_data.extend_from_slice(&value);
         let value = u32::from_le_bytes(value);
         _ = emu.fastmem_write(address, value);
         tracing::debug!("copied byte {} to memory at {}", hex(value), hex(address));
