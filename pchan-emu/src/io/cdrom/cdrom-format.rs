@@ -16,19 +16,25 @@ pub struct Bcd {
     digit_02: u4,
 }
 
+impl std::fmt::Display for Bcd {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:02}", self.unpack())
+    }
+}
+
 impl Bcd {
     pub const fn unpack(self) -> u8 {
         self.digit_02().value() * 10 + self.digit_01().value()
     }
 }
 
-impl const From<Bcd> for u8 {
+const impl From<Bcd> for u8 {
     fn from(val: Bcd) -> Self {
         val.unpack()
     }
 }
 
-impl const From<u8> for Bcd {
+const impl From<u8> for Bcd {
     fn from(value: u8) -> Self {
         Self::new_with_raw_value(value)
     }
@@ -83,21 +89,11 @@ impl CdromCursor {
     }
 
     pub const fn to_byte(self) -> u32 {
-        self.lba * 0x924 + self.byte
+        self.lba * SECTOR_USER_SIZE as u32 + self.byte
     }
 
-    pub const fn advance_by(&mut self, mut by_bytes: u32, sect_size: SetModeSectSize) {
-        let (pad, end) = match sect_size {
-            SetModeSectSize::DataOnly0x800 => (0x18, 0x18 + 0x800),
-            SetModeSectSize::Whole0x924 => (0x0c, SECTOR_USER_SIZE),
-        };
-        let mut to_end = end as u32 - self.byte;
-        while by_bytes >= to_end {
-            by_bytes -= to_end;
-            self.byte = pad;
-            self.lba += 1;
-            to_end = end as u32;
-        }
+    pub const fn advance_by(&mut self, by_sectors: u32, by_bytes: u32) {
+        self.lba += by_sectors;
         self.byte += by_bytes;
     }
 }

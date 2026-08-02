@@ -2,9 +2,7 @@ use std::collections::VecDeque;
 use std::fs;
 use std::io::{BufReader, Read, Seek};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 
-use heapless::Deque;
 use smallvec::{SmallVec, smallvec};
 
 use crate::Emu;
@@ -71,7 +69,10 @@ impl CdromDrive {
         u8: const From<T>,
     {
         self.cursor = CdromCursor::from_mss(mss);
-        tracing::info!("setloc at {:?}", self.cursor);
+        tracing::trace!("setloc to lba {}", self.cursor.lba)
+    }
+
+    pub fn seek_to_cursor(&mut self) {
         if let Some(disc) = &mut self.disc {
             let res = disc.seek(self.cursor);
             self.host_disc_err = res.err();
@@ -106,7 +107,6 @@ impl CdromDrive {
                 let cycles_per_sector = self.sector_cycles();
                 scheduler.evque.schedule(
                     |emu, _| {
-                        tracing::info!("readn callback");
                         emu.cdrom_send_response(Response::new(
                             super::HInt::Int1DataReady,
                             smallvec![emu.cdrom.drive.status_code.raw_value()],
@@ -130,7 +130,10 @@ impl CdromDrive {
     pub fn request_data(&mut self, status: &mut CDRomStatusReg, result_fifo: &mut VecDeque<u8>) {
         status.set_data_req(true);
         if let Some(disc) = &mut self.disc {
-            let (n, bytes) = match disc.readn::<SECTOR_USER_SIZE>(self.mode) {
+            // TODO: better reporting
+            tracing::info!("ReadN\t{}", self.cursor.to_mss::<u8>());
+
+            let (n, bytes) = match disc.readn::<SECTOR_USER_SIZE>(&mut self.cursor) {
                 Ok(res) => res,
                 Err(err) => {
                     self.host_disc_err = Some(err);
@@ -140,9 +143,10 @@ impl CdromDrive {
             if n == 0 {
                 return;
             }
+
             let sector = match self.mode.sect_size() {
                 SetModeSectSize::DataOnly0x800 => &bytes[0x18..0x18 + 0x800],
-                SetModeSectSize::Whole0x924 => &bytes[..],
+                SetModeSectSize::Whole0x924 => &bytes[0xc..],
             };
             result_fifo.extend(sector);
         }
@@ -177,8 +181,7 @@ pub enum DiscReader {
 #[derive(Default, derive_more::Debug, Clone)]
 pub struct InMemoryDiskReader {
     #[debug(skip)]
-    buf:    Box<[u8]>,
-    cursor: CdromCursor,
+    buf: Box<[u8]>,
 }
 
 trait DiscFile: Read + Seek + Send + Sync {}
@@ -188,34 +191,23 @@ impl<T> DiscFile for T where T: Read + Seek + Send + Sync {}
 pub struct StreamedDiskReader {
     #[debug(skip)]
     reader: BufReader<Box<dyn DiscFile>>,
-    cursor: CdromCursor,
 }
 
 impl DiscReader {
-    fn update_cursor(&mut self, cursor: CdromCursor) {
-        match self {
-            DiscReader::Streamed(streamed_disk_reader) => {
-                streamed_disk_reader.cursor = cursor;
-            }
-            DiscReader::InMemory(in_memory_disk_reader) => {
-                in_memory_disk_reader.cursor = cursor;
-            }
-        }
-    }
     pub fn seek(&mut self, to: u64) -> std::io::Result<()> {
         match self {
             DiscReader::Streamed(streamed_disk_reader) => streamed_disk_reader.seek(to),
-            DiscReader::InMemory(in_memory_disk_reader) => todo!(),
+            DiscReader::InMemory(_in_memory_disk_reader) => todo!(),
         }
     }
 
     pub fn readn<const BYTES: usize>(
         &mut self,
-        mode: SetMode,
+        cursor: &mut CdromCursor,
     ) -> std::io::Result<(usize, [u8; BYTES])> {
         match self {
-            DiscReader::Streamed(streamed_disk_reader) => streamed_disk_reader.readn(mode),
-            DiscReader::InMemory(in_memory_disk_reader) => todo!(),
+            DiscReader::Streamed(streamed_disk_reader) => streamed_disk_reader.readn(cursor),
+            DiscReader::InMemory(_in_memory_disk_reader) => todo!(),
         }
     }
 }
@@ -228,14 +220,15 @@ impl StreamedDiskReader {
 
     fn readn<const BYTES: usize>(
         &mut self,
-        mode: SetMode,
+        cursor: &mut CdromCursor,
     ) -> std::io::Result<(usize, [u8; BYTES])> {
-        tracing::info!("readn\t{}", self.cursor.to_mss::<u8>());
         let mut buf = [0u8; BYTES];
+        tracing::info!(readn_stream_pos = self.reader.stream_position().unwrap());
         let n = self.reader.read(&mut buf)?;
 
-        self.cursor.advance_by(BYTES as u32, mode.sect_size());
-        self.reader.seek(std::io::SeekFrom::Current(BYTES as i64))?;
+        cursor.lba += (BYTES / SECTOR_USER_SIZE) as u32;
+        cursor.byte += (BYTES % SECTOR_USER_SIZE) as u32;
+
         Ok((n, buf))
     }
 }
@@ -249,23 +242,23 @@ pub enum Disc {
 impl Disc {
     pub fn seek(&mut self, to: CdromCursor) -> std::io::Result<()> {
         let (padding, reader) = match self {
-            Disc::CueBin(cue_format, disc_reader) => {
-                (cue_format.index_list[0].second as u32 * 75, disc_reader)
-            }
+            Disc::CueBin(cue_format, disc_reader) => (
+                cue_format.index_list[0].second as u32 * 75 * SECTOR_USER_SIZE as u32,
+                disc_reader,
+            ),
             Disc::Raw(disc_reader) => (0, disc_reader),
         };
         let byte = padding + to.to_byte();
-        reader.update_cursor(to);
         reader.seek(byte as u64)
     }
 
     pub fn readn<const BYTES: usize>(
         &mut self,
-        mode: SetMode,
+        cursor: &mut CdromCursor,
     ) -> std::io::Result<(usize, [u8; BYTES])> {
         match self {
-            Disc::CueBin(cue_format, disc_reader) => disc_reader.readn(mode),
-            Disc::Raw(disc_reader) => todo!(),
+            Disc::CueBin(_cue_format, disc_reader) => disc_reader.readn(cursor),
+            Disc::Raw(_disc_reader) => todo!(),
         }
     }
 }
@@ -347,7 +340,6 @@ impl CdromDrive {
                 let file = fs::File::open(path)?;
                 Ok(DiscReader::Streamed(StreamedDiskReader {
                     reader: BufReader::new(Box::new(file)),
-                    cursor: CdromCursor::default(),
                 }))
             }
             false => {
@@ -356,8 +348,7 @@ impl CdromDrive {
                 let n = file.read_to_end(&mut buf)?;
                 buf.truncate(n);
                 Ok(DiscReader::InMemory(InMemoryDiskReader {
-                    buf:    buf.into_boxed_slice(),
-                    cursor: CdromCursor::default(),
+                    buf: buf.into_boxed_slice(),
                 }))
             }
         }

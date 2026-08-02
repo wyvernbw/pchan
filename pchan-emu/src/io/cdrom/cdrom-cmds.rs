@@ -122,7 +122,7 @@ impl CDRomState {
             }
             // 0x1a INT3(stat) --> INT2/5 (stat,flags,type,atip,"SCEx")
             0x1a => {
-                tracing::info!("0x1a INT3(stat) -> INT2/5(...)");
+                tracing::info!("0x1a GetID");
                 match self.drive.drive_status {
                     DriveStatus::LidOpen => {
                         self.status.set_busy_status(false);
@@ -168,7 +168,7 @@ impl CDRomState {
             }
             // ReadTOC - Command 1Eh --> INT3(stat) --> INT2(stat)
             0x1e => {
-                tracing::info!("ReadTOC INT3(stat) --> INT2(stat)");
+                tracing::info!("ReadTOC");
                 let res1 = self.responses.insert(self.int3_status(false));
                 let res2 = self.responses.insert(self.int2_status(true));
                 self.drive
@@ -218,7 +218,7 @@ impl CDRomState {
         let sect = self.get_param::<Bcd>();
 
         let mss = Mss::new(min, sec, sect);
-        tracing::info!(?mss, "setloc");
+        tracing::info!("Setloc\t{mss}");
         self.drive.setloc(mss);
         let res = CdromResponse::Immediate(self.int3_status(true));
         smallvec![res]
@@ -226,11 +226,12 @@ impl CDRomState {
 
     /// SeekL - Command 15h --> INT3(stat) --> INT2(stat)
     fn seekl_cmd(&mut self) -> ResponseList {
-        tracing::info!("seekl");
+        tracing::info!("SeekL");
         let res1 = self.responses.insert(self.int3_status(false));
         self.drive.status_code.set_spindle_mot(true);
         self.drive.status_code.reset_state();
         self.drive.status_code.set_seek(true);
+        self.drive.seek_to_cursor();
         let res2 = self.responses.insert(self.int2_status(true));
         self.drive
             .set_command_state(CommandState::responding([res1, res2]));
@@ -243,17 +244,16 @@ impl CDRomState {
 
     /// Setmode - Command 0Eh,mode --> INT3(stat)
     fn setmode_cmd(&mut self) -> ResponseList {
-        tracing::info!("setmode");
         self.status.set_busy_status(false);
         let res = self.int3_status(true);
         let setmode = self.get_param::<SetMode>();
+        tracing::info!("Setmode\t{setmode:?}");
         self.drive.setmode(setmode);
         smallvec![CdromResponse::Immediate(res)]
     }
 
     /// ReadN - Command 06h --> INT3(stat) --> INT1(stat) --> datablock
     fn readn_cmd(&mut self) -> ResponseList {
-        tracing::info!("readn start");
         self.drive.status_code.set_spindle_mot(true);
         self.drive.readn();
         smallvec![CdromResponse::Immediate(self.int3_status(true))]
@@ -261,7 +261,7 @@ impl CDRomState {
 
     /// Pause - Command 09h --> INT3(stat) --> INT2(stat)
     fn pause_cmd(&mut self) -> ResponseList {
-        tracing::info!("pause drive");
+        tracing::info!("Pause");
         let current_stat = self.int3_status(false);
         self.drive.pause();
         let res2 = self.responses.insert(self.int2_status(true));
@@ -275,13 +275,10 @@ impl CDRomState {
 
     /// Init - Command 0Ah --> INT3(stat) --> INT2(stat)
     fn init_cmd(&mut self) -> ResponseList {
+        tracing::info!("Init");
         self.drive.mode = SetMode::new_with_raw_value(0x20);
         self.drive.status_code.reset_state();
         self.drive.status_code.set_spindle_mot(true);
-        tracing::info!(
-            "init cdrom: status={}",
-            hex(self.drive.status_code.raw_value())
-        );
         let res1 = self.responses.insert(self.int3_status(false));
         let res2 = self.responses.insert(self.int2_status(true));
         self.drive
@@ -324,7 +321,7 @@ pub struct SetMode {
     speed:      SetModeSpeed,
 }
 
-impl const From<u8> for SetMode {
+const impl From<u8> for SetMode {
     fn from(value: u8) -> Self {
         SetMode::new_with_raw_value(value)
     }

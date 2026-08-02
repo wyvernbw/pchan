@@ -10,7 +10,7 @@ mod cdrom_ver;
 use std::collections::VecDeque;
 
 use crate::io::cdrom::cdrom_cmds::{CdromResponse, Response};
-use crate::io::cdrom::cdrom_drive::{CdromDrive, CommandState, Disc};
+use crate::io::cdrom::cdrom_drive::{CdromDrive, CommandState};
 use crate::io::cdrom::cdrom_ver::CDRomVerPtr;
 use crate::io::evque::{EvCtx, Evque};
 use crate::io::irq::{self};
@@ -28,8 +28,10 @@ pub struct CDRomState {
     hint_mask:   CDRomHIntMask,
     request:     CDRomReqRegister,
     param_fifo:  heapless::Deque<u8, 16>,
+    #[debug(skip)]
     result_fifo: heapless::Deque<u8, 16>,
     data_last:   u8,
+    #[debug(skip)]
     data_fifo:   VecDeque<u8>,
     ver:         CDRomVerPtr,
 
@@ -155,7 +157,7 @@ impl Emu {
             (0x1f801800, _) => Ok(self.cdrom().status.io_from_u32()),
             (0x1f801801, _) => match self
                 .cdrom_mut()
-                .result_pop()
+                .pop_response()
                 .inspect(|value| tracing::info!("cdrom: return response {}", hex(*value)))
             {
                 Some(value) => Ok(value.io_from_u32()),
@@ -480,7 +482,7 @@ impl CDRomState {
         }
     }
     #[pchan_macros::instrument(skip_all, ret)]
-    fn result_pop(&mut self) -> Option<u8> {
+    fn pop_response(&mut self) -> Option<u8> {
         let res = self.result_fifo.pop_front();
         if self.result_fifo.is_empty() {
             self.status.set_result_rready(false);
