@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, SampleFormat, Stream, SupportedStreamConfig};
 use miette::{Context, IntoDiagnostic, Result, bail};
@@ -55,28 +57,39 @@ impl AudioTask {
         let Some(mut cons) = self.cons else {
             bail!("audio task not bound");
         };
-        let config = self.config.clone();
+        let mut config = self.config.clone().config();
+        config.buffer_size = cpal::BufferSize::Fixed(441 * 5);
         let mut last_samples = [0.0, 0.0];
         let stream = self.device.build_output_stream(
-            &self.config.config(),
+            &config,
             move |data: &mut [f32], _info| {
-                if config.channels() > 2 {
+                if self.config.channels() > 2 {
                     panic!("unsupported audio config: device has more than 2 channels");
                 }
-                for s in data.chunks_mut(2) {
-                    let mut i = 0;
-                    let samples = [cons.cons.try_pop(), cons.cons.try_pop()].map(|src| {
-                        let res = src
-                            .map(|src| (src as f32) / (i16::MAX as f32 + 1.0))
-                            .unwrap_or(last_samples[i]);
-                        i += 1;
-                        res
-                    });
-                    for (src, dest) in samples.iter().copied().zip(s) {
-                        *dest = src;
-                    }
-                    last_samples = samples;
+                // ~50ms audio buffer
+                if cons.cons.occupied_len() <= 441 * 5 * 2 {
+                    return;
                 }
+                for s in data.chunks_mut(2) {
+                    for dest in s.iter_mut() {
+                        let sample = cons.cons.try_pop().unwrap_or(0);
+                        *dest = (sample as f32) / (i16::MAX as f32)
+                    }
+                }
+                // for s in data.chunks_mut(2) {
+                //     let mut i = 0;
+                //     let samples = [cons.cons.try_pop(), cons.cons.try_pop()].map(|src| {
+                //         let res = src
+                //             .map(|src| (src as f32) / (i16::MAX as f32 + 1.0))
+                //             .unwrap_or(last_samples[i]);
+                //         i += 1;
+                //         res
+                //     });
+                //     for (src, dest) in samples.iter().copied().zip(s) {
+                //         *dest = src;
+                //     }
+                //     last_samples = samples;
+                // }
             },
             |err| tracing::error!("{err}"),
             None,
