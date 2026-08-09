@@ -1,6 +1,7 @@
 #![feature(duration_millis_float)]
 
 pub use glam;
+use pchan_utils::tracy::TracyClient;
 pub(crate) mod render_pass;
 
 use std::mem::offset_of;
@@ -19,9 +20,11 @@ use wgpu::*;
 
 #[derive(Debug)]
 pub struct Renderer {
+    pub instance: Instance,
     pub adapter: Adapter,
     pub device: Device,
     pub queue: Queue,
+    pub tracy: TracyClient,
 
     pipeline_layout: PipelineLayout,
     render_pipeline: RenderPipeline,
@@ -77,6 +80,7 @@ pub enum InitError {
 
 impl Renderer {
     pub async fn from_wgpu(
+        instance: Instance,
         adapter: Adapter,
         device: Device,
         queue: Queue,
@@ -120,7 +124,7 @@ impl Renderer {
 
         // uniform vram texture
         let vram_texture = device.create_texture(&TextureDescriptor {
-            label: Some("pchan_gpu::render_tex"),
+            label: Some("pchan_gpu::vram_tex"),
             size: Extent3d {
                 width: 512,
                 height: 512,
@@ -206,7 +210,7 @@ impl Renderer {
             mapped_at_creation: false,
         });
         let display_bind_group = device.create_bind_group(&BindGroupDescriptor {
-            label: Some("pchan_gpu::rasterizer_bind_group"),
+            label: Some("pchan_gpu::display_bind_group"),
             layout: &display_bind_group_layout,
             entries: &[
                 BindGroupEntry {
@@ -311,6 +315,7 @@ impl Renderer {
         });
 
         Ok(Self {
+            instance,
             adapter,
             device,
             queue,
@@ -330,6 +335,7 @@ impl Renderer {
             display_uniform_buffer,
             display_uniforms: Mutex::new(DisplayUniforms::default()),
             display_format,
+            tracy: TracyClient::default(),
         })
     }
 
@@ -361,7 +367,14 @@ impl Renderer {
                 trace: Trace::Off,
             })
             .await?;
-        Self::from_wgpu(adapter, device, queue, TextureFormat::Bgra8UnormSrgb).await
+        Self::from_wgpu(
+            instance,
+            adapter,
+            device,
+            queue,
+            TextureFormat::Bgra8UnormSrgb,
+        )
+        .await
     }
 
     pub async fn new() -> Self {
@@ -374,6 +387,7 @@ impl Renderer {
 
     pub fn start(self: Arc<Self>) {
         std::thread::spawn(move || {
+            self.tracy.set_thread_name("pchan-gpu");
             pchan_executor::block_on(async {
                 tracing::info!("started gpu renderer task");
                 loop {
@@ -395,7 +409,9 @@ impl Renderer {
                             let scene = Scene::new_from_draw_calls(draw_calls);
                             let mut pass = self.create_render_pass(scene).await;
                             pass.draw(&vram);
-                            pass.finish(&mut vram).await;
+                            if let Err(err) = pass.finish(&mut vram).await {
+                                tracing::warn!("render error: {}", err);
+                            };
                             let elapsed = now.elapsed().as_millis_f32();
                             _ = self.conn.vram_out_chan.0.send(vram).await;
                             tracing::info!("finished render ({elapsed:01.2}ms)");
@@ -638,6 +654,7 @@ enum DrawRectError {
 
 impl Scene {
     pub fn new_from_draw_calls(cmds: DrawCallCollection) -> Scene {
+        let _scene = pchan_utils::tracy::span!("rd-build-scene");
         let Some(gpustat) = cmds.draw_calls.last().map(|draw| draw.gpustat) else {
             return Scene::default();
         };

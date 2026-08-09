@@ -40,8 +40,12 @@ impl Emu {
         VBLANK_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
+    #[inline(always)]
     pub fn consume_vblank_signal(&mut self) -> bool {
         let signal = self.gpu().vblank_signal;
+        if signal {
+            self.tracy.frame_mark();
+        }
         self.gpu_mut().vblank_signal = false;
         signal
     }

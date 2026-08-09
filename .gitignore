@@ -3,5 +3,7 @@
 /target
 bios-decomp/
 
+*.xcodeproj
+
 *.BIN
 *.log

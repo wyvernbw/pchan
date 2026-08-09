@@ -3,6 +3,9 @@ name = "pchan-egui-experimental"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+tracy = ["pchan-utils/tracy-enable"]
+
 [dependencies]
 fontdb = "0.24.0"
 miette = { version = "7.6.0", features = ["fancy-no-backtrace"] }
@@ -15,11 +18,11 @@ pchan-executor.workspace = true
 rfd = "0.17.2"
 ringbuf = "0.5.1"
 ttf-parser = "0.25.1"
+spin_sleep = "1.3.3"
+egui_extras = "0.36.1"
 
 [dependencies.eframe]
-version = "*"
-git = "https://github.com/wyvernbw/egui.git"
-branch = "wyvernbw/eframe-optional-links"
+version = "0.36.1"
 default-features = false
 features = [
   "accesskit",

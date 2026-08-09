@@ -2,7 +2,7 @@ use derive_more as d;
 use dynasm::dynasm;
 use dynasmrt::{Assembler, DynasmApi, DynasmLabelApi, ExecutableBuffer};
 use heapless::binary_heap::Min;
-use pchan_utils::{default, hex};
+use pchan_utils::{default, hex, tracy};
 use smallbox::SmallBox;
 use smallvec::SmallVec;
 use std::cell::Cell;
@@ -829,6 +829,7 @@ pub fn run_step(emu: &mut Emu, dynarec: &mut Dynarec) {
     let block = match emu.dynarec_cache.remove(pc) {
         None => {
             let block = fetch_and_compile_single_threaded(emu, dynarec).unwrap();
+            emu.stats.blocks_compiled += 1;
             #[cfg(debug_assertions)]
             {
                 INSTR_COMPILED.fetch_add(block.op_count as u64, Ordering::Relaxed);
@@ -845,9 +846,7 @@ pub fn run_step(emu: &mut Emu, dynarec: &mut Dynarec) {
         }
     };
     block(emu, false);
-    // while emu.cpu.pc == pc {
-    //     block(emu, false);
-    // }
+    emu.stats.blocks_ran += 1;
 
     dynarec.last_ran_function = Some(block.function.clone());
     emu.dynarec_cache.insert(pc, block);

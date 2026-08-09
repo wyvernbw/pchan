@@ -123,7 +123,7 @@ pub(crate) fn draw_display(state: &AppState, dp: &mut DisplayState) -> Vec<u8> {
     });
     _ = gpu.device.poll(PollType::wait_indefinitely());
     let render = {
-        let buf = dp.display_buf.get_mapped_range(..);
+        let buf = dp.display_buf.get_mapped_range(..).unwrap();
         let mut buf_owned = buf.to_vec();
         bgra_to_rgba(&mut buf_owned);
         #[cfg(feature = "image-debug")]

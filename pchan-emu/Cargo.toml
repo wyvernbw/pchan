@@ -12,7 +12,7 @@ trace = []
 [dependencies]
 tracing = { workspace = true }
 pchan-macros = { workspace = true }
-pchan-utils = { workspace = true }
+pchan-utils = { workspace = true, features = ["tracy"] }
 pchan-bind.workspace = true
 kanal.workspace = true
 arbitrary-int.workspace = true

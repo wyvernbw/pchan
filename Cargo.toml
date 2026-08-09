@@ -22,9 +22,10 @@ members = [
     "pchan-audio",
     "pchan-dbg-egui",
     "pchan-dbg-v2",
-    "pchan-egui-experimental",
     "pchan-input",
-    "pchan-executor"
+    "pchan-executor",
+    "experimental/pchan-egui-experimental",
+    "experimental/pchan-imgui"
 ]
 
 [workspace.dependencies]

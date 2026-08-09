@@ -18,7 +18,7 @@ pchan-gpu.workspace = true
 pchan-utils = { workspace = true, features = ["tracing-subscriber"] }
 smol.workspace = true
 tracing = "0.1.44"
-wgpu = "29.0.3"
+wgpu = "30.0.0"
 crossterm = { version = "0.29.0", features = ["event-stream"] }
 rat-imaginary = { version = "0.1.0", path = "./rat-imaginary" }
 edtui = { version = "0.11.3", default-features = false }

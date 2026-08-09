@@ -1,8 +1,11 @@
 pub mod input;
 
-use std::{fmt::Debug, sync::Arc};
+use std::fmt::Debug;
+use std::sync::Arc;
 
-use ringbuf::{CachingCons, CachingProd, SharedRb, storage::Heap, traits::Split};
+use ringbuf::storage::Heap;
+use ringbuf::traits::Split;
+use ringbuf::{CachingCons, CachingProd, SharedRb};
 
 pub use ringbuf;
 
@@ -27,7 +30,7 @@ impl Debug for AudioProducer {
 }
 
 pub fn create_audio() -> (AudioConsumer, AudioProducer) {
-    let rb = SharedRb::<Heap<i16>>::new(4096 * 2); // 16kb audio ringbuffer
+    let rb = SharedRb::<Heap<i16>>::new(4096 * 8); // 32kb audio ringbuffer
     let (prod, cons) = rb.split();
     (AudioConsumer { cons }, AudioProducer { prod })
 }

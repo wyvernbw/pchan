@@ -5,6 +5,8 @@ edition = "2024"
 
 [features]
 tracing-subscriber = ["dep:tracing-subscriber"]
+tracy-enable = ["tracy-client/enable"]
+tracy = ["dep:tracy-client"]
 default = ["tracing-subscriber"]
 
 [dependencies]
@@ -14,6 +16,7 @@ tracing = { workspace = true }
 const-hex.workspace = true
 heapless = "0.9.3"
 kanal.workspace = true
+tracy-client = { version = "0.18.4", optional = true, default-features = false }
 
 [dev-dependencies]
 pretty_assertions = {version = "1.4.1", features = ["unstable"]}

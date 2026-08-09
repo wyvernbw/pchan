@@ -8,7 +8,7 @@ wgpu = "30.0.0"
 thiserror = "2.0.18"
 pchan-emu = {workspace = true}
 pchan-macros = { workspace = true }
-pchan-utils = { workspace = true }
+pchan-utils = { workspace = true, features = ["tracy"] }
 tracing = { workspace = true }
 glam = "0.32.1"
 pchan-executor.workspace = true
@@ -22,6 +22,5 @@ pretty_assertions = {version = "1.4.1", features = ["unstable"]}
 rstest = "*"
 color-eyre = "*" 
 criterion = { version = "0.8", features = ["html_reports"] }
-ratatui = "*"
 bitbybit.workspace = true
 arbitrary-int.workspace = true

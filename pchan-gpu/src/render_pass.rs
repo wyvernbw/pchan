@@ -1,5 +1,6 @@
 use crate::{Renderer, Scene};
 use pchan_emu::memory::mb;
+use pchan_utils::tracy;
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
 use wgpu::*;
 
@@ -7,7 +8,7 @@ impl Renderer {
     pub async fn create_render_pass(&self, scene: Scene) -> RenderPass<'_> {
         let vertex_buf = unsafe {
             std::slice::from_raw_parts(
-                scene.vertex_buf.as_slice() as *const [_] as *const u8,
+                scene.vertex_buf.as_ptr() as *const u8,
                 std::mem::size_of_val(scene.vertex_buf.as_slice()),
             )
         };
@@ -65,6 +66,7 @@ pub struct RenderPass<'a> {
 
 impl<'a> RenderPass<'a> {
     pub fn draw(&mut self, vram: &[u16]) {
+        let _draw = tracy::span!("rd-gpu-draw");
         if self.scene.vertex_buf.is_empty() {
             return;
         }
@@ -153,6 +155,7 @@ impl<'a> RenderPass<'a> {
     }
 
     pub async fn finish(mut self, vram: &mut [u16]) -> Result<(), MapRangeError> {
+        let _commit = tracy::span!("rd-commit");
         let output_buffer = self.renderer.device.create_buffer(&BufferDescriptor {
             label: Some("output"),
             size: mb(1) as u64,

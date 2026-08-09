@@ -109,6 +109,14 @@ pub struct Emu {
     pub sio:           SioState,
     pub irq:           IrqState,
     pub evque:         Evque<Self>,
+    pub tracy:         TracyClient,
+    pub stats:         Stats,
+}
+
+#[derive(Default, derive_more::Debug, Clone)]
+pub struct Stats {
+    pub blocks_compiled: u64,
+    pub blocks_ran:      u64,
 }
 
 impl Emu {
@@ -136,7 +144,21 @@ impl Emu {
     }
 }
 
+impl Stats {
+    pub fn pop_frame_blocks_compiled(&mut self) -> u64 {
+        let res = self.blocks_compiled;
+        self.blocks_compiled = 0;
+        res
+    }
+    pub fn pop_frame_blocks_ran(&mut self) -> u64 {
+        let res = self.blocks_ran;
+        self.blocks_ran = 0;
+        res
+    }
+}
+
 use pchan_utils::hex;
+use pchan_utils::tracy::TracyClient;
 
 impl Emu {
     #[inline(always)]

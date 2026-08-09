@@ -31,7 +31,8 @@ pub struct SpuState {
     ram_current: usize,
     clock:       u64,
 
-    prod: Option<Mutex<AudioProducer>>,
+    prod:      Option<Mutex<AudioProducer>>,
+    clock_idx: u64,
 }
 
 impl Default for SpuState {
@@ -47,6 +48,7 @@ impl Default for SpuState {
             adsr:           ADSRState::default(),
             main_vol_left:  0x0,
             main_vol_right: 0x0,
+            clock_idx:      0,
         }
     }
 }
@@ -64,6 +66,7 @@ impl Clone for SpuState {
             adsr:           self.adsr.clone(),
             main_vol_left:  self.main_vol_left,
             main_vol_right: self.main_vol_right,
+            clock_idx:      0,
         }
     }
 }
@@ -323,12 +326,14 @@ impl Emu {
 
     pub fn handle_ev_spu_clock(&mut self, ctx: EvCtx) {
         self.clock();
+        let last_clock = self.spu.clock_idx * SpuState::CLOCK_CYCLES;
         self.evque_mut().schedule_from(
             Self::handle_ev_spu_clock,
             0,
-            ctx.clock,
+            last_clock,
             SpuState::CLOCK_CYCLES,
         );
+        self.spu.clock_idx += 1;
     }
 
     fn clock(&mut self) {

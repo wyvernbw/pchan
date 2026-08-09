@@ -45,18 +45,22 @@ fn vs_main(
 
     let tex_aspect  = res.x / res.y;
     let screen_aspect = f32(display.screen_rect.x) / f32(display.screen_rect.y);
+
+    // letterbox
     var scale: vec2f;
     if tex_aspect > screen_aspect {
         scale = vec2f(1.0, screen_aspect / tex_aspect);
     } else {
         scale = vec2f(tex_aspect / screen_aspect, 1.0);
     }
-
+    
     pos = vertices[in_vertex_index];
     out.uv = (pos + vec2(1)) * vec2(0.5);
     pos *= scale;
+
     out.clip_position = vec4<f32>(pos.x, pos.y, 0.0, 1.0);
     out.vert_pos = out.clip_position.xyz;
+
     return out;
 }
 

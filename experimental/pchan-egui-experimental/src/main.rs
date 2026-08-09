@@ -1,13 +1,18 @@
 #![feature(duration_millis_float)]
 
+use egui_extras::{Size, StripBuilder};
 use pchan_bind::ringbuf::StaticRb;
 use pchan_bind::ringbuf::traits::{Consumer, RingBuffer};
-use pchan_utils::InitTracingArgs;
+use pchan_emu::cpu::REG_STR;
+use pchan_utils::tracy::{PlotConfiguration, plot_name};
+use pchan_utils::{InitTracingArgs, default, tracy};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use eframe::egui::{self, FontData, FontDefinitions, RichText, ScrollArea, Sense, Style};
+use eframe::egui::{
+    self, Color32, FontData, FontDefinitions, Panel, RichText, ScrollArea, Sense, Style, Ui,
+};
 use eframe::egui_wgpu::{Callback, CallbackTrait};
 use miette::{Context, IntoDiagnostic};
 use pchan_audio::AudioTask;
@@ -22,6 +27,13 @@ fn main() -> miette::Result<()> {
     });
     let native_options = eframe::NativeOptions {
         persist_window: true,
+        wgpu_options: eframe::WgpuConfiguration {
+            surface: eframe::SurfaceConfig {
+                present_mode:                  eframe::wgpu::PresentMode::AutoVsync,
+                desired_maximum_frame_latency: Some(2),
+            },
+            ..Default::default()
+        },
         ..Default::default()
     };
     eframe::run_native(
@@ -45,7 +57,8 @@ struct MyEguiApp {
 
     disc_path: Option<PathBuf>,
 
-    pc_history: StaticRb<u32, 128>,
+    pc_history:     StaticRb<u32, 128>,
+    register_edits: [String; 34],
 }
 
 #[derive(PartialEq)]
@@ -79,6 +92,7 @@ fn get_system_fonts(defs: &mut FontDefinitions) {
     let mut db = fontdb::Database::new();
     db.load_system_fonts();
     add_from_character(defs, &db, 'あ');
+    add_from_character(defs, &db, 'a');
 }
 
 impl MyEguiApp {
@@ -96,16 +110,16 @@ impl MyEguiApp {
             "Geist".into(),
             FontData::from_static(include_bytes!("../assets/Geist[wght].ttf")).into(),
         );
-        fonts
-            .families
-            .get_mut(&egui::FontFamily::Proportional)
-            .unwrap()
-            .push("GeistMono".into());
-        fonts
-            .families
-            .get_mut(&egui::FontFamily::Proportional)
-            .unwrap()
-            .push("Geist".into());
+        // fonts
+        //     .families
+        //     .get_mut(&egui::FontFamily::Proportional)
+        //     .unwrap()
+        //     .push("GeistMono".into());
+        // fonts
+        //     .families
+        //     .get_mut(&egui::FontFamily::Proportional)
+        //     .unwrap()
+        //     .push("Geist".into());
         get_system_fonts(&mut fonts);
         cc.egui_ctx.set_fonts(fonts);
 
@@ -138,12 +152,18 @@ impl MyEguiApp {
         std::mem::forget(audio_stream);
 
         let game_display_cb = GameDisplayCallback { rd: gpu.clone() };
+
+        emu.tracy.plot_config(
+            plot_name!("jit_cache_rate"),
+            PlotConfiguration::default().format(tracy::PlotFormat::Percentage),
+        );
         Ok(Self {
             emu,
             emu_running: false,
             gpu,
             runner: Runner::new().with_config(pchan_emu::run::RunnerConfig {
-                force_mode: Some(pchan_emu::run::RunnerMode::Dynarec),
+                // force_mode: Some(pchan_emu::run::RunnerMode::Dynarec),
+                force_mode: Some(pchan_emu::run::RunnerMode::Interpreter),
             }),
             frame_instant: Instant::now(),
             frame_idx: 0,
@@ -151,6 +171,8 @@ impl MyEguiApp {
             game_display_cb,
             disc_path: None,
             pc_history: StaticRb::default(),
+
+            register_edits: core::array::from_fn(|_| default()),
         })
     }
 
@@ -172,7 +194,7 @@ impl MyEguiApp {
 
 impl eframe::App for MyEguiApp {
     fn persist_egui_memory(&self) -> bool {
-        true
+        false
     }
 
     fn on_exit(&mut self) {}
@@ -184,6 +206,12 @@ impl eframe::App for MyEguiApp {
                 self.pc_history.push_overwrite(self.emu.cpu.pc);
                 self.runner.execute(&mut self.emu);
             }
+            let blocks_compiled = self.emu.stats.pop_frame_blocks_compiled();
+            tracy::plot!("jit_blocks_compiled", blocks_compiled as f64);
+            let blocks_ran = self.emu.stats.pop_frame_blocks_ran();
+            tracy::plot!("jit_blocks_ran", blocks_ran as f64);
+            let cache_rate = (1.0 - blocks_compiled as f64 / blocks_ran as f64) * 100.;
+            tracy::plot!("jit_cache_rate", cache_rate);
         }
         self.frame_idx += 1;
     }
@@ -232,39 +260,17 @@ impl eframe::App for MyEguiApp {
                         self.game_display_cb.clone(),
                     ))
                 });
-            egui::Window::new("Cpu Info")
-                .resizable(true)
-                .constrain(true)
-                .show(ui, |ui| {
-                    egui::Grid::new("cpu_grid")
-                        .num_columns(2)
-                        .striped(true)
-                        .show(ui, |ui| {
-                            ui.label("pc");
-                            ui.label(format!("{}", pchan_utils::hex(self.emu.cpu.pc)));
-                            ui.end_row();
-                        });
-                    ui.separator();
-                    ui.heading("PC Log");
-                    ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-                        ui.vertical(|ui| {
-                            for &pc in self.pc_history.iter().rev() {
-                                ui.label(format!("{}", pchan_utils::hex(pc)));
-                            }
-                        });
-                    });
-                    // ui.horizontal(|ui| {
-                    // })
-                });
+            // TODO: handle errors
+            self.cpu_info(ui).unwrap();
         });
 
         if let Some(window) = frame.winit_window() {
             match self.loop_mode() {
                 LoopMode::OnEvent => {}
                 LoopMode::GameLoop => {
-                    // let sleep_for =
-                    //     Duration::from_micros(16666).saturating_sub(self.frame_instant.elapsed());
-                    // std::thread::sleep(sleep_for);
+                    let sleep_for =
+                        Duration::from_micros(16666).saturating_sub(self.frame_instant.elapsed());
+                    spin_sleep::sleep(sleep_for);
                     window.request_redraw()
                 }
             }
@@ -290,5 +296,70 @@ impl CallbackTrait for GameDisplayCallback {
                 pchan_gpu::glam::U16Vec2::new(rect.width_px as u16, rect.height_px as u16);
         }
         self.rd.draw_display(render_pass);
+    }
+}
+
+impl MyEguiApp {
+    fn cpu_info(&mut self, ui: &mut Ui) -> miette::Result<()> {
+        egui::Window::new("cpu info")
+            .default_size([400., 400.])
+            .resizable(false)
+            .show(ui, |ui| {
+                StripBuilder::new(ui)
+                    .sizes(Size::relative(0.5), 2)
+                    .horizontal(|mut strip| {
+                        strip.cell(|ui| {
+                            ScrollArea::vertical()
+                                .auto_shrink([true, true])
+                                .show(ui, |ui| {
+                                    egui::Grid::new("cpu_grid")
+                                        .num_columns(2)
+                                        .striped(true)
+                                        .show(ui, |ui| {
+                                            ui.vertical(|ui| {
+                                                ui.label("pc");
+                                                ui.label(format!(
+                                                    "{}",
+                                                    pchan_utils::hex(self.emu.cpu.pc)
+                                                ));
+                                                ui.end_row();
+                                                let mut name = String::new();
+                                                for (reg, reg_str) in
+                                                    REG_STR.iter().enumerate().take(2)
+                                                {
+                                                    use core::fmt::Write;
+
+                                                    write!(name, "${reg_str}").expect("fmt error");
+                                                    ui.label(&name);
+                                                    self.register_edits[reg].clear();
+                                                    self.register_edits[reg].push_str(reg_str);
+                                                    let res = ui.text_edit_singleline(
+                                                        &mut self.register_edits[reg],
+                                                    );
+                                                    ui.end_row();
+
+                                                    name.clear();
+                                                }
+                                            });
+                                        });
+                                });
+                        });
+                        strip.cell(|ui| {
+                            ui.vertical(|ui| {
+                                ui.heading("PC Log");
+                                ScrollArea::vertical()
+                                    .auto_shrink([true, true])
+                                    .show(ui, |ui| {
+                                        for &pc in self.pc_history.iter().rev() {
+                                            ui.label(format!("{}", pchan_utils::hex(pc)));
+                                        }
+                                    });
+                            });
+                        });
+                    });
+                // ui.horizontal(|ui| {
+                // })
+            });
+        Ok(())
     }
 }

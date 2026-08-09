@@ -153,6 +153,21 @@ pub mod trace_utils {
     }
 }
 
+#[cfg(feature = "tracy")]
+pub mod tracy {
+    #[derive(derive_more::Deref, derive_more::DerefMut, Clone, derive_more::Debug)]
+    #[debug("N/A")]
+    pub struct TracyClient(tracy_client::Client);
+
+    impl Default for TracyClient {
+        fn default() -> Self {
+            Self(tracy_client::Client::start())
+        }
+    }
+
+    pub use tracy_client::*;
+}
+
 #[cfg(feature = "tracing-subscriber")]
 pub use trace_utils::*;
 
