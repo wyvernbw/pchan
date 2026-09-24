@@ -25,7 +25,8 @@ members = [
     "pchan-input",
     "pchan-executor",
     "experimental/pchan-egui-experimental",
-    "experimental/pchan-imgui"
+    "experimental/pchan-imgui",
+    "experimental/pchan-dbg-gpui"
 ]
 
 [workspace.dependencies]
