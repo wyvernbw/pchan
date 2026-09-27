@@ -3,22 +3,25 @@
 #[path = "game-surface.rs"]
 pub mod game_surface;
 
+use core::num::ParseIntError;
+use core::time::Duration;
 use std::borrow::Cow;
-use std::num::ParseIntError;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use gpui::prelude::*;
 use gpui::{AppContext, Render, *};
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::collapsible::Collapsible;
 use gpui_component::input::{Input, InputState};
+use gpui_component::separator::Separator;
 use gpui_component::spinner::Spinner;
 use gpui_component::tab::TabBar;
 use gpui_component::text::{TextView, markdown};
 use gpui_component::{
-    ActiveTheme, IconName, Root, Sizable, StyledExt, Theme, ThemeConfig, h_flex, v_flex,
+    ActiveTheme, Icon, IconName, Root, Sizable, StyledExt, Theme, ThemeConfig, h_flex, v_flex,
 };
 use gpui_kit_assets::Assets;
 use pchan_audio::AudioTask;
@@ -26,7 +29,7 @@ use pchan_emu::Emu;
 use pchan_emu::cpu::REG_STR;
 use pchan_emu::cpu::ops::OpCode;
 use pchan_emu::dynarec_v2::emitters::DecodedOp;
-use pchan_utils::{hex, setup_tracing};
+use pchan_utils::{hex, init_tracing};
 
 actions!(app, [Quit]);
 
@@ -35,14 +38,18 @@ actions!(app, [Quit]);
 static ALLOC: dhat::Alloc = dhat::Alloc;
 
 fn main() -> miette::Result<()> {
-    setup_tracing();
+    init_tracing(pchan_utils::InitTracingArgs {
+        stdout:     false,
+        file:       true,
+        panic_hook: false,
+    });
     #[cfg(feature = "dhat-heap")]
     let _profiler = dhat::Profiler::new_heap();
     #[cfg(feature = "dhat-heap")]
     let _profiler_ptr = &_profiler as *const dhat::Profiler as *mut dhat::Profiler;
 
     gpui_platform::application()
-        .with_assets(Assets)
+        .with_assets(PchanAssets::new())
         .with_quit_mode(QuitMode::LastWindowClosed)
         .run(move |cx| {
             gpui_component::init(cx);
@@ -53,7 +60,7 @@ fn main() -> miette::Result<()> {
                 ..Default::default()
             }));
 
-            theme.primary_foreground = rgb_to_hsla(rgb(0x61eed0));
+            theme.primary_foreground = rgb_to_hsla(rgb(0xf25d94));
             cx.set_window_appearance(Some(WindowAppearance::VibrantDark));
 
             cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
@@ -68,6 +75,15 @@ fn main() -> miette::Result<()> {
             _ = cx.open_window(
                 gpui::WindowOptions {
                     window_background: WindowBackgroundAppearance::Blurred,
+                    window_decorations: Some(WindowDecorations::Client),
+                    titlebar: Some(TitlebarOptions {
+                        title:                  None,
+                        appears_transparent:    true,
+                        traffic_light_position: Some(Point {
+                            x: 8.0.into(),
+                            y: 8.0.into(),
+                        }),
+                    }),
                     ..Default::default()
                 },
                 |win, cx| {
@@ -84,6 +100,34 @@ fn main() -> miette::Result<()> {
     Ok(())
 }
 
+struct PchanAssets {
+    eject_icon:  &'static [u8],
+    disc_3_icon: &'static [u8],
+}
+
+impl PchanAssets {
+    fn new() -> Self {
+        Self {
+            eject_icon:  include_bytes!("./assets/eject.svg"),
+            disc_3_icon: include_bytes!("./assets/disc-3.svg"),
+        }
+    }
+}
+
+impl AssetSource for PchanAssets {
+    fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
+        match path {
+            "eject.svg" => Ok(Some(Cow::Borrowed(self.eject_icon))),
+            "disc-3.svg" => Ok(Some(Cow::Borrowed(self.disc_3_icon))),
+            _ => Assets.load(path),
+        }
+    }
+
+    fn list(&self, path: &str) -> Result<Vec<SharedString>> {
+        Assets.list(path)
+    }
+}
+
 struct Debugger {
     emu:         Emu,
     runner:      Runner,
@@ -96,16 +140,17 @@ struct Debugger {
 
     exec_control_panel_open: bool,
     mips_dump_scroll_handle: UniformListScrollHandle,
+    disc_path:               Option<PathBuf>,
 
     target:     PchanTexture,
     target_buf: wgpu::Buffer,
 }
 
-use miette::IntoDiagnostic;
+use miette::{IntoDiagnostic, miette};
 use pchan_emu::run::Runner;
 use pchan_gpu::wgpu;
 
-use crate::game_surface::{PchanTexture, SurfaceState, create_target, draw_display};
+use crate::game_surface::{PchanTexture, SurfaceState, create_target};
 
 impl Debugger {
     pub fn new(_window: &Window, cx: &App) -> miette::Result<Self> {
@@ -155,6 +200,7 @@ impl Debugger {
             cached_reg_names,
             cpu_control_reg_tab: 0,
             exec_control_panel_open: true,
+            disc_path: None,
             mips_dump_scroll_handle: UniformListScrollHandle::new(),
 
             target,
@@ -210,22 +256,21 @@ impl Render for Debugger {
 
 fn header<T>(cx: &Context<T>, frame_time: &Duration) -> impl IntoElement {
     let theme = cx.theme();
-    div()
+    h_flex()
         .text_sm()
         .bg(theme.title_bar)
         .px_4()
+        .pl(rems(4.5))
         .py_1()
-        .flex()
         .gap_4()
+        .items_center()
         .border_color(theme.title_bar_border)
         .border_b_1()
         .text_color(theme.table_head_foreground)
+        .font_family(&theme.mono_font_family)
         .child("🐷🎗️ P-ちゃん")
         .child(div().flex_grow_1())
-        .child(
-            markdown(format!("frame: {:02}ms", frame_time.as_millis()))
-                .font_family(&theme.mono_font_family),
-        )
+        .child(markdown(format!("frame: {:02}ms", frame_time.as_millis())))
 }
 
 impl Debugger {
@@ -256,10 +301,10 @@ impl Debugger {
                         .child(
                             h_flex()
                                 .justify_between()
-                                .child(self.execution_header(cx, &theme))
+                                .gap_2()
+                                .child(self.execution_header(cx, &theme).min_w_0().flex_grow_1())
                                 .child(
                                     Button::new("toggle1")
-                                        .text_sm()
                                         .icon(IconName::ChevronDown)
                                         .ghost()
                                         .small()
@@ -398,10 +443,9 @@ impl Debugger {
             }
         });
 
-        v_flex()
+        panel(&theme)
+            .v_flex()
             .id("cpu-scroll-container")
-            .p_2()
-            .px_4()
             .h_full()
             .child(
                 h_flex()
@@ -409,15 +453,16 @@ impl Debugger {
                     .child(markdown("REGS").text_color(theme.colors.muted_foreground))
                     .child(tabs),
             )
-            .border_2()
-            .border_color(theme.border)
-            .corner_radii(Corners::all(8.0.into()))
             .gap_2()
             .child(
-                v_flex()
+                div()
+                    .v_flex()
+                    .flex_wrap()
+                    // .grid()
+                    // .grid_cols_max_content(4)
+                    .px_4()
                     .min_h_0()
                     .flex_grow_1()
-                    .flex_wrap()
                     .w_full()
                     .gap_neg_2()
                     .children(regs),
@@ -432,8 +477,7 @@ impl Debugger {
         let entity = cx.entity().clone();
         let theme = theme.clone();
         let pc = self.emu.cpu.pc;
-        panel(&theme)
-            .v_flex()
+        v_flex()
             .overflow_y_hidden()
             .gap_2()
             .child(
@@ -465,11 +509,15 @@ impl Debugger {
                                     .map(DecodedOp::new)
                                     .map(|instr| Cow::Owned(format!("{instr}")))
                                     .unwrap_or(Cow::Borrowed("N/A"));
+                                let is_pc = pc & 0x1fff_ffff == addr & 0x1fff_ffff;
                                 h_flex()
                                     .w_full()
                                     .font_family(&theme.mono_font_family)
-                                    .gap_4()
-                                    .opacity(if idx.is_multiple_of(2) { 1.0 } else { 0.8 })
+                                    .bg(theme.foreground.opacity(if idx.is_multiple_of(2) {
+                                        0.0
+                                    } else {
+                                        0.08
+                                    }))
                                     .child(
                                         TextView::markdown(
                                             ElementId::NamedInteger(op_label, idx as u64),
@@ -479,15 +527,19 @@ impl Debugger {
                                         .opacity(0.5),
                                     )
                                     .child(
+                                        div()
+                                            .text_center()
+                                            .w_4()
+                                            .when(is_pc, |this| this.child(">")),
+                                    )
+                                    .child(
                                         TextView::markdown(
                                             ElementId::NamedInteger(address_label, idx as u64),
                                             instr,
                                         )
                                         .selectable(true),
                                     )
-                                    .when(pc & 0x1fff_ffff == addr & 0x1fff_ffff, |this| {
-                                        this.text_color(theme.primary_foreground).child("<-")
-                                    })
+                                    .when(is_pc, |this| this.text_color(theme.primary_foreground))
                                     .h_4()
                             })
                             .collect()
@@ -498,6 +550,72 @@ impl Debugger {
                 .flex_grow_1(),
             )
     }
+
+    fn open_disc_button(&mut self, cx: &mut Context<Debugger>, theme: &Theme) -> Button {
+        Button::new("disc-path-button")
+            .secondary()
+            .on_click(cx.listener(|_, _, _, cx| {
+                let path_recv = cx.prompt_for_paths(PathPromptOptions {
+                    files:       true,
+                    directories: false,
+                    multiple:    false,
+                    prompt:      Some("Open disc file (.bin, .cue)".into()),
+                });
+                cx.spawn(async move |view, cx| -> miette::Result<()> {
+                    let Some(view) = view.upgrade() else {
+                        return Ok(());
+                    };
+                    let res = path_recv.await.into_diagnostic()?;
+                    let res = res.map_err(|err| miette!("error: {err}"))?;
+                    let mut res = res.ok_or_else(|| miette!("no file selected"))?;
+                    let disc_path = res
+                        .pop()
+                        .ok_or_else(|| miette!("expected at least one disc path"))?;
+
+                    view.update(cx, move |view, _| -> miette::Result<()> {
+                        let fsm = view.emu.open_disc(&disc_path, false).into_diagnostic()?;
+                        view.emu
+                            .advance_open_disc(&disc_path, fsm, false)
+                            .into_diagnostic()?;
+                        view.disc_path = Some(disc_path);
+                        Ok(())
+                    })?;
+
+                    Ok(())
+                })
+                .detach();
+            }))
+    }
+
+    fn disc_buttons(
+        &mut self,
+        cx: &mut Context<Debugger>,
+        theme: &Theme,
+    ) -> impl IntoElement + Styled {
+        let open_disc = self.open_disc_button(cx, theme);
+        match self.disc_path.as_ref() {
+            None => h_flex().flex_grow_1().child(
+                open_disc
+                    .label("Open Disc")
+                    .icon(Icon::empty().path("disc-3.svg")),
+            ),
+            Some(path) => h_flex()
+                .min_w_0()
+                .gap_2()
+                .w_full()
+                .child(
+                    div().min_w_0().flex_grow_1().child(
+                        open_disc.w_full().text_ellipsis().flex().label(
+                            path.file_name()
+                                .map(|f| f.to_string_lossy())
+                                .unwrap_or(Cow::Borrowed("Unknown")),
+                        ),
+                    ),
+                )
+                .child(Button::new("eject-disc-button").icon(Icon::empty().path("eject.svg"))),
+        }
+    }
+
     fn execution_header(
         &mut self,
         cx: &mut Context<Debugger>,
@@ -505,29 +623,27 @@ impl Debugger {
     ) -> impl IntoElement + Styled {
         h_flex()
             .gap_2()
+            .items_center()
+            .min_w_0()
+            .flex_grow_1()
             .child(
                 Button::new("run-button")
+                    .w_24()
                     .cursor_pointer()
                     .label(match self.running {
                         true => "Pause",
                         false => "Run",
                     })
+                    .children(
+                        self.running.then_some(
+                            Spinner::new()
+                                .icon(IconName::LoaderCircle)
+                                .color(theme.muted_foreground),
+                        ),
+                    )
                     .on_click(cx.listener(|view, _, _, _| view.running = !view.running)),
             )
-            .child(
-                markdown(match self.running {
-                    true => "Running...",
-                    false => "Paused",
-                })
-                .text_color(theme.muted_foreground),
-            )
-            .children(
-                self.running.then_some(
-                    Spinner::new()
-                        .icon(IconName::LoaderCircle)
-                        .color(theme.muted_foreground),
-                ),
-            )
+            .child(self.disc_buttons(cx, theme))
     }
 
     fn execution_control(
@@ -538,6 +654,7 @@ impl Debugger {
         div()
             .v_flex()
             .gap_2()
+            .child(Separator::horizontal())
             .child(self.instructions_list(cx, theme).flex_grow_1().min_h_0())
     }
 }
