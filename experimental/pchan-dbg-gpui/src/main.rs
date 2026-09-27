@@ -21,7 +21,8 @@ use gpui_component::spinner::Spinner;
 use gpui_component::tab::TabBar;
 use gpui_component::text::{TextView, markdown};
 use gpui_component::{
-    ActiveTheme, Icon, IconName, Root, Sizable, StyledExt, Theme, ThemeConfig, h_flex, v_flex,
+    ActiveTheme, Icon, IconName, Root, Sizable, StyledExt, Theme, ThemeConfig, ThemeRegistry,
+    h_flex, v_flex,
 };
 use gpui_kit_assets::Assets;
 use pchan_audio::AudioTask;
@@ -53,14 +54,16 @@ fn main() -> miette::Result<()> {
         .with_quit_mode(QuitMode::LastWindowClosed)
         .run(move |cx| {
             gpui_component::init(cx);
-            let theme = Theme::global_mut(cx);
-            theme.apply_config(&Rc::new(ThemeConfig {
-                mono_font_family: Some("GeistMono Nerd Font".into()),
-                mode: gpui_component::ThemeMode::Dark,
-                ..Default::default()
-            }));
 
-            theme.primary_foreground = rgb_to_hsla(rgb(0xf25d94));
+            let theme_reg = ThemeRegistry::global_mut(cx);
+            let gruvbox = include_str!("./assets/themes/gruvbox.json");
+            theme_reg
+                .load_themes_from_str(gruvbox)
+                .expect("failed to load theme from string");
+            let gruvbox = theme_reg.themes().get("Gruvbox Dark").unwrap().clone();
+
+            let theme = Theme::global_mut(cx);
+            theme.apply_config(&gruvbox);
             cx.set_window_appearance(Some(WindowAppearance::VibrantDark));
 
             cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
@@ -336,19 +339,30 @@ impl Debugger {
             )
             // bottom panel
             .child(
-                div()
+                panel(&theme)
+                    .h_flex()
                     .text_sm()
-                    .flex()
-                    .min_h_0()
-                    .max_h_72()
                     .flex_grow_1()
+                    .max_h(rems(16.))
+                    .min_h_0()
+                    .w_full()
+                    .gap_2()
+                    .text_sm()
                     .child(
-                        panel(&theme)
-                            .w_full()
+                        v_flex()
                             .h_full()
-                            .flex()
-                            .text_sm()
-                            .child(self.cpu_controls(window, cx).h_full()),
+                            .min_h_0()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .h_flex()
+                                    .items_center()
+                                    .flex_grow_0()
+                                    .gap_2()
+                                    .child(markdown("Registers").text_color(theme.muted_foreground))
+                                    .child(self.cpu_control_tabbar(cx)),
+                            )
+                            .child(self.cpu_controls(window, cx).min_h_0().flex_grow_1()),
                     ),
             )
     }
@@ -371,14 +385,9 @@ fn parse_hex_register(str: &str) -> Result<u32, ParseIntError> {
 }
 
 impl Debugger {
-    fn cpu_controls(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Debugger>,
-    ) -> impl IntoElement + Styled {
-        let theme = cx.theme().clone();
-
-        let tabs = TabBar::new("segmented-tabs")
+    fn cpu_control_tabbar(&mut self, cx: &mut Context<Debugger>) -> impl IntoElement + Styled {
+        TabBar::new("segmented-tabs")
+            .min_h_0()
             .segmented()
             .selected_index(self.cpu_control_reg_tab)
             .cursor_pointer()
@@ -386,7 +395,15 @@ impl Debugger {
                 view.cpu_control_reg_tab = *index;
                 cx.notify();
             }))
-            .children(vec!["CPU", "COP0", "GTE"]);
+            .children(vec!["CPU", "COP0", "GTE"])
+    }
+
+    fn cpu_controls(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Debugger>,
+    ) -> impl IntoElement + Styled {
+        let theme = cx.theme().clone();
 
         let regs = self.emu.cpu.gpr.iter().copied().enumerate().map({
             |(r, value)| {
@@ -431,6 +448,7 @@ impl Debugger {
                     .font_family(&theme.mono_font_family)
                     .justify_between()
                     .items_center()
+                    .h(rems(1.))
                     .w(rems(9.0))
                     .child(markdown(reg_id).text_ellipsis().w(rems(2.)))
                     .child(
@@ -446,25 +464,15 @@ impl Debugger {
         panel(&theme)
             .v_flex()
             .id("cpu-scroll-container")
-            .h_full()
-            .child(
-                h_flex()
-                    .gap_4()
-                    .child(markdown("REGS").text_color(theme.colors.muted_foreground))
-                    .child(tabs),
-            )
             .gap_2()
             .child(
                 div()
+                    .gap_1()
                     .v_flex()
                     .flex_wrap()
-                    // .grid()
-                    // .grid_cols_max_content(4)
-                    .px_4()
                     .min_h_0()
                     .flex_grow_1()
                     .w_full()
-                    .gap_neg_2()
                     .children(regs),
             )
     }
@@ -539,7 +547,7 @@ impl Debugger {
                                         )
                                         .selectable(true),
                                     )
-                                    .when(is_pc, |this| this.text_color(theme.primary_foreground))
+                                    .when(is_pc, |this| this.text_color(theme.colors.info))
                                     .h_4()
                             })
                             .collect()
@@ -551,7 +559,7 @@ impl Debugger {
             )
     }
 
-    fn open_disc_button(&mut self, cx: &mut Context<Debugger>, theme: &Theme) -> Button {
+    fn open_disc_button(&mut self, cx: &mut Context<Debugger>, _theme: &Theme) -> Button {
         Button::new("disc-path-button")
             .secondary()
             .on_click(cx.listener(|_, _, _, cx| {

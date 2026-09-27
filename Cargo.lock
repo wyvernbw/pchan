@@ -6846,6 +6846,7 @@ dependencies = [
  "pchan-emu",
  "pchan-gpu",
  "pchan-utils",
+ "serde_json",
  "spin_sleep",
 ]
 
