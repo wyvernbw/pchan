@@ -3,31 +3,46 @@
 #[path = "game-surface.rs"]
 pub mod game_surface;
 
+use std::borrow::Cow;
 use std::num::ParseIntError;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
-use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use gpui::prelude::*;
 use gpui::{AppContext, Render, *};
+use gpui_component::button::{Button, ButtonVariants};
+use gpui_component::collapsible::Collapsible;
 use gpui_component::input::{Input, InputState};
+use gpui_component::spinner::Spinner;
 use gpui_component::tab::TabBar;
-use gpui_component::text::markdown;
-use gpui_component::{ActiveTheme, Root, StyledExt, Theme, ThemeConfig, h_flex, v_flex};
-use kanal::Sender;
+use gpui_component::text::{TextView, markdown};
+use gpui_component::{
+    ActiveTheme, IconName, Root, Sizable, StyledExt, Theme, ThemeConfig, h_flex, v_flex,
+};
+use gpui_kit_assets::Assets;
 use pchan_audio::AudioTask;
 use pchan_emu::Emu;
 use pchan_emu::cpu::REG_STR;
+use pchan_emu::cpu::ops::OpCode;
+use pchan_emu::dynarec_v2::emitters::DecodedOp;
 use pchan_utils::{hex, setup_tracing};
 
 actions!(app, [Quit]);
 
+#[cfg(feature = "dhat-heap")]
+#[global_allocator]
+static ALLOC: dhat::Alloc = dhat::Alloc;
+
 fn main() -> miette::Result<()> {
     setup_tracing();
+    #[cfg(feature = "dhat-heap")]
+    let _profiler = dhat::Profiler::new_heap();
+    #[cfg(feature = "dhat-heap")]
+    let _profiler_ptr = &_profiler as *const dhat::Profiler as *mut dhat::Profiler;
 
     gpui_platform::application()
+        .with_assets(Assets)
         .with_quit_mode(QuitMode::LastWindowClosed)
         .run(move |cx| {
             gpui_component::init(cx);
@@ -38,10 +53,15 @@ fn main() -> miette::Result<()> {
                 ..Default::default()
             }));
 
+            theme.primary_foreground = rgb_to_hsla(rgb(0x61eed0));
             cx.set_window_appearance(Some(WindowAppearance::VibrantDark));
 
             cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
-            cx.on_action(|_: &Quit, cx| {
+            cx.on_action(move |_: &Quit, cx| {
+                #[cfg(feature = "dhat-heap")]
+                unsafe {
+                    core::ptr::drop_in_place(_profiler_ptr);
+                }
                 cx.quit();
             });
 
@@ -57,6 +77,7 @@ fn main() -> miette::Result<()> {
                     cx.new(|cx| Root::new(view, win, cx).h_full().bg(theme.background))
                 },
             );
+
             cx.activate(true);
         });
 
@@ -73,17 +94,18 @@ struct Debugger {
     cached_reg_names:    [SharedString; 32],
     cpu_control_reg_tab: usize,
 
-    target:        wgpu::Texture,
-    target_buf:    wgpu::Buffer,
-    display_tx:    Sender<SurfaceState>,
-    _display_task: JoinHandle<()>,
+    exec_control_panel_open: bool,
+    mips_dump_scroll_handle: UniformListScrollHandle,
+
+    target:     PchanTexture,
+    target_buf: wgpu::Buffer,
 }
 
 use miette::IntoDiagnostic;
 use pchan_emu::run::Runner;
 use pchan_gpu::wgpu;
 
-use crate::game_surface::{SurfaceState, create_target, draw_display};
+use crate::game_surface::{PchanTexture, SurfaceState, create_target, draw_display};
 
 impl Debugger {
     pub fn new(_window: &Window, cx: &App) -> miette::Result<Self> {
@@ -104,29 +126,13 @@ impl Debugger {
         let mut dp = gpu.display_uniforms.lock().unwrap();
         dp.screen_rect.x = 320;
         dp.screen_rect.y = 240;
-        let (target, target_buf) = create_target(&gpu, &mut dp);
         drop(dp);
 
         gpu.connect_emu(&mut emu);
         let gpu = Arc::new(gpu);
         gpu.clone().start();
 
-        let (display_tx, display_rx) = kanal::unbounded::<SurfaceState>();
-
-        let _display_task = std::thread::spawn({
-            let gpu = gpu.clone();
-            move || {
-                while let Ok(surface) = display_rx.recv() {
-                    draw_display(
-                        &gpu,
-                        &surface.target,
-                        &surface.target_buf,
-                        &surface.fifo_tx,
-                        surface.buffer_mapped,
-                    );
-                }
-            }
-        });
+        let (target, target_buf) = create_target(&gpu, &mut gpu.display_uniforms.lock().unwrap());
 
         let cached_reg_names = core::array::from_fn(|reg| {
             let reg = match reg as u8 {
@@ -148,11 +154,11 @@ impl Debugger {
 
             cached_reg_names,
             cpu_control_reg_tab: 0,
+            exec_control_panel_open: true,
+            mips_dump_scroll_handle: UniformListScrollHandle::new(),
 
             target,
             target_buf,
-            display_tx,
-            _display_task,
         })
     }
 }
@@ -164,14 +170,7 @@ impl Render for Debugger {
         cx: &mut Context<Self>,
     ) -> impl gpui::prelude::IntoElement {
         let surface_state = window.use_state(cx, |_, _| {
-            let (fifo_tx, fifo_rx) = kanal::bounded(2);
-            SurfaceState {
-                target: self.target.clone(),
-                target_buf: self.target_buf.clone(),
-                fifo_tx,
-                fifo_rx,
-                buffer_mapped: Arc::new(AtomicBool::new(false)),
-            }
+            SurfaceState::new(self.target.clone(), self.target_buf.clone())
         });
         let surface = self.pchan_game_surface(surface_state);
         let _theme = cx.theme();
@@ -179,13 +178,18 @@ impl Render for Debugger {
         self.last_render = Instant::now();
 
         if self.running {
-            self.display_tx
-                .send(surface.state.read(cx).clone())
-                .unwrap();
+            let surface_state = surface.state.read(cx);
+            surface_state.start_display_draw(&self.renderer);
             while !self.emu.consume_vblank_signal() {
                 self.runner.execute(&mut self.emu);
             }
+            // surface_state.wait_for_display_draw(&self.renderer);
+            surface_state.start_convert_render(&self.renderer);
             window.request_animation_frame();
+
+            let ix = (self.emu.cpu.pc & 0x1fffffff) / 4;
+            self.mips_dump_scroll_handle
+                .scroll_to_item(ix as usize, ScrollStrategy::Center);
         }
 
         let frame_time = self.last_render.elapsed();
@@ -193,7 +197,7 @@ impl Render for Debugger {
 
         v_flex()
             .h(window_height)
-            .child(header(cx, &frame_time, self.display_tx.len()))
+            .child(header(cx, &frame_time))
             .child(
                 div()
                     .h_full()
@@ -204,7 +208,7 @@ impl Render for Debugger {
     }
 }
 
-fn header<T>(cx: &Context<T>, frame_time: &Duration, frames_in_flight: usize) -> impl IntoElement {
+fn header<T>(cx: &Context<T>, frame_time: &Duration) -> impl IntoElement {
     let theme = cx.theme();
     div()
         .text_sm()
@@ -222,10 +226,6 @@ fn header<T>(cx: &Context<T>, frame_time: &Duration, frames_in_flight: usize) ->
             markdown(format!("frame: {:02}ms", frame_time.as_millis()))
                 .font_family(&theme.mono_font_family),
         )
-        .child(
-            markdown(format!("frames in flight: {}", frames_in_flight))
-                .font_family(&theme.mono_font_family),
-        )
 }
 
 impl Debugger {
@@ -234,7 +234,7 @@ impl Debugger {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + Styled {
-        let theme = cx.theme();
+        let theme = cx.theme().clone();
 
         v_flex()
             .id("main")
@@ -243,25 +243,79 @@ impl Debugger {
             .relative()
             .text_color(theme.foreground)
             .p_4()
+            .gap_4()
             .bg(transparent_white())
-            .child(div().flex_grow_1())
-            // bottom panel
             .child(
-                div().flex().min_h_0().max_h_72().flex_grow_1().child(
-                    div()
-                        .w_full()
-                        .h_full()
-                        .flex()
-                        .text_sm()
-                        .border_2()
-                        .bg(theme.background)
-                        .border_color(theme.border)
-                        .corner_radii(Corners::all(8.0.into()))
-                        .p_2()
-                        .child(self.cpu_controls(window, cx).h_full()),
+                div().h_flex().items_start().flex_grow_1().text_sm().child(
+                    panel(&theme)
+                        .v_flex()
+                        .flex_grow_1()
+                        .max_w_96()
+                        .when(self.exec_control_panel_open, |this| this.min_h_full())
+                        .gap_2()
+                        .child(
+                            h_flex()
+                                .justify_between()
+                                .child(self.execution_header(cx, &theme))
+                                .child(
+                                    Button::new("toggle1")
+                                        .text_sm()
+                                        .icon(IconName::ChevronDown)
+                                        .ghost()
+                                        .small()
+                                        .on_click({
+                                            cx.listener(move |this, _, _, cx| {
+                                                this.exec_control_panel_open.toggle();
+                                                cx.notify();
+                                            })
+                                        }),
+                                ),
+                        )
+                        .when(self.exec_control_panel_open, |this| {
+                            this.child(
+                                Collapsible::new()
+                                    .open(self.exec_control_panel_open)
+                                    .flex()
+                                    .flex_grow_1()
+                                    .h_full()
+                                    .w_full()
+                                    .content(
+                                        self.execution_control(cx, &theme)
+                                            .w_full()
+                                            .min_h_0()
+                                            .flex_grow_1(),
+                                    ),
+                            )
+                        }),
                 ),
             )
+            // bottom panel
+            .child(
+                div()
+                    .text_sm()
+                    .flex()
+                    .min_h_0()
+                    .max_h_72()
+                    .flex_grow_1()
+                    .child(
+                        panel(&theme)
+                            .w_full()
+                            .h_full()
+                            .flex()
+                            .text_sm()
+                            .child(self.cpu_controls(window, cx).h_full()),
+                    ),
+            )
     }
+}
+
+fn panel(theme: &Theme) -> Div {
+    div()
+        .border_2()
+        .bg(theme.background)
+        .border_color(theme.border)
+        .corner_radii(Corners::all(8.0.into()))
+        .p_2()
 }
 
 fn parse_hex_register(str: &str) -> Result<u32, ParseIntError> {
@@ -329,7 +383,7 @@ impl Debugger {
                 div()
                     .flex()
                     .id(reg_id.clone())
-                    .font_family(&cx.theme().mono_font_family)
+                    .font_family(&theme.mono_font_family)
                     .justify_between()
                     .items_center()
                     .w(rems(9.0))
@@ -358,14 +412,132 @@ impl Debugger {
             .border_2()
             .border_color(theme.border)
             .corner_radii(Corners::all(8.0.into()))
+            .gap_2()
             .child(
                 v_flex()
                     .min_h_0()
                     .flex_grow_1()
                     .flex_wrap()
                     .w_full()
-                    .gap_neg_1()
+                    .gap_neg_2()
                     .children(regs),
             )
+    }
+
+    fn instructions_list(
+        &mut self,
+        cx: &mut Context<Debugger>,
+        theme: &Theme,
+    ) -> impl IntoElement + Styled {
+        let entity = cx.entity().clone();
+        let theme = theme.clone();
+        let pc = self.emu.cpu.pc;
+        panel(&theme)
+            .v_flex()
+            .overflow_y_hidden()
+            .gap_2()
+            .child(
+                h_flex()
+                    .justify_between()
+                    .child(
+                        markdown("MIPS dump")
+                            .text_color(theme.muted_foreground)
+                            .flex_grow_0(),
+                    )
+                    .child(
+                        markdown(format!("$pc: {}", hex(self.emu.cpu.pc)))
+                            .selectable(true)
+                            .font_family(&theme.mono_font_family),
+                    ),
+            )
+            .child(
+                uniform_list("mips-dump", u32::MAX as usize / 4, move |range, _, cx| {
+                    let theme = &theme;
+                    cx.read_entity(&entity, move |view, _| {
+                        range
+                            .map(|idx| {
+                                let address_label: SharedString = "mips-dump-address".into();
+                                let op_label: SharedString = "mips-dump-op".into();
+
+                                let addr = idx as u32 * 4;
+                                let instr = view.emu.fastmem_read::<OpCode>(addr);
+                                let instr = instr
+                                    .map(DecodedOp::new)
+                                    .map(|instr| Cow::Owned(format!("{instr}")))
+                                    .unwrap_or(Cow::Borrowed("N/A"));
+                                h_flex()
+                                    .w_full()
+                                    .font_family(&theme.mono_font_family)
+                                    .gap_4()
+                                    .opacity(if idx.is_multiple_of(2) { 1.0 } else { 0.8 })
+                                    .child(
+                                        TextView::markdown(
+                                            ElementId::NamedInteger(op_label, idx as u64),
+                                            hex(addr).to_string(),
+                                        )
+                                        .selectable(true)
+                                        .opacity(0.5),
+                                    )
+                                    .child(
+                                        TextView::markdown(
+                                            ElementId::NamedInteger(address_label, idx as u64),
+                                            instr,
+                                        )
+                                        .selectable(true),
+                                    )
+                                    .when(pc & 0x1fff_ffff == addr & 0x1fff_ffff, |this| {
+                                        this.text_color(theme.primary_foreground).child("<-")
+                                    })
+                                    .h_4()
+                            })
+                            .collect()
+                    })
+                })
+                .track_scroll(&self.mips_dump_scroll_handle)
+                .corner_radii(Corners::all(8.0.into()))
+                .flex_grow_1(),
+            )
+    }
+    fn execution_header(
+        &mut self,
+        cx: &mut Context<Debugger>,
+        theme: &Theme,
+    ) -> impl IntoElement + Styled {
+        h_flex()
+            .gap_2()
+            .child(
+                Button::new("run-button")
+                    .cursor_pointer()
+                    .label(match self.running {
+                        true => "Pause",
+                        false => "Run",
+                    })
+                    .on_click(cx.listener(|view, _, _, _| view.running = !view.running)),
+            )
+            .child(
+                markdown(match self.running {
+                    true => "Running...",
+                    false => "Paused",
+                })
+                .text_color(theme.muted_foreground),
+            )
+            .children(
+                self.running.then_some(
+                    Spinner::new()
+                        .icon(IconName::LoaderCircle)
+                        .color(theme.muted_foreground),
+                ),
+            )
+    }
+
+    fn execution_control(
+        &mut self,
+        cx: &mut Context<Debugger>,
+        theme: &Theme,
+    ) -> impl IntoElement + Styled {
+        div()
+            .v_flex()
+            .gap_2()
+            .child(self.instructions_list(cx, theme).flex_grow_1().min_h_0())
     }
 }

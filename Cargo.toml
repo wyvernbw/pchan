@@ -73,6 +73,3 @@ debug = true
 overflow-checks = true
 panic = "abort"
 rustflags = ["-Zsanitizer=address"]
-
-[patch.crates-io]
-image = { path = "vendor/image" }
