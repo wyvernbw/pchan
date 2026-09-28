@@ -162,11 +162,12 @@ struct Debugger {
 }
 
 struct EmuContext {
-    emu:        Emu,
-    runner:     Runner,
-    running:    bool,
-    renderer:   Arc<pchan_gpu::Renderer>,
-    frame_time: Duration,
+    emu:            Emu,
+    runner:         Runner,
+    running:        bool,
+    running_notify: event_listener::Event,
+    renderer:       Arc<pchan_gpu::Renderer>,
+    frame_time:     Duration,
 }
 
 use miette::{IntoDiagnostic, miette};
@@ -215,6 +216,7 @@ impl Debugger {
             emu,
             renderer: gpu.clone(),
             running: false,
+            running_notify: event_listener::Event::new(),
             runner: Runner::new().with_config(pchan_emu::run::RunnerConfig {
                 force_mode: Some(pchan_emu::run::RunnerMode::Dynarec),
             }),
@@ -236,12 +238,19 @@ impl Debugger {
             emucx:  emucx.clone(),
         });
 
-        cx.spawn_with_priority(Priority::RealtimeAudio, {
+        cx.spawn_with_priority(Priority::High, {
             let surface = game_surface.clone();
             let surface_state = surface_state.clone();
             let emucx = emucx.clone();
             async move |cx| {
                 loop {
+                    let run_listener = cx.read_entity(&emucx, |emucx, _| match emucx.running {
+                        false => Some(emucx.running_notify.listen()),
+                        true => None,
+                    });
+                    if let Some(run_listener) = run_listener {
+                        run_listener.await;
+                    }
                     let start = Instant::now();
                     let frame_time = emucx.update(cx, |emucx, cx| {
                         if emucx.running {
@@ -257,7 +266,6 @@ impl Debugger {
                             drop(surface_state);
                             surface.update(cx, |_, cx| cx.notify());
                         }
-
                         let frame_time = start.elapsed();
                         emucx.frame_time = frame_time;
 
@@ -760,7 +768,10 @@ impl Debugger {
                         ),
                     )
                     .on_click(cx.listener(|view, _, _, cx| {
-                        view.emucx.update(cx, |emucx, _| emucx.running.toggle())
+                        view.emucx.update(cx, |emucx, _| {
+                            emucx.running.toggle();
+                            emucx.running_notify.notify(usize::MAX);
+                        })
                     })),
             )
             .child(self.disc_buttons(cx, theme))

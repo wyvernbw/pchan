@@ -27,3 +27,4 @@ core-video = { version = "0.5.2", features = ["metal"] }
 core-foundation = "0.10.0"
 objc2-io-surface = "0.3.2"
 objc2-core-foundation = "0.3.2"
+event-listener = "5.4.2"
