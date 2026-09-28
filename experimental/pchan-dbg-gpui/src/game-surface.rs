@@ -5,22 +5,47 @@ use core_foundation::base::TCFType;
 use core_video::pixel_buffer::CVPixelBuffer;
 use gpui::prelude::*;
 use gpui::*;
+use gpui_component::StyledExt;
 use pchan_gpu::wgpu::{self};
+use std::rc::Rc;
 use std::sync::{Arc, MutexGuard};
 
 use crate::Debugger;
 
+#[derive(Clone)]
 pub struct GameSurface {
-    div:       Div,
+    id:        ElementId,
+    idx:       usize,
+    style:     StyleRefinement,
     renderer:  Arc<pchan_gpu::Renderer>,
     pub state: Entity<SurfaceState>,
     running:   bool,
     vram:      Option<Box<[u16]>>,
 }
 
+impl GameSurface {
+    pub fn new(
+        id: impl Into<ElementId>,
+        gpu: Arc<pchan_gpu::Renderer>,
+        running: bool,
+        state: Entity<SurfaceState>,
+    ) -> Self {
+        GameSurface {
+            id: id.into(),
+            style: StyleRefinement::default(),
+            renderer: gpu,
+            state,
+            vram: None,
+            running,
+            idx: 0,
+        }
+    }
+}
+
 pub struct SurfaceState {
     pub target:         PchanTexture,
     pub target_buf:     wgpu::Buffer,
+    rendered_once:      Cell<bool>,
     display_submission: Cell<Option<wgpu::SubmissionIndex>>,
 
     #[cfg(target_os = "macos")]
@@ -34,6 +59,7 @@ impl SurfaceState {
             target_buf,
             display_submission: Cell::new(None),
             metal_ypcbcr: None,
+            rendered_once: Cell::new(false),
         }
     }
 }
@@ -48,7 +74,7 @@ impl IntoElement for GameSurface {
 
 impl Element for GameSurface {
     type RequestLayoutState = DivFrameState;
-    type PrepaintState = Option<Hitbox>;
+    type PrepaintState = ();
 
     fn paint(
         &mut self,
@@ -110,15 +136,17 @@ impl Element for GameSurface {
         //         false,
         //     )
         //     .unwrap();
-        state.target.draw_into(window, bounds);
+        if state.rendered_once.get() {
+            state.target.draw_into(window, bounds);
+        }
     }
 
     fn id(&self) -> Option<ElementId> {
-        Element::id(&self.div)
+        Some(self.id.clone())
     }
 
     fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
-        Element::source_location(&self.div)
+        None
     }
 
     fn request_layout(
@@ -128,7 +156,10 @@ impl Element for GameSurface {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        Element::request_layout(&mut self.div, id, inspector_id, window, cx)
+        let mut div = div();
+        *div.interactivity().base_style = self.style.clone();
+
+        Element::request_layout(&mut div, id, inspector_id, window, cx)
     }
 
     fn prepaint(
@@ -153,37 +184,37 @@ impl Element for GameSurface {
             self.state.update(cx, |state, _| {
                 state.target = target;
                 state.target_buf = target_buf;
-            })
-        }
+            });
+        };
 
-        Element::prepaint(
-            &mut self.div,
-            id,
-            inspector_id,
-            bounds,
-            request_layout,
-            window,
-            cx,
-        )
+        // Element::prepaint(
+        //     &mut self.div,
+        //     id,
+        //     inspector_id,
+        //     bounds,
+        //     request_layout,
+        //     window,
+        //     cx,
+        // )
+    }
+}
+
+impl Render for GameSurface {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        self.clone().into_element().w_full().h_full()
     }
 }
 
 impl Styled for GameSurface {
     #[doc = " Returns a reference to the style memory of this element."]
     fn style(&mut self) -> &mut StyleRefinement {
-        self.div.style()
+        &mut self.style
     }
 }
 
 impl Debugger {
-    pub fn pchan_game_surface(&mut self, state: Entity<SurfaceState>) -> GameSurface {
-        GameSurface {
-            div: div(),
-            renderer: self.renderer.clone(),
-            state,
-            vram: None,
-            running: self.running,
-        }
+    pub fn game_surface(&self) -> &Entity<GameSurface> {
+        &self.game_surface
     }
 }
 
@@ -617,6 +648,7 @@ impl SurfaceState {
                 compute.wait_for_conversion(gpu);
             }
         }
+        self.rendered_once.set(true);
     }
     pub fn start_display_draw(&self, gpu: &pchan_gpu::Renderer) {
         let sub = draw_display(gpu, &self.target.wgpu, &self.target_buf);
@@ -628,6 +660,7 @@ impl SurfaceState {
                 submission_index: Some(sub),
                 timeout:          None,
             });
+            self.rendered_once.set(true);
         }
     }
 }

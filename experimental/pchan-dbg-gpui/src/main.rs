@@ -7,12 +7,15 @@ use core::num::ParseIntError;
 use core::time::Duration;
 use std::borrow::Cow;
 use std::path::PathBuf;
-use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
 
 use gpui::prelude::*;
 use gpui::{AppContext, Render, *};
+use gpui_base::{
+    ElementExt, TextSelectionHandle, TextSelectionLayer, TextSelectionRegistration,
+    TextSelectionRun,
+};
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::collapsible::Collapsible;
 use gpui_component::input::{Input, InputState};
@@ -21,8 +24,7 @@ use gpui_component::spinner::Spinner;
 use gpui_component::tab::TabBar;
 use gpui_component::text::{TextView, markdown};
 use gpui_component::{
-    ActiveTheme, Icon, IconName, Root, Sizable, StyledExt, Theme, ThemeConfig, ThemeRegistry,
-    h_flex, v_flex,
+    ActiveTheme, Icon, IconName, Root, Sizable, StyledExt, Theme, ThemeRegistry, h_flex, v_flex,
 };
 use gpui_kit_assets::Assets;
 use pchan_audio::AudioTask;
@@ -30,7 +32,7 @@ use pchan_emu::Emu;
 use pchan_emu::cpu::REG_STR;
 use pchan_emu::cpu::ops::OpCode;
 use pchan_emu::dynarec_v2::emitters::DecodedOp;
-use pchan_utils::{hex, init_tracing};
+use pchan_utils::{hex, hex_pref, init_tracing};
 
 actions!(app, [Quit]);
 
@@ -92,7 +94,18 @@ fn main() -> miette::Result<()> {
                 |win, cx| {
                     let view = Debugger::new(win, cx).unwrap();
                     let view = cx.new(|_| view);
+                    {
+                        // let view = view.clone();
+                        // win.on_next_frame(move |_, cx| {
+                        //     view.update(cx, |view, _| {
+                        //         let mem_idx = 0xbfc0_0000 / 16;
+                        //         view.memview_scroll
+                        //             .scroll_to_item(mem_idx, ScrollStrategy::Top);
+                        //     });
+                        // });
+                    }
                     let theme = cx.theme().clone();
+
                     cx.new(|cx| Root::new(view, win, cx).h_full().bg(theme.background))
                 },
             );
@@ -132,11 +145,8 @@ impl AssetSource for PchanAssets {
 }
 
 struct Debugger {
-    emu:         Emu,
-    runner:      Runner,
-    running:     bool,
-    renderer:    Arc<pchan_gpu::Renderer>,
-    last_render: Instant,
+    emucx:        Entity<EmuContext>,
+    game_surface: Entity<GameSurface>,
 
     cached_reg_names:    [SharedString; 32],
     cpu_control_reg_tab: usize,
@@ -145,18 +155,28 @@ struct Debugger {
     mips_dump_scroll_handle: UniformListScrollHandle,
     disc_path:               Option<PathBuf>,
 
+    memview: Entity<MemviewTable>,
+
     target:     PchanTexture,
     target_buf: wgpu::Buffer,
+}
+
+struct EmuContext {
+    emu:        Emu,
+    runner:     Runner,
+    running:    bool,
+    renderer:   Arc<pchan_gpu::Renderer>,
+    frame_time: Duration,
 }
 
 use miette::{IntoDiagnostic, miette};
 use pchan_emu::run::Runner;
 use pchan_gpu::wgpu;
 
-use crate::game_surface::{PchanTexture, SurfaceState, create_target};
+use crate::game_surface::{GameSurface, PchanTexture, SurfaceState, create_target};
 
 impl Debugger {
-    pub fn new(_window: &Window, cx: &App) -> miette::Result<Self> {
+    pub fn new(_window: &Window, cx: &mut App) -> miette::Result<Self> {
         let mut emu = Emu::new();
         emu.set_bios_path(std::env::var("PCHAN_BIOS").into_diagnostic()?);
         emu.load_bios().into_diagnostic()?;
@@ -191,14 +211,70 @@ impl Debugger {
             format!("${}", reg).into()
         });
 
-        Ok(Self {
+        let emucx = cx.new(|_| EmuContext {
             emu,
-            renderer: gpu,
-            running: true,
+            renderer: gpu.clone(),
+            running: false,
             runner: Runner::new().with_config(pchan_emu::run::RunnerConfig {
                 force_mode: Some(pchan_emu::run::RunnerMode::Dynarec),
             }),
-            last_render: Instant::now(),
+            frame_time: Duration::ZERO,
+        });
+
+        let surface_state = cx.new(|_| SurfaceState::new(target.clone(), target_buf.clone()));
+        let game_surface = cx.new(|_| {
+            GameSurface::new(
+                "global-game-surface",
+                gpu.clone(),
+                true,
+                surface_state.clone(),
+            )
+        });
+
+        let memview = cx.new(|_| MemviewTable {
+            scroll: UniformListScrollHandle::new(),
+            emucx:  emucx.clone(),
+        });
+
+        cx.spawn_with_priority(Priority::RealtimeAudio, {
+            let surface = game_surface.clone();
+            let surface_state = surface_state.clone();
+            let emucx = emucx.clone();
+            async move |cx| {
+                loop {
+                    let start = Instant::now();
+                    let frame_time = emucx.update(cx, |emucx, cx| {
+                        if emucx.running {
+                            let surface_state = surface_state.as_mut(cx);
+                            surface_state.start_display_draw(&emucx.renderer);
+
+                            while !emucx.emu.consume_vblank_signal() {
+                                emucx.runner.execute(&mut emucx.emu);
+                            }
+
+                            surface_state.wait_for_display_draw(&emucx.renderer);
+                            surface_state.start_convert_render(&emucx.renderer);
+                            drop(surface_state);
+                            surface.update(cx, |_, cx| cx.notify());
+                        }
+
+                        let frame_time = start.elapsed();
+                        emucx.frame_time = frame_time;
+
+                        frame_time
+                    });
+
+                    spin_sleep(cx, Duration::from_micros(16_667).saturating_sub(frame_time)).await;
+                }
+            }
+        })
+        .detach();
+
+        Ok(Self {
+            emucx,
+            game_surface,
+
+            memview,
 
             cached_reg_names,
             cpu_control_reg_tab: 0,
@@ -212,52 +288,52 @@ impl Debugger {
     }
 }
 
+async fn spin_sleep(cx: &AsyncApp, duration: Duration) {
+    let sleep_for = duration.saturating_sub(Duration::from_millis(4));
+    let deadline = Instant::now() + duration;
+
+    cx.background_executor()
+        .spawn_with_priority(Priority::High, cx.background_executor().timer(sleep_for))
+        .await;
+    loop {
+        if Instant::now() > deadline {
+            return;
+        }
+        std::hint::spin_loop();
+    }
+}
+
 impl Render for Debugger {
     fn render(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl gpui::prelude::IntoElement {
-        let surface_state = window.use_state(cx, |_, _| {
-            SurfaceState::new(self.target.clone(), self.target_buf.clone())
-        });
-        let surface = self.pchan_game_surface(surface_state);
-        let _theme = cx.theme();
-
-        self.last_render = Instant::now();
-
-        if self.running {
-            let surface_state = surface.state.read(cx);
-            surface_state.start_display_draw(&self.renderer);
-            while !self.emu.consume_vblank_signal() {
-                self.runner.execute(&mut self.emu);
-            }
-            // surface_state.wait_for_display_draw(&self.renderer);
-            surface_state.start_convert_render(&self.renderer);
-            window.request_animation_frame();
-
-            let ix = (self.emu.cpu.pc & 0x1fffffff) / 4;
-            self.mips_dump_scroll_handle
-                .scroll_to_item(ix as usize, ScrollStrategy::Center);
-        }
-
-        let frame_time = self.last_render.elapsed();
         let window_height = window.viewport_size().height;
 
+        let _theme = cx.theme();
+
         v_flex()
+            .child(TextSelectionLayer)
             .h(window_height)
-            .child(header(cx, &frame_time))
+            .child(header(cx, self.emucx.read(cx).frame_time))
             .child(
                 div()
                     .h_full()
                     .bg(transparent_white())
-                    .child(surface.absolute().w_full().h_full())
+                    .child(
+                        div()
+                            .absolute()
+                            .w_full()
+                            .h_full()
+                            .child(self.game_surface().clone()),
+                    )
                     .child(self.debugger_ui(window, cx).w_full().h_full()),
             )
     }
 }
 
-fn header<T>(cx: &Context<T>, frame_time: &Duration) -> impl IntoElement {
+fn header<T: 'static>(cx: &Context<T>, frame_time: Duration) -> impl IntoElement {
     let theme = cx.theme();
     h_flex()
         .text_sm()
@@ -363,6 +439,24 @@ impl Debugger {
                                     .child(self.cpu_control_tabbar(cx)),
                             )
                             .child(self.cpu_controls(window, cx).min_h_0().flex_grow_1()),
+                    )
+                    .child(
+                        v_flex()
+                            .flex_grow_1()
+                            .h_full()
+                            .min_h_0()
+                            .gap_2()
+                            .child(
+                                h_flex().h_8().child(
+                                    div().child("Memory").text_color(theme.muted_foreground),
+                                ),
+                            )
+                            .child(
+                                panel(&theme)
+                                    .flex_grow_1()
+                                    .min_h_0()
+                                    .child(self.memview.clone()),
+                            ),
                     ),
             )
     }
@@ -405,7 +499,8 @@ impl Debugger {
     ) -> impl IntoElement + Styled {
         let theme = cx.theme().clone();
 
-        let regs = self.emu.cpu.gpr.iter().copied().enumerate().map({
+        let gpr = self.emucx.read(cx).emu.cpu.gpr.clone();
+        let gpr = gpr.iter().copied().enumerate().map({
             |(r, value)| {
                 let reg_id = &self.cached_reg_names[r];
                 let input_state = window.use_keyed_state(reg_id.clone(), cx, |win, cx| {
@@ -422,15 +517,18 @@ impl Debugger {
                     window,
                     move |view, input_state, event, win, cx| {
                         if let InputEvent::PressEnter { .. } | InputEvent::Blur = event {
-                            match parse_hex_register(&input_state.read(cx).value()) {
-                                Ok(reg_value) => view.emu.cpu.gpr[r] = reg_value,
+                            let reg_value = match parse_hex_register(&input_state.read(cx).value())
+                            {
+                                Ok(reg_value) => {
+                                    view.emucx
+                                        .update(cx, |emucx, _| emucx.emu.cpu.gpr[r] = reg_value);
+                                    reg_value
+                                }
                                 // TODO: handle error
-                                Err(_err) => {}
-                            }
+                                Err(_err) => return,
+                            };
                             input_state.update(cx, |state, cx| {
-                                let value: SharedString =
-                                    hex(view.emu.cpu.gpr[r]).to_string().into();
-                                state.set_value(value, win, cx);
+                                state.set_value(hex(reg_value).as_str(), win, cx);
                             })
                         }
                     },
@@ -473,7 +571,7 @@ impl Debugger {
                     .min_h_0()
                     .flex_grow_1()
                     .w_full()
-                    .children(regs),
+                    .children(gpr),
             )
     }
 
@@ -484,7 +582,14 @@ impl Debugger {
     ) -> impl IntoElement + Styled {
         let entity = cx.entity().clone();
         let theme = theme.clone();
-        let pc = self.emu.cpu.pc;
+        let pc = self.emucx.read(cx).emu.cpu.pc;
+        let ix = (pc & 0x1fffffff) / 4;
+
+        if self.emucx.read(cx).running {
+            self.mips_dump_scroll_handle
+                .scroll_to_item(ix as usize, ScrollStrategy::Center);
+        }
+
         v_flex()
             .overflow_y_hidden()
             .gap_2()
@@ -497,7 +602,7 @@ impl Debugger {
                             .flex_grow_0(),
                     )
                     .child(
-                        markdown(format!("$pc: {}", hex(self.emu.cpu.pc)))
+                        markdown(format!("$pc: {}", hex(pc)))
                             .selectable(true)
                             .font_family(&theme.mono_font_family),
                     ),
@@ -505,14 +610,14 @@ impl Debugger {
             .child(
                 uniform_list("mips-dump", u32::MAX as usize / 4, move |range, _, cx| {
                     let theme = &theme;
-                    cx.read_entity(&entity, move |view, _| {
+                    cx.read_entity(&entity, move |view, cx| {
                         range
                             .map(|idx| {
                                 let address_label: SharedString = "mips-dump-address".into();
                                 let op_label: SharedString = "mips-dump-op".into();
 
                                 let addr = idx as u32 * 4;
-                                let instr = view.emu.fastmem_read::<OpCode>(addr);
+                                let instr = view.emucx.read(cx).emu.fastmem_read::<OpCode>(addr);
                                 let instr = instr
                                     .map(DecodedOp::new)
                                     .map(|instr| Cow::Owned(format!("{instr}")))
@@ -580,11 +685,15 @@ impl Debugger {
                         .pop()
                         .ok_or_else(|| miette!("expected at least one disc path"))?;
 
-                    view.update(cx, move |view, _| -> miette::Result<()> {
-                        let fsm = view.emu.open_disc(&disc_path, false).into_diagnostic()?;
-                        view.emu
-                            .advance_open_disc(&disc_path, fsm, false)
-                            .into_diagnostic()?;
+                    view.update(cx, move |view, cx| -> miette::Result<()> {
+                        view.emucx.update(cx, |emucx, _| -> miette::Result<()> {
+                            let fsm = emucx.emu.open_disc(&disc_path, false).into_diagnostic()?;
+                            emucx
+                                .emu
+                                .advance_open_disc(&disc_path, fsm, false)
+                                .into_diagnostic()?;
+                            Ok(())
+                        })?;
                         view.disc_path = Some(disc_path);
                         Ok(())
                     })?;
@@ -604,7 +713,7 @@ impl Debugger {
         match self.disc_path.as_ref() {
             None => h_flex().flex_grow_1().child(
                 open_disc
-                    .label("Open Disc")
+                    .label("Load Disc")
                     .icon(Icon::empty().path("disc-3.svg")),
             ),
             Some(path) => h_flex()
@@ -629,6 +738,7 @@ impl Debugger {
         cx: &mut Context<Debugger>,
         theme: &Theme,
     ) -> impl IntoElement + Styled {
+        let emucx = self.emucx.read(cx);
         h_flex()
             .gap_2()
             .items_center()
@@ -638,18 +748,20 @@ impl Debugger {
                 Button::new("run-button")
                     .w_24()
                     .cursor_pointer()
-                    .label(match self.running {
+                    .label(match emucx.running {
                         true => "Pause",
                         false => "Run",
                     })
                     .children(
-                        self.running.then_some(
+                        emucx.running.then_some(
                             Spinner::new()
                                 .icon(IconName::LoaderCircle)
                                 .color(theme.muted_foreground),
                         ),
                     )
-                    .on_click(cx.listener(|view, _, _, _| view.running = !view.running)),
+                    .on_click(cx.listener(|view, _, _, cx| {
+                        view.emucx.update(cx, |emucx, _| emucx.running.toggle())
+                    })),
             )
             .child(self.disc_buttons(cx, theme))
     }
@@ -664,5 +776,76 @@ impl Debugger {
             .gap_2()
             .child(Separator::horizontal())
             .child(self.instructions_list(cx, theme).flex_grow_1().min_h_0())
+    }
+}
+
+struct MemviewTable {
+    scroll: UniformListScrollHandle,
+    emucx:  Entity<EmuContext>,
+}
+
+impl Render for MemviewTable {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let columns = 4;
+        let items = u32::MAX as usize / (columns * 4);
+        let entity = cx.entity();
+        let theme = cx.theme().clone();
+        uniform_list("memview-table", items, move |range, win, cx| {
+            let mut sink = String::new();
+            range
+                .map(|row_idx| {
+                    use core::fmt::Write;
+
+                    let caddress = hex(row_idx as u32 * columns as u32 * 4);
+                    let selection = TextSelectionHandle::new("", cx);
+                    let selection_refresh = selection.refresh_window_on_change(win, cx);
+
+                    let view = entity.read(cx);
+                    let emu = &view.emucx.read(cx).emu;
+
+                    sink.clear();
+
+                    _ = write!(sink, "{caddress} ");
+                    for word_idx in 0..columns {
+                        let address = row_idx * columns * 4 + word_idx * 4;
+                        let address = address & 0x1fff_ffff;
+                        let word = emu.try_read_pure::<u32>(address as u32).unwrap_or(0);
+                        let hex = hex_pref::<_, false>(word);
+                        _ = write!(sink, "{hex} ");
+                    }
+
+                    for word_idx in 0..columns {
+                        let address = row_idx * columns * 4 + word_idx * 4;
+                        let address = address & 0x1fff_ffff;
+                        let mut word = emu
+                            .try_read_pure::<[u8; 4]>(address as u32)
+                            .unwrap_or([b'.'; 4]);
+                        for byte in word.iter_mut() {
+                            match *byte {
+                                ..=0x1f | 0x7f.. => {
+                                    *byte = b'.';
+                                }
+                                _ => {}
+                            }
+                        }
+                        let word = core::str::from_utf8(&word).expect("impossible");
+                        _ = write!(sink, "{word}");
+                    }
+
+                    TextView::markdown(
+                        ElementId::NamedInteger(
+                            SharedString::new_static("memview-row"),
+                            row_idx as u64,
+                        ),
+                        &sink,
+                    )
+                    .selectable(true)
+                    .font_family(&theme.mono_font_family)
+                })
+                .collect()
+        })
+        .w_full()
+        .h_full()
+        .track_scroll(&self.scroll)
     }
 }
