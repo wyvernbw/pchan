@@ -40,6 +40,58 @@ impl GameSurface {
             idx: 0,
         }
     }
+    pub fn clear<T>(&self, cx: &Context<'_, T>) {
+        use wgpu::*;
+
+        let state = self.state.read(cx);
+        let mut encoder = self
+            .renderer
+            .device
+            .create_command_encoder(&CommandEncoderDescriptor::default());
+        let range = &ImageSubresourceRange {
+            aspect:            TextureAspect::All,
+            base_mip_level:    0,
+            mip_level_count:   None,
+            base_array_layer:  0,
+            array_layer_count: None,
+        };
+        encoder.clear_texture(&state.target.wgpu, range);
+
+        #[cfg(target_os = "macos")]
+        {
+            let buf = &state.target.metal.pixel_buffer;
+            let ret = buf.lock_base_address(0);
+            if ret == 0 {
+                let y_value = 0;
+                unsafe {
+                    // Plane 0: luma
+                    let y_base = buf.get_base_address_of_plane(0) as *mut u8;
+                    let y_stride = buf.get_bytes_per_row_of_plane(0);
+                    let y_height = buf.get_height_of_plane(0);
+                    std::ptr::write_bytes(y_base, y_value, y_stride * y_height);
+
+                    // Plane 1: interleaved CbCr, half height, 2 bytes per chroma sample.
+                    // 128 for both Cb and Cr means neutral chroma, so a single byte value works.
+                    let c_base = buf.get_base_address_of_plane(1) as *mut u8;
+                    let c_stride = buf.get_bytes_per_row_of_plane(1);
+                    let c_height = buf.get_height_of_plane(1);
+                    std::ptr::write_bytes(c_base, 128, c_stride * c_height);
+                }
+
+                buf.unlock_base_address(0);
+            }
+        }
+
+        let cmd_buf = encoder.finish();
+        let sub = self.renderer.queue.submit([cmd_buf]);
+        self.renderer
+            .device
+            .poll(wgt::PollType::Wait {
+                submission_index: Some(sub),
+                timeout:          None,
+            })
+            .unwrap();
+    }
 }
 
 pub struct SurfaceState {
@@ -692,7 +744,7 @@ pub(crate) fn draw_display(
             view:           &target_view,
             resolve_target: None,
             ops:            wgpu::Operations {
-                load:  wgpu::LoadOp::Load,
+                load:  wgpu::LoadOp::Clear(Color::BLACK),
                 store: wgpu::StoreOp::Store,
             },
             depth_slice:    None,

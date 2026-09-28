@@ -19,6 +19,7 @@ use gpui_base::{
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::collapsible::Collapsible;
 use gpui_component::input::{Input, InputState};
+use gpui_component::menu::DropdownMenu;
 use gpui_component::separator::Separator;
 use gpui_component::spinner::Spinner;
 use gpui_component::tab::TabBar;
@@ -34,7 +35,7 @@ use pchan_emu::cpu::ops::OpCode;
 use pchan_emu::dynarec_v2::emitters::DecodedOp;
 use pchan_utils::{hex, hex_pref, init_tracing};
 
-actions!(app, [Quit]);
+actions!(app, [Quit, SoftReset, HardReset]);
 
 #[cfg(feature = "dhat-heap")]
 #[global_allocator]
@@ -69,6 +70,7 @@ fn main() -> miette::Result<()> {
             cx.set_window_appearance(Some(WindowAppearance::VibrantDark));
 
             cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
+
             cx.on_action(move |_: &Quit, cx| {
                 #[cfg(feature = "dhat-heap")]
                 unsafe {
@@ -117,15 +119,17 @@ fn main() -> miette::Result<()> {
 }
 
 struct PchanAssets {
-    eject_icon:  &'static [u8],
-    disc_3_icon: &'static [u8],
+    eject_icon:      &'static [u8],
+    disc_3_icon:     &'static [u8],
+    rotate_ccw_icon: &'static [u8],
 }
 
 impl PchanAssets {
     fn new() -> Self {
         Self {
-            eject_icon:  include_bytes!("./assets/eject.svg"),
-            disc_3_icon: include_bytes!("./assets/disc-3.svg"),
+            eject_icon:      include_bytes!("./assets/eject.svg"),
+            disc_3_icon:     include_bytes!("./assets/disc-3.svg"),
+            rotate_ccw_icon: include_bytes!("./assets/rotate-ccw.svg"),
         }
     }
 }
@@ -135,6 +139,7 @@ impl AssetSource for PchanAssets {
         match path {
             "eject.svg" => Ok(Some(Cow::Borrowed(self.eject_icon))),
             "disc-3.svg" => Ok(Some(Cow::Borrowed(self.disc_3_icon))),
+            "rotate-ccw.svg" => Ok(Some(Cow::Borrowed(self.rotate_ccw_icon))),
             _ => Assets.load(path),
         }
     }
@@ -277,6 +282,34 @@ impl Debugger {
             }
         })
         .detach();
+
+        cx.on_action::<HardReset>({
+            let emucx = emucx.clone();
+            let surface = game_surface.clone();
+            let surface_state = surface_state.clone();
+            move |_, cx| {
+                emucx
+                    .update(cx, |emucx, cx| -> miette::Result<()> {
+                        let bios_path = emucx.emu.bootloader().bios_path.clone();
+                        emucx.emu = Emu::new();
+                        emucx.emu.set_bios_path(bios_path);
+                        emucx.emu.load_bios().into_diagnostic()?;
+                        emucx.emu.gpu.vram = pchan_emu::gpu::create_vram();
+                        emucx.emu.cpu.jump_to_bios();
+                        emucx.renderer.reset();
+                        emucx.renderer.connect_emu(&mut emucx.emu);
+                        emucx.emu.tty.set_tracing();
+
+                        let mut audio_task = AudioTask::new()?;
+                        pchan_bind::bind_audio(&mut audio_task, &mut emucx.emu);
+                        let audio_stream = audio_task.start()?;
+                        std::mem::forget(audio_stream);
+
+                        Ok(())
+                    })
+                    .unwrap();
+            }
+        });
 
         Ok(Self {
             emucx,
@@ -752,6 +785,14 @@ impl Debugger {
             .items_center()
             .min_w_0()
             .flex_grow_1()
+            .child(
+                Button::new("reset-button")
+                    .icon(Icon::empty().path("rotate-ccw.svg"))
+                    .dropdown_menu(|menu, _, _| {
+                        menu.menu("Hard Reset", Box::new(HardReset))
+                            .menu("Soft Reset", Box::new(SoftReset))
+                    }),
+            )
             .child(
                 Button::new("run-button")
                     .w_24()
