@@ -788,36 +788,85 @@ impl Render for MemviewTable {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let columns = 4;
         let items = u32::MAX as usize / (columns * 4);
-        let entity = cx.entity();
+        let view = cx.entity();
         let theme = cx.theme().clone();
         uniform_list("memview-table", items, move |range, win, cx| {
-            let mut sink = String::new();
             range
                 .map(|row_idx| {
                     use core::fmt::Write;
 
                     let caddress = hex(row_idx as u32 * columns as u32 * 4);
-                    let selection = TextSelectionHandle::new("", cx);
-                    let selection_refresh = selection.refresh_window_on_change(win, cx);
 
-                    let view = entity.read(cx);
-                    let emu = &view.emucx.read(cx).emu;
+                    let mut result = h_flex().font_family(&theme.mono_font_family).gap_2().child(
+                        TextView::markdown(
+                            ElementId::NamedInteger("mem-view-row-address".into(), row_idx as u64),
+                            caddress.as_str(),
+                        ),
+                    );
 
-                    sink.clear();
-
-                    _ = write!(sink, "{caddress} ");
                     for word_idx in 0..columns {
                         let address = row_idx * columns * 4 + word_idx * 4;
                         let address = address & 0x1fff_ffff;
-                        let word = emu.try_read_pure::<u32>(address as u32).unwrap_or(0);
+                        let word = view
+                            .read(cx)
+                            .emucx
+                            .read(cx)
+                            .emu
+                            .try_read_pure::<u32>(address as u32)
+                            .unwrap_or(0);
                         let hex = hex_pref::<_, false>(word);
-                        _ = write!(sink, "{hex} ");
+
+                        let id =
+                            ElementId::NamedInteger("mewmview-hex-input".into(), address as u64);
+                        let input_state = win.use_keyed_state(id, cx, |win, cx| {
+                            InputState::new(win, cx).default_value(hex.as_str())
+                        });
+                        win.subscribe(&input_state, cx, {
+                            let emucx = view.read(cx).emucx.clone();
+                            let input_state = input_state.clone();
+                            use gpui_component::input::InputEvent;
+                            move |_, event: &InputEvent, win, cx| {
+                                if let InputEvent::PressEnter { .. } | InputEvent::Blur = event {
+                                    let mem_value =
+                                        match parse_hex_register(&input_state.read(cx).value()) {
+                                            Ok(mem_value) => {
+                                                emucx.update(cx, |emucx, _| {
+                                                    emucx.emu.write(address as u32, mem_value);
+                                                });
+                                                mem_value
+                                            }
+                                            // TODO: handle error
+                                            Err(_err) => return,
+                                        };
+                                    input_state.update(cx, |state, cx| {
+                                        state.set_value(
+                                            hex_pref::<_, false>(mem_value).as_str(),
+                                            win,
+                                            cx,
+                                        );
+                                    });
+                                }
+                            }
+                        })
+                        .detach();
+
+                        if !input_state.focus_handle(cx).is_focused(win) {
+                            input_state.update(cx, |state, cx| {
+                                state.set_value(hex.as_str(), win, cx);
+                            });
+                        }
+
+                        result = result.child(Input::new(&input_state).text_center().w(rems(6.)));
                     }
 
                     for word_idx in 0..columns {
                         let address = row_idx * columns * 4 + word_idx * 4;
                         let address = address & 0x1fff_ffff;
-                        let mut word = emu
+                        let mut word = view
+                            .read(cx)
+                            .emucx
+                            .read(cx)
+                            .emu
                             .try_read_pure::<[u8; 4]>(address as u32)
                             .unwrap_or([b'.'; 4]);
                         for byte in word.iter_mut() {
@@ -829,18 +878,13 @@ impl Render for MemviewTable {
                             }
                         }
                         let word = core::str::from_utf8(&word).expect("impossible");
-                        _ = write!(sink, "{word}");
+
+                        let id =
+                            ElementId::NamedInteger("mewmview-hex-ascii".into(), address as u64);
+                        result = result.child(TextView::markdown(id, word));
                     }
 
-                    TextView::markdown(
-                        ElementId::NamedInteger(
-                            SharedString::new_static("memview-row"),
-                            row_idx as u64,
-                        ),
-                        &sink,
-                    )
-                    .selectable(true)
-                    .font_family(&theme.mono_font_family)
+                    result
                 })
                 .collect()
         })
