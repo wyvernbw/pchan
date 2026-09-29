@@ -938,7 +938,7 @@ pub struct VirtualList {
     interactivity: Interactivity,
     rows_total:    u64,
     render_row:    Box<dyn Fn(u64, &mut Window, &mut App) -> AnyElement>,
-    state:         Option<Entity<DisasmListState>>,
+    state:         Option<Entity<VirtualListState>>,
     scroll_handle: Option<VirtualListScrollHandle>,
 }
 
@@ -962,7 +962,7 @@ impl Default for VirtualListScrollHandle {
 }
 
 pub struct VirtualListScrollState {
-    state:    WeakEntity<DisasmListState>,
+    state:    WeakEntity<VirtualListState>,
     deferred: Option<u64>,
 }
 
@@ -990,7 +990,7 @@ impl VirtualList {
     }
 
     #[track_caller]
-    fn init_state(&mut self, window: &mut Window, cx: &mut App) -> Entity<DisasmListState> {
+    fn init_state(&mut self, window: &mut Window, cx: &mut App) -> Entity<VirtualListState> {
         let state = match &self.state {
             Some(state) => state.clone(),
             None => window.use_keyed_state(
@@ -999,7 +999,7 @@ impl VirtualList {
                     .clone()
                     .unwrap_or(ElementId::CodeLocation(*core::panic::Location::caller())),
                 cx,
-                |_, _| DisasmListState::default(),
+                |_, _| VirtualListState::default(),
             ),
         };
         if let Some(scroll) = &self.scroll_handle {
@@ -1039,7 +1039,7 @@ impl Default for VirtualListScrollState {
 }
 
 #[derive(Default)]
-pub struct DisasmListState {
+pub struct VirtualListState {
     children:   Vec<(AnyElement, Point<Pixels>)>,
     top_row:    u64,
     frac_px:    f32,
@@ -1048,7 +1048,7 @@ pub struct DisasmListState {
 
 impl Element for VirtualList {
     type RequestLayoutState = ();
-    type PrepaintState = (Entity<DisasmListState>, Hitbox);
+    type PrepaintState = (Entity<VirtualListState>, Hitbox);
 
     fn id(&self) -> Option<ElementId> {
         self.interactivity.element_id.clone()
