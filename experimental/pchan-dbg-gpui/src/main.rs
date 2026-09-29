@@ -1,5 +1,6 @@
 #![allow(clippy::type_complexity)]
 #![allow(recursion_depth_exceeding_limit)]
+#![feature(const_type_name)]
 
 #[path = "game-surface.rs"]
 pub mod game_surface;
@@ -20,10 +21,14 @@ use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::collapsible::Collapsible;
 use gpui_component::input::{Input, InputState};
 use gpui_component::menu::DropdownMenu;
+use gpui_component::scroll::ScrollableElement;
 use gpui_component::select::{Select as SelectView, SelectEvent, SelectItem, SelectState};
 use gpui_component::separator::Separator;
 use gpui_component::spinner::Spinner;
 use gpui_component::tab::TabBar;
+use gpui_component::table::{
+    Table, TableBody, TableCaption, TableCell, TableHead, TableHeader, TableRow,
+};
 use gpui_component::text::{TextView, markdown};
 use gpui_component::{
     ActiveTheme, Icon, IconName, Root, Sizable, StyledExt, Theme, ThemeRegistry, h_flex, v_flex,
@@ -266,9 +271,10 @@ impl Debugger {
             let mut memview_scroll = VirtualListScrollHandle::new();
             memview_scroll.scroll_to(0x0000_0000, cx);
             MemviewTable {
-                scroll:  memview_scroll,
-                emucx:   emucx.clone(),
-                editing: None,
+                scroll:   memview_scroll,
+                emucx:    emucx.clone(),
+                editing:  None,
+                selected: None,
             }
         });
 
@@ -552,6 +558,38 @@ impl Debugger {
             .child(format!("{speed_percent:.2}%"))
     }
 
+    fn memview_jumpbar(&mut self, win: &mut Window, cx: &mut Context<Self>) -> Input {
+        let memview = self.memview.clone();
+        let input = win.use_state(cx, |win, cx| {
+            cx.subscribe_in(
+                &memview,
+                win,
+                move |input: &mut HexInputState, _, edit, win, cx| {
+                    input.input.update(cx, |input, cx| {
+                        input.set_value(hex(edit.address).as_str(), win, cx);
+                    });
+                    cx.notify();
+                },
+            )
+            .detach();
+
+            HexInputState::new::<true, _>(None, win, cx, {
+                let memview = memview.clone();
+                move |value, cx| -> Option<()> {
+                    let value = value?;
+                    memview.update(cx, |memview, cx| {
+                        memview.scroll.scroll_to(value as u64 / 16, cx);
+                    });
+                    None
+                }
+            })
+        });
+        let theme = cx.theme();
+        Input::new(&input.read(cx).input)
+            .font_family(&theme.mono_font_family)
+            .prefix("Jump to: ")
+    }
+
     fn debugger_ui(
         &mut self,
         win: &mut Window,
@@ -647,7 +685,12 @@ impl Debugger {
                             .gap_2()
                             .child(
                                 h_flex().h_8().child(
-                                    div().child("Memory").text_color(theme.muted_foreground),
+                                    h_flex()
+                                        .gap_2()
+                                        .child("Memory")
+                                        .text_color(theme.muted_foreground)
+                                        .child(self.memview_jumpbar(win, cx).w_64())
+                                        .child(div().child("Ascii")),
                                 ),
                             )
                             .child(
@@ -655,6 +698,29 @@ impl Debugger {
                                     .flex_grow_1()
                                     .min_h_0()
                                     .child(self.memview.clone()),
+                            ),
+                    )
+                    .child(
+                        v_flex()
+                            .h_full()
+                            .w(rems(11.5))
+                            .min_h_0()
+                            .gap_2()
+                            .child(
+                                h_flex().h_8().child(
+                                    h_flex()
+                                        .gap_2()
+                                        .child("Mem Inspector")
+                                        .text_color(theme.muted_foreground),
+                                ),
+                            )
+                            .child(
+                                panel(&theme)
+                                    .flex_grow_1()
+                                    .w_full()
+                                    .min_h_0()
+                                    .px_0()
+                                    .child(self.mem_inspector(cx, &theme)),
                             ),
                     ),
             )
@@ -670,11 +736,18 @@ fn panel(theme: &Theme) -> Div {
         .p_2()
 }
 
-fn parse_hex_register(str: &str) -> Result<u32, ParseIntError> {
+fn parse_hex_word(str: &str) -> Result<u32, ParseIntError> {
     if str == "0x" {
         return Ok(0);
     }
-    u32::from_str_radix(str.trim_prefix("0x"), 16)
+    let str = str.trim_prefix("0x");
+    if let Some((a, b)) = str.split_once("_") {
+        let a = parse_hex_word(a)?;
+        let b = parse_hex_word(b)?;
+        Ok(a << 16 | b)
+    } else {
+        u32::from_str_radix(str, 16)
+    }
 }
 
 impl Debugger {
@@ -706,7 +779,7 @@ impl Debugger {
                     let reg_value: SharedString = hex(value).to_string().into();
                     InputState::new(win, cx)
                         .default_value(reg_value)
-                        .validate(|value, _| parse_hex_register(value).is_ok())
+                        .validate(|value, _| parse_hex_word(value).is_ok())
                 });
 
                 use gpui_component::input::InputEvent;
@@ -716,8 +789,7 @@ impl Debugger {
                     window,
                     move |view, input_state, event, win, cx| {
                         if let InputEvent::PressEnter { .. } | InputEvent::Blur = event {
-                            let reg_value = match parse_hex_register(&input_state.read(cx).value())
-                            {
+                            let reg_value = match parse_hex_word(&input_state.read(cx).value()) {
                                 Ok(reg_value) => {
                                     view.emucx
                                         .update(cx, |emucx, _| emucx.emu.cpu.gpr[r] = reg_value);
@@ -972,55 +1044,187 @@ impl Debugger {
             .child(Separator::horizontal())
             .child(self.instructions_list(cx, theme).flex_grow_1().min_h_0())
     }
+
+    fn mem_inspector(
+        &mut self,
+        cx: &mut Context<Debugger>,
+        theme: &Theme,
+    ) -> impl IntoElement + Styled {
+        let selected = self.memview.read(cx).selected;
+
+        fn get_value<T: Copy + core::fmt::Debug>(
+            emucx: &Entity<EmuContext>,
+            cx: &mut Context<Debugger>,
+            address: Option<u32>,
+        ) -> SharedString {
+            let Some(address) = address else {
+                return " ".into();
+            };
+            match emucx.read(cx).emu.try_read_pure::<T>(address) {
+                Ok(value) => format!("{value:?}").into(),
+                Err(_) => "N/A".into(),
+            }
+        }
+
+        fn table_row<T: Copy + core::fmt::Debug>(
+            type_label: &'static str,
+            emucx: &Entity<EmuContext>,
+            cx: &mut Context<Debugger>,
+            address: Option<u32>,
+        ) -> TableRow {
+            TableRow::new()
+                .gap_2()
+                .child(TableCell::new().child(type_label).min_w_0().w(rems(4.)))
+                .child(TableCell::new().child(get_value::<T>(emucx, cx, address)))
+        }
+
+        #[derive(Clone, Copy)]
+        struct Ascii([u8; 4]);
+        impl core::fmt::Debug for Ascii {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                let mut word = self.0;
+                for byte in word.iter_mut() {
+                    match *byte {
+                        ..=0x1f | 0x7f.. => {
+                            *byte = b'.';
+                        }
+                        _ => {}
+                    }
+                }
+
+                let word = core::str::from_utf8(&word).expect("impossible");
+                write!(f, "{:?}", word)
+            }
+        }
+
+        div()
+            .w_full()
+            .h_full()
+            .min_w_0()
+            .overflow_y_scrollbar()
+            .child(
+                div().overflow_x_scrollbar().w_full().h_full().child(
+                    Table::new()
+                        .child(
+                            TableHeader::new().child(
+                                TableRow::new()
+                                    .child(TableHead::new().child("Type").min_w_0().w(rems(4.)))
+                                    .child(TableHead::new().child("Value")),
+                            ),
+                        )
+                        .child(
+                            TableBody::new()
+                                .w_full()
+                                .child(table_row::<u32>("u32", &self.emucx, cx, selected))
+                                .child(table_row::<[u16; 2]>("u16", &self.emucx, cx, selected))
+                                .child(table_row::<[u8; 4]>("u8", &self.emucx, cx, selected))
+                                .child(table_row::<i32>("i32", &self.emucx, cx, selected))
+                                .child(table_row::<[i16; 2]>("i16", &self.emucx, cx, selected))
+                                .child(table_row::<[i8; 4]>("i8", &self.emucx, cx, selected))
+                                .child(table_row::<Ascii>("ascii", &self.emucx, cx, selected)),
+                        ),
+                ),
+            )
+    }
+}
+
+struct HexInputState {
+    input: Entity<InputState>,
+    _sub:  Subscription,
+}
+
+impl HexInputState {
+    pub fn new<const PREFIX: bool, R>(
+        default_value: Option<u32>,
+        win: &mut Window,
+        cx: &mut App,
+        on_submit: impl Fn(Option<u32>, &mut App) -> R + 'static,
+    ) -> Self {
+        let input = cx.new(|cx| {
+            let state = InputState::new(win, cx);
+            match default_value {
+                None => state,
+                Some(default_value) => {
+                    state.default_value(hex_pref::<_, PREFIX>(default_value).as_str())
+                }
+            }
+        });
+
+        let _sub = win.subscribe(&input, cx, move |input, event, win, cx| {
+            use gpui_component::input::InputEvent;
+            let (InputEvent::PressEnter { .. } | InputEvent::Blur) = event else {
+                return;
+            };
+
+            let word = match parse_hex_word(&input.read(cx).value()) {
+                Ok(word) => {
+                    on_submit(Some(word), cx);
+                    word
+                }
+                // TODO: handle error
+                Err(_err) => {
+                    on_submit(None, cx);
+                    return;
+                }
+            };
+            input.update(cx, |input, cx| {
+                input.set_value(hex_pref::<_, PREFIX>(word).as_str(), win, cx)
+            });
+            cx.notify(input.entity_id());
+        });
+
+        HexInputState { input, _sub }
+    }
 }
 
 struct MemviewTable {
-    scroll:  VirtualListScrollHandle,
-    emucx:   Entity<EmuContext>,
-    editing: Option<MemviewTableEdit>,
+    scroll:   VirtualListScrollHandle,
+    emucx:    Entity<EmuContext>,
+    editing:  Option<MemviewTableEdit>,
+    selected: Option<u32>,
 }
 
 struct MemviewTableEdit {
     address: u32,
-    input:   Entity<InputState>,
-    _sub:    Subscription,
+    input:   Entity<HexInputState>,
 }
 
 impl MemviewTable {
     fn start_edit(
         &mut self,
         address: u32,
-        text: SharedString,
+        default_value: u32,
         win: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        use gpui_component::input::InputEvent;
-
-        let input = cx.new(|cx| InputState::new(win, cx).default_value(text));
-        let sub = cx.subscribe_in(&input, win, move |this, input, ev: &InputEvent, _, cx| {
-            let (InputEvent::PressEnter { .. } | InputEvent::Blur) = ev else {
-                return;
-            };
-
-            let text = input.read(cx).value();
-            if let Ok(v) = parse_hex_register(&text) {
-                this.emucx.update(cx, |emucx, _| {
-                    let _ = emucx.emu.try_write(address, v);
+        let emucx = self.emucx.clone();
+        let view = cx.entity();
+        let input = cx.new(|cx| {
+            HexInputState::new::<false, _>(Some(default_value), win, cx, move |value, cx| {
+                emucx.update(cx, |emucx, _| -> Option<()> {
+                    let _ = emucx.emu.try_write::<u32>(address, value?);
+                    None
                 });
-            }
-
-            this.editing = None;
-            cx.notify();
+                view.update(cx, |view, _| {
+                    view.editing = None;
+                })
+            })
         });
-        input.update(cx, |input, cx| input.focus(win, cx));
-        self.editing = Some(MemviewTableEdit {
-            address,
-            input,
-            _sub: sub,
+        input.update(cx, |input, cx| {
+            cx.focus_view(&input.input, win);
         });
-        cx.notify();
+        self.editing = Some(MemviewTableEdit { address, input });
+        self.selected = Some(address);
+        cx.emit(MemviewTableEditEvent { address });
+        dbg!(self.selected);
     }
 }
+
+struct MemviewTableEditEvent {
+    address: u32,
+}
+
+impl EventEmitter<MemviewTableEditEvent> for MemviewTable {}
 
 impl Render for MemviewTable {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1048,7 +1252,7 @@ impl Render for MemviewTable {
 
             for word_idx in 0..columns {
                 let address = row_idx * columns * 4 + word_idx * 4;
-                let address = address as u32 & 0x1fff_ffff;
+                let address = address as u32;
                 let word = view
                     .read(cx)
                     .emucx
@@ -1071,11 +1275,11 @@ impl Render for MemviewTable {
 
                 let id = ElementId::NamedInteger("memview-hex-input".into(), address as u64);
 
-                match view.read(cx).editing.as_ref() {
+                match &view.read(cx).editing.as_ref() {
                     Some(edit) if edit.address == address => {
                         result = result.child(
                             deferred(
-                                Input::new(&edit.input)
+                                Input::new(&edit.input.read(cx).input)
                                     .px_0()
                                     .h_6()
                                     .text_center()
@@ -1098,12 +1302,7 @@ impl Render for MemviewTable {
                                     let view = view.clone();
                                     move |_, win, cx| {
                                         view.update(cx, |view, cx| {
-                                            view.start_edit(
-                                                address,
-                                                word_str.as_str().into(),
-                                                win,
-                                                cx,
-                                            );
+                                            view.start_edit(address, word, win, cx);
                                         });
                                     }
                                 }),
@@ -1114,31 +1313,45 @@ impl Render for MemviewTable {
 
             for word_idx in 0..columns {
                 let address = row_idx * columns * 4 + word_idx * 4;
-                let address = address & 0x1fff_ffff;
+                let address = address as u32;
                 let mut word = view
                     .read(cx)
                     .emucx
                     .read(cx)
                     .emu
-                    .try_read_pure::<[u8; 4]>(address as u32)
+                    .try_read_pure::<[u8; 4]>(address)
                     .unwrap_or([b'.'; 4]);
+                let mut no_ascii = true;
                 for byte in word.iter_mut() {
                     match *byte {
                         ..=0x1f | 0x7f.. => {
                             *byte = b'.';
                         }
-                        _ => {}
+                        _ => {
+                            no_ascii = false;
+                        }
                     }
                 }
-                let word = core::str::from_utf8(&word).expect("impossible");
 
-                let id = ElementId::NamedInteger("mewmview-hex-ascii".into(), address);
-                result = result.child(TextView::markdown(id, word).selectable(true));
+                let word = core::str::from_utf8(&word).expect("impossible");
+                let id = ElementId::NamedInteger("mewmview-hex-ascii".into(), address as u64);
+                let color = match (view.read(cx).editing.as_ref(), no_ascii) {
+                    (Some(edit), _) if edit.address == address => &theme.colors.yellow,
+                    (_, false) => &theme.foreground,
+                    (_, true) => &theme.muted_foreground,
+                };
+
+                result = result.child(
+                    TextView::markdown(id, word)
+                        .selectable(true)
+                        .text_color(*color)
+                        .w(rems(2.5)),
+                );
             }
 
             result
         })
-        .w_full()
+        // .w_full()
         .h_full()
         .track_scroll(&self.scroll)
     }
@@ -1240,6 +1453,14 @@ impl VirtualListScrollHandle {
         }
         self.handle.borrow_mut().deferred = Some(idx);
     }
+
+    pub fn scroll_idx(&self, cx: &impl AppContext) -> u64 {
+        if let Some(state) = self.handle.borrow().state.upgrade() {
+            cx.read_entity(&state, |s, _| s.top_row)
+        } else {
+            0
+        }
+    }
 }
 
 impl Default for VirtualListScrollState {
@@ -1295,7 +1516,10 @@ impl Element for VirtualList {
         let row_h: f32 = state.read(cx).row_height.unwrap_or_else(|| {
             first
                 .layout_as_root(
-                    Size::new(AvailableSpace::MinContent, AvailableSpace::MinContent),
+                    Size::new(
+                        AvailableSpace::MinContent,
+                        AvailableSpace::Definite(bounds.size.width),
+                    ),
                     window,
                     cx,
                 )
