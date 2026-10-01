@@ -10,6 +10,7 @@ use core::cell::RefCell;
 use core::num::ParseIntError;
 use core::time::Duration;
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -154,6 +155,7 @@ struct Debugger {
 
     cached_reg_names:    [SharedString; 32],
     cpu_control_reg_tab: usize,
+    cpu_control_subs:    [Option<Subscription>; 32],
 
     exec_control_panel_open: bool,
     mips_dump_scroll_handle: VirtualListScrollHandle,
@@ -203,8 +205,8 @@ impl SelectItem for EmuSpeed {
 
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
 enum SurfaceMode {
-    #[default]
     Background,
+    #[default]
     Pane,
 }
 
@@ -313,7 +315,7 @@ impl Debugger {
         });
         let surface_mode = cx.new(|cx| {
             SelectState::new(
-                vec![SurfaceMode::Background, SurfaceMode::Pane],
+                vec![SurfaceMode::Pane, SurfaceMode::Background],
                 Some(IndexPath::default()),
                 window,
                 cx,
@@ -438,6 +440,7 @@ impl Debugger {
             memview,
 
             cached_reg_names,
+            cpu_control_subs: [const { None }; 32],
             cpu_control_reg_tab: 0,
             exec_control_panel_open: true,
             disc_path: None,
@@ -890,27 +893,34 @@ impl Debugger {
 
                 use gpui_component::input::InputEvent;
 
-                cx.subscribe_in(
-                    &input_state,
-                    window,
-                    move |view, input_state, event, win, cx| {
-                        if let InputEvent::PressEnter { .. } | InputEvent::Blur = event {
-                            let reg_value = match parse_hex_word(&input_state.read(cx).value()) {
-                                Ok(reg_value) => {
-                                    view.emucx
-                                        .update(cx, |emucx, _| emucx.emu.cpu.gpr[r] = reg_value);
-                                    reg_value
+                match self.cpu_control_subs[r] {
+                    Some(_) => {}
+                    None => {
+                        let sub = cx.subscribe_in(
+                            &input_state,
+                            window,
+                            move |view, input_state, event, win, cx| {
+                                if let InputEvent::PressEnter { .. } | InputEvent::Blur = event {
+                                    let reg_value =
+                                        match parse_hex_word(&input_state.read(cx).value()) {
+                                            Ok(reg_value) => {
+                                                view.emucx.update(cx, |emucx, _| {
+                                                    emucx.emu.cpu.gpr[r] = reg_value
+                                                });
+                                                reg_value
+                                            }
+                                            // TODO: handle error
+                                            Err(_err) => return,
+                                        };
+                                    input_state.update(cx, |state, cx| {
+                                        state.set_value(hex(reg_value).as_str(), win, cx);
+                                    })
                                 }
-                                // TODO: handle error
-                                Err(_err) => return,
-                            };
-                            input_state.update(cx, |state, cx| {
-                                state.set_value(hex(reg_value).as_str(), win, cx);
-                            })
-                        }
-                    },
-                )
-                .detach();
+                            },
+                        );
+                        self.cpu_control_subs[r] = Some(sub);
+                    }
+                }
 
                 if !input_state.focus_handle(cx).is_focused(window) {
                     input_state.update(cx, |state, cx| {
