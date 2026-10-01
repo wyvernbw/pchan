@@ -1,6 +1,7 @@
 #![allow(clippy::type_complexity)]
 #![allow(recursion_depth_exceeding_limit)]
 #![feature(const_type_name)]
+#![feature(portable_simd)]
 
 #[path = "game-surface.rs"]
 pub mod game_surface;
@@ -18,6 +19,7 @@ use gpui::prelude::*;
 use gpui::{AppContext, Render, *};
 use gpui_base::{Disableable, IndexPath, TextSelectionLayer};
 use gpui_component::button::{Button, ButtonVariants};
+use gpui_component::checkbox::Checkbox;
 use gpui_component::collapsible::Collapsible;
 use gpui_component::input::{Input, InputState};
 use gpui_component::menu::DropdownMenu;
@@ -26,9 +28,7 @@ use gpui_component::select::{Select as SelectView, SelectEvent, SelectItem, Sele
 use gpui_component::separator::Separator;
 use gpui_component::spinner::Spinner;
 use gpui_component::tab::TabBar;
-use gpui_component::table::{
-    Table, TableBody, TableCaption, TableCell, TableHead, TableHeader, TableRow,
-};
+use gpui_component::table::{Table, TableBody, TableCell, TableHead, TableHeader, TableRow};
 use gpui_component::text::{TextView, markdown};
 use gpui_component::{
     ActiveTheme, Icon, IconName, Root, Sizable, StyledExt, Theme, ThemeRegistry, h_flex, v_flex,
@@ -146,8 +146,10 @@ impl AssetSource for PchanAssets {
 }
 
 struct Debugger {
-    emucx:            Entity<EmuContext>,
-    game_surface:     Entity<GameSurface>,
+    emucx:        Entity<EmuContext>,
+    game_surface: Entity<SurfaceState>,
+
+    surface_mode:     Entity<SelectState<Vec<SurfaceMode>>>,
     emu_speed_select: Entity<SelectState<Vec<EmuSpeed>>>,
 
     cached_reg_names:    [SharedString; 32],
@@ -161,7 +163,7 @@ struct Debugger {
     pc:      u32,
 }
 
-struct EmuContext {
+pub struct EmuContext {
     emu:                Emu,
     runner:             Runner,
     running:            bool,
@@ -173,6 +175,10 @@ struct EmuContext {
     start:              Instant,
     speed_limit:        EmuSpeed,
 }
+
+struct RenderedFrame;
+
+impl EventEmitter<RenderedFrame> for EmuContext {}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum EmuSpeed {
@@ -187,6 +193,28 @@ impl SelectItem for EmuSpeed {
         match self {
             EmuSpeed::Unlimited => "Unlimied".into(),
             EmuSpeed::Percent(p) => format!("{p}%").into(),
+        }
+    }
+
+    fn value(&self) -> &Self::Value {
+        self
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+enum SurfaceMode {
+    #[default]
+    Background,
+    Pane,
+}
+
+impl SelectItem for SurfaceMode {
+    type Value = Self;
+
+    fn title(&self) -> SharedString {
+        match self {
+            SurfaceMode::Background => "Background".into(),
+            SurfaceMode::Pane => "Pane".into(),
         }
     }
 
@@ -258,14 +286,6 @@ impl Debugger {
         });
 
         let surface_state = cx.new(|_| SurfaceState::new(target.clone(), target_buf.clone()));
-        let game_surface = cx.new(|_| {
-            GameSurface::new(
-                "global-game-surface",
-                gpu.clone(),
-                true,
-                surface_state.clone(),
-            )
-        });
 
         let memview = cx.new(|cx| {
             let mut memview_scroll = VirtualListScrollHandle::new();
@@ -291,6 +311,14 @@ impl Debugger {
                 cx,
             )
         });
+        let surface_mode = cx.new(|cx| {
+            SelectState::new(
+                vec![SurfaceMode::Background, SurfaceMode::Pane],
+                Some(IndexPath::default()),
+                window,
+                cx,
+            )
+        });
 
         cx.subscribe(&emu_speed_select, {
             let emucx = emucx.clone();
@@ -306,7 +334,6 @@ impl Debugger {
         .detach();
 
         cx.spawn_with_priority(Priority::High, {
-            let surface = game_surface.clone();
             let surface_state = surface_state.clone();
             let emucx = emucx.clone();
             async move |cx| {
@@ -337,7 +364,7 @@ impl Debugger {
                             surface_state.wait_for_display_draw(&emucx.renderer);
                             surface_state.start_convert_render(&emucx.renderer);
                             drop(surface_state);
-                            surface.update(cx, |_, cx| cx.notify());
+                            cx.emit(RenderedFrame);
                         }
                         let frame_time = start.elapsed();
                         emucx.frame_time = frame_time;
@@ -361,6 +388,7 @@ impl Debugger {
                     }
                     if yield_time > Duration::from_micros(16_667 * 2) {
                         futures_lite::future::yield_now().await;
+                        yield_time = Duration::ZERO;
                     }
                 }
             }
@@ -404,7 +432,8 @@ impl Debugger {
 
         Ok(Self {
             emucx,
-            game_surface,
+            game_surface: surface_state,
+            surface_mode,
 
             memview,
 
@@ -420,14 +449,14 @@ impl Debugger {
 }
 
 async fn spin_sleep(cx: &AsyncApp, duration: Duration) -> bool {
-    let sleep_for = duration.saturating_sub(Duration::from_millis(5));
+    let sleep_for = duration.saturating_sub(Duration::from_millis(7));
     let deadline = Instant::now() + duration;
 
     let mut yielded = false;
     if sleep_for > Duration::ZERO {
         yielded = true;
         cx.background_executor()
-            .spawn_with_priority(Priority::High, cx.background_executor().timer(sleep_for))
+            .spawn_with_priority(Priority::Low, cx.background_executor().timer(sleep_for))
             .await;
     }
     loop {
@@ -448,7 +477,15 @@ impl Render for Debugger {
 
         let _theme = cx.theme();
 
+        let surface = self.game_surface(cx);
         let emucx = self.emucx.read(cx);
+        let surface_mode = self
+            .surface_mode
+            .read(cx)
+            .selected_value()
+            .cloned()
+            .unwrap_or(SurfaceMode::Background);
+
         v_flex()
             .child(TextSelectionLayer)
             .h(window_height)
@@ -463,19 +500,27 @@ impl Render for Debugger {
                 div()
                     .h_full()
                     .bg(transparent_white())
-                    .child(
-                        div()
-                            .absolute()
-                            .w_full()
-                            .h_full()
-                            .child(self.game_surface().clone()),
-                    )
+                    .when(surface_mode == SurfaceMode::Background, |this| {
+                        this.child(div().absolute().w_full().h_full().child(surface))
+                    })
                     .child(self.debugger_ui(window, cx).w_full().h_full()),
             )
     }
 }
 
 impl Debugger {
+    fn game_surface(&self, cx: &mut impl AppContext) -> GameSurface {
+        GameSurface::new(
+            "game-surface",
+            cx.read_entity(&self.emucx, |emucx, _| emucx.renderer.clone()),
+            self.game_surface.clone(),
+        )
+        .w_full()
+        .h_full()
+        .min_h_4()
+        .min_w_4()
+    }
+
     fn header<T: 'static>(
         &self,
         cx: &mut Context<T>,
@@ -509,6 +554,19 @@ impl Debugger {
                 div().child(
                     SelectView::new(&self.emu_speed_select)
                         .title_prefix("Speed: ")
+                        .items_center()
+                        .small()
+                        .h_6()
+                        .min_h_0()
+                        .min_w_0()
+                        .flex_shrink_1()
+                        .flex_grow_0(),
+                ),
+            )
+            .child(
+                div().child(
+                    SelectView::new(&self.surface_mode)
+                        .title_prefix("Game: ")
                         .items_center()
                         .small()
                         .h_6()
@@ -596,6 +654,21 @@ impl Debugger {
         cx: &mut Context<Self>,
     ) -> impl IntoElement + Styled {
         let theme = cx.theme().clone();
+        let surface_mode = self
+            .surface_mode
+            .read(cx)
+            .selected_value()
+            .copied()
+            .unwrap_or(SurfaceMode::Background);
+        let surface = self.game_surface(cx).clone();
+        let emucx = self.emucx.clone();
+        let show_vram = emucx
+            .read(cx)
+            .renderer
+            .display_uniforms
+            .lock()
+            .unwrap()
+            .dp_debug;
 
         v_flex()
             .id("main")
@@ -604,51 +677,84 @@ impl Debugger {
             .relative()
             .text_color(theme.foreground)
             .p_4()
-            .gap_4()
+            .gap_2()
             .bg(transparent_white())
             .child(
-                div().h_flex().items_start().flex_grow_1().text_sm().child(
-                    panel(&theme)
-                        .v_flex()
-                        .flex_grow_1()
-                        .max_w_96()
-                        .when(self.exec_control_panel_open, |this| this.min_h_full())
-                        .gap_2()
-                        .child(
-                            h_flex()
-                                .justify_between()
+                div()
+                    .h_flex()
+                    .gap_2()
+                    .items_start()
+                    .flex_grow_1()
+                    .text_sm()
+                    .child(
+                        panel(&theme)
+                            .v_flex()
+                            .flex_grow_1()
+                            .max_w_96()
+                            .when(self.exec_control_panel_open, |this| this.min_h_full())
+                            .gap_2()
+                            .child(
+                                h_flex()
+                                    .justify_between()
+                                    .gap_2()
+                                    .child(
+                                        self.execution_header(cx, &theme).min_w_0().flex_grow_1(),
+                                    )
+                                    .child(
+                                        Button::new("toggle1")
+                                            .icon(IconName::ChevronDown)
+                                            .ghost()
+                                            .small()
+                                            .on_click({
+                                                cx.listener(move |this, _, _, cx| {
+                                                    this.exec_control_panel_open.toggle();
+                                                    cx.notify();
+                                                })
+                                            }),
+                                    ),
+                            )
+                            .when(self.exec_control_panel_open, |this| {
+                                this.child(
+                                    Collapsible::new()
+                                        .open(self.exec_control_panel_open)
+                                        .flex()
+                                        .flex_grow_1()
+                                        .h_full()
+                                        .w_full()
+                                        .content(
+                                            self.execution_control(cx, &theme)
+                                                .w_full()
+                                                .min_h_0()
+                                                .flex_grow_1(),
+                                        ),
+                                )
+                            }),
+                    )
+                    .when(surface_mode == SurfaceMode::Pane, |this| {
+                        this.child(
+                            panel(&theme)
+                                .v_flex()
+                                .flex_grow_1()
+                                .w_full()
+                                .h_full()
+                                .min_w_4()
+                                .min_h_4()
                                 .gap_2()
-                                .child(self.execution_header(cx, &theme).min_w_0().flex_grow_1())
                                 .child(
-                                    Button::new("toggle1")
-                                        .icon(IconName::ChevronDown)
-                                        .ghost()
-                                        .small()
+                                    Checkbox::new("display-vram-checkbox")
+                                        .checked(show_vram)
+                                        .label("VRAM")
                                         .on_click({
-                                            cx.listener(move |this, _, _, cx| {
-                                                this.exec_control_panel_open.toggle();
+                                            let surface = surface.clone();
+                                            cx.listener(move |_, toggled, _, cx| {
+                                                surface.set_vram_view(*toggled);
                                                 cx.notify();
                                             })
                                         }),
-                                ),
+                                )
+                                .child(surface),
                         )
-                        .when(self.exec_control_panel_open, |this| {
-                            this.child(
-                                Collapsible::new()
-                                    .open(self.exec_control_panel_open)
-                                    .flex()
-                                    .flex_grow_1()
-                                    .h_full()
-                                    .w_full()
-                                    .content(
-                                        self.execution_control(cx, &theme)
-                                            .w_full()
-                                            .min_h_0()
-                                            .flex_grow_1(),
-                                    ),
-                            )
-                        }),
-                ),
+                    }),
             )
             // bottom panel
             .child(
@@ -880,6 +986,8 @@ impl Debugger {
             let is_pc = pc & 0x1fff_ffff == addr & 0x1fff_ffff;
             h_flex()
                 .w_full()
+                .whitespace_nowrap()
+                .overflow_hidden()
                 .font_family(&theme.mono_font_family)
                 .bg(theme
                     .foreground
@@ -1048,7 +1156,7 @@ impl Debugger {
     fn mem_inspector(
         &mut self,
         cx: &mut Context<Debugger>,
-        theme: &Theme,
+        _theme: &Theme,
     ) -> impl IntoElement + Styled {
         let selected = self.memview.read(cx).selected;
 
@@ -1261,16 +1369,16 @@ impl Render for MemviewTable {
                     .try_read_pure::<u32>(address)
                     .unwrap_or(0);
                 // le bytes reversed
-                let color_runs = word.to_be_bytes().map(|byte| TextRun {
-                    len: 2,
-                    font: font(&theme.mono_font_family),
-                    color: if byte == 0 {
-                        theme.muted_foreground
-                    } else {
-                        theme.foreground
-                    },
-                    ..Default::default()
-                });
+                // let color_runs = word.to_be_bytes().map(|byte| TextRun {
+                //     len: 2,
+                //     font: font(&theme.mono_font_family),
+                //     color: if byte == 0 {
+                //         theme.muted_foreground
+                //     } else {
+                //         theme.foreground
+                //     },
+                //     ..Default::default()
+                // });
                 let word_str = hex_pref::<_, false>(word);
 
                 let id = ElementId::NamedInteger("memview-hex-input".into(), address as u64);
@@ -1292,9 +1400,7 @@ impl Render for MemviewTable {
                         result = result.child(
                             div()
                                 .id(id)
-                                .child(
-                                    StyledText::new(word_str.as_str()).with_runs(color_runs.into()),
-                                )
+                                .child(StyledText::new(word_str.as_str()))
                                 .h_6()
                                 .text_center()
                                 .w(rems(5.))
@@ -1604,32 +1710,32 @@ impl Element for VirtualList {
         window: &mut Window,
         cx: &mut App,
     ) {
-        self.interactivity.paint(
-            id,
-            inspector_id,
-            bounds,
-            Some(hitbox),
-            window,
-            cx,
-            |_, window, cx| {
-                window.paint_quad(PaintQuad {
-                    bounds,
-                    background: transparent_black().into(),
-                    corner_radii: Corners::all(0.0.into()),
-                    border_widths: Edges::all(0.0.into()),
-                    border_color: transparent_black(),
-                    border_style: BorderStyle::Solid,
-                });
+        state.update(cx, |state, cx| {
+            self.interactivity.paint(
+                id,
+                inspector_id,
+                bounds,
+                Some(hitbox),
+                window,
+                cx,
+                |_, window, cx| {
+                    window.paint_quad(PaintQuad {
+                        bounds,
+                        background: transparent_black().into(),
+                        corner_radii: Corners::all(0.0.into()),
+                        border_widths: Edges::all(0.0.into()),
+                        border_color: transparent_black(),
+                        border_style: BorderStyle::Solid,
+                    });
 
-                window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
-                    state.update(cx, |state, cx| {
+                    window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
                         for (el, _origin) in state.children.iter_mut() {
                             el.paint(window, cx);
                         }
                     })
-                });
-            },
-        );
+                },
+            );
+        });
     }
 
     fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {

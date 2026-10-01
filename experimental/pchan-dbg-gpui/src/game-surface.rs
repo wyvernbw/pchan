@@ -5,29 +5,21 @@ use core_foundation::base::TCFType;
 use core_video::pixel_buffer::CVPixelBuffer;
 use gpui::prelude::*;
 use gpui::*;
-use gpui_component::StyledExt;
 use pchan_gpu::wgpu::{self};
-use std::rc::Rc;
 use std::sync::{Arc, MutexGuard};
 
-use crate::Debugger;
-
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct GameSurface {
     id:        ElementId,
-    idx:       usize,
     style:     StyleRefinement,
     renderer:  Arc<pchan_gpu::Renderer>,
     pub state: Entity<SurfaceState>,
-    running:   bool,
-    vram:      Option<Box<[u16]>>,
 }
 
 impl GameSurface {
     pub fn new(
         id: impl Into<ElementId>,
         gpu: Arc<pchan_gpu::Renderer>,
-        running: bool,
         state: Entity<SurfaceState>,
     ) -> Self {
         GameSurface {
@@ -35,11 +27,13 @@ impl GameSurface {
             style: StyleRefinement::default(),
             renderer: gpu,
             state,
-            vram: None,
-            running,
-            idx: 0,
         }
     }
+
+    pub fn set_vram_view(&self, value: bool) {
+        self.renderer.display_uniforms.lock().unwrap().dp_debug = value
+    }
+
     pub fn clear<T>(&self, cx: &Context<'_, T>) {
         use wgpu::*;
 
@@ -149,45 +143,7 @@ impl Element for GameSurface {
             compute.wait_for_conversion(&self.renderer);
             state.metal_ypcbcr = Some(compute);
         }
-        // let img = match self.vram.as_ref() {
-        //     None => match Option::take(&mut state.render) {
-        //         Some(img) => img,
-        //         None => return,
-        //     },
-        //     Some(vram) => {
-        //         // TODO: use preallocated buffer
-        //         let mut buf = vec![0u8; 1024 * 512 * 4];
-        //         for (i, pixel) in vram.iter().enumerate() {
-        //             let pixel = Rgb5::new_with_raw_value(*pixel);
-        //             buf[i * 4] = ((pixel.b().value() as u16) * 256 / 32) as u8;
-        //             buf[i * 4 + 1] = ((pixel.g().value() as u16) * 256 / 32) as u8;
-        //             buf[i * 4 + 2] = ((pixel.r().value() as u16) * 256 / 32) as u8;
-        //             buf[i * 4 + 3] = 255;
-        //         }
-        //         let frame =
-        //             image::Frame::new(image::ImageBuffer::from_raw(1024, 512, buf).unwrap());
-        //         Arc::new(RenderImage::new([frame]))
-        //     }
-        // };
-        // window
-        //     .paint_image(
-        //         bounds,
-        //         Bounds::new(
-        //             Point {
-        //                 x: 0.0.into(),
-        //                 y: 0.0.into(),
-        //             },
-        //             Size {
-        //                 width:  state.target.wgpu.width().into(),
-        //                 height: state.target.wgpu.height().into(),
-        //             },
-        //         ),
-        //         Corners::default(),
-        //         img,
-        //         0,
-        //         false,
-        //     )
-        //     .unwrap();
+
         if state.rendered_once.get() {
             state.target.draw_into(window, bounds);
         }
@@ -216,11 +172,11 @@ impl Element for GameSurface {
 
     fn prepaint(
         &mut self,
-        id: Option<&GlobalElementId>,
-        inspector_id: Option<&InspectorElementId>,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
-        request_layout: &mut Self::RequestLayoutState,
-        window: &mut Window,
+        _request_layout: &mut Self::RequestLayoutState,
+        _window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
         let width = bounds.size.width;
@@ -251,22 +207,10 @@ impl Element for GameSurface {
     }
 }
 
-impl Render for GameSurface {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        self.clone().into_element().w_full().h_full()
-    }
-}
-
 impl Styled for GameSurface {
     #[doc = " Returns a reference to the style memory of this element."]
     fn style(&mut self) -> &mut StyleRefinement {
         &mut self.style
-    }
-}
-
-impl Debugger {
-    pub fn game_surface(&self) -> &Entity<GameSurface> {
-        &self.game_surface
     }
 }
 
@@ -351,7 +295,6 @@ pub fn create_target_texture_metal(
     use core_foundation::boolean::*;
     use core_foundation::dictionary::*;
     use core_foundation::string::*;
-    use core_foundation::*;
 
     use core_video::*;
     use objc2_metal::*;
@@ -511,7 +454,7 @@ struct MetalYpCbCrComputeState {
 
 impl MetalYpCbCrComputeState {
     #[cfg(target_os = "macos")]
-    pub fn new(gpu: &pchan_gpu::Renderer, tex: &PchanTexture) -> Self {
+    pub fn new(gpu: &pchan_gpu::Renderer, _tex: &PchanTexture) -> Self {
         use wgpu::*;
         let shader = gpu
             .device
