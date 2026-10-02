@@ -21,17 +21,17 @@ use crate::dynarec_v2::{
 use crate::memory::mb;
 
 #[derive(derive_more::Debug)]
-pub struct Runner<'a> {
+pub struct Runner<A: Allocator + Copy> {
     interpreter:     Interpreter,
     pub(crate) mode: RunnerMode,
     pub config:      RunnerConfig,
-    transport:       Transport,
+    transport:       Transport<A>,
     #[debug(skip)]
     actor_tx:        Caching<Arc<SharedRb<Heap<CompileActorMsg>>>, true, false>,
-    own_dynarec:     Dynarec<'a>,
+    own_dynarec:     Dynarec<A>,
     actor_handle:    ActorHandle,
     #[debug(skip)]
-    alloc:           &'a (dyn Allocator + Send),
+    alloc:           A,
 }
 
 #[derive(Default, Debug, Clone, Copy)]
@@ -57,16 +57,16 @@ enum CompileActorMsg {
     Kill,
 }
 
-enum CompileActorResponse {
-    Compiled(Result<DynarecBlock, PipelineCompileError>),
+enum CompileActorResponse<A: Allocator + Copy> {
+    Compiled(Result<DynarecBlock<A>, PipelineCompileError>),
 }
 
 #[derive(Debug, Clone)]
-struct Transport {
-    out_chan: Chan<CompileActorResponse>,
+struct Transport<A: Allocator + Copy> {
+    out_chan: Chan<CompileActorResponse<A>>,
 }
 
-impl Transport {
+impl<A: Allocator + Copy> Transport<A> {
     fn new() -> Self {
         Transport {
             out_chan: kanal::bounded(1024),
@@ -74,20 +74,20 @@ impl Transport {
     }
 }
 
-impl Default for Transport {
+impl Default for Transport<Global> {
     fn default() -> Self {
         Transport::new()
     }
 }
 
-impl Runner<'static> {
+impl Runner<Global> {
     pub fn new() -> Self {
-        Self::new_in(&Global)
+        Self::new_in(Global)
     }
 }
 
-impl<'a> Runner<'a> {
-    pub fn new_in(alloc: &'a (impl Allocator + Send + Sync)) -> Self {
+impl<A: Allocator + Copy + Clone> Runner<A> {
+    pub fn new_in(alloc: A) -> Self {
         let transport = Transport::new();
         let rb = HeapRb::<CompileActorMsg>::new(mb(32));
         let (prod, cons) = rb.split();
@@ -106,7 +106,7 @@ impl<'a> Runner<'a> {
             config: RunnerConfig::default(),
             transport,
             actor_tx: prod,
-            own_dynarec: Dynarec::new(CreateDynarecParams::new(alloc)),
+            own_dynarec: Dynarec::new(CreateDynarecParams::new(alloc.clone())),
             actor_handle,
             alloc,
         }
@@ -121,7 +121,7 @@ impl<'a> Runner<'a> {
         self.config.force_mode.unwrap_or(RunnerMode::Dynarec)
     }
 
-    pub fn execute(&mut self, emu: &mut Emu) {
+    pub fn execute(&mut self, emu: &mut Emu<A>) {
         match self.config.force_mode {
             Some(RunnerMode::Interpreter) => loop {
                 let (result, _, _) = self.interpreter.run_instruction(emu);
@@ -199,9 +199,9 @@ impl<'a> Runner<'a> {
 
     fn compile_actor(
         mut rx: Caching<Arc<SharedRb<Heap<CompileActorMsg>>>, false, true>,
-        tx: Sender<CompileActorResponse>,
+        tx: Sender<CompileActorResponse<A>>,
         handle: ActorHandle,
-        alloc: &impl Allocator,
+        alloc: A,
     ) {
         enum ActorState {
             Idle,
@@ -228,7 +228,7 @@ impl<'a> Runner<'a> {
                     op_count: 0,
                 }
             }
-            pub fn emit_op(&mut self, dynarec: &mut Dynarec, op: DecodedOp) {
+            pub fn emit_op<A: Allocator + Copy>(&mut self, dynarec: &mut Dynarec<A>, op: DecodedOp) {
                 self.pc_updated |= op
                     .emit(EmitCtx {
                         dynarec,
@@ -260,7 +260,11 @@ impl<'a> Runner<'a> {
                 }
                 self.op_count += 1;
             }
-            pub fn advance(mut self, dynarec: &mut Dynarec, op: DecodedOp) -> ActorState {
+            pub fn advance<A: Allocator + Copy>(
+                mut self,
+                dynarec: &mut Dynarec<A>,
+                op: DecodedOp,
+            ) -> ActorState {
                 self.emit_op(dynarec, op);
                 self = CompileState {
                     pc: self.pc + 4,
@@ -274,7 +278,7 @@ impl<'a> Runner<'a> {
         }
 
         let mut state = ActorState::Idle;
-        let mut dynarec = Dynarec::new(CreateDynarecParams::new(alloc));
+        let mut dynarec = Dynarec::new(CreateDynarecParams::new(alloc.clone()));
         let sleep_duration = Duration::from_millis(2);
         let mut last_packet = Instant::now();
         loop {
@@ -293,7 +297,7 @@ impl<'a> Runner<'a> {
                 CompileActorMsg::Op(pc, op) => {
                     match state {
                         ActorState::Idle => {
-                            dynarec.reset(alloc);
+                            dynarec.reset(alloc.clone());
                             dynarec.emit_block_prelude();
                             let compile_state = CompileState::new(pc);
                             handle.currently_compiling.store(pc, Ordering::Release);
@@ -351,7 +355,7 @@ impl<'a> Runner<'a> {
     }
 }
 
-impl Default for Runner<'static> {
+impl Default for Runner<Global> {
     fn default() -> Self {
         Self::new()
     }

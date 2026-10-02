@@ -1,9 +1,11 @@
 #![feature(duration_millis_float)]
+#![feature(allocator_ext)]
 
 pub use glam;
 use pchan_utils::tracy::TracyClient;
 pub(crate) mod render_pass;
 
+use core::alloc::Allocator;
 use std::mem::offset_of;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
@@ -392,7 +394,7 @@ impl Renderer {
         Self::try_new().await.unwrap()
     }
 
-    pub fn connect_emu(&self, emu: &mut Emu) {
+    pub fn connect_emu<A: Allocator + Copy>(&self, emu: &mut Emu<A>) {
         emu.gpu.conn = self.conn.clone();
     }
 

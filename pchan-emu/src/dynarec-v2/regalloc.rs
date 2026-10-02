@@ -291,7 +291,7 @@ impl RegAlloc {
     /// evict any register
     /// policy: oldest first
     fn evict_any(&mut self) -> (Evicted<Guest>, Evicted<Host>) {
-        // debug_assert!(self.is_full(), "cannot evict any on non full reg allocator");
+        // debug_assert!(self.is_full(), "cannot evict any on non full reg AllocatorClone");
         // debug_assert!(
         //     self.first_allocated_low_priority().is_none(),
         //     "cannot evict any if there are low prio allocations. evict first low prio instead."

@@ -1,4 +1,5 @@
 use alloc::collections::VecDeque;
+use core::alloc::Allocator;
 use std::fs;
 use std::io::{BufReader, Read, Seek};
 use std::path::{Path, PathBuf};
@@ -98,7 +99,7 @@ impl CdromDrive {
         self.status_code.reset_state();
     }
 
-    pub fn run(&mut self, scheduler: &mut CdromScheduler<'_, '_>) {
+    pub fn run<A: Allocator + Copy>(&mut self, scheduler: &mut CdromScheduler<'_, A>) {
         match self.drive_state {
             DriveState::Idle => {}
             DriveState::ReadN => {
@@ -279,7 +280,7 @@ pub enum OpenDiscErr {
     InvalidPath(PathBuf),
 }
 
-impl Emu<'_> {
+impl<A: Allocator + Copy> Emu<A> {
     pub fn open_disc(
         &mut self,
         path: impl AsRef<Path>,

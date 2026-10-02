@@ -1,3 +1,5 @@
+use core::alloc::Allocator;
+
 use arbitrary_int::prelude::*;
 use bitbybit::{bitenum, bitfield};
 use derive_more as d;
@@ -70,7 +72,7 @@ impl IrqState {
     }
 }
 
-impl Emu<'_> {
+impl<A: Allocator + Copy> Emu<A> {
     pub fn irq_trigger(&mut self, irq: Irq) {
         self.irq_mut().irq_trigger(irq);
         self.run_irq_io();

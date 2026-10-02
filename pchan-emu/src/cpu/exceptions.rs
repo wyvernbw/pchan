@@ -59,7 +59,7 @@ pub enum Exception {
     RI        = 0xa,
 }
 
-impl<'a> Emu<'a> {
+impl<A: Allocator + Copy> Emu<A> {
     fn handle_exception(&mut self, exception: Exception) {
         let mut sr = Cop0StatusReg::new_with_raw_value(self.cpu().cop0.reg[12]);
         if !sr.iec() && exception == Exception::Interrupt {
@@ -95,7 +95,6 @@ impl<'a> Emu<'a> {
         self.cpu.exc_pending = false;
     }
 
-    #[unsafe(no_mangle)]
     pub extern "C" fn handle_rfe(&mut self) {
         let mut sr = Cop0StatusReg::new_with_raw_value(self.cpu().cop0.reg[12]);
         sr.set_kuc(sr.kup());
@@ -105,12 +104,10 @@ impl<'a> Emu<'a> {
         self.cpu.cop0.reg[12] = sr.raw_value();
     }
 
-    #[unsafe(no_mangle)]
     pub extern "C" fn handle_break(&mut self) {
         self.handle_exception(Exception::Break);
     }
 
-    #[unsafe(no_mangle)]
     pub extern "C" fn handle_syscall(&mut self, bd: bool) {
         if bd {
             let cause = self.cpu().cop0.reg[13];

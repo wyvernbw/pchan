@@ -1,3 +1,4 @@
+use core::alloc::Allocator;
 use core::ptr;
 
 use crate::Emu;
@@ -88,7 +89,7 @@ pub fn util_fast_map_address(address: u32) -> Option<u32> {
 
 pub type FastmemResult<T> = Result<T, UnhandledIO>;
 
-impl Emu<'_> {
+impl<A: Allocator + Copy> Emu<A> {
     pub fn fastmem_read<T: Copy>(&self, address: u32) -> FastmemResult<T> {
         let page = address >> 16;
         let offset = address & 0x0000_FFFF;

@@ -23,12 +23,14 @@ members = [
 ]
 
 [workspace.lints.clippy]
-pedantic = { level = "warn", priority = -1 }
+# pedantic = { level = "warn", priority = -1 }
 std_instead_of_core = "deny"
 std_instead_of_alloc = "deny"
 unreadable-literal = "allow"
 match-bool = "allow"
 too-many-lines = "allow"
+# causes problems with dynasm
+semicolon-if-nothing-returned = "allow"
 
 [workspace.dependencies]
 arbitrary-int = "2.2.0"

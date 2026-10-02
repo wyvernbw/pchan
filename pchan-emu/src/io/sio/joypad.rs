@@ -1,3 +1,5 @@
+use core::alloc::Allocator;
+
 use bitbybit::{bitenum, bitfield};
 use pchan_bind::input::{InputEvent, PchanButton};
 
@@ -160,7 +162,7 @@ impl DigitalSwitches {
     }
 }
 
-impl Emu<'_> {
+impl<A: Allocator + Copy> Emu<A> {
     pub fn send_input_event(&mut self, event: InputEvent, port: Sio0Port) {
         match event {
             InputEvent::Press(btn) => {
@@ -179,6 +181,6 @@ impl Emu<'_> {
                     .switches
                     .release(btn);
             }
-        };
+        }
     }
 }

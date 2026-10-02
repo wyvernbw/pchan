@@ -6,6 +6,8 @@
 #![allow(clippy::inline_always)]
 #![allow(clippy::missing_errors_doc)]
 #![allow(clippy::missing_panics_doc)]
+// required for dynasm macro
+#![allow(clippy::semicolon_if_nothing_returned)]
 // feature flags
 #![feature(arbitrary_self_types_pointers)]
 #![cfg_attr(test, feature(random))]
@@ -27,10 +29,11 @@
 #![feature(const_destruct)]
 #![feature(arbitrary_self_types)]
 #![feature(alloc_slice_into_array)]
-#![feature(allocator_ext)]
 #![feature(integer_widen_truncate)]
+#![feature(allocator_ext)]
 // allow unused variables in tests to supress the setup tracing warnings
 #![cfg_attr(test, allow(unused_variables))]
+use core::alloc::Allocator;
 use std::mem::offset_of;
 
 extern crate alloc;
@@ -70,11 +73,11 @@ pub mod spu;
 
 #[derive(derive_more::Debug, Clone)]
 #[repr(C)]
-pub struct Emu<'a> {
+pub struct Emu<A: Allocator + Copy = Global> {
     pub cpu:           Cpu,
     #[debug(skip)]
-    pub dynarec_cache: DynarecCache<'a>,
-    pub mem:           MemoryState<'a>,
+    pub dynarec_cache: DynarecCache<A>,
+    pub mem:           MemoryState<A>,
     pub boot:          BootloaderState,
     pub tty:           Tty,
     pub gpu:           GpuState,
@@ -90,6 +93,8 @@ pub struct Emu<'a> {
     pub evque:         Evque<Self>,
     pub tracy:         TracyClient,
     pub stats:         Stats,
+    #[debug(skip)]
+    alloc:             A,
 }
 
 #[derive(Default, derive_more::Debug, Clone)]
@@ -98,12 +103,10 @@ pub struct Stats {
     pub blocks_ran:      u64,
 }
 
-use core::alloc::Allocator;
-
-impl<'a> Emu<'a> {
-    const PC_OFFSET: usize = offset_of!(Emu<'a>, cpu) + Cpu::PC_OFFSET;
-    const D_CLOCK_OFFSET: usize = offset_of!(Emu<'a>, cpu) + Cpu::D_CLOCK_OFFSET;
-    const HILO_OFFSET: usize = offset_of!(Emu<'a>, cpu) + Cpu::HILO_OFFSET;
+impl<A: Allocator + Copy> Emu<A> {
+    const PC_OFFSET: usize = offset_of!(Emu<A>, cpu) + Cpu::PC_OFFSET;
+    const D_CLOCK_OFFSET: usize = offset_of!(Emu<A>, cpu) + Cpu::D_CLOCK_OFFSET;
+    const HILO_OFFSET: usize = offset_of!(Emu<A>, cpu) + Cpu::HILO_OFFSET;
 
     #[must_use]
     pub fn reg_offset(reg: u8) -> usize {
@@ -120,11 +123,11 @@ impl<'a> Emu<'a> {
         )
     }
 
-    pub fn new_in(alloc: &'a impl Allocator) -> Self {
+    pub fn new_in(alloc: A) -> Self {
         let mut emu = Self {
             cpu: Cpu::new(),
-            dynarec_cache: DynarecCache::new(alloc),
-            mem: MemoryState::new(alloc),
+            dynarec_cache: DynarecCache::new(alloc.clone()),
+            mem: MemoryState::new(alloc.clone()),
             boot: BootloaderState::default(),
             tty: Tty::default(),
             gpu: GpuState::default(),
@@ -139,16 +142,17 @@ impl<'a> Emu<'a> {
             evque: Evque::default(),
             tracy: TracyClient::default(),
             stats: Stats::default(),
+            alloc,
         };
         emu.handle_ev_spu_clock(io::evque::EvCtx::ZERO);
         emu
     }
 }
 
-impl Emu<'static> {
+impl Emu<Global> {
     #[must_use]
     pub fn new() -> Self {
-        Emu::new_in(&std::alloc::Global)
+        Emu::new_in(std::alloc::Global)
     }
 }
 
@@ -165,12 +169,13 @@ impl Stats {
     }
 }
 
+use alloc::alloc::{AllocatorClone, Global};
 use pchan_utils::hex;
 use pchan_utils::tracy::TracyClient;
 
-impl<'a> Emu<'a> {
+impl<A: Allocator + Copy> Emu<A> {
     #[inline(always)]
-    pub fn mem_mut(&mut self) -> &mut MemoryState<'a> {
+    pub fn mem_mut(&mut self) -> &mut MemoryState<A> {
         &mut self.mem
     }
     #[inline(always)]
@@ -178,7 +183,7 @@ impl<'a> Emu<'a> {
         &self.cpu
     }
     #[inline(always)]
-    pub fn mem(&self) -> &MemoryState<'_> {
+    pub fn mem(&self) -> &MemoryState<A> {
         &self.mem
     }
     #[inline(always)]
@@ -259,7 +264,7 @@ impl<'a> Emu<'a> {
     }
 }
 
-impl Default for Emu<'static> {
+impl Default for Emu<Global> {
     fn default() -> Self {
         Self::new()
     }
@@ -269,10 +274,11 @@ impl Default for Emu<'static> {
 pub mod test_utils {
 
     use crate::Emu;
+    use alloc::alloc::Global;
     use rstest::fixture;
 
     #[fixture]
-    pub fn emulator() -> Emu<'static> {
+    pub fn emulator() -> Emu<Global> {
         Emu::new()
     }
 }

@@ -1,3 +1,5 @@
+use core::alloc::Allocator;
+
 use crate::Emu;
 use crate::gpu::{DrawEvenOdd, VBLANK_COUNT};
 use crate::io::irq::Irq;
@@ -5,7 +7,7 @@ use crate::io::irq::Irq;
 pub const CPU_FREQ: u32 = 33_868_800;
 pub const NTSC_CYCLES: u32 = CPU_FREQ / 60;
 
-impl Emu<'_> {
+impl<A: Allocator + Copy> Emu<A> {
     #[deprecated]
     fn run_poll_vblank(&mut self) {
         let even_odd = self.gpu().gpustat.even_odd_in_vblank();

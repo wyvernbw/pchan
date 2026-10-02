@@ -1,3 +1,5 @@
+use core::alloc::Allocator;
+
 use arbitrary_int::prelude::*;
 use bitbybit::bitenum;
 use derive_more as d;
@@ -128,7 +130,7 @@ pub struct AdvanceTimerSummary {
     timer_0_new: u16,
 }
 
-impl Emu<'_> {
+impl<A: Allocator + Copy> Emu<A> {
     fn timers_init(&mut self) {
         let timers = self.timers_mut();
         timers.timer_0.irq = Irq::Irq4Timer0;

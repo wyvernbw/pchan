@@ -1,5 +1,6 @@
 #![allow(clippy::type_complexity)]
 #![allow(recursion_depth_exceeding_limit)]
+#![feature(allocator_ext)]
 
 #[path = "game-surface.rs"]
 pub mod game_surface;
@@ -57,7 +58,8 @@ fn main() -> miette::Result<()> {
     let _profiler = dhat::Profiler::new_heap();
     #[cfg(feature = "dhat-heap")]
     let _profiler_ptr = &_profiler as *const dhat::Profiler as *mut dhat::Profiler;
-    let arena: &'static Bump = Box::leak(Box::new(Bump::new()));
+    let arena: &'static &'static Bump =
+        Box::leak(Box::new(Box::leak(Box::new(Bump::new())) as &'static _));
 
     gpui_platform::application()
         .with_assets(PchanAssets::new())
@@ -167,8 +169,8 @@ struct Debugger {
 }
 
 pub struct EmuContext {
-    emu:                Emu<'static>,
-    runner:             Runner<'static>,
+    emu:                Emu<&'static Bump>,
+    runner:             Runner<&'static Bump>,
     running:            bool,
     running_notify:     event_listener::Event,
     renderer:           Arc<pchan_gpu::Renderer>,
@@ -238,14 +240,10 @@ use pchan_emu::run::{Runner, RunnerMode};
 use crate::game_surface::{GameSurface, SurfaceState, create_target};
 
 impl Debugger {
-    pub fn new(
-        window: &mut Window,
-        cx: &mut App,
-        alloc: impl Allocator + 'static,
-    ) -> miette::Result<Self> {
-        let mut emu = Emu::new();
+    pub fn new(window: &mut Window, cx: &mut App, alloc: &'static Bump) -> miette::Result<Self> {
+        let mut emu = Emu::new_in(alloc);
         emu.set_bios_path(std::env::var("PCHAN_BIOS").into_diagnostic()?);
-        emu.load_bios(&alloc).into_diagnostic()?;
+        emu.load_bios(alloc).into_diagnostic()?;
         emu.cpu.jump_to_bios();
         emu.tty.set_tracing();
 
@@ -282,7 +280,7 @@ impl Debugger {
             renderer: gpu.clone(),
             running: false,
             running_notify: event_listener::Event::new(),
-            runner: Runner::new().with_config(pchan_emu::run::RunnerConfig {
+            runner: Runner::new_in(alloc).with_config(pchan_emu::run::RunnerConfig {
                 force_mode: Some(pchan_emu::run::RunnerMode::Dynarec),
             }),
             frame_time: Duration::ZERO,
@@ -421,9 +419,9 @@ impl Debugger {
                     .update(cx, |emucx, _| -> miette::Result<()> {
                         let bios_path = emucx.emu.bootloader().bios_path.clone();
                         emucx.renderer.reset();
-                        emucx.emu = Emu::new();
+                        emucx.emu = Emu::new_in(alloc);
                         emucx.emu.set_bios_path(bios_path);
-                        emucx.emu.load_bios(&alloc).into_diagnostic()?;
+                        emucx.emu.load_bios(alloc).into_diagnostic()?;
                         emucx.emu.gpu.vram = pchan_emu::gpu::create_vram();
                         emucx.emu.cpu.jump_to_bios();
                         emucx.renderer.connect_emu(&mut emucx.emu);

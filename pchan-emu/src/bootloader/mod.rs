@@ -45,11 +45,11 @@ pub enum BootError {
     SideloadErr(#[from] ExeHeaderParseErr),
 }
 
-impl Emu<'_> {
+impl<A: Allocator + Copy> Emu<A> {
     pub fn set_bios_path(&mut self, path: impl AsRef<Path>) {
         self.bootloader_mut().bios_path = path.as_ref().to_path_buf();
     }
-    pub fn load_bios(&mut self, alloc: &impl Allocator) -> Result<(), BootError> {
+    pub fn load_bios(&mut self, alloc: A) -> Result<(), BootError> {
         let mut bios_file =
             fs::File::open(&self.bootloader().bios_path).map_err(BootError::BiosFileOpenError)?;
         let mut bios = buffer(kb(524), alloc);

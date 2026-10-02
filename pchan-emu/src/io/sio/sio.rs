@@ -1,5 +1,6 @@
 pub mod joypad;
 
+use core::alloc::Allocator;
 use core::cmp;
 
 use arbitrary_int::prelude::*;
@@ -44,11 +45,11 @@ pub enum SioEvent {
 }
 
 impl SioEvent {
-    fn to_callback<'e>(&self) -> PchanEventFn<Emu<'e>> {
+    fn to_callback<A: Allocator + Copy>(&self) -> PchanEventFn<Emu<A>> {
         match self {
-            SioEvent::Sio0ProcTx => Emu::handle_ev_sio0_tx_proc,
-            SioEvent::Sio0Irq => Emu::handle_ev_sio0_irq,
-            SioEvent::Sio0Ack => Emu::handle_ev_sio0_ack,
+            SioEvent::Sio0ProcTx => Emu::<A>::handle_ev_sio0_tx_proc,
+            SioEvent::Sio0Irq => Emu::<A>::handle_ev_sio0_irq,
+            SioEvent::Sio0Ack => Emu::<A>::handle_ev_sio0_ack,
         }
     }
 }
@@ -110,7 +111,7 @@ pub trait Peripheral {
 #[derive(d::Deref, d::DerefMut, Debug, Default, Clone)]
 pub struct Sio0Rx(Deque<u8, 4>);
 
-impl Emu<'_> {
+impl<A: Allocator + Copy> Emu<A> {
     #[pchan_macros::instrument(skip_all, fields(pc = %hex(self.cpu().pc)))]
     pub fn sio_write<T: Copy>(&mut self, address: u32, value: T) -> Result<(), UnhandledIO> {
         let address = address & 0x1fffffff;

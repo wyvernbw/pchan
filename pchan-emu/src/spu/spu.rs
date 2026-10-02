@@ -2,6 +2,7 @@ mod adpcm;
 pub mod adsr;
 mod gauss_interp;
 
+use core::alloc::Allocator;
 use std::sync::Mutex;
 
 use bitbybit::bitfield;
@@ -143,7 +144,7 @@ fn voice_idx(addr: u32, base: u32, stride: u32) -> Option<usize> {
     }
 }
 
-impl Emu<'_> {
+impl<A: Allocator + Copy> Emu<A> {
     #[pchan_macros::instrument(level = "trace", skip(self), "spu:r")]
     pub fn spu_read<T: Copy>(&mut self, address: u32) -> IOResult<T> {
         let address = address & 0x1fffffff;
@@ -476,7 +477,7 @@ impl Voice {
     }
 }
 
-impl BindAudioProducer for Emu<'_> {
+impl<A: Allocator + Copy> BindAudioProducer for Emu<A> {
     fn bind_producer(&mut self, prod: AudioProducer) {
         self.spu.prod = Some(prod.into());
     }
