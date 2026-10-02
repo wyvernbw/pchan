@@ -46,7 +46,7 @@ use pchan_emu::cpu::ops::OpCode;
 use pchan_emu::dynarec_v2::emitters::DecodedOp;
 use pchan_utils::{hex, hex_pref, init_tracing};
 
-actions!(app, [Quit, SoftReset, HardReset, Step]);
+actions!(app, [Quit, SoftReset, HardReset, Step, StepFrame]);
 
 #[cfg(feature = "dhat-heap")]
 #[global_allocator]
@@ -175,6 +175,7 @@ pub struct EmuContext {
     emu:                Emu<&'static Bump>,
     runner:             Runner<&'static Bump>,
     running:            bool,
+    run_for_one_frame:  bool,
     running_notify:     event_listener::Event,
     renderer:           Arc<pchan_gpu::Renderer>,
     frame_time:         Duration,
@@ -293,6 +294,7 @@ impl Debugger {
             cycles_per_run: 0,
             speed_limit: EmuSpeed::Percent(100),
             real_time_running: Duration::ZERO,
+            run_for_one_frame: false,
         });
 
         let surface_state = cx.new(|_| SurfaceState::new(target.clone(), target_buf.clone()));
@@ -384,6 +386,11 @@ impl Debugger {
                             surface_state.start_convert_render(&emucx.renderer);
                             drop(surface_state);
                             cx.emit(RenderedFrame);
+
+                            if emucx.run_for_one_frame {
+                                emucx.run_for_one_frame = false;
+                                emucx.running = false;
+                            }
                         }
                     });
                     let emu_frame_time = start.elapsed();
@@ -459,6 +466,18 @@ impl Debugger {
             move |_, cx| {
                 emucx.update(cx, |emucx, _| {
                     emucx.runner.execute(&mut emucx.emu);
+                    emucx.running_notify.notify(usize::MAX);
+                });
+            }
+        });
+
+        cx.on_action::<StepFrame>({
+            let emucx = emucx.clone();
+            move |_, cx| {
+                emucx.update(cx, |emucx, _| {
+                    emucx.run_for_one_frame = true;
+                    emucx.running = true;
+                    emucx.running_notify.notify(usize::MAX);
                 });
             }
         });
@@ -1343,15 +1362,27 @@ impl Debugger {
             .v_flex()
             .gap_2()
             .child(
-                Button::new("step-btn")
-                    .label(match emucx.runner_mode() {
-                        RunnerMode::Dynarec => "Step (block)",
-                        RunnerMode::Interpreter => "Step (instr)",
-                    })
-                    .disabled(emucx.running)
-                    .on_click(|_, win, cx| {
-                        win.dispatch_action(Box::new(Step), cx);
-                    }),
+                h_flex()
+                    .gap_2()
+                    .child(
+                        Button::new("step-btn")
+                            .label(match emucx.runner_mode() {
+                                RunnerMode::Dynarec => "Step block",
+                                RunnerMode::Interpreter => "Step instr.",
+                            })
+                            .disabled(emucx.running)
+                            .on_click(|_, win, cx| {
+                                win.dispatch_action(Box::new(Step), cx);
+                            }),
+                    )
+                    .child(
+                        Button::new("step-frame-btn")
+                            .label("Step frame")
+                            .disabled(emucx.running)
+                            .on_click(|_, win, cx| {
+                                win.dispatch_action(Box::new(StepFrame), cx);
+                            }),
+                    ),
             )
             .child(Separator::horizontal())
             .child(self.instructions_list(cx, theme).flex_grow_1().min_h_0())
