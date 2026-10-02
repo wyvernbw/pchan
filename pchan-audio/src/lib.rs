@@ -61,7 +61,7 @@ impl AudioTask {
         config.buffer_size = cpal::BufferSize::Fixed(441 * 5);
         let mut last_samples = [0.0, 0.0];
         let stream = self.device.build_output_stream(
-            &config,
+            config,
             move |data: &mut [f32], _info| {
                 if self.config.channels() > 2 {
                     panic!("unsupported audio config: device has more than 2 channels");

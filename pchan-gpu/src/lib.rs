@@ -370,7 +370,8 @@ impl Renderer {
             .request_device(&DeviceDescriptor {
                 label: None,
                 required_features: Features::default()
-                    | Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES,
+                    | Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
+                    | Features::CLEAR_TEXTURE,
                 required_limits: Limits::defaults(),
                 experimental_features: ExperimentalFeatures::disabled(),
                 memory_hints: MemoryHints::Performance,

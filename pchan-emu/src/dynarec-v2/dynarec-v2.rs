@@ -2,7 +2,7 @@ use derive_more as d;
 use dynasm::dynasm;
 use dynasmrt::{Assembler, DynasmApi, DynasmLabelApi, ExecutableBuffer};
 use heapless::binary_heap::Min;
-use pchan_utils::{default, hex, tracy};
+use pchan_utils::{default, hex, max_simd_elements};
 use smallbox::SmallBox;
 use smallvec::SmallVec;
 use std::cell::Cell;
@@ -14,13 +14,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use thiserror::Error;
 use tracing::{Instrument, Level, enabled};
 
+use crate::Emu;
 use crate::cpu::exceptions::Exception;
 use crate::cpu::ops::OpCode;
 use crate::cpu::reg_str;
 use crate::dynarec_v2::emitters::{DecodedOp, DynarecOp, EmitCtx, EmitSummary};
 use crate::dynarec_v2::regalloc::*;
 use crate::memory::kb;
-use crate::{Emu, max_simd_elements};
 
 pub mod emitters;
 pub mod regalloc;
@@ -31,6 +31,8 @@ pub static BLOCKS_COMPILED: AtomicU64 = AtomicU64::new(0);
 pub static BLOCKS_EXECUTED: AtomicU64 = AtomicU64::new(0);
 pub static CACHE_HITS: AtomicU64 = AtomicU64::new(0);
 pub static CACHE_MISSES: AtomicU64 = AtomicU64::new(0);
+
+static ASM_CAPACITY: usize = 64 * size_of::<usize>();
 
 pub fn cache_hitrate() -> f32 {
     let hits = CACHE_HITS.load(Ordering::Relaxed) as f32;
@@ -85,8 +87,7 @@ unsafe impl Sync for Dynarec {}
 
 impl Default for Dynarec {
     fn default() -> Self {
-        let asm = Assembler::new_with_capacity(size_of::<u64>() * 128)
-            .expect("failed to create assembler");
+        let asm = Assembler::new_with_capacity(ASM_CAPACITY).expect("failed to create assembler");
         Self {
             scheduler: Box::new(Scheduler::default()),
             reg_alloc: Default::default(),
@@ -107,7 +108,7 @@ impl Dynarec {
         let reg_alloc = reg_alloc.unwrap_or_default();
         let scheduler = scheduler.unwrap_or_default();
         let asm = asm.unwrap_or_else(|| {
-            Assembler::new_with_capacity(8 * 50).expect("fatal: failed to allocate assembler")
+            Assembler::new_with_capacity(ASM_CAPACITY).expect("fatal: failed to allocate assembler")
         });
         Self {
             reg_alloc,
@@ -121,7 +122,7 @@ impl Dynarec {
         self.reg_alloc = default();
         self.scheduler = default();
         self.asm =
-            Assembler::new_with_capacity(8 * 120).expect("fatal failed to allocate assembler");
+            Assembler::new_with_capacity(ASM_CAPACITY).expect("fatal failed to allocate assembler");
     }
 }
 
@@ -218,7 +219,7 @@ impl Dynarec {
         self.reg_alloc = RegAlloc::default();
         let asm = std::mem::replace(
             &mut self.asm,
-            Assembler::new_with_capacity(8 * 128).unwrap(),
+            Assembler::new_with_capacity(ASM_CAPACITY).unwrap(),
         );
         let exec = match asm.finalize() {
             Ok(exec) => exec,

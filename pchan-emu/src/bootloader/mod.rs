@@ -18,8 +18,8 @@ pub static AMIDOG_TESTS: &[u8] =
 
 #[derive(derive_more::Debug, Clone)]
 pub struct BootloaderState {
-    bios_path: PathBuf,
-    sideload:  Option<Exe<'static, Vec<u8>>>,
+    pub bios_path: PathBuf,
+    sideload:      Option<Exe<'static, Vec<u8>>>,
 }
 
 impl Default for BootloaderState {

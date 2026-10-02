@@ -102,6 +102,10 @@ impl Runner {
         self
     }
 
+    pub fn mode(&self) -> RunnerMode {
+        self.config.force_mode.unwrap_or(RunnerMode::Dynarec)
+    }
+
     pub fn execute(&mut self, emu: &mut Emu) {
         match self.config.force_mode {
             Some(RunnerMode::Interpreter) => loop {

@@ -1,5 +1,4 @@
 use crate::gpu::GpuCmd;
-use crate::io::evque::EvCtx;
 use crate::io::irq::Irq;
 use crate::io::{CastIOFrom, CastIOInto, IOResult, UnhandledIO};
 use crate::{Emu, trace_todo};
@@ -7,7 +6,6 @@ use arbitrary_int::prelude::*;
 use bitbybit::{bitenum, bitfield};
 use pchan_macros::{pchan_instrument_read, pchan_instrument_write};
 use pchan_utils::hex;
-use slab::Slab;
 
 #[derive(derive_more::Debug, Clone)]
 pub struct DmaState {
@@ -187,7 +185,7 @@ impl Emu {
         match self.dma.ongoing_transfer {
             Some(old) => {
                 tracing::debug!("dma stall: already transfering");
-                let clock = old.cycles(self);
+                let _clock = old.cycles(self);
                 self.handle_dma_event(old);
                 // self.cpu.d_clock = clock as u32;
                 // self.run_io();

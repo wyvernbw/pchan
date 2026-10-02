@@ -324,7 +324,7 @@ impl Emu {
         self.spu_mut().clock += dclock;
     }
 
-    pub fn handle_ev_spu_clock(&mut self, ctx: EvCtx) {
+    pub fn handle_ev_spu_clock(&mut self, _ctx: EvCtx) {
         self.clock();
         let last_clock = self.spu.clock_idx * SpuState::CLOCK_CYCLES;
         self.evque_mut().schedule_from(

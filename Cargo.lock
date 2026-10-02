@@ -6831,9 +6831,12 @@ dependencies = [
  "core-foundation 0.10.0",
  "core-video",
  "dhat",
+ "event-listener",
+ "futures-lite",
  "gpui-ce",
  "gpui_ce_components",
  "gpui_ce_components_assets",
+ "gpui_ce_components_base",
  "gpui_ce_platform",
  "image",
  "kanal",
@@ -6846,7 +6849,6 @@ dependencies = [
  "pchan-emu",
  "pchan-gpu",
  "pchan-utils",
- "serde_json",
  "spin_sleep",
 ]
 

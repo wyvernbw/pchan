@@ -554,8 +554,26 @@ pub struct Read;
 pub struct ReadWrite;
 
 pub trait VramAccessType {
-    type VramRef<'a>;
+    type VramRef<'a>: BoxVram;
     type SignalRef<'a>;
+}
+
+pub trait BoxVram {
+    fn box_vram(&self) -> Box<[u16]>;
+}
+
+impl BoxVram for &[u16] {
+    fn box_vram(&self) -> Box<[u16]> {
+        (*self).into()
+    }
+}
+
+impl BoxVram for &mut [u16] {
+    fn box_vram(&self) -> Box<[u16]> {
+        let mut vram = create_vram();
+        vram.copy_from_slice(self);
+        vram
+    }
 }
 
 impl VramAccessType for Read {
@@ -570,6 +588,12 @@ impl VramAccessType for ReadWrite {
 pub struct VramGuard<'a, T: VramAccessType> {
     vram:   T::VramRef<'a>,
     signal: T::SignalRef<'a>,
+}
+
+impl<'a, A: VramAccessType> VramGuard<'a, A> {
+    pub fn to_owned(&self) -> Box<[u16]> {
+        self.vram.box_vram()
+    }
 }
 
 impl<'a> VramGuard<'a, ReadWrite> {

@@ -4,8 +4,6 @@ use std::str::FromStr;
 use arbitrary_int::prelude::*;
 use bitbybit::*;
 
-use crate::io::cdrom::cdrom_cmds::SetModeSectSize;
-
 #[bitfield(u8, debug)]
 pub struct Bcd {
     /// the least significant digit
@@ -187,7 +185,7 @@ impl FromStr for CueFormat {
 
 #[cfg(test)]
 mod cuetests {
-    use crate::io::cdrom::cdrom_format::{CueFormat, CueFormatParseErr, CueIndex};
+    use crate::io::cdrom::cdrom_format::{CueFormat, CueIndex};
 
     #[test]
     fn test_basic_cue() {

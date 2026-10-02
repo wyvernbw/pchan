@@ -1,4 +1,3 @@
-#![feature(const_destruct)]
 #![feature(const_trait_impl)]
 #![allow(incomplete_features)]
 
@@ -196,6 +195,10 @@ pub const fn max_simd_width_bytes() -> usize {
     1
 }
 
+pub const fn max_simd_elements<T>() -> usize {
+    max_simd_width_bytes() / size_of::<T>()
+}
+
 pub const MAX_SIMD_WIDTH: usize = max_simd_width_bytes();
 
 pub type Chan<T> = (Sender<T>, Receiver<T>);
@@ -212,8 +215,9 @@ use std::mem::size_of;
 
 const PTR_SIZE: usize = size_of::<usize>();
 
+#[derive(Debug, Clone, Copy)]
 pub struct Hex<const PREFIX: bool> {
-    buf: [u8; PTR_SIZE * 2],
+    buf: [u8; PTR_SIZE * 2 + 2],
     len: usize,
 }
 
@@ -236,9 +240,13 @@ pub fn hex_pref<T, const PREFIX: bool>(mut x: T) -> Hex<PREFIX> {
     let mut bytes = [0u8; PTR_SIZE];
     bytes[..size_of::<T>()].copy_from_slice(value);
 
-    let mut sink = [b'0'; PTR_SIZE * 2];
+    let mut sink = [b'0'; PTR_SIZE * 2 + 2];
     // should not error
-    let _ = const_hex::encode_to_slice(bytes, &mut sink).expect("whatt");
+    const_hex::encode_to_slice(bytes, &mut sink[2..]).expect("whatt");
+    if PREFIX {
+        sink[0] = b'0';
+        sink[1] = b'x';
+    }
     Hex {
         buf: sink,
         len: size_of::<T>() * 2,
@@ -247,7 +255,7 @@ pub fn hex_pref<T, const PREFIX: bool>(mut x: T) -> Hex<PREFIX> {
 
 impl<const PREFIX: bool> Display for Hex<PREFIX> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let str = unsafe { str::from_utf8_unchecked(&self.buf[..self.len]) };
+        let str = unsafe { str::from_utf8_unchecked(&self.buf[2..self.effective_len()]) };
         match PREFIX {
             true => {
                 write!(f, "0x{str}")
@@ -257,6 +265,21 @@ impl<const PREFIX: bool> Display for Hex<PREFIX> {
     }
 }
 
+impl<const PREFIX: bool> Hex<PREFIX> {
+    fn effective_len(&self) -> usize {
+        self.len + 2
+    }
+    pub fn as_str(&self) -> &str {
+        match PREFIX {
+            true => {
+                (unsafe { core::str::from_utf8_unchecked(&self.buf[..self.effective_len()]) }) as _
+            }
+            false => {
+                (unsafe { core::str::from_utf8_unchecked(&self.buf[2..self.effective_len()]) }) as _
+            }
+        }
+    }
+}
 const fn assert_hex_size<T>() {
     assert!(
         size_of::<T>() <= PTR_SIZE,

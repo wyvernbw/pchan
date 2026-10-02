@@ -3,6 +3,7 @@
 #![allow(long_running_const_eval)]
 #![allow(incomplete_features)]
 #![allow(clippy::collapsible_if)]
+// feature flags
 #![feature(arbitrary_self_types_pointers)]
 #![cfg_attr(test, feature(random))]
 #![feature(read_array)]
@@ -25,7 +26,7 @@
 #![feature(alloc_slice_into_array)]
 // allow unused variables in tests to supress the setup tracing warnings
 #![cfg_attr(test, allow(unused_variables))]
-
+//
 use std::mem::offset_of;
 
 #[cfg(feature = "debugger-ext")]
@@ -48,8 +49,6 @@ use crate::spu::SpuState;
 pub mod bindings;
 pub mod bootloader;
 pub mod cpu;
-// #[path = "./dynarec/dynarec.rs"]
-// pub mod dynarec;
 #[cfg(feature = "debugger-ext")]
 pub mod debug;
 #[path = "./dynarec-v2/dynarec-v2.rs"]
@@ -62,32 +61,6 @@ pub mod memory;
 pub mod run;
 #[path = "./spu/spu.rs"]
 pub mod spu;
-
-pub const fn max_simd_width_bytes() -> usize {
-    if cfg!(target_feature = "avx512f") {
-        return 64;
-    } // 512 bits
-
-    if cfg!(target_feature = "neon") {
-        return 16;
-    }
-
-    if cfg!(target_feature = "avx2") {
-        return 32;
-    } // 256 bits
-
-    if cfg!(target_feature = "sse2") {
-        return 16;
-    } // 128 bits
-
-    1
-}
-
-pub const MAX_SIMD_WIDTH: usize = max_simd_width_bytes();
-
-pub const fn max_simd_elements<T>() -> usize {
-    max_simd_width_bytes() / size_of::<T>()
-}
 
 #[derive(Default, derive_more::Debug, Clone)]
 #[repr(C)]
