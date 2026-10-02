@@ -32,6 +32,12 @@ pub struct Cpu {
     pub exc_pending:  bool,
 }
 
+impl Cpu {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
 use std::fmt;
 
 #[derive(d::Deref, d::DerefMut, d::AsMut, d::AsRef, Hash, Clone)]

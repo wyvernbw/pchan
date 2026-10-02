@@ -1,3 +1,4 @@
+use core::alloc::Allocator;
 use std::ptr::NonNull;
 
 use crate::Emu;
@@ -7,7 +8,7 @@ use crate::Emu;
 pub struct NonNullRecv<T>(NonNull<T>);
 
 use crate::memory::ext;
-impl Emu {
+impl<A: Allocator> Emu<A> {
     /// # Safety
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn urread32(self: *mut Self, address: u32, overwrite: u32) -> u32 {

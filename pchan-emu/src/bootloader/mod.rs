@@ -1,4 +1,5 @@
 use byteorder::{LE, ReadBytesExt};
+use core::alloc::Allocator;
 use pchan_macros::instrument;
 use pchan_utils::hex;
 use std::borrow::Cow;
@@ -44,14 +45,14 @@ pub enum BootError {
     SideloadErr(#[from] ExeHeaderParseErr),
 }
 
-impl Emu {
+impl<A: Allocator> Emu<A> {
     pub fn set_bios_path(&mut self, path: impl AsRef<Path>) {
         self.bootloader_mut().bios_path = path.as_ref().to_path_buf();
     }
-    pub fn load_bios(&mut self) -> Result<(), BootError> {
+    pub fn load_bios(&mut self, alloc: A) -> Result<(), BootError> {
         let mut bios_file =
             fs::File::open(&self.bootloader().bios_path).map_err(BootError::BiosFileOpenError)?;
-        let mut bios = buffer(kb(524));
+        let mut bios = buffer(kb(524), alloc);
         let _ = bios_file
             .read(&mut bios)
             .map_err(BootError::BiosReadError)?;

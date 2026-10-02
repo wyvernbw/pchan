@@ -3,6 +3,9 @@ name = "pchan-emu"
 version = "0.1.0"
 edition = "2024"
 
+[lints]
+workspace = true
+
 [features]
 fetch-channel = []
 amidog-tests = []

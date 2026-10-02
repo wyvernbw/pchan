@@ -1,3 +1,5 @@
+use core::alloc::Allocator;
+
 use pchan_utils::hex;
 
 use crate::Emu;
@@ -17,16 +19,17 @@ pub const fn from_kb(value: usize) -> usize {
     value / 1024
 }
 
-pub fn buffer(size: usize) -> Box<[u8]> {
-    vec![0x0; size].into_boxed_slice()
+pub fn buffer<A: Allocator>(size: usize, alloc: A) -> Box<[u8], A> {
+    // SAFETY: memory is zeroed out
+    unsafe { Box::new_zeroed_slice_in(size, alloc).assume_init() }
 }
 
-pub type Buffer = Box<[u8]>;
+pub type Buffer<A: Allocator> = Box<[u8], A>;
 
 #[derive(derive_more::Debug, Clone)]
 #[debug("memory:{}kb", MEM_SIZE/1024)]
-pub struct MemoryState {
-    pub buf: Buffer,
+pub struct MemoryState<A: Allocator> {
+    pub buf: Buffer<A>,
 }
 
 pub struct MemMap {
@@ -64,15 +67,12 @@ static MEM_SIZE: usize = kb(2048 + 8192) + kb(1) + kb(8) + kb(8) + kb(2048) + kb
 // const MEM_SIZE: usize = 600 * 1024 * 1024;
 static MEM_KB: usize = from_kb(MEM_SIZE) + 1;
 
-impl Default for MemoryState {
-    fn default() -> Self {
-        MemoryState {
-            buf: buffer(MEM_SIZE),
+impl<A: Allocator> MemoryState<A> {
+    pub fn new(alloc: A) -> Self {
+        Self {
+            buf: buffer(MEM_SIZE, alloc),
         }
     }
-}
-
-impl MemoryState {
     #[inline(always)]
     pub fn read_region<T: Copy>(&self, host_region: usize, guest_region: usize, address: u32) -> T {
         let offset = (address & 0x1fff_ffff) as usize - (guest_region & 0x1fff_ffff);
