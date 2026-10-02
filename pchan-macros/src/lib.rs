@@ -1,5 +1,9 @@
+#![allow(clippy::missing_errors_doc)]
+#![allow(clippy::missing_panics_doc)]
+
 extern crate proc_macro;
-use darling::*;
+
+use darling::{FromDeriveInput, FromField, FromMeta, ast};
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{DeriveInput, Expr, ExprLit, Ident, ItemFn, Lit, LitStr, Variant, parse_macro_input};
@@ -67,8 +71,7 @@ pub fn encoding(item: TokenStream) -> TokenStream {
             field
                 .ident
                 .as_ref()
-                .map(|ident| *ident == search_ident)
-                .unwrap_or(false)
+                .is_some_and(|ident| *ident == search_ident)
         })
     };
 
@@ -133,8 +136,7 @@ pub fn encoding(item: TokenStream) -> TokenStream {
         Some(order) => order,
         None => match (rd, imm16) {
             (None, Some(_)) => EncodeParamOrder::RtRs,
-            (Some(_), None) => EncodeParamOrder::RsRt,
-            (None, None) => EncodeParamOrder::RsRt,
+            (Some(_) | None, None) => EncodeParamOrder::RsRt,
             (Some(_), Some(_)) => panic!("rd field cannot be specified with imm"),
         },
     };
@@ -203,17 +205,34 @@ pub fn encoding(item: TokenStream) -> TokenStream {
 
 #[proc_macro_derive(OpCode, attributes(opcode))]
 pub fn derive_opcode(stream: TokenStream) -> TokenStream {
+    fn is_op_default(variant: &Variant) -> bool {
+        variant
+            .attrs
+            .iter()
+            .filter(|attr| {
+                attr.path().is_ident("opcode")
+                    && attr
+                        .meta
+                        .require_list()
+                        .and_then(syn::MetaList::parse_args::<Ident>)
+                        .is_ok_and(|ident| ident == "default")
+            })
+            .count()
+            == 1
+    }
+
     let stream = parse_macro_input!(stream as DeriveInput);
     let name = stream.ident.clone();
     let repr = stream.attrs.iter().find_map(|attr| {
         let mut repr = None;
         if attr.path().is_ident("repr") {
             let _ = attr.parse_nested_meta(|meta| {
+                use ValidRepr::U8;
+
                 let Some(ident) = meta.path.get_ident() else {
                     return Ok(());
                 };
                 let ident = ident.to_string();
-                use ValidRepr::*;
                 let res = match ident.as_str() {
                     "u8" => Some(U8),
                     _ => None,
@@ -230,30 +249,13 @@ pub fn derive_opcode(stream: TokenStream) -> TokenStream {
         panic!("OpCode derive macro expects an enum.");
     };
 
-    fn is_op_default(variant: &Variant) -> bool {
-        variant
-            .attrs
-            .iter()
-            .filter(|attr| {
-                attr.path().is_ident("opcode")
-                    && attr
-                        .meta
-                        .require_list()
-                        .and_then(|meta| meta.parse_args::<Ident>())
-                        .map(|ident| ident == "default")
-                        .unwrap_or(false)
-            })
-            .count()
-            == 1
-    }
-
     let default_value = data
         .variants
         .iter()
         .find(|variant| is_op_default(variant))
         .expect("OpCode macro requires one variant with the #[opcode(default)] attribute");
     let mut codes = vec![default_value.ident.clone(); repr.max()];
-    for variant in data.variants.iter() {
+    for variant in &data.variants {
         if is_op_default(variant) {
             continue;
         }
@@ -305,9 +307,8 @@ pub fn instrument_write(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 isc = unsafe {{ (*self).cpu.isc() }}
             )
         ))]
-        {}
+        {item}
         "#,
-        item
     )
     .parse()
     .expect("invalid tokens")

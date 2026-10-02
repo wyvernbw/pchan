@@ -20,7 +20,7 @@ impl CDRomVerPtr {
         self.0.iter().copied()
     }
 
-    pub fn to_owned(&self) -> CDRomVer {
+    pub fn to_owned(self) -> CDRomVer {
         *self.0
     }
 

@@ -3,6 +3,9 @@ name = "pchan-gpu"
 version = "0.1.0"
 edition = "2024"
 
+[lints]
+workspace = true
+
 [dependencies]
 wgpu = "30.0.1"
 thiserror = "2.0.21"

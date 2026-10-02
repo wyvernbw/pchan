@@ -1,20 +1,27 @@
 use core::alloc::Allocator;
 
+#[cfg(feature = "trace")]
 use pchan_utils::hex;
 
 use crate::Emu;
-use crate::io::{CastIOInto, IOResult, UnhandledIO};
+#[cfg(feature = "trace")]
+use crate::io::CastIOInto;
+
+use crate::io::{IOResult, UnhandledIO};
 
 pub mod fastmem;
 
+#[must_use]
 pub const fn kb(value: usize) -> usize {
     value * 1024
 }
 
+#[must_use]
 pub const fn mb(value: usize) -> usize {
     kb(value) * 1024
 }
 
+#[must_use]
 pub const fn from_kb(value: usize) -> usize {
     value / 1024
 }
@@ -105,6 +112,7 @@ impl<A: Allocator + Copy> Emu<A> {
         "scratchpad:r"
     )]
     pub fn scratch_read<T: Copy>(&self, address: u32) -> IOResult<T> {
+        #[allow(clippy::match_same_arms)]
         match address {
             // scratchpad is not mapped in kseg1
             0xbf800000..0xbf800400 => Err(UnhandledIO(address)),
@@ -123,6 +131,7 @@ impl<A: Allocator + Copy> Emu<A> {
         "scratchpad:w"
     )]
     pub fn scratch_write<T: Copy>(&mut self, address: u32, value: T) -> IOResult<()> {
+        #[allow(clippy::match_same_arms)]
         match address {
             // scratchpad is not mapped in kseg1
             0xbf800000..0xbf801000 => Err(UnhandledIO(address)),
@@ -142,14 +151,14 @@ pub struct NoExt;
 
 pub const trait Extend<E> {
     type Out;
-    fn ext(self) -> Self::Out;
+    fn extend(self) -> Self::Out;
 }
 
 const impl<T> Extend<NoExt> for T {
     type Out = Self;
 
     #[inline(always)]
-    fn ext(self) -> Self::Out {
+    fn extend(self) -> Self::Out {
         self
     }
 }
@@ -157,7 +166,7 @@ const impl<T> Extend<NoExt> for T {
 const impl Extend<Sign> for u8 {
     type Out = i32;
     #[inline(always)]
-    fn ext(self) -> Self::Out {
+    fn extend(self) -> Self::Out {
         self as i8 as i32
     }
 }
@@ -165,7 +174,7 @@ const impl Extend<Sign> for u8 {
 const impl Extend<Zero> for u8 {
     type Out = u32;
     #[inline(always)]
-    fn ext(self) -> Self::Out {
+    fn extend(self) -> Self::Out {
         self as u32
     }
 }
@@ -173,7 +182,7 @@ const impl Extend<Zero> for u8 {
 const impl Extend<Sign> for u16 {
     type Out = i32;
     #[inline(always)]
-    fn ext(self) -> Self::Out {
+    fn extend(self) -> Self::Out {
         self as i16 as i32
     }
 }
@@ -181,7 +190,7 @@ const impl Extend<Sign> for u16 {
 const impl Extend<Zero> for u16 {
     type Out = u32;
     #[inline(always)]
-    fn ext(self) -> Self::Out {
+    fn extend(self) -> Self::Out {
         self as u32
     }
 }
@@ -189,7 +198,7 @@ const impl Extend<Zero> for u16 {
 const impl Extend<Sign> for i8 {
     type Out = i32;
     #[inline(always)]
-    fn ext(self) -> Self::Out {
+    fn extend(self) -> Self::Out {
         self as i32
     }
 }
@@ -197,7 +206,7 @@ const impl Extend<Sign> for i8 {
 const impl Extend<Zero> for i8 {
     type Out = u32;
     #[inline(always)]
-    fn ext(self) -> Self::Out {
+    fn extend(self) -> Self::Out {
         self as u8 as u32
     }
 }
@@ -205,7 +214,7 @@ const impl Extend<Zero> for i8 {
 const impl Extend<Sign> for i16 {
     type Out = i32;
     #[inline(always)]
-    fn ext(self) -> Self::Out {
+    fn extend(self) -> Self::Out {
         self as i32
     }
 }
@@ -213,10 +222,53 @@ const impl Extend<Sign> for i16 {
 const impl Extend<Zero> for i16 {
     type Out = u32;
     #[inline(always)]
-    fn ext(self) -> Self::Out {
+    fn extend(self) -> Self::Out {
         self as u16 as u32
     }
 }
+
+const impl Extend<Sign> for i32 {
+    type Out = i64;
+
+    fn extend(self) -> Self::Out {
+        self as i64
+    }
+}
+
+const impl Extend<Zero> for i32 {
+    type Out = u64;
+
+    fn extend(self) -> Self::Out {
+        self as u32 as u64
+    }
+}
+
+const impl Extend<Sign> for u32 {
+    type Out = i64;
+
+    fn extend(self) -> Self::Out {
+        self as i32 as i64
+    }
+}
+
+const impl Extend<Zero> for u32 {
+    type Out = u64;
+
+    fn extend(self) -> Self::Out {
+        self as u64
+    }
+}
+
+pub trait ExtendExt: Sized {
+    fn ext<E>(self) -> <Self as Extend<E>>::Out
+    where
+        Self: Extend<E>,
+    {
+        Extend::<E>::extend(self)
+    }
+}
+
+impl<T> ExtendExt for T where T: Sized {}
 
 pub mod ext {
     pub use super::{NoExt, Sign, Zero};
@@ -228,7 +280,7 @@ pub mod ext {
     where
         T: const Extend<E>,
     {
-        value.ext()
+        value.extend()
     }
 
     #[inline(always)]
@@ -236,7 +288,7 @@ pub mod ext {
     where
         T: const Extend<Sign>,
     {
-        value.ext()
+        value.extend()
     }
 
     #[inline(always)]
@@ -244,6 +296,6 @@ pub mod ext {
     where
         T: const Extend<Zero>,
     {
-        value.ext()
+        value.extend()
     }
 }

@@ -17,16 +17,15 @@ use std::simd::Simd;
 use thiserror::Error;
 use tracing::{Instrument, Level, enabled};
 
+use crate::Emu;
 use crate::cpu::exceptions::Exception;
 use crate::cpu::ops::OpCode;
 use crate::cpu::reg_str;
 use crate::dynarec_v2::emitters::{DecodedOp, DynarecOp, EmitCtx, EmitSummary};
 use crate::dynarec_v2::regalloc::{
     AllocResult, AllocResultStackless, Guest, Reg, RegAlloc, RegAllocError, RegAllocErrorStackless,
-    RegisterType,
 };
 use crate::memory::kb;
-use crate::{AllocatorClone, Emu};
 
 pub mod emitters;
 pub mod regalloc;
@@ -146,14 +145,14 @@ pub struct DynarecBlock<A: Allocator + Copy> {
     pub(crate) op_count: u32,
 }
 
-type DynarecBlockArgs<'a, A: Allocator + Copy> = (&'a mut Emu<A>, bool);
+type DynarecBlockArgs<'a, A> = (&'a mut Emu<A>, bool);
 
 impl<A: Allocator + Copy> DynarecBlock<A> {
     pub fn call_block(&self, (emu, instrument): DynarecBlockArgs<A>) {
         #[cfg(debug_assertions)]
         {
             BLOCKS_EXECUTED.fetch_add(1, Ordering::Relaxed);
-            INSTR_EXECUTED.fetch_add(self.op_count as u64, Ordering::Relaxed);
+            INSTR_EXECUTED.fetch_add(u64::from(self.op_count), Ordering::Relaxed);
         }
 
         // reset delta clock before running
@@ -165,7 +164,7 @@ impl<A: Allocator + Copy> DynarecBlock<A> {
                 .inner()(emu)
         } else {
             (self.function.func)(emu)
-        };
+        }
 
         #[cfg(feature = "debugger-ext")]
         {
@@ -188,6 +187,7 @@ impl<A: Allocator + Copy> DynarecBlock<A> {
         debug_assert_eq!(emu.cpu.gpr[0], 0);
     }
 
+    #[must_use]
     pub fn buffer(&self) -> &ExecutableBuffer {
         &self.function.exec
     }
@@ -357,7 +357,7 @@ impl<A: Allocator + Copy> Dynarec<A> {
             .clone() // this is actually cheap since `dirty` is just a u32
             .iter()
             .enumerate()
-            .flat_map(|(guest_reg, dirty)| if *dirty { Some(guest_reg) } else { None })
+            .filter_map(|(guest_reg, dirty)| if *dirty { Some(guest_reg) } else { None })
             .for_each(|guest_reg| {
                 let host_reg = self.alloc_reg(guest_reg as _);
                 self.emit_writeback(guest_reg as _, host_reg.reg());
@@ -673,8 +673,8 @@ pub struct LoadedReg<T> {
 impl From<AllocResult> for LoadedReg<AllocResult> {
     fn from(result: AllocResult) -> Self {
         let reg = match &result {
-            Ok(reg) => **reg,
-            Err(
+            Ok(reg)
+            | Err(
                 RegAllocError::EvictToMemory(_, reg)
                 | RegAllocError::EvictToStack(_, reg)
                 | RegAllocError::AlreadyAllocatedTo(reg),
@@ -691,8 +691,8 @@ impl From<AllocResult> for LoadedReg<AllocResult> {
 impl From<AllocResultStackless> for LoadedReg<AllocResultStackless> {
     fn from(result: AllocResultStackless) -> Self {
         let reg = match &result {
-            Ok(reg) => **reg,
-            Err(
+            Ok(reg)
+            | Err(
                 RegAllocErrorStackless::EvictToMemory(_, reg)
                 | RegAllocErrorStackless::AlreadyAllocatedTo(reg),
             ) => **reg,
@@ -769,7 +769,7 @@ unsafe impl<A: Allocator + Copy> Sync for Scheduler<A> {}
 impl<A: Allocator + Copy> Default for Scheduler<A> {
     fn default() -> Self {
         Self {
-            queue: Default::default(),
+            queue: heapless::BinaryHeap::default(),
         }
     }
 }
@@ -784,7 +784,7 @@ impl<A: Allocator + Copy> Dynarec<A> {
         debug_assert!(!self.reg_alloc.allocatable[**reg as usize]);
         self.reg_alloc.allocatable.set(**reg as _, true);
     }
-    pub fn pop_scheduled_at<'a, 'd>(&mut self, pc: u32) -> Option<ScheduledEmitter<A>> {
+    pub fn pop_scheduled_at(&mut self, pc: u32) -> Option<ScheduledEmitter<A>> {
         if let Some(emitter) = self.scheduler.queue.peek() {
             if emitter.schedule <= pc {
                 return self.scheduler.queue.pop();
@@ -844,7 +844,7 @@ pub fn run_step<A: Allocator + Copy + Clone>(emu: &mut Emu<A>, dynarec: &mut Dyn
             emu.stats.blocks_compiled += 1;
             #[cfg(debug_assertions)]
             {
-                INSTR_COMPILED.fetch_add(block.op_count as u64, Ordering::Relaxed);
+                INSTR_COMPILED.fetch_add(u64::from(block.op_count), Ordering::Relaxed);
                 BLOCKS_COMPILED.fetch_add(1, Ordering::Relaxed);
                 CACHE_MISSES.fetch_add(1, Ordering::Relaxed);
             }
@@ -966,7 +966,7 @@ pub(crate) fn fetch_and_compile_single_threaded<A: Allocator + Copy>(
                     },))
                     .pc_updated;
             }
-            cycles += op.cycles() as u32;
+            cycles += u32::from(op.cycles());
             if op.hazard() != 0 {
                 cycles -= 1;
             }
@@ -1009,7 +1009,7 @@ const CACHE_LEN: usize = (kb(2048) + kb(512)) >> 2;
 const PAGE_COUNT: usize = CACHE_LEN / PAGE_LEN;
 const PAGE_LEN: usize = kb(16);
 
-/// # DynarecCache
+/// # [`DynarecCache`]
 ///
 /// maps the entire psx ram and bios losslessly into a a flat, paged, ~320kb buffer
 #[derive(derive_more::Debug, Clone)]
@@ -1036,7 +1036,7 @@ impl Default for CachePage {
 impl<A: Allocator + Copy> DynarecCache<A> {
     pub fn new(alloc: A) -> Self {
         let mut buf = Box::new_uninit_slice_in(PAGE_LEN * PAGE_COUNT, alloc);
-        for el in buf.iter_mut() {
+        for el in &mut buf {
             *el = MaybeUninit::new(None);
         }
         let buf = unsafe { buf.assume_init() }.into_array().ok();
@@ -1055,8 +1055,8 @@ impl<A: Allocator + Copy> DynarecCache<A> {
     fn block_mut(&mut self, page_idx: usize, element_idx: usize) -> &mut Option<DynarecBlock<A>> {
         &mut self.blocks[page_idx * PAGE_LEN + element_idx]
     }
-    fn block(&self, page_idx: usize, element_idx: usize) -> &Option<DynarecBlock<A>> {
-        &self.blocks[page_idx * PAGE_LEN + element_idx]
+    fn block(&self, page_idx: usize, element_idx: usize) -> Option<&DynarecBlock<A>> {
+        self.blocks[page_idx * PAGE_LEN + element_idx].as_ref()
     }
 
     const fn map_addr_to_idx(address: u32) -> Option<usize> {
@@ -1077,11 +1077,10 @@ impl<A: Allocator + Copy> DynarecCache<A> {
     pub fn remove(&mut self, at: u32) -> Option<DynarecBlock<A>> {
         Self::map_addr(at)
             .map(|(page_idx, element_idx)| self.block_mut(page_idx, element_idx))
-            .and_then(|block| block.take())
+            .and_then(Option::take)
     }
     pub fn get(&self, at: u32) -> Option<&DynarecBlock<A>> {
-        Self::map_addr(at)
-            .and_then(|(page_idx, element_idx)| self.block(page_idx, element_idx).as_ref())
+        Self::map_addr(at).and_then(|(page_idx, element_idx)| self.block(page_idx, element_idx))
     }
     pub fn insert(&mut self, at: u32, value: DynarecBlock<A>) -> bool {
         if let Some((page_idx, element_idx)) = Self::map_addr(at) {

@@ -72,10 +72,9 @@ impl<A: Allocator + Copy> Emu<A> {
         Ok(())
     }
 
-    pub fn run_sideloading(&mut self) -> Result<(), BootError> {
-        match self.cpu().pc {
-            0x80030000 => self.trigger_sideload_exe(),
-            _ => Ok(()),
+    pub fn run_sideloading(&mut self) {
+        if self.cpu().pc == 0x80030000 {
+            self.trigger_sideload_exe();
         }
     }
 
@@ -86,10 +85,10 @@ impl<A: Allocator + Copy> Emu<A> {
         Ok(())
     }
 
-    #[instrument(err, skip_all)]
-    fn trigger_sideload_exe(&mut self) -> Result<(), BootError> {
+    #[instrument(skip_all)]
+    fn trigger_sideload_exe(&mut self) {
         let Some(exe) = self.bootloader_mut().sideload.take() else {
-            return Ok(());
+            return;
         };
         // self.cpu_mut().pc = exe.header.initial_pc;
         self.cpu_mut().jump_queue = Some(exe.header.initial_pc);
@@ -112,7 +111,6 @@ impl<A: Allocator + Copy> Emu<A> {
             });
 
         tracing::info!("set state");
-        Ok(())
     }
 }
 

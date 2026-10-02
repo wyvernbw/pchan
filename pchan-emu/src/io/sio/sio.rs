@@ -93,10 +93,10 @@ impl Sio0Ports {
 }
 
 #[derive(Default, derive_more::Debug, Clone)]
+#[non_exhaustive]
 pub struct PortState {
     pub joypad: Joypad,
-    // TODO
-    memcard:    (),
+    // TODO: memcard
 }
 
 pub enum TxWriteResult {
@@ -116,6 +116,7 @@ impl<A: Allocator + Copy> Emu<A> {
     pub fn sio_write<T: Copy>(&mut self, address: u32, value: T) -> Result<(), UnhandledIO> {
         let address = address & 0x1fffffff;
         let value = value.io_into_u32();
+        #[allow(clippy::match_same_arms)]
         match address {
             // 1/4  JOY_DATA Joypad/Memory Card Data (R/W)
             0x1f801040 => {
@@ -178,12 +179,7 @@ impl<A: Allocator + Copy> Emu<A> {
                 // removes only one from rx, but reading 4 removes all 4!
                 let cnt = size_of::<T>();
                 let res: u32 = match cnt {
-                    1 => self
-                        .sio_mut()
-                        .sio0_rx
-                        .pop_front()
-                        .map(|value| value as u32)
-                        .unwrap_or(HI_Z),
+                    1 => self.sio_mut().sio0_rx.pop_front().map_or(HI_Z, u32::from),
                     2 => {
                         let rx = &mut self.sio_mut().sio0_rx;
                         let buf = [
@@ -196,7 +192,7 @@ impl<A: Allocator + Copy> Emu<A> {
                     }
                     4 => {
                         let mut buf = [0xffu8; 4];
-                        for x in buf.iter_mut() {
+                        for x in &mut buf {
                             let Some(val) = self.sio_mut().sio0_rx.pop_front() else {
                                 break;
                             };
@@ -290,7 +286,7 @@ impl<A: Allocator + Copy> Emu<A> {
         self.sio_mut().irq_latch = false;
         let cycles = self.sio().sio_cycles();
         self.irq_trigger(Irq::Irq7JoypadAndMemcard);
-        self.sio_schedule_event_from(SioEvent::Sio0Ack, ctx.clock, cycles as _);
+        self.sio_schedule_event_from(SioEvent::Sio0Ack, ctx.clock, cycles.into());
     }
 
     fn handle_ev_sio0_ack(&mut self, _: EvCtx) {
@@ -425,16 +421,16 @@ const fn sio_idx(addr: u32, base: u32, stride: u32) -> Option<usize> {
 /// on the controller and memory card ports; bit 7 is thus set when /ACK is low
 /// (asserted) and cleared when it is high. Bits 4-6 and 8 are always zero. The
 /// number of bits actually used by the baud rate timer is probably affected by
-/// the reload factor set in SIO_MODE.
+/// the reload factor set in `SIO_MODE`.
 #[bitfield(u32, debug, default = 0b001)]
 struct SioStatusReg {
-    /// SIO_STAT.0
+    /// `SIO_STAT.0`
     #[bit(0, rw)]
     tx_not_full:  bool,
-    /// SIO_STAT.1
+    /// `SIO_STAT.1`
     #[bit(1, rw)]
     rx_not_empty: bool,
-    /// SIO_STAT.2
+    /// `SIO_STAT.2`
     #[bit(2, rw)]
     tx_idle:      bool,
     #[bit(3, rw)]
@@ -450,10 +446,10 @@ struct SioStatusReg {
     #[bit(8, rw)]
     sio1_cts_in_lvl:  bool,
 
-    /// SIO_STAT.7
+    /// `SIO_STAT.7`
     #[bit(7, rw)]
     dsr_in_lvl: bool,
-    /// SIO_STAT.9
+    /// `SIO_STAT.9`
     #[bit(9, rw)]
     irq:        bool,
 
@@ -632,10 +628,7 @@ impl SioState {
         self.sio0stat.set_tx_not_full(false);
         tracing::info!("sio: send {}", hex(value));
         match self.sio0_tx {
-            Sio0Tx::Idle => {
-                self.sio0_tx = Sio0Tx::Queued(value);
-            }
-            Sio0Tx::Queued(_) => {
+            Sio0Tx::Idle | Sio0Tx::Queued(_) => {
                 self.sio0_tx = Sio0Tx::Queued(value);
             }
             Sio0Tx::Transferring(old_value, _) => {
@@ -648,13 +641,12 @@ impl SioState {
     fn sio0_run_transfer(&mut self) -> Option<(SioEvent, u64)> {
         if self.sio0ctrl.tx_on() {
             match self.sio0_tx {
-                Sio0Tx::Idle => {}
                 Sio0Tx::Queued(value) => {
                     self.sio0_tx = Sio0Tx::Transferring(value, None);
                     self.sio0stat.set_tx_not_full(true);
                     return Some((SioEvent::Sio0ProcTx, 100));
                 }
-                Sio0Tx::Transferring(_, _) => {}
+                Sio0Tx::Idle | Sio0Tx::Transferring(_, _) => {}
             }
         } else if let Sio0Tx::Transferring(_, Some(next)) = self.sio0_tx {
             self.sio0_tx = Sio0Tx::Queued(next)
@@ -665,8 +657,7 @@ impl SioState {
 
     fn sio0_tx_pop(&mut self) -> Option<u8> {
         match self.sio0_tx {
-            Sio0Tx::Idle => None,
-            Sio0Tx::Queued(_) => None,
+            Sio0Tx::Idle | Sio0Tx::Queued(_) => None,
             Sio0Tx::Transferring(value, Some(next)) => {
                 self.sio0_tx = Sio0Tx::Transferring(next, None);
                 self.sio0stat.set_tx_not_full(true);
@@ -690,7 +681,7 @@ impl SioState {
             self.sio0_tx = Sio0Tx::Idle;
         }
 
-        tracing::trace!(ack=ctrl.ack(), port = ?self.sio0ctrl.sio0_port(), "/CS"=self.sio0ctrl.dtr_out_lvl(), rxen = ?(self.sio0ctrl.rx_on() as usize));
+        tracing::trace!(ack=ctrl.ack(), port = ?self.sio0ctrl.sio0_port(), "/CS"=self.sio0ctrl.dtr_out_lvl(), rxen = ?usize::from(self.sio0ctrl.rx_on()));
         if ctrl.ack() {
             self.sio0stat.set_rx_par_err(false);
             self.sio0stat.set_irq(false);
@@ -709,7 +700,7 @@ impl SioState {
     }
 
     fn read_sio0_ctrl(&self) -> SioCtrlReg {
-        tracing::trace!(port = ?self.sio0ctrl.sio0_port(), "/CS"=self.sio0ctrl.dtr_out_lvl(), rxen = ?(self.sio0ctrl.rx_on() as usize));
+        tracing::trace!(port = ?self.sio0ctrl.sio0_port(), "/CS"=self.sio0ctrl.dtr_out_lvl(), rxen = ?usize::from(self.sio0ctrl.rx_on()));
         self.sio0ctrl
     }
 
@@ -723,10 +714,9 @@ impl SioState {
     }
 
     fn sio_cycles(&self) -> u32 {
-        let bd = self.sio0bdrate_reload as u32;
+        let bd = u32::from(self.sio0bdrate_reload);
         let factor = match self.sio0mode.bdrate_reload_factor() {
-            BdrateReloadFactor::Mul1OrStop => 1,
-            BdrateReloadFactor::Mul1 => 1,
+            BdrateReloadFactor::Mul1OrStop | BdrateReloadFactor::Mul1 => 1,
             BdrateReloadFactor::Mul16 => 16,
             BdrateReloadFactor::Mul64 => 64,
         };
@@ -737,6 +727,7 @@ impl SioState {
 }
 
 impl Sio0Ports {
+    #[must_use]
     pub fn port(&self, port: Sio0Port) -> &PortState {
         &self.ports[port as usize]
     }

@@ -33,6 +33,7 @@ use pchan_utils::MAX_SIMD_WIDTH;
 /// ```
 #[bitfield(u32, debug)]
 #[derive(Default)]
+#[must_use]
 pub struct ADSRRegister {
     // accessors for IO
     /// at `0x1f801c08+N*0x10`
@@ -92,25 +93,26 @@ enum Direction {
     Dec = 0x1,
 }
 
+#[allow(clippy::unused_self)]
 impl ADSRRegister {
-    const fn decay_step(&self) -> i8 {
+    const fn decay_step(self) -> i8 {
         -8
     }
-    const fn decay_dir(&self) -> Direction {
+    const fn decay_dir(self) -> Direction {
         Direction::Dec
     }
-    const fn decay_mode(&self) -> EasingMode {
+    const fn decay_mode(self) -> EasingMode {
         EasingMode::Expo
     }
-    const fn attack_dir(&self) -> Direction {
+    const fn attack_dir(self) -> Direction {
         Direction::Inc
     }
     /// Release Step (Fixed, always "-8")
-    const fn release_step(&self) -> i8 {
+    const fn release_step(self) -> i8 {
         -8
     }
     /// Release Direction (Fixed, always Decrease) (until Level 0000h)
-    const fn release_dir(&self) -> Direction {
+    const fn release_dir(self) -> Direction {
         Direction::Dec
     }
 }
@@ -124,12 +126,14 @@ enum VolumeMode {
 }
 
 #[bitfield(u16, default = 0x0, debug)]
+#[must_use]
 pub struct VolumeRegister {
     #[bit(15, rw)]
     mode: VolumeMode,
 }
 
 #[bitfield(u16)]
+#[must_use]
 pub struct FixedVolumeRegister {
     /// Voice volume/2    (-4000h..+3FFFh = Volume -8000h..+7FFEh)
     #[bits(0..=14, rw)]
@@ -143,6 +147,7 @@ pub enum Phase {
 }
 
 #[bitfield(u16)]
+#[must_use]
 pub struct SweepVolumeRegister {
     #[bit(14, rw)]
     sweep_mode:  EasingMode,
@@ -164,6 +169,7 @@ pub enum TypedVolumeRegister {
 }
 
 impl VolumeRegister {
+    #[must_use]
     pub fn typed(self) -> TypedVolumeRegister {
         match self.mode() {
             VolumeMode::Fixed => TypedVolumeRegister::Fixed(
@@ -174,6 +180,7 @@ impl VolumeRegister {
             ),
         }
     }
+    #[must_use]
     pub fn as_fixed(self) -> Option<FixedVolumeRegister> {
         match self.typed() {
             TypedVolumeRegister::Fixed(fixed_volume_register) => Some(fixed_volume_register),
@@ -249,7 +256,7 @@ impl VolumeState {
                 dir:   sweep.sweep_dir(),
                 mode:  sweep.sweep_mode(),
                 shift: sweep.sweep_shift().into(),
-                step:  sweep.sweep_step().as_u8() as u16 as i16,
+                step:  u16::from(sweep.sweep_step().as_u8()) as i16,
             };
             let mut counter_decrement =
                 ADSRState::ENVELOPE_COUNTER_MAX >> params.shift.saturating_sub(11);
@@ -266,14 +273,14 @@ impl VolumeState {
 
                 // update envelope
 
-                let mut step = (7 - params.step) as i32;
+                let mut step = i32::from(7 - params.step);
                 if params.dir == Direction::Dec {
                     step = !step;
                 }
 
                 let mut step = step << 11u16.saturating_sub(params.shift);
 
-                let current_level = self.internal[i] as i32;
+                let current_level = i32::from(self.internal[i]);
                 if params.dir == Direction::Dec && params.mode == EasingMode::Expo {
                     step = (step * current_level) >> 15;
                 }
@@ -314,8 +321,9 @@ pub enum EnvelopePhase {
 }
 
 #[inline(always)]
+#[must_use]
 pub fn apply_volume(sample: i16, volume: i16) -> i16 {
-    (((sample as i32) * (volume as i32)) >> 15) as i16
+    ((i32::from(sample) * i32::from(volume)) >> 15) as i16
 }
 
 struct EnvelopePhaseParams {
@@ -373,14 +381,14 @@ impl ADSRState {
 
                 // update envelope
 
-                let mut step = (7 - params.step) as i32;
+                let mut step = i32::from(7 - params.step);
                 if params.dir == Direction::Dec {
                     step = !step;
                 }
 
                 let mut step = step << 11u16.saturating_sub(params.shift);
 
-                let current_level = self.envelopes.level[i] as i32;
+                let current_level = i32::from(self.envelopes.level[i]);
                 if params.dir == Direction::Dec && params.mode == EasingMode::Expo {
                     step = (step * current_level) >> 15;
                 }
@@ -434,7 +442,11 @@ impl ADSRState {
             let levels = Simd::from_slice(&self.envelopes.level[base..]);
             let sustain_levels = Simd::from_slice(&self.envelopes.sustain_level[base..]);
             let phases = unsafe {
-                ptr::read(self.envelopes.phase[base..base + N].as_ptr() as *const Simd<u16, N>)
+                ptr::read_unaligned(
+                    self.envelopes.phase[base..base + N]
+                        .as_ptr()
+                        .cast::<Simd<u16, N>>(),
+                )
             };
             let is_attack = phases.simd_eq(attack);
             let is_attack_end_level = levels.simd_eq(attack_end_level);
@@ -448,8 +460,8 @@ impl ADSRState {
 
             unsafe {
                 ptr::copy_nonoverlapping(
-                    updated.as_array() as *const u16,
-                    self.envelopes.phase[base..].as_mut_ptr() as *mut u16,
+                    updated.as_array().as_ptr(),
+                    self.envelopes.phase[base..].as_mut_ptr().cast::<u16>(),
                     N,
                 );
             }

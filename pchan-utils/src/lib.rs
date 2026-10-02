@@ -1,7 +1,9 @@
 #![feature(const_trait_impl)]
 #![allow(incomplete_features)]
+#![allow(clippy::missing_errors_doc)]
+#![allow(clippy::missing_panics_doc)]
 
-use std::fmt::Display;
+use core::fmt::{self, Display};
 use std::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use kanal::{AsyncReceiver, AsyncSender, Receiver, Sender};
@@ -58,8 +60,7 @@ pub mod trace_utils {
         std::panic::set_hook(Box::new(|info| {
             let (file, line, column) = info
                 .location()
-                .map(|loc| (loc.file(), loc.line(), loc.column()))
-                .unwrap_or_default();
+                .map_or_default(|loc| (loc.file(), loc.line(), loc.column()));
             tracing::error!(
                 src.file = file,
                 src.line = line,
@@ -138,8 +139,7 @@ pub mod trace_utils {
                 old_hook(info);
                 let (file, line, column) = info
                     .location()
-                    .map(|loc| (loc.file(), loc.line(), loc.column()))
-                    .unwrap_or_default();
+                    .map_or_default(|loc| (loc.file(), loc.line(), loc.column()));
                 tracing::error!(
                     src.file = file,
                     src.line = line,
@@ -171,10 +171,12 @@ pub mod tracy {
 #[cfg(feature = "tracing-subscriber")]
 pub use trace_utils::*;
 
+#[must_use]
 pub fn default_const<T: Default>() -> T {
     T::default()
 }
 
+#[must_use]
 pub const fn max_simd_width_bytes() -> usize {
     if cfg!(target_feature = "avx512f") {
         return 64;
@@ -195,6 +197,7 @@ pub const fn max_simd_width_bytes() -> usize {
     1
 }
 
+#[must_use]
 pub const fn max_simd_elements<T>() -> usize {
     max_simd_width_bytes() / size_of::<T>()
 }
@@ -211,7 +214,7 @@ macro_rules! array {
     );
 }
 
-use std::mem::size_of;
+use core::mem::size_of;
 
 const PTR_SIZE: usize = size_of::<usize>();
 
@@ -228,7 +231,7 @@ pub fn hex<T>(x: T) -> Hex<true> {
 pub fn hex_pref<T, const PREFIX: bool>(mut x: T) -> Hex<PREFIX> {
     assert_hex_size::<T>();
 
-    let ptr = &mut x as *mut T as *mut u8;
+    let ptr = (&raw mut x).cast::<u8>();
 
     // SAFETY: should always be valid since size_of::<T> is enforced
     // at compile time
@@ -254,7 +257,7 @@ pub fn hex_pref<T, const PREFIX: bool>(mut x: T) -> Hex<PREFIX> {
 }
 
 impl<const PREFIX: bool> Display for Hex<PREFIX> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let str = unsafe { str::from_utf8_unchecked(&self.buf[2..self.effective_len()]) };
         match PREFIX {
             true => {
@@ -269,6 +272,7 @@ impl<const PREFIX: bool> Hex<PREFIX> {
     fn effective_len(&self) -> usize {
         self.len + 2
     }
+    #[must_use]
     pub fn as_str(&self) -> &str {
         match PREFIX {
             true => {
@@ -336,6 +340,7 @@ where
     }
 }
 
+#[must_use]
 pub fn default<T: Default>() -> T {
     T::default()
 }

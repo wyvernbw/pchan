@@ -99,6 +99,7 @@ pub enum ButtonState {
 ///  15  [] Button        (0=Pressed, 1=Released) (Square, left button)
 /// ```
 #[bitfield(u16, debug, default = 0xffff)]
+#[must_use]
 pub struct DigitalSwitches {
     #[bits(0..=7, r)]
     lower: u8,

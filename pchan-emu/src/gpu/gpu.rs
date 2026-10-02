@@ -79,8 +79,8 @@ impl Default for GpuState {
             gp0read: Default::default(),
             gp0read_queue: Deque::new(),
             model: GpuModel::default(),
-            tex_window: Default::default(),
-            draw_reg: Default::default(),
+            tex_window: Gp0TexWindowCmd::default(),
+            draw_reg: GpuInternalDrawReg::default(),
             draw_call_queue: vec![],
             conn: Conn {
                 draw_call_chan: kanal::bounded_async(0),
@@ -96,6 +96,7 @@ impl Default for GpuState {
     }
 }
 
+#[must_use]
 pub fn create_vram() -> Box<[u16]> {
     vec![0; mb(1) / 2].into_boxed_slice()
 }
@@ -476,8 +477,8 @@ impl<A: Allocator + Copy> Emu<A> {
                 }
 
                 let value = HDisplayRange::new_with_raw_value(value.raw_value());
-                self.gpu_mut().dp.display_range_start.x = value.start().as_();
-                self.gpu_mut().dp.display_range_end.x = value.end().as_();
+                self.gpu_mut().dp.range_start.x = value.start().as_();
+                self.gpu_mut().dp.range_end.x = value.end().as_();
                 tracing::debug!("set h framebuffer range");
             }
             0x07 => {
@@ -492,8 +493,8 @@ impl<A: Allocator + Copy> Emu<A> {
                     end:   u10,
                 }
                 let value = VDisplayRange::new_with_raw_value(value.raw_value());
-                self.gpu_mut().dp.display_range_start.y = value.start().as_();
-                self.gpu_mut().dp.display_range_end.y = value.end().as_();
+                self.gpu_mut().dp.range_start.y = value.start().as_();
+                self.gpu_mut().dp.range_end.y = value.end().as_();
                 tracing::debug!("set v framebuffer range");
             }
             0x08 => {
@@ -592,13 +593,13 @@ pub struct VramGuard<'a, T: VramAccessType> {
     signal: T::SignalRef<'a>,
 }
 
-impl<'a, A: VramAccessType> VramGuard<'a, A> {
+impl<A: VramAccessType> VramGuard<'_, A> {
     pub fn to_owned(&self) -> Box<[u16]> {
         self.vram.box_vram()
     }
 }
 
-impl<'a> VramGuard<'a, ReadWrite> {
+impl VramGuard<'_, ReadWrite> {
     fn as_readonly(&self) -> VramGuard<'_, Read> {
         VramGuard {
             vram:   self.vram,
@@ -630,7 +631,7 @@ impl<'a> VramGuard<'a, ReadWrite> {
         self.as_readonly().vram_read(coord)
     }
 }
-impl<'a> VramGuard<'a, Read> {
+impl VramGuard<'_, Read> {
     fn vram_read(&mut self, coord: VramCoord) -> u16 {
         let coord = coord.wrap();
         let addr = coord.x as usize + coord.y as usize * kb(1);
@@ -760,6 +761,7 @@ impl GpuState {
     }
 }
 
+#[must_use]
 pub fn halfwords(word: u32) -> [u16; 2] {
     [word as u16, (word >> 16) as u16]
 }
@@ -789,6 +791,7 @@ pub struct VramCoord {
 }
 
 #[bitfield(u16)]
+#[must_use]
 pub struct Rgb5 {
     #[bits(0..=4, rw)]
     r:    u5,
@@ -801,9 +804,11 @@ pub struct Rgb5 {
 }
 
 impl VramCoord {
+    #[must_use]
     pub fn new(xpos: u16, ypos: u16) -> Self {
         Self { x: xpos, y: ypos }
     }
+    #[must_use]
     pub fn wrap(mut self) -> Self {
         if self.x >= 1024 {
             self.x = 0;
@@ -814,18 +819,21 @@ impl VramCoord {
         self
     }
 
+    #[must_use]
     pub fn copy_cmd_pos_mask(mut self) -> Self {
         self.x &= 0x3ff;
         self.y &= 0x1ff;
         self
     }
 
+    #[must_use]
     pub fn fill_cmd_pos_mask(mut self) -> Self {
         self.x &= 0x3f0;
         self.y &= 0x1ff;
         self
     }
 
+    #[must_use]
     pub fn copy_cmd_size_mask(mut self) -> Self {
         if self.x == 0 {
             self.x = 0x400;
@@ -838,6 +846,7 @@ impl VramCoord {
         self
     }
 
+    #[must_use]
     pub fn fill_cmd_size_mask(mut self) -> Self {
         self.x = ((self.x & 0x3ff) + 0x0f) & (!0x0f);
         self.y &= 0x1ff;
@@ -859,6 +868,7 @@ pub struct IVramCoord {
 }
 
 impl IVramCoord {
+    #[must_use]
     pub fn new(xpos: i16, ypos: i16) -> Self {
         Self { x: xpos, y: ypos }
     }
@@ -942,6 +952,7 @@ pub enum Gp0VramRect {
 }
 
 #[bitfield(u32)]
+#[must_use]
 pub struct GpuCmd {
     #[bits(0..=23, r)]
     fields: u24,
@@ -987,6 +998,7 @@ pub struct GpuCmd {
 #[bitfield(u32)]
 #[derive(derive_more::Debug, Default, derive_more::Into)]
 #[debug("{}", hex(self.raw_value))]
+#[must_use]
 pub struct GpuStatReg {
     #[bits(0..=3, rw)]
     texpage_x_base:       u4,
@@ -1000,10 +1012,10 @@ pub struct GpuStatReg {
     dither:               bool,
     #[bit(10, rw)]
     draw_to_display:      bool,
-    /// GPU_STAT.11
+    /// `GPU_STAT.11`
     #[bit(11, rw)]
     set_mask:             bool,
-    /// GPU_STAT.12
+    /// `GPU_STAT.12`
     #[bit(12, rw)]
     draw_pixels:          DrawPixels,
     #[bit(13, rw)]
@@ -1049,6 +1061,7 @@ impl GpuStatReg {
         self.set_ready_send_vram(false);
     }
 
+    #[must_use]
     pub fn resolution(self) -> U16Vec2 {
         let vertical = match (self.v_resolution(), self.v_interlace()) {
             (VRes::Res480, true) => 480,
@@ -1066,6 +1079,7 @@ impl GpuStatReg {
         U16Vec2::new(horizontal, vertical)
     }
 
+    #[must_use]
     pub fn texpage_base(self) -> U8Vec2 {
         U8Vec2::new(self.texpage_x_base().as_u8(), self.texpage_y_base().as_u8())
     }
@@ -1121,7 +1135,7 @@ impl ops::Not for DrawEvenOdd {
 
 /// #  GP0(E1h) - Draw Mode setting (aka "Texpage")
 ///
-/// Likely sets the relevant bits in the GpuStat register.
+/// Likely sets the relevant bits in the `GpuStat` register.
 ///
 /// PSX-SPX summary:
 ///
@@ -1143,6 +1157,7 @@ impl ops::Not for DrawEvenOdd {
 #[bitfield(u32)]
 #[derive(derive_more::Debug, Default, derive_more::Into)]
 #[debug("{}", hex(self.raw_value))]
+#[must_use]
 pub struct TexpageCmd {
     #[bits(0..=3, rw)]
     texpage_x_base:    u4,
@@ -1165,6 +1180,7 @@ pub struct TexpageCmd {
 }
 
 impl TexpageCmd {
+    #[must_use]
     pub fn to_u8vec2(self) -> U8Vec2 {
         U8Vec2::new(self.texpage_x_base().as_u8(), self.texpage_y_base().as_u8())
     }
@@ -1188,6 +1204,7 @@ pub enum TextureColorMode {
 ///   1-23  Not used (zero)
 /// ```
 #[bitfield(u32)]
+#[must_use]
 pub struct Gp1DisplayEnableCmd {
     #[bit(0, rw)]
     on_off: bool,
@@ -1264,6 +1281,7 @@ pub enum GpuInfoCmd {
 ///   24-31  Command  (E2h)
 #[bitfield(u32)]
 #[derive(Debug, Default)]
+#[must_use]
 pub struct Gp0TexWindowCmd {
     #[bits(0..=4)]
     mask_x:   u5,
@@ -1290,6 +1308,7 @@ pub struct Gp0TexWindowCmd {
 /// 8-23  Not used (zero)
 ///
 #[bitfield(u32, debug)]
+#[must_use]
 pub struct DisplayModeCmd {
     #[bits(0..=1, rw)]
     hres_1:              HRes1,
@@ -1350,6 +1369,7 @@ pub enum DisplayColorDepth {
 /// size=(X2-X1/cycles_per_pix), (Y2-Y1). Unknown if using Y values in 512-1023
 /// range is supported (with 2 MB VRAM).
 #[bitfield(u19)]
+#[must_use]
 pub struct StartOfDisplayCmd {
     #[bits(0..=9, rw)]
     address:  u10,
@@ -1364,6 +1384,7 @@ pub enum VideoEventKind {
 }
 
 impl GpuState {
+    #[must_use]
     pub fn video_cycles_per_scanline(&self) -> u64 {
         match self.gpustat.video_mode() {
             VideoMode::Ntsc => 3413,
@@ -1371,6 +1392,7 @@ impl GpuState {
         }
     }
 
+    #[must_use]
     pub fn cycles_vblank_pending(&self) -> u64 {
         let scanlines = if self.dp.current_scanline > self.dp.v_end() {
             Display::NTSC_TOTAL_LINES - self.dp.current_scanline + self.dp.v_end()
@@ -1382,6 +1404,7 @@ impl GpuState {
             + (Display::NTSC_TOTAL_VCYCLES_PER_LINE - self.dp.video_cycle_in_scanline)
     }
 
+    #[must_use]
     pub fn cycles_hblank_pending(&self) -> u64 {
         if self.dp.video_cycle_in_scanline > self.dp.h_end() {
             Display::NTSC_TOTAL_VCYCLES_PER_LINE - self.dp.video_cycle_in_scanline + self.dp.h_end()
@@ -1390,6 +1413,7 @@ impl GpuState {
         }
     }
 
+    #[must_use]
     pub fn pending_event(&self) -> (VideoEventKind, u64) {
         let _hblank = self.cycles_hblank_pending();
         let vblank = self.cycles_vblank_pending();
@@ -1409,8 +1433,8 @@ pub struct Display {
     pub video_cycle:             u64,
     pub video_cycle_in_scanline: u64,
 
-    display_range_start: U64Vec2,
-    display_range_end:   U64Vec2,
+    range_start: U64Vec2,
+    range_end:   U64Vec2,
 
     current_scanline: u64,
 
@@ -1519,24 +1543,24 @@ impl Display {
     const NTSC_ACTIVE_V_END: u64 = 256;
 
     fn update_ranges(&mut self) {
-        self.display_range_start = u64vec2(Self::NTSC_ACTIVE_H_START, Self::NTSC_ACTIVE_V_START);
-        self.display_range_end = u64vec2(Self::NTSC_ACTIVE_H_END, Self::NTSC_ACTIVE_V_END);
+        self.range_start = u64vec2(Self::NTSC_ACTIVE_H_START, Self::NTSC_ACTIVE_V_START);
+        self.range_end = u64vec2(Self::NTSC_ACTIVE_H_END, Self::NTSC_ACTIVE_V_END);
     }
 
     const fn h_start(&self) -> u64 {
-        self.display_range_start.x
+        self.range_start.x
     }
 
     const fn h_end(&self) -> u64 {
-        self.display_range_end.x
+        self.range_end.x
     }
 
     const fn v_start(&self) -> u64 {
-        self.display_range_start.y
+        self.range_start.y
     }
 
     const fn v_end(&self) -> u64 {
-        self.display_range_end.y
+        self.range_end.y
     }
 
     fn in_hblank(&self) -> bool {

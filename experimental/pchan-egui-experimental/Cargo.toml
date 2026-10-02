@@ -3,6 +3,9 @@ name = "pchan-egui-experimental"
 version = "0.1.0"
 edition = "2024"
 
+[lints]
+workspace = true
+
 [features]
 tracy = ["pchan-utils/tracy-enable"]
 

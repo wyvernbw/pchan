@@ -39,7 +39,7 @@ impl<A: Allocator + Copy> Emu<A> {
             self.sideload_exe(AMIDOG_TESTS).unwrap();
         }
 
-        let d_clock = self.cpu().d_clock as u64;
+        let d_clock = u64::from(self.cpu().d_clock);
         self.cpu_mut().vblank_timer = self.cpu().vblank_timer.wrapping_add(d_clock as u32);
         self.cpu_mut().cycles = self.cpu().cycles.wrapping_add(d_clock);
         self.evque_advance(d_clock);
@@ -49,14 +49,14 @@ impl<A: Allocator + Copy> Emu<A> {
 
         let mut d_clock = d_clock;
         while d_clock > 0 {
-            self.timers_advance_by_cpu(d_clock.min(u16::MAX as u64) as u16);
+            self.timers_advance_by_cpu(d_clock.min(u64::from(u16::MAX)) as u16);
             self.run_timer_pipeline();
-            d_clock = d_clock.saturating_sub(u16::MAX as u64);
+            d_clock = d_clock.saturating_sub(u64::from(u16::MAX));
         }
 
         self.run_io_kernel_functions();
         self.run_exceptions_io();
-        _ = self.run_sideloading();
+        self.run_sideloading();
     }
 
     pub fn run_io_kernel_functions(&mut self) {
@@ -79,14 +79,14 @@ impl<A: Allocator + Copy> Emu<A> {
     }
     pub fn read_ext<T: Copy + Extend<E>, E>(&mut self, address: u32) -> T::Out {
         let value = self.read::<T>(address);
-        Extend::<E>::ext(value)
+        Extend::<E>::extend(value)
     }
     pub fn write_ext<T, E>(&mut self, address: u32, value: T)
     where
         T::Out: Copy,
         T: Extend<E>,
     {
-        let value = Extend::<E>::ext(value);
+        let value = Extend::<E>::extend(value);
         self.write(address, value);
     }
     #[pchan_macros::instrument(level = "trace", skip_all)]
@@ -239,20 +239,20 @@ impl<A: Allocator + Copy> Emu<A> {
     pub fn read<T: Copy>(&mut self, address: u32) -> T {
         match self.try_read(address) {
             Ok(value) => value,
-            Err(err) => self.panic(&format!("{}", err)),
+            Err(err) => self.panic(&format!("{err}")),
         }
     }
 
     pub fn read_pure<T: Copy>(&self, address: u32) -> T {
         match self.try_read_pure(address) {
             Ok(value) => value,
-            Err(err) => self.panic(&format!("{}", err)),
+            Err(err) => self.panic(&format!("{err}")),
         }
     }
 
     pub fn write<T: Copy>(&mut self, address: u32, value: T) {
         if let Err(err) = self.try_write(address, value) {
-            self.panic(&format!("{}", err));
+            self.panic(&format!("{err}"));
         }
     }
 
@@ -265,10 +265,10 @@ impl<A: Allocator + Copy> Emu<A> {
             self.dbg.break_on(address, BreakpointKind::READ);
         }
 
-        let inspect_read = |msg: &str, res: IOResult<T>| {
+        let inspect_read = |_msg: &str, res: IOResult<T>| {
             #[cfg(feature = "trace")]
             {
-                res.inspect(|_| tracing::info!("{msg}: {}", hex(address)))
+                res.inspect(|_| tracing::info!("{_msg}: {}", hex(address)))
             }
             #[cfg(not(feature = "trace"))]
             {
@@ -326,14 +326,14 @@ impl<A: Allocator + Copy> Emu<A> {
     #[pchan_macros::instrument(skip_all)]
     pub fn write32_unaligned_l(&mut self, address: u32, value: u32) {
         if let Err(err) = self.try_write32_unaligned_l(address, value) {
-            self.panic(&format!("{}", err));
+            self.panic(&format!("{err}"));
         }
     }
 
     #[pchan_macros::instrument(skip_all)]
     pub fn write32_unaligned_r(&mut self, address: u32, value: u32) {
         if let Err(err) = self.try_write32_unaligned_r(address, value) {
-            self.panic(&format!("{}", err));
+            self.panic(&format!("{err}"));
         }
     }
 
@@ -370,7 +370,7 @@ pub trait CastIOInto: Copy {
         let mut buf = original.to_ne_bytes();
         unsafe {
             ptr::copy_nonoverlapping(
-                self as *const Self as *const u8,
+                ptr::from_ref(self).cast::<u8>(),
                 buf.as_mut_ptr(),
                 size_of::<Self>(),
             );

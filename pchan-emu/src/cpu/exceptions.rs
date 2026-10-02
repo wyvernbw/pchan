@@ -7,6 +7,7 @@ use crate::Emu;
 use crate::cpu::Cop0StatusReg;
 
 #[bitfield(u32, debug)]
+#[must_use]
 pub struct CauseRegister {
     #[bits(2..=6, rw)]
     excode:      u5,

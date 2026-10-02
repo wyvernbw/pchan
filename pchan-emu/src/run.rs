@@ -81,6 +81,7 @@ impl Default for Transport<Global> {
 }
 
 impl Runner<Global> {
+    #[must_use]
     pub fn new() -> Self {
         Self::new_in(Global)
     }
@@ -90,8 +91,8 @@ impl<A: Allocator + Copy + Clone> Runner<A> {
     pub fn new_in(alloc: A) -> Self {
         let transport = Transport::new();
         let rb = HeapRb::<CompileActorMsg>::new(mb(32));
-        let (prod, cons) = rb.split();
-        let transport_2 = transport.clone();
+        let (prod, _cons) = rb.split();
+        let _transport_2 = transport.clone();
         let actor_handle = ActorHandle {
             currently_compiling: Arc::new(AtomicU32::new(u32::MAX)),
         };
@@ -106,12 +107,13 @@ impl<A: Allocator + Copy + Clone> Runner<A> {
             config: RunnerConfig::default(),
             transport,
             actor_tx: prod,
-            own_dynarec: Dynarec::new(CreateDynarecParams::new(alloc.clone())),
+            own_dynarec: Dynarec::new(CreateDynarecParams::new(alloc)),
             actor_handle,
             alloc,
         }
     }
 
+    #[must_use]
     pub fn with_config(mut self, config: RunnerConfig) -> Self {
         self.config = config;
         self
@@ -146,12 +148,9 @@ impl<A: Allocator + Copy + Clone> Runner<A> {
                 match self.mode {
                     RunnerMode::Dynarec => {
                         let pc = emu.cpu.pc;
-                        let block = match emu.dynarec_cache.remove(pc) {
-                            None => {
-                                self.mode = RunnerMode::Interpreter;
-                                continue;
-                            }
-                            Some(block) => block,
+                        let Some(block) = emu.dynarec_cache.remove(pc) else {
+                            self.mode = RunnerMode::Interpreter;
+                            continue;
                         };
                         block(emu, false);
                         emu.dynarec_cache.insert(pc, block);
@@ -175,13 +174,11 @@ impl<A: Allocator + Copy + Clone> Runner<A> {
                                 emu.dynarec_cache.insert(block.pc, block);
                                 continue;
                             }
-                        } else {
-                            if let Some(block) = emu.dynarec_cache.remove(pc) {
-                                self.mode = RunnerMode::Dynarec;
-                                block(emu, false);
-                                emu.dynarec_cache.insert(pc, block);
-                                continue;
-                            };
+                        } else if let Some(block) = emu.dynarec_cache.remove(pc) {
+                            self.mode = RunnerMode::Dynarec;
+                            block(emu, false);
+                            emu.dynarec_cache.insert(pc, block);
+                            continue;
                         }
 
                         self.actor_tx.try_push(CompileActorMsg::Op(pc, op)).unwrap();
@@ -199,8 +196,8 @@ impl<A: Allocator + Copy + Clone> Runner<A> {
 
     fn compile_actor(
         mut rx: Caching<Arc<SharedRb<Heap<CompileActorMsg>>>, false, true>,
-        tx: Sender<CompileActorResponse<A>>,
-        handle: ActorHandle,
+        tx: &Sender<CompileActorResponse<A>>,
+        handle: &ActorHandle,
         alloc: A,
     ) {
         enum ActorState {
@@ -228,7 +225,11 @@ impl<A: Allocator + Copy + Clone> Runner<A> {
                     op_count: 0,
                 }
             }
-            pub fn emit_op<A: Allocator + Copy>(&mut self, dynarec: &mut Dynarec<A>, op: DecodedOp) {
+            pub fn emit_op<A: Allocator + Copy>(
+                &mut self,
+                dynarec: &mut Dynarec<A>,
+                op: DecodedOp,
+            ) {
                 self.pc_updated |= op
                     .emit(EmitCtx {
                         dynarec,
@@ -254,7 +255,7 @@ impl<A: Allocator + Copy + Clone> Runner<A> {
                         },))
                         .pc_updated;
                 }
-                self.cycles += op.cycles() as u32;
+                self.cycles += u32::from(op.cycles());
                 if op.hazard() != 0 {
                     self.cycles -= 1;
                 }
@@ -278,26 +279,23 @@ impl<A: Allocator + Copy + Clone> Runner<A> {
         }
 
         let mut state = ActorState::Idle;
-        let mut dynarec = Dynarec::new(CreateDynarecParams::new(alloc.clone()));
+        let mut dynarec = Dynarec::new(CreateDynarecParams::new(alloc));
         let sleep_duration = Duration::from_millis(2);
         let mut last_packet = Instant::now();
         loop {
-            let msg = match rx.try_pop() {
-                Some(msg) => msg,
-                None => {
-                    if last_packet.elapsed() > Duration::from_millis(3) {
-                        std::thread::sleep(sleep_duration);
-                    }
-                    std::thread::yield_now();
-                    continue;
+            let Some(msg) = rx.try_pop() else {
+                if last_packet.elapsed() > Duration::from_millis(3) {
+                    std::thread::sleep(sleep_duration);
                 }
+                std::thread::yield_now();
+                continue;
             };
             last_packet = Instant::now();
             match msg {
                 CompileActorMsg::Op(pc, op) => {
                     match state {
                         ActorState::Idle => {
-                            dynarec.reset(alloc.clone());
+                            dynarec.reset(alloc);
                             dynarec.emit_block_prelude();
                             let compile_state = CompileState::new(pc);
                             handle.currently_compiling.store(pc, Ordering::Release);

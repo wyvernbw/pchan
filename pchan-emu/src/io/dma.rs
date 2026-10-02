@@ -314,7 +314,7 @@ impl<A: Allocator + Copy> Emu<A> {
                         init_chan.bcr.s1_block_count()
                     );
 
-                    if slice.idx >= init_chan.bcr.s1_block_count() as u32 - 1 {
+                    if slice.idx >= u32::from(init_chan.bcr.s1_block_count()) - 1 {
                         tracing::info!(
                             "dma event.{} finished",
                             hex(init_chan.madr.addr().as_u32())
@@ -324,36 +324,36 @@ impl<A: Allocator + Copy> Emu<A> {
                         self.dma_irq_raise_complete(idx);
 
                         break;
+                    }
+
+                    let bcr = &mut T::channel(self).bcr;
+                    bcr.set_s1_block_count(bcr.s1_block_count() - 1);
+
+                    if let DmaIrqMode::OnChunk = self.dma.dicr.irq_mode(idx) {
+                        T::channel(self).set_complete();
+                        self.dma_irq_raise_complete(idx);
+                    }
+
+                    let cycles_per_step = event.init_chan.slice_cycles();
+                    let addr_step = event.init_chan.bcr.s1_block_size();
+                    let upcoming = clock + cycles_per_step;
+                    let slice = SliceTransferState {
+                        addr: slice.addr + u32::from(addr_step) * 0x4,
+                        idx:  slice.idx + 1,
+                    };
+                    let next_event = DmaEvent {
+                        in_cycles: cycles_per_step,
+                        init_chan: event.init_chan,
+                        slice:     Some(slice),
+                        dma_t:     event.dma_t,
+                    };
+
+                    if upcoming < clock {
+                        current_event = Some(next_event);
                     } else {
-                        let bcr = &mut T::channel(self).bcr;
-                        bcr.set_s1_block_count(bcr.s1_block_count() - 1);
+                        self.dma_start_transfer(next_event);
 
-                        if let DmaIrqMode::OnChunk = self.dma.dicr.irq_mode(idx) {
-                            T::channel(self).set_complete();
-                            self.dma_irq_raise_complete(idx);
-                        }
-
-                        let cycles_per_step = event.init_chan.slice_cycles();
-                        let addr_step = event.init_chan.bcr.s1_block_size();
-                        let upcoming = clock + cycles_per_step;
-                        let slice = SliceTransferState {
-                            addr: slice.addr + addr_step as u32 * 0x4,
-                            idx:  slice.idx + 1,
-                        };
-                        let next_event = DmaEvent {
-                            in_cycles: cycles_per_step,
-                            init_chan: event.init_chan,
-                            slice:     Some(slice),
-                            dma_t:     event.dma_t,
-                        };
-
-                        if upcoming < clock {
-                            current_event = Some(next_event);
-                        } else {
-                            self.dma_start_transfer(next_event);
-
-                            break;
-                        }
+                        break;
                     }
                 }
             }
@@ -378,17 +378,16 @@ impl<A: Allocator + Copy> Emu<A> {
                 let mut visited = heapless::index_set::FnvIndexSet::<u32, 2048>::new();
                 let mut count = 0;
                 loop {
-                    if count >= 1024 + 128 {
-                        panic!(
-                            "infinite loop detected, dma n: {init_chan:#?}\ndpcr: {:#?}",
-                            self.dma().dpcr
-                        );
-                    }
+                    assert!(
+                        count < 1024 + 128,
+                        "infinite loop detected, dma n: {init_chan:#?}\ndpcr: {:#?}",
+                        self.dma().dpcr
+                    );
                     let header = self.read::<DmaNodeHeader>(addr);
                     tracing::trace!(header.next = %hex(header.next()), header.len = header.len());
                     let len = header.len();
                     for idx in 0..len {
-                        let addr = addr + idx as u32 * 0x4 + 0x4;
+                        let addr = addr + u32::from(idx) * 0x4 + 0x4;
                         transfer.write(self, addr);
                     }
                     visited.insert(addr).expect(
@@ -422,7 +421,7 @@ impl<A: Allocator + Copy> Emu<A> {
 
     fn dma6_write_data(&mut self, event: DmaEvent) {
         let channel = event.init_chan;
-        let mut word_count = channel.bcr.s0_word_count() as u32;
+        let mut word_count = u32::from(channel.bcr.s0_word_count());
         tracing::trace!("dma6 start write:\n{:#?}", channel);
 
         if word_count == 0 {
@@ -528,6 +527,7 @@ impl Transfer for Dma3Cdrom {
 
 /// ## 1F8010F0h - DPCR - DMA Control Register (R/W)
 ///
+///```plaintext
 ///  0-2   DMA0, MDECin  Priority      (0..7; 0=Highest, 7=Lowest)
 ///  3     DMA0, MDECin  Master Enable (0=Disable, 1=Enable)
 ///  4-6   DMA1, MDECout Priority      (0..7; 0=Highest, 7=Lowest)
@@ -544,8 +544,10 @@ impl Transfer for Dma3Cdrom {
 ///  27    DMA6, OTC     Master Enable (0=Disable, 1=Enable)
 ///  28-30 CPU memory access priority  (0..7; 0=Highest, 7=Lowest)
 ///  31    No effect, should be CPU memory access enable (R/W)
+/// ```
 #[bitfield(u32, debug)]
 #[derive(Default)]
+#[must_use]
 pub struct Dpcr {
     #[bits(0..=2, rw)]
     dma0prio: u3,
@@ -603,6 +605,7 @@ pub struct Dpcr {
 ///   31    Master interrupt flag (R)
 #[bitfield(u32)]
 #[derive(Debug, Default)]
+#[must_use]
 pub struct Dicr {
     #[bit(0, rw)]
     irq_mode:        [DmaIrqMode; 7],
@@ -637,6 +640,7 @@ enum DmaIrqMode {
 ///   24-31 Not used (always zero)
 #[bitfield(u32, debug)]
 #[derive(Default, PartialEq, Eq)]
+#[must_use]
 pub struct DmaMadr {
     #[bits(0..=23, rw)]
     addr: u24,
@@ -659,6 +663,7 @@ pub struct DmaMadr {
 ///   0-31  0     Not used (should be zero) (transfer ends at END-CODE in list)
 #[bitfield(u32, debug)]
 #[derive(Default, PartialEq, Eq)]
+#[must_use]
 pub struct DmaBcr {
     // s0
     #[bits(0..=15, rw)]
@@ -702,6 +707,7 @@ pub struct DmaBcr {
 /// ```
 #[bitfield(u32, debug)]
 #[derive(Default, PartialEq, Eq)]
+#[must_use]
 pub struct DmaChcr {
     #[bit(0, rw)]
     direction:     TransferDir,
@@ -798,6 +804,7 @@ pub enum DmaTransportKind {
 }
 
 impl DmaTransportKind {
+    #[must_use]
     pub fn idx(&self) -> u8 {
         match self {
             DmaTransportKind::Otc => 6,
@@ -843,7 +850,7 @@ impl DmaChannel {
                 // cycle detected, return early and reschedule later
                 return count;
             }
-            count += header.len() as u64;
+            count += u64::from(header.len());
             if header.is_end_marker() {
                 break;
             }
@@ -852,13 +859,13 @@ impl DmaChannel {
     }
 
     fn slice_cycles(&self) -> u64 {
-        self.bcr.s1_block_size() as u64
+        u64::from(self.bcr.s1_block_size())
     }
 
     fn burst_cycles(&self, dma_t: DmaTransportKind) -> u64 {
         match dma_t {
-            DmaTransportKind::Otc | DmaTransportKind::Gpu => self.bcr.s0_word_count() as u64,
-            DmaTransportKind::Cdrom => self.bcr.s0_word_count() as u64 * 24,
+            DmaTransportKind::Otc | DmaTransportKind::Gpu => u64::from(self.bcr.s0_word_count()),
+            DmaTransportKind::Cdrom => u64::from(self.bcr.s0_word_count()) * 24,
         }
     }
 
@@ -870,6 +877,7 @@ impl DmaChannel {
 #[expect(clippy::len_without_is_empty)]
 #[bitfield(u32, debug)]
 #[derive(Default)]
+#[must_use]
 pub struct DmaNodeHeader {
     #[bits(0..=23,rw)]
     next: u24,
@@ -879,7 +887,7 @@ pub struct DmaNodeHeader {
 
 impl DmaNodeHeader {
     pub const END: u32 = 0x00ff_ffff;
-    fn is_end_marker(&self) -> bool {
+    fn is_end_marker(self) -> bool {
         self.next().value() == Self::END
     }
 }

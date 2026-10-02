@@ -1,14 +1,20 @@
 #![feature(duration_millis_float)]
-#![feature(allocator_ext)]
+#![allow(clippy::missing_errors_doc)]
+#![allow(clippy::missing_panics_doc)]
+#![allow(dead_code)]
+#![allow(recursion_depth_exceeding_limit)]
+
+extern crate alloc;
 
 pub use glam;
 use pchan_utils::tracy::TracyClient;
 pub(crate) mod render_pass;
 
+use alloc::sync::Arc;
 use core::alloc::Allocator;
+use core::sync::atomic::{self, AtomicBool};
 use std::mem::offset_of;
-use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::time::Instant;
 
 use glam::{I16Vec2, U8Vec2, U8Vec3, U16Vec2, UVec2, i16vec2, u8vec2, u16vec2};
@@ -31,10 +37,10 @@ pub struct Renderer {
     pub tracy: TracyClient,
     reset_flag: AtomicBool,
 
-    pipeline_layout: PipelineLayout,
+    _pipeline_layout: PipelineLayout,
     render_pipeline: RenderPipeline,
     pub display_pipeline: RenderPipeline,
-    display_format: TextureFormat,
+    _display_format: TextureFormat,
     pub render_texture: Texture,
     pub render_view: TextureView,
     render_bind_group: BindGroup,
@@ -63,9 +69,9 @@ pub struct DisplayUniforms {
 impl Default for DisplayUniforms {
     fn default() -> Self {
         Self {
-            dp_start: Default::default(),
-            dp_res: Default::default(),
-            screen_rect: Default::default(),
+            dp_start: U16Vec2::default(),
+            dp_res: U16Vec2::default(),
+            screen_rect: U16Vec2::default(),
             dp_debug: Default::default(),
             dp_srgb: true,
         }
@@ -84,7 +90,7 @@ pub enum InitError {
 }
 
 impl Renderer {
-    pub async fn from_wgpu(
+    pub fn from_wgpu(
         instance: Instance,
         adapter: Adapter,
         device: Device,
@@ -324,7 +330,7 @@ impl Renderer {
             adapter,
             device,
             queue,
-            pipeline_layout,
+            _pipeline_layout: pipeline_layout,
             render_pipeline,
             render_texture,
             render_view,
@@ -339,15 +345,14 @@ impl Renderer {
             display_bind_group,
             display_uniform_buffer,
             display_uniforms: Mutex::new(DisplayUniforms::default()),
-            display_format,
+            _display_format: display_format,
             tracy: TracyClient::default(),
             reset_flag: AtomicBool::new(false),
         })
     }
 
     pub fn reset(&self) {
-        self.reset_flag
-            .store(true, std::sync::atomic::Ordering::Release);
+        self.reset_flag.store(true, atomic::Ordering::Release);
     }
 
     pub async fn try_new() -> Result<Self, InitError> {
@@ -387,7 +392,6 @@ impl Renderer {
             queue,
             TextureFormat::Bgra8UnormSrgb,
         )
-        .await
     }
 
     pub async fn new() -> Self {
@@ -403,8 +407,8 @@ impl Renderer {
             .compare_exchange(
                 true,
                 false,
-                std::sync::atomic::Ordering::AcqRel,
-                std::sync::atomic::Ordering::Relaxed,
+                atomic::Ordering::AcqRel,
+                atomic::Ordering::Relaxed,
             )
             .is_ok()
     }
@@ -431,7 +435,7 @@ impl Renderer {
                             tracing::debug!("received vram");
 
                             let scene = Scene::new_from_draw_calls(draw_calls);
-                            let mut pass = self.create_render_pass(scene).await;
+                            let mut pass = self.create_render_pass(scene);
                             pass.draw(&vram);
                             if let Err(err) = pass.finish(&mut vram).await {
                                 tracing::warn!("render error: {}", err);
@@ -702,14 +706,14 @@ impl Scene {
                 DrawCallKind::Polygon(draw_polygon) => {
                     scene.add_draw_polygon_draw_call(&draw_polygon, cmd.gpustat, cmd.draw_reg);
                 }
-                DrawCallKind::Line(draw_line) => {}
+                DrawCallKind::Line(_draw_line) => {}
             }
         }
 
         scene
     }
 
-    #[pchan_macros::instrument(skip_all, err)]
+    #[tracing::instrument(skip_all, err)]
     fn add_draw_rect_draw_call(
         &mut self,
         draw_rect: &DrawRect,
@@ -752,7 +756,7 @@ impl Scene {
         Ok(())
     }
 
-    #[pchan_macros::instrument(skip_all)]
+    #[tracing::instrument(skip_all)]
     fn add_draw_polygon_draw_call(
         &mut self,
         draw_polygon: &DrawPolygon,
@@ -818,7 +822,7 @@ impl Scene {
 
 /// PSX vertex order according to PSX SPX by Martin Korth
 ///
-/// https://psx-spx.consoledev.net/graphicsprocessingunitgpu/#notes
+/// <https://psx-spx.consoledev.net/graphicsprocessingunitgpu/#notes>
 fn triangulate_quad(vertices: &[Vertex]) -> [Vertex; 6] {
     let v0 = vertices[0];
     let v1 = vertices[1];
@@ -827,7 +831,7 @@ fn triangulate_quad(vertices: &[Vertex]) -> [Vertex; 6] {
     [v0, v1, v2, v1, v2, v3]
 }
 
-/// Credits to jsgroth at https://jsgroth.dev/blog/posts/ps1-diamond/#preparing-the-scene
+/// Credits to jsgroth at <https://jsgroth.dev/blog/posts/ps1-diamond/#preparing-the-scene>
 fn ensure_vertex_order(vertex_buf: &mut [Vertex], indices: [usize; 3]) {
     let [v0, v1, v2] = vertex_buf
         .get_disjoint_mut(indices)
@@ -838,7 +842,7 @@ fn ensure_vertex_order(vertex_buf: &mut [Vertex], indices: [usize; 3]) {
     let cross_product_z = (v1_pos.x - v0_pos.x) * (v2_pos.y - v0_pos.y)
         - (v1_pos.y - v0_pos.y) * (v2_pos.x - v0_pos.x);
     if cross_product_z < 0 {
-        std::mem::swap(v0, v1);
+        core::mem::swap(v0, v1);
     }
 }
 
@@ -858,8 +862,8 @@ impl DisplayUniforms {
             dp_start.as_uvec2(),
             dp_res.as_uvec2(),
             screen_rect.as_uvec2(),
-            *dp_debug as u32,
-            *dp_srgb as u32,
+            u32::from(*dp_debug),
+            u32::from(*dp_srgb),
         )
     }
 }

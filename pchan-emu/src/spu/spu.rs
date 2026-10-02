@@ -39,13 +39,13 @@ pub struct SpuState {
 impl Default for SpuState {
     fn default() -> Self {
         Self {
-            voices:         Default::default(),
-            voice_flags:    Default::default(),
+            voices:         Box::default(),
+            voice_flags:    VoiceFlags::default(),
             mem:            create_spu_mem(),
-            ram_start:      Default::default(),
-            ram_current:    Default::default(),
-            clock:          Default::default(),
-            prod:           Default::default(),
+            ram_start:      0,
+            ram_current:    0,
+            clock:          0,
+            prod:           None,
             adsr:           ADSRState::default(),
             main_vol_left:  0x0,
             main_vol_right: 0x0,
@@ -151,18 +151,18 @@ impl<A: Allocator + Copy> Emu<A> {
         // TODO add reads
         match address {
             // Sound RAM Data Transfer Address
-            0x1f801da6 => Ok((self.spu().ram_start as u32).io_from_u32()),
+            0x1f801da6 => Ok(u32::from(self.spu().ram_start).io_from_u32()),
             // adpcm sample rate
             addr @ 0x1f801c04..=0x1f801d7f if let Some(n) = voice_idx(addr, 0x1f801c04, 0x10) => {
-                Ok((self.spu().voices[n].rate.0 as u32).io_from_u32())
+                Ok(u32::from(self.spu().voices[n].rate.0).io_from_u32())
             }
             // adpcm start
             addr @ 0x1f801c06..=0x1f801d7f if let Some(n) = voice_idx(addr, 0x1f801c06, 0x10) => {
-                Ok((self.spu().voices[n].start.0 as u32).io_from_u32())
+                Ok(u32::from(self.spu().voices[n].start.0).io_from_u32())
             }
             // adpcm repeat
             addr @ 0x1f801c0e..=0x1f801d7e if let Some(n) = voice_idx(addr, 0x1f801c0e, 0x10) => {
-                Ok((self.spu().voices[n].repeat.0 as u32).io_from_u32())
+                Ok(u32::from(self.spu().voices[n].repeat.0).io_from_u32())
             }
             addr @ 0x1f801c00..=0x1f801d70 if let Some(n) = voice_idx(addr, 0x1f801c00, 0x10) => {
                 Ok((self.spu().adsr.voice_left.registers[n]).io_from_u32())
@@ -445,7 +445,7 @@ impl Voice {
     fn advance_decode(&mut self, spu_ram: &[u16]) {
         // address needs to be shifted right by 3 and we divide by 2 to get
         // offset in [u16] buffer, so the shift by 3 becomes a shift by 2.
-        let address = (self.current.0 as u32) << 2;
+        let address = u32::from(self.current.0) << 2;
 
         // a block is 16 bytes: 2 bytes header and 14 bytes samples, for 28
         // samples in total

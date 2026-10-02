@@ -3,6 +3,9 @@ name = "pchan-input"
 version = "0.1.0"
 edition = "2024"
 
+[lints]
+workspace = true
+
 [dependencies]
 pchan-bind.workspace = true
 pchan-emu.workspace = true

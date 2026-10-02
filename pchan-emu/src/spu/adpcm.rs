@@ -90,11 +90,11 @@ pub fn decode_adpcm(from: &[u16; 8], to: &mut [i16], s1: &mut i16, s2: &mut i16)
     for (idx, dest) in to.iter_mut().take(28).enumerate() {
         let sample = samples[idx / 2];
         let sample = (sample >> (4 * (idx % 2))) & 0x0F;
-        let sample = ((sample as i8) << 4 >> 4) as i32; // sign extend from bit 3
+        let sample = i32::from((sample as i8) << 4 >> 4); // sign extend from bit 3
 
         {
-            let s1 = *s1 as i32;
-            let s2 = *s2 as i32;
+            let s1 = i32::from(*s1);
+            let s2 = i32::from(*s2);
 
             let sample = (sample << shift) + ((s1 * f0 + s2 * f1 + 32) / 64);
             let sample = sample.clamp(-0x8000, 0x7fff);

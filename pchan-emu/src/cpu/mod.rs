@@ -100,6 +100,7 @@ coprocessor_definition!(Cop2, 64, unnamed);
 // }
 
 #[bitfield(u32, debug)]
+#[must_use]
 pub struct Cop0StatusReg {
     /// interrupt enable current
     #[bit(0, rw)]
@@ -176,17 +177,17 @@ impl Cop0 {
 
 #[inline(never)]
 #[unsafe(no_mangle)]
-pub fn emu_set_bd(emu: &mut crate::Emu) {
+pub extern "C" fn emu_set_bd(emu: &mut crate::Emu) {
     emu.cpu.cop0.set_bd(true);
 }
 #[inline(never)]
 #[unsafe(no_mangle)]
-pub fn emu_set_bt_true(emu: &mut crate::Emu) {
+pub extern "C" fn emu_set_bt_true(emu: &mut crate::Emu) {
     emu.cpu.cop0.set_bt(true);
 }
 #[inline(never)]
 #[unsafe(no_mangle)]
-pub fn emu_set_bt_false(emu: &mut crate::Emu) {
+pub extern "C" fn emu_set_bt_false(emu: &mut crate::Emu) {
     emu.cpu.cop0.set_bt(false);
 }
 
@@ -230,10 +231,12 @@ impl Cpu {
     pub const SCRATCH_SIZE: usize = 8;
     pub const CLOCK: u32 = 33_868_800;
 
+    #[must_use]
     pub const fn reg_offset(reg: u8) -> usize {
         (offset_of!(Cpu, gpr) + size_of::<u32>() * reg as usize)
     }
 
+    #[must_use]
     pub const fn cop_reg_offset(cop: u8, reg: u8) -> usize {
         match cop {
             0 => Self::cop0_reg_offset(reg),
@@ -243,14 +246,17 @@ impl Cpu {
         }
     }
 
+    #[must_use]
     pub const fn cop0_reg_offset(reg: u8) -> usize {
         offset_of!(Cpu, cop0) + offset_of!(Cop0, reg) + size_of::<u32>() * reg as usize
     }
 
+    #[must_use]
     pub const fn cop1_reg_offset(reg: u8) -> usize {
         offset_of!(Cpu, cop1) + offset_of!(Cop1, reg) + size_of::<u32>() * reg as usize
     }
 
+    #[must_use]
     pub const fn cop2_reg_offset(reg: u8) -> usize {
         offset_of!(Cpu, cop2) + offset_of!(Cop2, reg) + size_of::<u32>() * reg as usize
     }
@@ -262,6 +268,7 @@ impl Cpu {
         self.pc = 0xBFC0_0000;
     }
 
+    #[must_use]
     pub fn isc(&self) -> bool {
         self.cop0.status().isc()
     }
@@ -335,6 +342,7 @@ pub static REG_STR: &[&str] = &array![
     33 => "lo",
 ];
 
+#[must_use]
 pub const fn reg_str(reg: Reg) -> &'static str {
     REG_STR[reg as usize]
 }

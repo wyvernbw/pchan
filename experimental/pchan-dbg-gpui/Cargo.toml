@@ -3,6 +3,9 @@ name = "pchan-dbg-gpui"
 version = "0.1.0"
 edition = "2024"
 
+[lints]
+workspace = true
+
 [features]
 dhat-heap = ["dep:dhat"]    
 
@@ -20,7 +23,6 @@ pchan-utils = { workspace = true, features = ["tracing-subscriber"] }
 pchan-audio.workspace = true
 pchan-bind.workspace = true
 image = { version = "0.25.10", default-features = false }
-spin_sleep = "1.3.3"
 dhat = { version = "*", optional = true }
 objc2-metal = { version = "0.3.2", features = ["objc2-io-surface"] }
 core-video = { version = "0.5.2", features = ["metal"] }

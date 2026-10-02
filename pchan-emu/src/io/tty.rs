@@ -58,7 +58,7 @@ impl Tty {
         let string = str::from_utf8(&self.buf.as_ref()[..self.end])?;
         match &mut self.mode {
             TtyMode::Stdout => {
-                print!("{}", string);
+                print!("{string}");
             }
             TtyMode::Tracing => {
                 tracing::info!(name: "psx-tty", "{}", string.trim());

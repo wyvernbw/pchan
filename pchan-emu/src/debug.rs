@@ -35,6 +35,7 @@ impl BreakpointKind {
     pub const WRITE: BreakpointKind = BreakpointKind(1 << 1);
     pub const EXECUTE: BreakpointKind = BreakpointKind(1 << 2);
 
+    #[must_use]
     pub fn contains(self, other: BreakpointKind) -> bool {
         self & other != Self::NONE
     }

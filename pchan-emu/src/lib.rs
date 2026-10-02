@@ -126,8 +126,8 @@ impl<A: Allocator + Copy> Emu<A> {
     pub fn new_in(alloc: A) -> Self {
         let mut emu = Self {
             cpu: Cpu::new(),
-            dynarec_cache: DynarecCache::new(alloc.clone()),
-            mem: MemoryState::new(alloc.clone()),
+            dynarec_cache: DynarecCache::new(alloc),
+            mem: MemoryState::new(alloc),
             boot: BootloaderState::default(),
             tty: Tty::default(),
             gpu: GpuState::default(),
@@ -169,7 +169,7 @@ impl Stats {
     }
 }
 
-use alloc::alloc::{AllocatorClone, Global};
+use alloc::alloc::Global;
 use pchan_utils::hex;
 use pchan_utils::tracy::TracyClient;
 

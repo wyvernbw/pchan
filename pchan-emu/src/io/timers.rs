@@ -30,6 +30,7 @@ pub struct Timer {
 
 #[bitbybit::bitfield(u32, debug)]
 #[derive(Default)]
+#[must_use]
 pub struct TimerCounterValue {
     #[bits(0..=15, rw)]
     value: u16,
@@ -68,6 +69,7 @@ pub struct TimerTarget(TimerCounterValue);
 /// ```
 #[bitbybit::bitfield(u32, debug)]
 #[derive(Default)]
+#[must_use]
 pub struct TimerCounterMode {
     #[bit(0, rw)]
     sync_on:    bool,
@@ -195,8 +197,8 @@ impl<A: Allocator + Copy> Emu<A> {
                     .write(TimerCounterMode::new_with_raw_value(value.io_into_u32()));
             }
             0x1f801128 => {
-                self.timers_mut().timer_2.value =
-                    TimerCounterValue::new_with_raw_value(value.io_into_u32());
+                self.timers_mut().timer_2.target =
+                    TimerTarget(TimerCounterValue::new_with_raw_value(value.io_into_u32()));
             }
             _ => return Err(UnhandledIO(address)),
         }
@@ -273,6 +275,7 @@ impl Timer {
         }
     }
 
+    #[must_use]
     pub fn check_source(&self, flags: [u8; 2]) -> bool {
         let source = self.mode.source().as_u8();
         flags.contains(&source)

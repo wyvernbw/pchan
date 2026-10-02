@@ -4,7 +4,7 @@ use crate::cpu::Cpu;
 use crate::io::cdrom::cdrom_drive::CommandState;
 use crate::io::cdrom::cdrom_format::{Bcd, Mss};
 use crate::io::cdrom::{CDRomState, DriveStatus};
-use bitbybit::*;
+use bitbybit::{bitenum, bitfield};
 use pchan_utils::hex;
 use smallvec::{SmallVec, smallvec};
 
@@ -178,7 +178,7 @@ impl CDRomState {
                     .set_command_state(CommandState::responding([res1, res2]));
                 smallvec![
                     CdromResponse::InCycles(105, res1),
-                    CdromResponse::InCycles(Cpu::CLOCK as u64, res2),
+                    CdromResponse::InCycles(u64::from(Cpu::CLOCK), res2),
                 ]
             }
             0x02 => self.setloc_cmd(),
@@ -227,8 +227,10 @@ impl CDRomState {
         smallvec![res]
     }
 
-    /// SeekL - Command 15h --> INT3(stat) --> INT2(stat)
+    /// `SeekL` - Command 15h --> INT3(stat) --> INT2(stat)
     fn seekl_cmd(&mut self) -> ResponseList {
+        const SEEK_TIME: u64 = Cpu::CLOCK as u64 / 75;
+
         tracing::info!("SeekL");
         let res1 = self.responses.insert(self.int3_status(false));
         self.drive.status_code.set_spindle_mot(true);
@@ -238,7 +240,6 @@ impl CDRomState {
         let res2 = self.responses.insert(self.int2_status(true));
         self.drive
             .set_command_state(CommandState::responding([res1, res2]));
-        const SEEK_TIME: u64 = Cpu::CLOCK as u64 / 75;
         smallvec![
             CdromResponse::InCycles(0x000c4e1, res1),
             CdromResponse::InCycles(SEEK_TIME, res2)
@@ -255,7 +256,7 @@ impl CDRomState {
         smallvec![CdromResponse::Immediate(res)]
     }
 
-    /// ReadN - Command 06h --> INT3(stat) --> INT1(stat) --> datablock
+    /// `ReadN` - Command 06h --> INT3(stat) --> INT1(stat) --> datablock
     fn readn_cmd(&mut self) -> ResponseList {
         self.drive.status_code.set_spindle_mot(true);
         self.drive.readn();

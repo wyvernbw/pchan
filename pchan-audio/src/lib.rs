@@ -1,4 +1,5 @@
-use std::time::Duration;
+#![allow(clippy::missing_errors_doc)]
+#![allow(clippy::missing_panics_doc)]
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, SampleFormat, Stream, SupportedStreamConfig};
@@ -59,13 +60,13 @@ impl AudioTask {
         };
         let mut config = self.config.clone().config();
         config.buffer_size = cpal::BufferSize::Fixed(441 * 5);
-        let mut last_samples = [0.0, 0.0];
         let stream = self.device.build_output_stream(
             config,
             move |data: &mut [f32], _info| {
-                if self.config.channels() > 2 {
-                    panic!("unsupported audio config: device has more than 2 channels");
-                }
+                assert!(
+                    self.config.channels() <= 2,
+                    "unsupported audio config: device has more than 2 channels"
+                );
                 // ~50ms audio buffer
                 if cons.cons.occupied_len() <= 441 * 5 * 2 {
                     return;
@@ -73,7 +74,7 @@ impl AudioTask {
                 for s in data.chunks_mut(2) {
                     for dest in s.iter_mut() {
                         let sample = cons.cons.try_pop().unwrap_or(0);
-                        *dest = (sample as f32) / (i16::MAX as f32)
+                        *dest = f32::from(sample) / f32::from(i16::MAX)
                     }
                 }
                 // for s in data.chunks_mut(2) {

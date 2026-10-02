@@ -1,19 +1,22 @@
+#![allow(clippy::missing_panics_doc)]
+#![allow(clippy::redundant_closure_for_method_calls)]
 #![allow(clippy::type_complexity)]
 #![allow(recursion_depth_exceeding_limit)]
-#![feature(allocator_ext)]
+
+extern crate alloc;
 
 #[path = "game-surface.rs"]
 pub mod game_surface;
 
-use core::alloc::Allocator;
+use alloc::borrow::Cow;
+use alloc::rc::Rc;
+use alloc::sync::Arc;
 use core::cell::RefCell;
 use core::num::ParseIntError;
 use core::ops::Range;
 use core::time::Duration;
-use std::borrow::Cow;
+use core::{fmt, mem};
 use std::path::PathBuf;
-use std::rc::Rc;
-use std::sync::Arc;
 use std::time::Instant;
 
 use bumpalo::Bump;
@@ -48,7 +51,7 @@ actions!(app, [Quit, SoftReset, HardReset, Step]);
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;
 
-fn main() -> miette::Result<()> {
+fn main() {
     init_tracing(pchan_utils::InitTracingArgs {
         stdout:     false,
         file:       true,
@@ -57,7 +60,7 @@ fn main() -> miette::Result<()> {
     #[cfg(feature = "dhat-heap")]
     let _profiler = dhat::Profiler::new_heap();
     #[cfg(feature = "dhat-heap")]
-    let _profiler_ptr = &_profiler as *const dhat::Profiler as *mut dhat::Profiler;
+    let _profiler_ptr = (&raw const _profiler).cast_mut();
     let arena: &'static &'static Bump =
         Box::leak(Box::new(Box::leak(Box::new(Bump::new())) as &'static _));
 
@@ -114,10 +117,9 @@ fn main() -> miette::Result<()> {
 
             cx.activate(true);
         });
-
-    Ok(())
 }
 
+#[allow(clippy::struct_field_names)]
 struct PchanAssets {
     eject_icon:      &'static [u8],
     disc_3_icon:     &'static [u8],
@@ -250,7 +252,7 @@ impl Debugger {
         let mut audio_task = AudioTask::new()?;
         pchan_bind::bind_audio(&mut audio_task, &mut emu);
         let audio_stream = audio_task.start()?;
-        std::mem::forget(audio_stream);
+        mem::forget(audio_stream);
 
         let gpu = pchan_gpu::Renderer::try_new();
         let gpu = cx.foreground_executor().block_on(gpu).into_diagnostic()?;
@@ -272,7 +274,7 @@ impl Debugger {
                 pchan_emu::cpu::FP => "fp",
                 other => REG_STR[other as usize],
             };
-            format!("${}", reg).into()
+            format!("${reg}").into()
         });
 
         let emucx = cx.new(|_| EmuContext {
@@ -390,7 +392,9 @@ impl Debugger {
 
                         let frame_limit = match emucx.speed_limit {
                             EmuSpeed::Unlimited => Duration::ZERO,
-                            EmuSpeed::Percent(p) => Duration::from_micros(16_667 * 100 / p as u64),
+                            EmuSpeed::Percent(p) => {
+                                Duration::from_micros(16_667 * 100 / u64::from(p))
+                            }
                         };
                         emucx.frame_time_limited = frame_time.max(frame_limit);
 
@@ -430,7 +434,7 @@ impl Debugger {
                         let mut audio_task = AudioTask::new()?;
                         pchan_bind::bind_audio(&mut audio_task, &mut emucx.emu);
                         let audio_stream = audio_task.start()?;
-                        std::mem::forget(audio_stream);
+                        mem::forget(audio_stream);
 
                         Ok(())
                     })
@@ -501,7 +505,7 @@ impl Render for Debugger {
             .surface_mode
             .read(cx)
             .selected_value()
-            .cloned()
+            .copied()
             .unwrap_or(SurfaceMode::Background);
 
         v_flex()
@@ -548,7 +552,7 @@ impl Debugger {
         real_time: Duration,
     ) -> impl IntoElement {
         let theme = cx.theme();
-        let sim_time_ms = cycles * 1000 / pchan_emu::cpu::Cpu::CLOCK as u64;
+        let sim_time_ms = cycles * 1000 / u64::from(pchan_emu::cpu::Cpu::CLOCK);
         let sim_time_s = sim_time_ms as f64 / 1000.0;
         let real_time_s = real_time.as_millis() as f64 / 1000.0;
         let drift = ((sim_time_s - real_time_s) / sim_time_s) * 100.0;
@@ -613,23 +617,19 @@ impl Debugger {
                     .child(
                         div()
                             .text_color(theme.colors.yellow)
-                            .child(format!("{:01.2}s", sim_time_s)),
+                            .child(format!("{sim_time_s:01.2}s")),
                     )
                     .child("/")
                     .child(
                         div()
                             .text_color(theme.colors.blue)
-                            .child(format!("{:01.2}s", real_time_s)),
+                            .child(format!("{real_time_s:01.2}s")),
                     )
                     .child(" drift: ")
-                    .child(
-                        div()
-                            .child(format!("{:.2}%", drift))
-                            .text_color(match drift {
-                                ..0.0 => theme.colors.yellow,
-                                _ => theme.colors.blue,
-                            }),
-                    ),
+                    .child(div().child(format!("{drift:.2}%")).text_color(match drift {
+                        ..0.0 => theme.colors.yellow,
+                        _ => theme.colors.blue,
+                    })),
             )
             .child(format!("{speed_percent:.2}%"))
     }
@@ -654,7 +654,7 @@ impl Debugger {
                 move |value, cx| -> Option<()> {
                     let value = value?;
                     memview.update(cx, |memview, cx| {
-                        memview.scroll.scroll_to(value as u64 / 16, cx);
+                        memview.scroll.scroll_to(u64::from(value) / 16, cx);
                     });
                     None
                 }
@@ -869,7 +869,7 @@ fn parse_hex_word(str: &str) -> Result<u32, ParseIntError> {
         return Ok(0);
     }
     let str = str.trim_prefix("0x");
-    if let Some((a, b)) = str.split_once("_") {
+    if let Some((a, b)) = str.split_once('_') {
         let a = parse_hex_word(a)?;
         let b = parse_hex_word(b)?;
         Ok(a << 16 | b)
@@ -902,6 +902,8 @@ impl Debugger {
         let gpr = self.emucx.read(cx).emu.cpu.gpr.clone();
         let gpr = gpr.iter().copied().enumerate().map({
             |(r, value)| {
+                use gpui_component::input::InputEvent;
+
                 let reg_id = &self.cached_reg_names[r];
                 let input_state = window.use_keyed_state(reg_id.clone(), cx, |win, cx| {
                     let reg_value: SharedString = hex(value).to_string().into();
@@ -909,8 +911,6 @@ impl Debugger {
                         .default_value(reg_value)
                         .validate(|value, _| parse_hex_word(value).is_ok())
                 });
-
-                use gpui_component::input::InputEvent;
 
                 match self.cpu_control_subs[r] {
                     Some(_) => {}
@@ -997,57 +997,61 @@ impl Debugger {
         let pc = self.emucx.read(cx).emu.cpu.pc;
 
         if pc != self.pc {
-            self.mips_dump_scroll_handle.scroll_to(pc as u64 / 4, cx);
+            self.mips_dump_scroll_handle
+                .scroll_to(u64::from(pc) / 4, cx);
             self.pc = pc;
         }
 
-        VirtualList::new("mips-dump-list", u32::MAX as u64 / 4, move |idx, _, cx| {
-            let address_label: SharedString = "mips-dump-address".into();
+        VirtualList::new(
+            "mips-dump-list",
+            u64::from(u32::MAX) / 4,
+            move |idx, _, cx| {
+                let address_label: SharedString = "mips-dump-address".into();
 
-            let view = entity.read(cx);
-            let addr = idx as u32 * 4;
-            let instr = view.emucx.read(cx).emu.fastmem_read::<OpCode>(addr);
-            let instr = instr
-                .map(DecodedOp::new)
-                .map(|instr| Cow::Owned(format!("{instr}")))
-                .unwrap_or(Cow::Borrowed("N/A"));
-            let is_pc = pc & 0x1fff_ffff == addr & 0x1fff_ffff;
-            h_flex()
-                .w_full()
-                .whitespace_nowrap()
-                .overflow_hidden()
-                .font_family(&theme.mono_font_family)
-                .bg(theme
-                    .foreground
-                    .opacity(if idx.is_multiple_of(2) { 0.0 } else { 0.08 }))
-                .child(
-                    sel_text_keyed(
-                        ElementId::NamedInteger(
-                            "mipds-dump-list-address-column".into(),
-                            addr as u64,
-                        ),
-                        hex(addr).to_string(),
+                let view = entity.read(cx);
+                let addr = idx as u32 * 4;
+                let instr = view.emucx.read(cx).emu.fastmem_read::<OpCode>(addr);
+                let instr = instr
+                    .map(DecodedOp::new)
+                    .map_or(Cow::Borrowed("N/A"), |instr| Cow::Owned(format!("{instr}")));
+                let is_pc = pc & 0x1fff_ffff == addr & 0x1fff_ffff;
+                h_flex()
+                    .w_full()
+                    .whitespace_nowrap()
+                    .overflow_hidden()
+                    .font_family(&theme.mono_font_family)
+                    .bg(theme
+                        .foreground
+                        .opacity(if idx.is_multiple_of(2) { 0.0 } else { 0.08 }))
+                    .child(
+                        sel_text_keyed(
+                            ElementId::NamedInteger(
+                                "mipds-dump-list-address-column".into(),
+                                u64::from(addr),
+                            ),
+                            hex(addr).to_string(),
+                        )
+                        .opacity(0.5),
                     )
-                    .opacity(0.5),
-                )
-                .child(
-                    div()
-                        .text_center()
-                        .min_w_4()
-                        .w_4()
-                        .when(is_pc, |this| this.child(">")),
-                )
-                .child(sel_text_keyed(
-                    ElementId::NamedInteger(address_label, idx),
-                    instr,
-                ))
-                .when(is_pc, |this| this.text_color(theme.colors.info))
-                .h_4()
-        })
+                    .child(
+                        div()
+                            .text_center()
+                            .min_w_4()
+                            .w_4()
+                            .when(is_pc, |this| this.child(">")),
+                    )
+                    .child(sel_text_keyed(
+                        ElementId::NamedInteger(address_label, idx),
+                        instr,
+                    ))
+                    .when(is_pc, |this| this.text_color(theme.colors.info))
+                    .h_4()
+            },
+        )
         .track_scroll(&self.mips_dump_scroll_handle)
     }
 
-    fn open_disc_button(&mut self, cx: &mut Context<Debugger>, _theme: &Theme) -> Button {
+    fn open_disc_button(cx: &mut Context<Debugger>, _theme: &Theme) -> Button {
         Button::new("disc-path-button")
             .secondary()
             .on_click(cx.listener(|_, _, _, cx| {
@@ -1092,7 +1096,7 @@ impl Debugger {
         cx: &mut Context<Debugger>,
         theme: &Theme,
     ) -> impl IntoElement + Styled {
-        let open_disc = self.open_disc_button(cx, theme);
+        let open_disc = Debugger::open_disc_button(cx, theme);
         match self.disc_path.as_ref() {
             None => h_flex().flex_grow_1().child(
                 open_disc
@@ -1107,8 +1111,7 @@ impl Debugger {
                     div().min_w_0().flex_grow_1().child(
                         open_disc.w_full().text_ellipsis().flex().label(
                             path.file_name()
-                                .map(|f| f.to_string_lossy())
-                                .unwrap_or(Cow::Borrowed("Unknown")),
+                                .map_or(Cow::Borrowed("Unknown"), |f| f.to_string_lossy()),
                         ),
                     ),
                 )
@@ -1189,7 +1192,17 @@ impl Debugger {
         cx: &mut Context<Debugger>,
         _theme: &Theme,
     ) -> impl IntoElement + Styled {
-        let selected = self.memview.read(cx).selected;
+        fn table_row<T: Copy + core::fmt::Debug>(
+            type_label: &'static str,
+            emucx: &Entity<EmuContext>,
+            cx: &mut Context<Debugger>,
+            address: Option<u32>,
+        ) -> TableRow {
+            TableRow::new()
+                .gap_2()
+                .child(TableCell::new().child(type_label).min_w_0().w(rems(4.)))
+                .child(TableCell::new().child(get_value::<T>(emucx, cx, address)))
+        }
 
         fn get_value<T: Copy + core::fmt::Debug>(
             emucx: &Entity<EmuContext>,
@@ -1205,24 +1218,13 @@ impl Debugger {
             }
         }
 
-        fn table_row<T: Copy + core::fmt::Debug>(
-            type_label: &'static str,
-            emucx: &Entity<EmuContext>,
-            cx: &mut Context<Debugger>,
-            address: Option<u32>,
-        ) -> TableRow {
-            TableRow::new()
-                .gap_2()
-                .child(TableCell::new().child(type_label).min_w_0().w(rems(4.)))
-                .child(TableCell::new().child(get_value::<T>(emucx, cx, address)))
-        }
-
         #[derive(Clone, Copy)]
         struct Ascii([u8; 4]);
+
         impl core::fmt::Debug for Ascii {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 let mut word = self.0;
-                for byte in word.iter_mut() {
+                for byte in &mut word {
                     match *byte {
                         ..=0x1f | 0x7f.. => {
                             *byte = b'.';
@@ -1232,9 +1234,11 @@ impl Debugger {
                 }
 
                 let word = core::str::from_utf8(&word).expect("impossible");
-                write!(f, "{:?}", word)
+                write!(f, "{word:?}")
             }
         }
+
+        let selected = self.memview.read(cx).selected;
 
         div()
             .w_full()
@@ -1368,7 +1372,7 @@ impl EventEmitter<MemviewTableEditEvent> for MemviewTable {}
 impl Render for MemviewTable {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let columns = 4u64;
-        let items = u32::MAX as u64 / (columns * 4);
+        let items = u64::from(u32::MAX) / (columns * 4);
         let view = cx.entity();
         let theme = cx.theme().clone();
         VirtualList::new("memview-table", items, move |row_idx, _, cx| {
@@ -1411,7 +1415,7 @@ impl Render for MemviewTable {
                 // });
                 let word_str = hex_pref::<_, false>(word);
 
-                let id = ElementId::NamedInteger("memview-hex-input".into(), address as u64);
+                let id = ElementId::NamedInteger("memview-hex-input".into(), u64::from(address));
 
                 match &view.read(cx).editing.as_ref() {
                     Some(edit) if edit.address == address => {
@@ -1458,7 +1462,7 @@ impl Render for MemviewTable {
                     .try_read_pure::<[u8; 4]>(address)
                     .unwrap_or([b'.'; 4]);
                 let mut no_ascii = true;
-                for byte in word.iter_mut() {
+                for byte in &mut word {
                     match *byte {
                         ..=0x1f | 0x7f.. => {
                             *byte = b'.';
@@ -1470,7 +1474,7 @@ impl Render for MemviewTable {
                 }
 
                 let word = core::str::from_utf8(&word).expect("impossible");
-                let id = ElementId::NamedInteger("mewmview-hex-ascii".into(), address as u64);
+                let id = ElementId::NamedInteger("mewmview-hex-ascii".into(), u64::from(address));
                 let color = match (view.read(cx).editing.as_ref(), no_ascii) {
                     (Some(edit), _) if edit.address == address => &theme.colors.yellow,
                     (_, false) => &theme.foreground,
@@ -1507,6 +1511,7 @@ pub struct VirtualListScrollHandle {
 }
 
 impl VirtualListScrollHandle {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             handle: Rc::new(RefCell::new(VirtualListScrollState::new())),
@@ -1543,6 +1548,7 @@ impl VirtualList {
         }
     }
 
+    #[must_use]
     pub fn track_scroll(mut self, handle: &VirtualListScrollHandle) -> Self {
         self.scroll_handle = Some(handle.clone());
         self
@@ -1575,6 +1581,7 @@ impl VirtualList {
 }
 
 impl VirtualListScrollState {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             state:    WeakEntity::new_invalid(),
@@ -1677,12 +1684,12 @@ impl Element for VirtualList {
                 let delta: f32 = ev.delta.pixel_delta(win.line_height()).y.into();
 
                 state.update(cx, |state, _| {
-                    let mut total = state.frac_px as f64 - delta as f64;
+                    let mut total = f64::from(state.frac_px) - f64::from(delta);
                     if state.top_row == 0 {
                         total = total.max(0.0);
                     }
-                    let rows = (total / row_height as f64).floor();
-                    state.frac_px = (total - rows * row_height as f64) as f32;
+                    let rows = (total / f64::from(row_height)).floor();
+                    state.frac_px = (total - rows * f64::from(row_height)) as f32;
                     match rows >= 0.0 {
                         true => {
                             state.top_row = state
@@ -1760,7 +1767,7 @@ impl Element for VirtualList {
                     });
 
                     window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
-                        for (el, _origin) in state.children.iter_mut() {
+                        for (el, _origin) in &mut state.children {
                             el.paint(window, cx);
                         }
                     })
@@ -1769,7 +1776,7 @@ impl Element for VirtualList {
         });
     }
 
-    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
         Some(core::panic::Location::caller())
     }
 }
@@ -1861,7 +1868,7 @@ impl SelectableText {
             state: Some(state),
             id:    ElementId::View(entity_id),
             text:  text.into(),
-            style: Default::default(),
+            style: StyleRefinement::default(),
         }
     }
 }
@@ -1873,7 +1880,7 @@ pub fn sel_text(text: impl Into<SharedString>) -> SelectableText {
         state: None,
         id,
         text: text.into(),
-        style: Default::default(),
+        style: StyleRefinement::default(),
     }
 }
 
@@ -1882,7 +1889,7 @@ pub fn sel_text_keyed(id: impl Into<ElementId>, text: impl Into<SharedString>) -
         state: None,
         id:    id.into(),
         text:  text.into(),
-        style: Default::default(),
+        style: StyleRefinement::default(),
     }
 }
 

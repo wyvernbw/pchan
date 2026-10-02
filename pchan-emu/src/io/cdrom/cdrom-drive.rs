@@ -244,13 +244,13 @@ impl Disc {
     pub fn seek(&mut self, to: CdromCursor) -> std::io::Result<()> {
         let (padding, reader) = match self {
             Disc::CueBin(cue_format, disc_reader) => (
-                cue_format.index_list[0].second as u32 * 75 * SECTOR_USER_SIZE as u32,
+                u32::from(cue_format.index_list[0].second) * 75 * SECTOR_USER_SIZE as u32,
                 disc_reader,
             ),
             Disc::Raw(disc_reader) => (0, disc_reader),
         };
         let byte = padding + to.to_byte();
-        reader.seek(byte as u64)
+        reader.seek(u64::from(byte))
     }
 
     pub fn readn<const BYTES: usize>(

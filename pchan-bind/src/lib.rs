@@ -1,7 +1,9 @@
 pub mod input;
 
-use std::fmt::Debug;
-use std::sync::Arc;
+extern crate alloc;
+
+use alloc::sync::Arc;
+use core::fmt::{self, Debug};
 
 use ringbuf::storage::Heap;
 use ringbuf::traits::Split;
@@ -14,7 +16,7 @@ pub struct AudioConsumer {
 }
 
 impl Debug for AudioConsumer {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AudioConsumer").finish()
     }
 }
@@ -24,11 +26,12 @@ pub struct AudioProducer {
 }
 
 impl Debug for AudioProducer {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AudioProducer").finish()
     }
 }
 
+#[must_use]
 pub fn create_audio() -> (AudioConsumer, AudioProducer) {
     let rb = SharedRb::<Heap<i16>>::new(4096 * 8); // 32kb audio ringbuffer
     let (prod, cons) = rb.split();

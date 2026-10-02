@@ -3,6 +3,9 @@ name = "pchan-utils"
 version = "0.1.0"
 edition = "2024"
 
+[lints]
+workspace = true
+
 [features]
 tracing-subscriber = ["dep:tracing-subscriber"]
 tracy-enable = ["tracy-client/enable"]

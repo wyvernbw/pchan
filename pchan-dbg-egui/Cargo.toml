@@ -3,6 +3,9 @@ name = "pchan-dbg-egui"
 version = "0.1.0"
 edition = "2024"
 
+[lints]
+workspace = true
+
 [dependencies]
 egui = "0.36.2"
 egui-wgpu = "0.36.2"

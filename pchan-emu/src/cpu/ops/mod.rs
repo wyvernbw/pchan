@@ -23,10 +23,14 @@
 //!
 //! [PSX-SPX Cpu Specifications](https://psx-spx.consoledev.net/cpuspecifications/)
 
-use arbitrary_int::*;
+use arbitrary_int::prelude::*;
 use bitbybit::bitfield;
 use derive_more as d;
 use pchan_macros::Encode;
+
+pub mod prelude {
+    pub use super::*;
+}
 
 pub const fn nop() -> OpCode {
     OpCode::NOP_FIELDS
@@ -43,6 +47,7 @@ pub struct HaltBlock;
 #[bitfield(u32)]
 #[derive(PartialEq, Eq, Debug)]
 #[derive_const(Default)]
+#[must_use]
 pub struct OpCode {
     #[bits(0..=5, rw)]
     pub funct:  u6,

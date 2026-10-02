@@ -5,6 +5,9 @@ name = "pchan"
 version = "0.1.0"
 edition = "2024"
 
+[lints]
+workspace = true
+
 [workspace]
 resolver = "3"
 members = [
@@ -23,14 +26,29 @@ members = [
 ]
 
 [workspace.lints.clippy]
-# pedantic = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
 std_instead_of_core = "deny"
 std_instead_of_alloc = "deny"
-unreadable-literal = "allow"
-match-bool = "allow"
-too-many-lines = "allow"
+
+# bad lints
+unreadable_literal = "allow"
+match_bool = "allow"
+too_many_lines = "allow"
+cast_possible_truncation = "allow"
+cast_precision_loss = "allow"
+single_match_else = "allow"
+type_complexity = "allow"
+needless_pass_by_value = "allow"
+similar_names = "allow"
+wildcard_imports = "allow"
+redundant_closure_for_method_calls = "allow"
+
 # causes problems with dynasm
-semicolon-if-nothing-returned = "allow"
+semicolon_if_nothing_returned = "allow"
+used_underscore_binding = "allow"
+unnecessary_semicolon = "allow"
+cast_sign_loss = "allow"
+cast_possible_wrap = "allow"
 
 [workspace.dependencies]
 arbitrary-int = "2.2.0"

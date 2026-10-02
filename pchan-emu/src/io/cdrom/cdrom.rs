@@ -69,6 +69,7 @@ impl<A: Allocator + Copy> Emu<A> {
         let address = address & 0x1fffffff;
         let bank = self.cdrom().bank();
         let value = value.io_into_u32() as u8;
+        #[allow(clippy::match_same_arms)]
         match (address, bank) {
             (0x1f801800, _) => {
                 let status = CDRomStatusReg::new_with_raw_value(value);
@@ -148,7 +149,7 @@ impl<A: Allocator + Copy> Emu<A> {
             }
             _ => Err(UnhandledIO(address)),
         }
-        .inspect(|_| tracing::info!("w(cdrom) @ {}:{}", hex(address), bank))
+        .inspect(|()| tracing::info!("w(cdrom) @ {}:{}", hex(address), bank))
     }
 
     #[pchan_macros::pchan_instrument_read]
@@ -226,7 +227,7 @@ impl<A: Allocator + Copy> Emu<A> {
 
     pub fn cdrom_read_data<const BYTES: usize>(&mut self) -> [u8; BYTES] {
         let mut buf = [0u8; BYTES];
-        for byte in buf.iter_mut() {
+        for byte in &mut buf {
             let value = self
                 .cdrom
                 .data_fifo
@@ -308,6 +309,7 @@ impl CDRomStatusReg {
 }
 
 impl CDRomState {
+    #[must_use]
     pub fn bank(&self) -> u8 {
         self.status.bank().as_u8()
     }

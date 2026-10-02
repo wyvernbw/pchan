@@ -3,6 +3,9 @@ name = "rat-imaginary"
 version = "0.1.0"
 edition = "2024"
 
+[lints]
+workspace = true
+
 [dependencies]
 kittage = { path = "./kittage", version = "0.4.0", default-features = false }
 ratatui = { version = "0.30.2", default-features = false }

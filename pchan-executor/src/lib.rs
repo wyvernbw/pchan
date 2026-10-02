@@ -1,9 +1,12 @@
 #![feature(negative_impls)]
 
-use std::cell::OnceCell;
-use std::marker::PhantomData;
-use std::sync::{Arc, Mutex};
-use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+extern crate alloc;
+
+use alloc::sync::Arc;
+use core::cell::OnceCell;
+use core::marker::PhantomData;
+use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+use std::sync::Mutex;
 use std::thread::{JoinHandle, Thread};
 
 pub struct Executor<'a> {
@@ -11,10 +14,11 @@ pub struct Executor<'a> {
     thread: Thread,
 }
 
-impl<'a> !Send for Executor<'a> {}
-impl<'a> !Sync for Executor<'a> {}
+impl !Send for Executor<'_> {}
+impl !Sync for Executor<'_> {}
 
 impl<'a> Executor<'a> {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             _life:  PhantomData,
@@ -24,7 +28,7 @@ impl<'a> Executor<'a> {
     fn create_waker(&self) -> Waker {
         unsafe {
             Waker::from_raw(RawWaker::new(
-                std::ptr::from_ref(&self.thread) as *const (),
+                core::ptr::from_ref(&self.thread).cast::<()>(),
                 &VTABLE,
             ))
         }
@@ -75,7 +79,7 @@ unsafe fn drop_waker(_: *const ()) {
     // has no owned data
 }
 
-impl<'a> Default for Executor<'a> {
+impl Default for Executor<'_> {
     fn default() -> Self {
         Self::new()
     }
@@ -113,7 +117,7 @@ where
 impl<O> Future for Unblock<O> {
     type Output = O;
 
-    fn poll(mut self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(mut self: core::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         {
             let mut waker = self.waker.lock().unwrap();
             *waker = Some(cx.waker().clone());
@@ -124,7 +128,7 @@ impl<O> Future for Unblock<O> {
 
         match handle.is_finished() {
             true => {
-                let handle = std::mem::take(&mut self.handle);
+                let handle = core::mem::take(&mut self.handle);
                 let Some(handle) = handle else {
                     return Poll::Pending;
                 };
@@ -137,7 +141,7 @@ impl<O> Future for Unblock<O> {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use core::time::Duration;
 
     use smol::Timer;
 

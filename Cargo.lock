@@ -6662,7 +6662,6 @@ dependencies = [
  "pchan-emu",
  "pchan-gpu",
  "pchan-utils",
- "spin_sleep",
 ]
 
 [[package]]

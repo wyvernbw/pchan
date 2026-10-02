@@ -3,7 +3,6 @@ use core::alloc::Allocator;
 use arbitrary_int::prelude::*;
 use bitbybit::{bitenum, bitfield};
 use derive_more as d;
-use pchan_utils::hex;
 
 use crate::Emu;
 use crate::io::{CastIOFrom, CastIOInto, IOResult, UnhandledIO};
@@ -16,6 +15,7 @@ pub struct IrqState {
 
 #[bitfield(u32, debug)]
 #[derive(d::Deref, Hash, Default)]
+#[must_use]
 pub struct IrqField {
     #[bit(0)]
     irq0_vblank: bool,
@@ -71,6 +71,9 @@ impl IrqState {
         }
     }
 }
+
+#[cfg(feature = "trace")]
+use pchan_utils::hex;
 
 impl<A: Allocator + Copy> Emu<A> {
     pub fn irq_trigger(&mut self, irq: Irq) {

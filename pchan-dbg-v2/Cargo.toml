@@ -3,6 +3,9 @@ name = "pchan-dbg-v2"
 version = "0.1.0"
 edition = "2024"
 
+[lints]
+workspace = true
+
 [features]
 image-debug = []
 trace = ["pchan-emu/trace"]

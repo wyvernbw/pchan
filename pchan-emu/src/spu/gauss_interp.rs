@@ -46,15 +46,15 @@ pub static GAUSS_TABLE: &[i16] = &[
 
 #[expect(clippy::identity_op)]
 pub fn interpolate(i: usize, s0: i16, s1: i16, s2: i16, s3: i16) -> i16 {
-    let s0 = s0 as i32;
-    let s1 = s1 as i32;
-    let s2 = s2 as i32;
-    let s3 = s3 as i32;
+    let s0 = i32::from(s0);
+    let s1 = i32::from(s1);
+    let s2 = i32::from(s2);
+    let s3 = i32::from(s3);
 
-    let out = (GAUSS_TABLE[0x0ff - i] as i32 * s3) >> 15;
-    let out = out + ((GAUSS_TABLE[0x1ff - i] as i32 * s2) >> 15);
-    let out = out + ((GAUSS_TABLE[0x100 + i] as i32 * s1) >> 15);
-    let out = out + ((GAUSS_TABLE[0x000 + i] as i32 * s0) >> 15);
+    let out = (i32::from(GAUSS_TABLE[0x0ff - i]) * s3) >> 15;
+    let out = out + ((i32::from(GAUSS_TABLE[0x1ff - i]) * s2) >> 15);
+    let out = out + ((i32::from(GAUSS_TABLE[0x100 + i]) * s1) >> 15);
+    let out = out + ((i32::from(GAUSS_TABLE[0x000 + i]) * s0) >> 15);
 
     out as i16
 }

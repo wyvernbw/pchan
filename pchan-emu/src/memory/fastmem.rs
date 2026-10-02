@@ -17,11 +17,13 @@ pub struct Lut {
 
 pub static LUT: Lut = generate_page_tables();
 
+#[allow(clippy::large_stack_arrays)]
 const fn generate_page_tables() -> Lut {
+    const RAM_PAGE_COUNT: usize = kb(2048) / PAGE_SIZE;
+    const BIOS_PAGE_COUNT: usize = kb(512) / PAGE_SIZE;
+
     let mut table_read: PageTable = [None; PAGE_COUNT];
     let mut table_write: PageTable = [None; PAGE_COUNT];
-
-    const RAM_PAGE_COUNT: usize = kb(2048) / PAGE_SIZE;
 
     // for each region, it will map `kuseg`, `kseg0` and `kseg1` respectively
 
@@ -58,8 +60,6 @@ const fn generate_page_tables() -> Lut {
         i += 1;
     }
 
-    const BIOS_PAGE_COUNT: usize = kb(512) / PAGE_SIZE;
-
     i = 0;
     while i < BIOS_PAGE_COUNT {
         let offset = (i * PAGE_SIZE) as u32;
@@ -80,6 +80,7 @@ const fn generate_page_tables() -> Lut {
 }
 
 #[inline(always)]
+#[must_use]
 pub fn util_fast_map_address(address: u32) -> Option<u32> {
     let page = address >> 16;
     let offset = address & 0xFFFF;
@@ -101,7 +102,7 @@ impl<A: Allocator + Copy> Emu<A> {
             // fastmem
             Some(region_ptr) => unsafe {
                 let ptr = mem.add(region_ptr as usize).add(offset as usize);
-                Ok(ptr::read(ptr as *const T))
+                Ok(ptr::read(ptr.cast::<T>()))
             },
             // memcheck
             None => Err(UnhandledIO(address)),
@@ -123,7 +124,7 @@ impl<A: Allocator + Copy> Emu<A> {
             self.dynarec_cache.invalidate(address);
             unsafe {
                 let ptr = mem.add(region_ptr as usize).add(offset as usize);
-                ptr::write(ptr as *mut _, value);
+                ptr::write(ptr.cast(), value);
             }
             Ok(())
         } else {

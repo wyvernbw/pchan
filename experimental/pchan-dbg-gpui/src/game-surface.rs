@@ -1,3 +1,4 @@
+use alloc::sync::Arc;
 use core::cell::Cell;
 #[cfg(target_os = "macos")]
 use core_foundation::base::TCFType;
@@ -6,7 +7,7 @@ use core_video::pixel_buffer::CVPixelBuffer;
 use gpui::prelude::*;
 use gpui::*;
 use pchan_gpu::wgpu::{self};
-use std::sync::{Arc, MutexGuard};
+use std::sync::MutexGuard;
 
 #[derive(Debug, Clone)]
 pub struct GameSurface {
@@ -59,17 +60,20 @@ impl GameSurface {
                 let y_value = 0;
                 unsafe {
                     // Plane 0: luma
-                    let y_base = buf.get_base_address_of_plane(0) as *mut u8;
+
+                    use core::ptr;
+
+                    let y_base = buf.get_base_address_of_plane(0).cast::<u8>();
                     let y_stride = buf.get_bytes_per_row_of_plane(0);
                     let y_height = buf.get_height_of_plane(0);
-                    std::ptr::write_bytes(y_base, y_value, y_stride * y_height);
+                    ptr::write_bytes(y_base, y_value, y_stride * y_height);
 
                     // Plane 1: interleaved CbCr, half height, 2 bytes per chroma sample.
                     // 128 for both Cb and Cr means neutral chroma, so a single byte value works.
-                    let c_base = buf.get_base_address_of_plane(1) as *mut u8;
+                    let c_base = buf.get_base_address_of_plane(1).cast::<u8>();
                     let c_stride = buf.get_bytes_per_row_of_plane(1);
                     let c_height = buf.get_height_of_plane(1);
-                    std::ptr::write_bytes(c_base, 128, c_stride * c_height);
+                    ptr::write_bytes(c_base, 128, c_stride * c_height);
                 }
 
                 buf.unlock_base_address(0);
@@ -99,6 +103,7 @@ pub struct SurfaceState {
 }
 
 impl SurfaceState {
+    #[must_use]
     pub fn new(target: PchanTexture, target_buf: wgpu::Buffer) -> Self {
         Self {
             target,
@@ -153,7 +158,7 @@ impl Element for GameSurface {
         Some(self.id.clone())
     }
 
-    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
         None
     }
 
@@ -226,7 +231,7 @@ use core::mem;
 #[cfg(target_os = "macos")]
 #[derive(Clone)]
 struct PchanMetalTexture {
-    gpu:               Arc<pchan_gpu::Renderer>,
+    _gpu:              Arc<pchan_gpu::Renderer>,
     pixel_buffer:      CVPixelBuffer,
     dest_yp_texture:   mem::ManuallyDrop<wgpu::Texture>,
     dest_cbcr_texture: mem::ManuallyDrop<wgpu::Texture>,
@@ -246,7 +251,7 @@ pub fn create_target(
 
     let target_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
         label:              None,
-        size:               width as u64 * dp.screen_rect.y as u64,
+        size:               u64::from(width) * u64::from(dp.screen_rect.y),
         usage:              wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
@@ -269,8 +274,8 @@ pub fn create_target_texture_wgpu(
     gpu.device.create_texture(&wgpu::TextureDescriptor {
         label:           None,
         size:            wgpu::Extent3d {
-            width:                 dp.screen_rect.x as u32,
-            height:                dp.screen_rect.y.max(16) as u32,
+            width:                 u32::from(dp.screen_rect.x),
+            height:                u32::from(dp.screen_rect.y.max(16)),
             depth_or_array_layers: 1,
         },
         mip_level_count: 1,
@@ -337,7 +342,9 @@ pub fn create_target_texture_metal(
         let dest_yp_texture = metal_device
             .newTextureWithDescriptor_iosurface_plane(
                 &descriptor,
-                (io_surface.as_concrete_TypeRef() as *const objc2_io_surface::IOSurfaceRef)
+                io_surface
+                    .as_concrete_TypeRef()
+                    .cast::<objc2_io_surface::IOSurfaceRef>()
                     .as_ref_unchecked(),
                 0,
             )
@@ -348,7 +355,9 @@ pub fn create_target_texture_metal(
         let dest_cbcr_texture = metal_device
             .newTextureWithDescriptor_iosurface_plane(
                 &descriptor,
-                (io_surface.as_concrete_TypeRef() as *const objc2_io_surface::IOSurfaceRef)
+                io_surface
+                    .as_concrete_TypeRef()
+                    .cast::<objc2_io_surface::IOSurfaceRef>()
                     .as_ref_unchecked(),
                 1,
             )
@@ -373,8 +382,8 @@ pub fn create_target_texture_metal(
             &wgpu::TextureDescriptor {
                 label:           None,
                 size:            wgpu::Extent3d {
-                    width:                 dp.screen_rect.x as u32,
-                    height:                dp.screen_rect.y.max(16) as u32,
+                    width:                 u32::from(dp.screen_rect.x),
+                    height:                u32::from(dp.screen_rect.y.max(16)),
                     depth_or_array_layers: 1,
                 },
                 mip_level_count: 1,
@@ -426,7 +435,7 @@ pub fn create_target_texture_metal(
         PchanTexture {
             wgpu:  wgpu_texture,
             metal: PchanMetalTexture {
-                gpu: gpu.clone(),
+                _gpu: gpu.clone(),
                 pixel_buffer,
                 dest_yp_texture: mem::ManuallyDrop::new(wgpu_yp_texture),
                 dest_cbcr_texture: mem::ManuallyDrop::new(wgpu_cbcr_texture),

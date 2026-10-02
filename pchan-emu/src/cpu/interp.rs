@@ -6,7 +6,7 @@ use crate::cpu::RA;
 use crate::cpu::exceptions::Exception;
 use crate::cpu::ops::{Nop, OpCode};
 use crate::dynarec_v2::emitters::{DecodedOp, DynarecOp};
-use crate::memory::ext;
+use crate::memory::{ExtendExt, Sign, Zero, ext};
 
 #[derive(Debug, Clone)]
 pub struct Interpreter {
@@ -31,7 +31,7 @@ enum MemOpSize {
     Byte,
 }
 
-#[derive(derive_more::Debug, Clone, PartialEq, Eq)]
+#[derive(derive_more::Debug, Clone, Copy, PartialEq, Eq)]
 enum DelaySlot {
     Nop,
     Lwl {
@@ -110,7 +110,7 @@ impl Interpreter {
 
         self.run_delay_slots(emu);
         let delay_slot = emu.run_op(self, op.0, op.1);
-        let d_clock = op.1.cycles() as u64;
+        let d_clock = u64::from(op.1.cycles());
         emu.cpu.d_clock += d_clock as u32;
         emu.run_io();
         emu.cpu.d_clock = 0;
@@ -119,7 +119,7 @@ impl Interpreter {
             self.in_delay_slot = false;
         }
         if let Some(op) = delay_slot {
-            debug_assert!(self.delay_queue[1] == DelaySlot::Nop);
+            debug_assert_eq!(self.delay_queue[1], DelaySlot::Nop);
             self.delay_queue[1] = op;
         };
 
@@ -196,8 +196,6 @@ impl<A: Allocator + Copy> Emu<A> {
     }
     fn run_op(&mut self, interp: &mut Interpreter, op_pc: u32, op: DecodedOp) -> Option<DelaySlot> {
         let res = match op {
-            DecodedOp::Nop(_) => None,
-            DecodedOp::Illegal(_) => None,
             DecodedOp::Sll(sll) => {
                 self.set_reg(sll.rd, self.get_reg(sll.rt) << sll.shamt);
                 None
@@ -252,7 +250,7 @@ impl<A: Allocator + Copy> Emu<A> {
             DecodedOp::Mthi(mthi) => {
                 let hi = self.get_reg(mthi.rs);
                 self.cpu.hilo &= 0x0000_0000_ffff_ffff;
-                self.cpu.hilo |= (hi as u64) << 32;
+                self.cpu.hilo |= u64::from(hi) << 32;
                 None
             }
             DecodedOp::Mflo(mflo) => {
@@ -263,18 +261,18 @@ impl<A: Allocator + Copy> Emu<A> {
             DecodedOp::Mtlo(mtlo) => {
                 let lo = self.get_reg(mtlo.rs);
                 self.cpu.hilo &= 0xffff_ffff_0000_0000;
-                self.cpu.hilo |= lo as u64;
+                self.cpu.hilo |= u64::from(lo);
                 None
             }
             DecodedOp::Mult(mult) => {
-                let rs = self.get_reg(mult.rs) as i32 as i64;
-                let rt = self.get_reg(mult.rt) as i32 as i64;
+                let rs = self.get_reg(mult.rs).ext::<Sign>();
+                let rt = self.get_reg(mult.rt).ext::<Sign>();
                 self.cpu.hilo = (rs * rt) as u64;
                 None
             }
             DecodedOp::Multu(multu) => {
-                let rs = self.get_reg(multu.rs) as u64;
-                let rt = self.get_reg(multu.rt) as u64;
+                let rs = self.get_reg(multu.rs).ext::<Zero>();
+                let rt = self.get_reg(multu.rt).ext::<Zero>();
                 self.cpu.hilo = rs * rt;
                 None
             }
@@ -287,8 +285,8 @@ impl<A: Allocator + Copy> Emu<A> {
                     (-0x80000000, -1) => (0, -0x80000000),
                     _ => (rs % rt, rs / rt),
                 };
-                let hi = hi as u32 as u64;
-                let lo = lo as u32 as u64;
+                let hi = hi.ext::<Zero>();
+                let lo = lo.ext::<Zero>();
                 self.cpu.hilo = (hi << 32) | lo;
                 None
             }
@@ -299,8 +297,8 @@ impl<A: Allocator + Copy> Emu<A> {
                     (_, 0) => (rs, u32::MAX),
                     _ => (rs % rt, rs / rt),
                 };
-                let hi = hi as u64;
-                let lo = lo as u64;
+                let hi = hi.ext::<Zero>();
+                let lo = lo.ext::<Zero>();
                 self.cpu.hilo = (hi << 32) | lo;
                 None
             }
@@ -391,14 +389,14 @@ impl<A: Allocator + Copy> Emu<A> {
                 let rs = self.get_reg(slt.rs) as i32;
                 let rt = self.get_reg(slt.rt) as i32;
                 let rd = rs < rt;
-                self.set_reg(slt.rd, rd as u32);
+                self.set_reg(slt.rd, u32::from(rd));
                 None
             }
             DecodedOp::Sltu(sltu) => {
                 let rs = self.get_reg(sltu.rs);
                 let rt = self.get_reg(sltu.rt);
                 let rd = rs < rt;
-                self.set_reg(sltu.rd, rd as u32);
+                self.set_reg(sltu.rd, u32::from(rd));
                 None
             }
             DecodedOp::Beq(beq) => {
@@ -417,39 +415,45 @@ impl<A: Allocator + Copy> Emu<A> {
                 }
                 None
             }
-            DecodedOp::HaltBlock(_) => None,
+            DecodedOp::Nop(_) | DecodedOp::Illegal(_) | DecodedOp::HaltBlock(_) => None,
             DecodedOp::Sb(sb) => {
                 let value = self.get_reg(sb.rt) as u8;
-                let address = self.get_reg(sb.rs).wrapping_add_signed(sb.imm16 as i32);
+                let address = self.get_reg(sb.rs).wrapping_add_signed(i32::from(sb.imm16));
                 self.write(address, value);
                 None
             }
             DecodedOp::Sh(sh) => {
                 let value = self.get_reg(sh.rt) as u16;
-                let address = self.get_reg(sh.rs).wrapping_add_signed(sh.imm16 as i32);
+                let address = self.get_reg(sh.rs).wrapping_add_signed(i32::from(sh.imm16));
                 self.write(address, value);
                 None
             }
             DecodedOp::Swl(swl) => {
                 let value = self.get_reg(swl.rt);
-                let address = self.get_reg(swl.rs).wrapping_add_signed(swl.imm16 as i32);
+                let address = self
+                    .get_reg(swl.rs)
+                    .wrapping_add_signed(i32::from(swl.imm16));
                 self.write32_unaligned_l(address, value);
                 None
             }
             DecodedOp::Sw(sw) => {
                 let value = self.get_reg(sw.rt);
-                let address = self.get_reg(sw.rs).wrapping_add_signed(sw.imm16 as i32);
+                let address = self.get_reg(sw.rs).wrapping_add_signed(i32::from(sw.imm16));
                 self.write(address, value);
                 None
             }
             DecodedOp::Swr(swr) => {
                 let value = self.get_reg(swr.rt);
-                let address = self.get_reg(swr.rs).wrapping_add_signed(swr.imm16 as i32);
+                let address = self
+                    .get_reg(swr.rs)
+                    .wrapping_add_signed(i32::from(swr.imm16));
                 self.write32_unaligned_r(address, value);
                 None
             }
             DecodedOp::Lwcn(lwcn) => {
-                let address = self.get_reg(lwcn.rs).wrapping_add_signed(lwcn.imm16 as i32);
+                let address = self
+                    .get_reg(lwcn.rs)
+                    .wrapping_add_signed(i32::from(lwcn.imm16));
                 let value = self.read::<u32>(address);
                 Some(DelaySlot::SetCop {
                     cop: lwcn.cop,
@@ -467,20 +471,20 @@ impl<A: Allocator + Copy> Emu<A> {
                 self.set_reg(
                     addiu.rt,
                     self.get_reg(addiu.rs)
-                        .wrapping_add_signed(addiu.imm16 as i32),
+                        .wrapping_add_signed(i32::from(addiu.imm16)),
                 );
                 None
             }
             DecodedOp::Slti(slti) => {
                 let rs = self.get_reg(slti.rs) as i32;
-                let rt = rs < slti.imm16 as i32;
-                self.set_reg(slti.rt, rt as u32);
+                let rt = rs < i32::from(slti.imm16);
+                self.set_reg(slti.rt, u32::from(rt));
                 None
             }
             DecodedOp::Sltiu(sltiu) => {
                 let rs = self.get_reg(sltiu.rs);
                 let rt = rs < ext::sign(sltiu.imm16) as u32;
-                self.set_reg(sltiu.rt, rt as u32);
+                self.set_reg(sltiu.rt, u32::from(rt));
                 None
             }
             DecodedOp::Andi(andi) => {
@@ -537,41 +541,49 @@ impl<A: Allocator + Copy> Emu<A> {
                 })
             }
             DecodedOp::Lb(lb) => {
-                let address = self.get_reg(lb.rs).wrapping_add_signed(lb.imm16 as i32);
+                let address = self.get_reg(lb.rs).wrapping_add_signed(i32::from(lb.imm16));
                 let value = ext::sign(self.read::<i8>(address)) as u32;
                 Some(DelaySlot::SetReg { value, reg: lb.rt })
             }
             DecodedOp::Lbu(lbu) => {
-                let address = self.get_reg(lbu.rs).wrapping_add_signed(lbu.imm16 as i32);
+                let address = self
+                    .get_reg(lbu.rs)
+                    .wrapping_add_signed(i32::from(lbu.imm16));
                 let value = ext::zero(self.read::<u8>(address));
                 Some(DelaySlot::SetReg { value, reg: lbu.rt })
             }
             DecodedOp::Lh(lh) => {
-                let address = self.get_reg(lh.rs).wrapping_add_signed(lh.imm16 as i32);
+                let address = self.get_reg(lh.rs).wrapping_add_signed(i32::from(lh.imm16));
                 let value = ext::sign(self.read::<i16>(address)) as u32;
                 Some(DelaySlot::SetReg { value, reg: lh.rt })
             }
             DecodedOp::Lhu(lhu) => {
-                let address = self.get_reg(lhu.rs).wrapping_add_signed(lhu.imm16 as i32);
+                let address = self
+                    .get_reg(lhu.rs)
+                    .wrapping_add_signed(i32::from(lhu.imm16));
                 let value = ext::zero(self.read::<u16>(address));
                 Some(DelaySlot::SetReg { value, reg: lhu.rt })
             }
             DecodedOp::Lwr(lwr) => {
-                let address = self.get_reg(lwr.rs).wrapping_add_signed(lwr.imm16 as i32);
+                let address = self
+                    .get_reg(lwr.rs)
+                    .wrapping_add_signed(i32::from(lwr.imm16));
                 Some(DelaySlot::Lwr {
                     register: lwr.rt,
                     address,
                 })
             }
             DecodedOp::Lwl(lwl) => {
-                let address = self.get_reg(lwl.rs).wrapping_add_signed(lwl.imm16 as i32);
+                let address = self
+                    .get_reg(lwl.rs)
+                    .wrapping_add_signed(i32::from(lwl.imm16));
                 Some(DelaySlot::Lwl {
                     register: lwl.rt,
                     address,
                 })
             }
             DecodedOp::Lw(lw) => {
-                let address = self.get_reg(lw.rs).wrapping_add_signed(lw.imm16 as i32);
+                let address = self.get_reg(lw.rs).wrapping_add_signed(i32::from(lw.imm16));
                 let value = self.read::<u32>(address);
                 Some(DelaySlot::SetReg { value, reg: lw.rt })
             }
@@ -588,7 +600,7 @@ impl<A: Allocator + Copy> Emu<A> {
     fn branch(&mut self, interp: &mut Interpreter, base: u32, offset: i16) {
         let dest = base
             .wrapping_add(4)
-            .wrapping_add_signed((offset as i32) << 2);
+            .wrapping_add_signed(i32::from(offset) << 2);
         self.cpu.pc = dest;
         interp.in_delay_slot = true;
     }

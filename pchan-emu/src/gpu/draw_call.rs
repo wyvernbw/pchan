@@ -37,7 +37,7 @@ pub enum DrawRectDecoder {
         color:   DrawRectColor,
         vertex1: VramCoord,
     },
-    /// entered when textured=false, var_size=true
+    /// entered when `textured=false`, `var_size=true`
     Vertex1VarSize {
         color:   DrawRectColor,
         vertex1: VramCoord,
@@ -66,10 +66,12 @@ pub struct Uv {
 }
 
 impl Uv {
+    #[must_use]
     pub fn from_u32(value: u32) -> Self {
         unsafe { transmute(value) }
     }
 
+    #[must_use]
     pub fn clut_from_u16(value: u16) -> U16Vec2 {
         #[bitfield(u16)]
         struct Clut {
@@ -82,12 +84,14 @@ impl Uv {
         U16Vec2::new(clut.x().as_u16(), clut.y().as_u16())
     }
 
+    #[must_use]
     pub fn extra_as_clut(&self) -> U16Vec2 {
         Self::clut_from_u16(self.extra)
     }
 }
 
 #[bitfield(u32)]
+#[must_use]
 pub struct Gp0SetDrawAreaCmd {
     #[bits(0..=9, rw)]
     x_coord: u10,
@@ -99,6 +103,7 @@ pub struct Gp0SetDrawAreaCmd {
 }
 
 #[bitfield(u32)]
+#[must_use]
 pub struct Gp0SetDrawOffsetCmd {
     #[bits(0..=10, rw)]
     x_offset: i11,
@@ -115,6 +120,7 @@ pub struct Gp0SetDrawOffsetCmd {
 ///  24-31 Command  (E6h)
 /// ```
 #[bitfield(u32)]
+#[must_use]
 pub struct Gp0SetMaskBitCmd {
     #[bit(0, rw)]
     draw_mask:   bool,
@@ -141,6 +147,7 @@ pub struct GpuInternalDrawReg {
 /// Credits to PSX-SPX by Martin Korth [Gpu Status Register](https://problemkaputt.de/psx-spx.htm#gpustatusregister)
 #[bitfield(u32, debug)]
 #[derive_const(Default)]
+#[must_use]
 pub struct DrawRectColor {
     #[bits(0..=23, rw)]
     rgb: u24,
@@ -241,6 +248,7 @@ pub struct DrawPolygon {
 }
 
 impl DrawPolygon {
+    #[must_use]
     pub fn tri_attrs(&self) -> [DrawPolygonAttribute; 3] {
         [
             self.attrs[0].clone(),
@@ -249,6 +257,7 @@ impl DrawPolygon {
         ]
     }
 
+    #[must_use]
     pub fn quad_attrs(&self) -> [DrawPolygonAttribute; 4] {
         [
             self.attrs[0].clone(),
@@ -278,6 +287,7 @@ pub struct DrawPolygonAttribute {
 /// ```
 #[bitfield(u32, debug)]
 #[derive(Default)]
+#[must_use]
 pub struct DrawPolygonHeader {
     #[bits(0..=23, rw)]
     color: u24,
@@ -296,10 +306,12 @@ pub struct DrawPolygonHeader {
 }
 
 impl DrawPolygonHeader {
+    #[must_use]
     pub fn modulation(&self) -> bool {
         self.textured() && (!self.raw()) && (self.shading() == Shading::Gouraud)
     }
 
+    #[must_use]
     pub fn goraud(&self) -> bool {
         matches!(self.shading(), Shading::Gouraud)
     }
@@ -424,9 +436,9 @@ impl DrawCallDecoder for DrawPolygonDecoder {
                     Err(DrawPolygon {
                         header:  self.header,
                         clut:    self.attrs[0].uv.unwrap_or_default().extra_as_clut(),
-                        texpage: TexpageCmd::new_with_raw_value(
-                            self.attrs[1].uv.unwrap_or_default().extra as u32,
-                        ),
+                        texpage: TexpageCmd::new_with_raw_value(u32::from(
+                            self.attrs[1].uv.unwrap_or_default().extra,
+                        )),
                         attrs:   self.attrs,
                     })
                 } else {
@@ -460,12 +472,13 @@ impl DrawPolygonAttributeDecoder {
 }
 
 impl DrawPolygonDecoder {
+    #[must_use]
     pub fn new(value: u32) -> Self {
         let header = DrawPolygonHeader::new_with_raw_value(value);
         let current_attr = DrawPolygonAttributeDecoder::from_header(header, true);
         Self {
             header,
-            attrs: Default::default(),
+            attrs: heapless::Vec::default(),
             current_attr,
         }
     }
@@ -509,6 +522,7 @@ pub struct DrawLine {
 /// ```
 #[bitfield(u32, debug)]
 #[derive(Default)]
+#[must_use]
 pub struct DrawLineHeader {
     #[bits(0..=23, rw)]
     rgb:              u24,
@@ -558,6 +572,7 @@ impl DrawCallDecoder for DrawLineAttributeDecoder {
 }
 
 impl DrawLineAttributeDecoder {
+    #[must_use]
     pub const fn from_header(header: DrawLineHeader) -> Self {
         match header.shading() {
             Shading::Flat => Self::Flat,
@@ -594,7 +609,7 @@ impl DrawCallDecoder for DrawLineDecoder {
                 Ok(self)
             }
             Err(attribute) => match (self.header.poly(), self.attrs.len()) {
-                (false, 0) => {
+                (false, 0) | (true, _) => {
                     self.attrs.push(attribute);
                     self.current_attr = DrawLineAttributeDecoder::from_header(self.header);
                     Ok(self)
@@ -607,17 +622,13 @@ impl DrawCallDecoder for DrawLineDecoder {
                     })
                 }
                 (false, _) => unreachable!(),
-                (true, _) => {
-                    self.attrs.push(attribute);
-                    self.current_attr = DrawLineAttributeDecoder::from_header(self.header);
-                    Ok(self)
-                }
             },
         }
     }
 }
 
 impl DrawLineDecoder {
+    #[must_use]
     pub const fn new(header: u32) -> Self {
         let header = DrawLineHeader::new_with_raw_value(header);
         Self {

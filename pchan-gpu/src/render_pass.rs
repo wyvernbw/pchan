@@ -1,3 +1,5 @@
+use core::{mem, ptr, slice};
+
 use crate::{Renderer, Scene};
 use pchan_emu::memory::mb;
 use pchan_utils::tracy;
@@ -5,11 +7,11 @@ use wgpu::util::{BufferInitDescriptor, DeviceExt};
 use wgpu::*;
 
 impl Renderer {
-    pub async fn create_render_pass(&self, scene: Scene) -> RenderPass<'_> {
+    pub fn create_render_pass(&self, scene: Scene) -> RenderPass<'_> {
         let vertex_buf = unsafe {
-            std::slice::from_raw_parts(
-                scene.vertex_buf.as_ptr() as *const u8,
-                std::mem::size_of_val(scene.vertex_buf.as_slice()),
+            slice::from_raw_parts(
+                scene.vertex_buf.as_ptr().cast::<u8>(),
+                mem::size_of_val(scene.vertex_buf.as_slice()),
             )
         };
         let vertex_buffer = self.device.create_buffer_init(&BufferInitDescriptor {
@@ -43,8 +45,8 @@ impl Renderer {
             let display_uniforms = display.to_data();
             let display_uniforms_slice = unsafe {
                 let len = size_of_val(&display_uniforms);
-                let ptr = (&display_uniforms) as *const _ as *const u8;
-                std::slice::from_raw_parts(ptr, len)
+                let ptr = ptr::from_ref(&display_uniforms).cast::<u8>();
+                slice::from_raw_parts(ptr, len)
             };
             self.queue
                 .write_buffer(&self.display_uniform_buffer, 0, display_uniforms_slice);
@@ -64,15 +66,14 @@ pub struct RenderPass<'a> {
     vertex_buf: Buffer,
 }
 
-impl<'a> RenderPass<'a> {
+impl RenderPass<'_> {
     pub fn draw(&mut self, vram: &[u16]) {
         let _draw = tracy::span!("rd-gpu-draw");
         if self.scene.vertex_buf.is_empty() {
             return;
         }
-        let vram_buf = unsafe {
-            std::slice::from_raw_parts(vram.as_ptr() as *const u8, std::mem::size_of_val(vram))
-        };
+        let vram_buf =
+            unsafe { slice::from_raw_parts(vram.as_ptr().cast::<u8>(), mem::size_of_val(vram)) };
 
         {
             let mut dp = self.renderer.display_uniforms.lock().unwrap();

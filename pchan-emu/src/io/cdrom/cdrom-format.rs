@@ -144,7 +144,7 @@ impl FromStr for CueFormat {
         let filename = s
             .strip_prefix(r#"""#)
             .and_then(|s| {
-                let quote_end = s.find(r#"""#)?;
+                let quote_end = s.find('"')?;
                 Some(&s[..quote_end])
             })
             .ok_or(CueFormatParseErr::ExpectedQuotes)?;
@@ -160,7 +160,7 @@ impl FromStr for CueFormat {
                     .ok_or(CueFormatParseErr::MissingIndexNumber)?;
                 let (min, sec) = index
                     .next()
-                    .map(|time| time.split(":").take(2))
+                    .map(|time| time.split(':').take(2))
                     .and_then(|mut split| split.next().zip(split.next()))
                     .ok_or(CueFormatParseErr::MissingTimestamp)?;
                 let min = min

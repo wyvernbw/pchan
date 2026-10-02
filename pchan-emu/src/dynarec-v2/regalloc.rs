@@ -1,6 +1,6 @@
 use alloc::collections::VecDeque;
 
-use bitvec::prelude as bv;
+use bitvec::prelude::{self as bv};
 use bitvec::view::BitView;
 use bv::Lsb0;
 use derive_more as de;
@@ -39,9 +39,9 @@ pub struct RegAlloc {
 impl Default for RegAlloc {
     fn default() -> Self {
         Self {
-            loaded:    Default::default(),
-            dirty:     Default::default(),
-            allocated: Default::default(),
+            loaded:    bv::BitArray::default(),
+            dirty:     bv::BitArray::default(),
+            allocated: bv::BitArray::default(),
 
             #[cfg(target_arch = "aarch64")]
             allocatable:                                 bv::bitarr![
@@ -90,7 +90,7 @@ impl Default for RegAlloc {
             ],
             mapping: Default::default(),
             reverse_mapping: Default::default(),
-            history: Default::default(),
+            history: VecDeque::default(),
         }
     }
 }
@@ -137,6 +137,7 @@ pub type AllocResult = Result<Allocated, RegAllocError>;
 pub type AllocResultStackless = Result<Allocated, RegAllocErrorStackless>;
 
 impl RegAlloc {
+    #[must_use]
     pub fn first_free(&self) -> Option<Reg> {
         let [allocated] = self.allocated.into_inner();
         let [allocatable] = self.allocatable.into_inner();
@@ -157,6 +158,7 @@ impl RegAlloc {
         None
     }
 
+    #[must_use]
     pub fn allocated_volatile(&self) -> SmallVec<[u8; 32]> {
         let [allocated] = self.allocated.into_inner();
         let [volatile] = self.volatile.into_inner();
@@ -168,16 +170,19 @@ impl RegAlloc {
             .collect()
     }
 
+    #[must_use]
     pub fn is_full(&self) -> bool {
         self.first_free().is_none()
     }
 
+    #[must_use]
     pub fn first_allocatable(&self) -> Reg {
         let [allocatable] = self.allocatable.into_inner();
         let index = allocatable.trailing_zeros() as u8;
         Reg::new(index)
     }
 
+    #[must_use]
     pub fn allocated_guest_to_host(&self, guest_reg: u8) -> Option<Reg> {
         self.mapping[guest_reg as usize]
     }
@@ -185,6 +190,7 @@ impl RegAlloc {
     // # Returns
     // guest index of first allocated low priority.
     // use [`allocated_guest_to_host`] to map to host register.
+    #[must_use]
     pub fn first_allocated_low_priority(&self) -> Option<u8> {
         self.mapping
             .iter()
@@ -270,8 +276,9 @@ impl RegAlloc {
                 let guest_dirty = self.dirty[first_low_prio as usize];
 
                 match (prio, guest_dirty) {
-                    (_, true) => Err(RegAllocError::EvictToMemory(evicted_guest, host_reg)),
-                    (true, false) => Err(RegAllocError::EvictToMemory(evicted_guest, host_reg)),
+                    (_, true) | (true, false) => {
+                        Err(RegAllocError::EvictToMemory(evicted_guest, host_reg))
+                    }
                     (false, false) => Err(RegAllocError::EvictToStack(evicted_guest, host_reg)),
                 }
             }
@@ -280,8 +287,9 @@ impl RegAlloc {
                 let guest_dirty = self.dirty[*evicted_guest as usize];
                 let host = self.alloc(guest_reg, *evicted_host);
                 match (prio, guest_dirty) {
-                    (_, true) => Err(RegAllocError::EvictToMemory(evicted_guest, host)),
-                    (true, false) => Err(RegAllocError::EvictToMemory(evicted_guest, host)),
+                    (_, true) | (true, false) => {
+                        Err(RegAllocError::EvictToMemory(evicted_guest, host))
+                    }
                     (false, false) => Err(RegAllocError::EvictToStack(evicted_guest, host)),
                 }
             }
@@ -358,19 +366,23 @@ impl Reg {
     const DELAY_1: Self = Reg::W(28);
     const DELAY_2: Self = Reg::W(27);
 
+    #[must_use]
     pub const fn new(idx: u8) -> Self {
         Self::W(idx)
     }
 
+    #[must_use]
     pub const fn to_idx(self) -> u8 {
         self.into()
     }
 
+    #[must_use]
     pub fn consecutive(self: Reg, b: Reg) -> bool {
         let Reg::W(w) = self;
         b == Reg::W(w + 1)
     }
 
+    #[must_use]
     pub fn caller_saved(&self) -> bool {
         matches!(self, Reg::W(19..=31))
     }
