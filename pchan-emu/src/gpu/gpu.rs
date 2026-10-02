@@ -95,7 +95,7 @@ impl Default for GpuState {
 }
 
 pub fn create_vram() -> Box<[u16]> {
-    vec![0; mb(1)].into_boxed_slice()
+    vec![0; mb(1) / 2].into_boxed_slice()
 }
 
 fn mask_bit(value: u16) -> bool {
@@ -550,10 +550,10 @@ impl Emu {
     }
 }
 
-struct Read;
-struct ReadWrite;
+pub struct Read;
+pub struct ReadWrite;
 
-trait VramAccessType {
+pub trait VramAccessType {
     type VramRef<'a>;
     type SignalRef<'a>;
 }
@@ -567,7 +567,7 @@ impl VramAccessType for ReadWrite {
     type SignalRef<'a> = &'a mut bool;
 }
 
-struct VramGuard<'a, T: VramAccessType> {
+pub struct VramGuard<'a, T: VramAccessType> {
     vram:   T::VramRef<'a>,
     signal: T::SignalRef<'a>,
 }
@@ -626,7 +626,7 @@ impl GpuState {
         )
     }
 
-    fn lock_vram(&mut self) -> VramGuard<'_, Read> {
+    pub fn lock_vram(&mut self) -> VramGuard<'_, Read> {
         self.vram_flush_render();
         VramGuard {
             vram:   &self.vram,

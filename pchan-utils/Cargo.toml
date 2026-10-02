@@ -16,7 +16,7 @@ tracing = { workspace = true }
 const-hex.workspace = true
 heapless = "0.9.3"
 kanal.workspace = true
-tracy-client = { version = "0.18.4", optional = true, default-features = false }
+tracy-client = { version = "0.19.0", optional = true, default-features = false }
 
 [dev-dependencies]
 pretty_assertions = {version = "1.4.1", features = ["unstable"]}

@@ -1,7 +1,8 @@
-#![feature(generic_const_exprs)]
+#![feature(const_destruct)]
+#![feature(const_trait_impl)]
 #![allow(incomplete_features)]
 
-use std::backtrace::Backtrace;
+use std::fmt::Display;
 use std::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use kanal::{AsyncReceiver, AsyncSender, Receiver, Sender};
@@ -209,26 +210,58 @@ macro_rules! array {
 
 use std::mem::size_of;
 
-#[derive(derive_more::Deref, derive_more::Display)]
-#[display("{}", self.0.as_str())]
-pub struct Hex<const N: usize, const PREFIX: bool>(const_hex::Buffer<N, PREFIX>);
+const PTR_SIZE: usize = size_of::<usize>();
 
-pub fn hex<T>(x: T) -> Hex<{ size_of::<T>() }, true> {
+pub struct Hex<const PREFIX: bool> {
+    buf: [u8; PTR_SIZE * 2],
+    len: usize,
+}
+
+pub fn hex<T>(x: T) -> Hex<true> {
     hex_pref::<T, true>(x)
 }
 
-pub fn hex_pref<T, const PREFIX: bool>(mut x: T) -> Hex<{ size_of::<T>() }, PREFIX> {
+pub fn hex_pref<T, const PREFIX: bool>(mut x: T) -> Hex<PREFIX> {
+    assert_hex_size::<T>();
+
     let ptr = &mut x as *mut T as *mut u8;
 
     // SAFETY: should always be valid since size_of::<T> is enforced
     // at compile time
-    let bytes = unsafe { &mut *ptr.cast::<[u8; size_of::<T>()]>() };
+    let value = unsafe { core::slice::from_raw_parts_mut(ptr, size_of_val(&x)) };
 
     if cfg!(target_endian = "little") {
-        bytes.reverse();
+        value.reverse();
     }
+    let mut bytes = [0u8; PTR_SIZE];
+    bytes[..size_of::<T>()].copy_from_slice(value);
 
-    Hex(const_hex::const_encode::<_, PREFIX>(bytes))
+    let mut sink = [b'0'; PTR_SIZE * 2];
+    // should not error
+    let _ = const_hex::encode_to_slice(bytes, &mut sink).expect("whatt");
+    Hex {
+        buf: sink,
+        len: size_of::<T>() * 2,
+    }
+}
+
+impl<const PREFIX: bool> Display for Hex<PREFIX> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let str = unsafe { str::from_utf8_unchecked(&self.buf[..self.len]) };
+        match PREFIX {
+            true => {
+                write!(f, "0x{str}")
+            }
+            false => write!(f, "{str}"),
+        }
+    }
+}
+
+const fn assert_hex_size<T>() {
+    assert!(
+        size_of::<T>() <= PTR_SIZE,
+        "value passed to hex function is bigger than the pointer size."
+    )
 }
 
 #[cfg(test)]

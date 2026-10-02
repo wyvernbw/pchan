@@ -17,19 +17,19 @@ pchan-bind.workspace = true
 kanal.workspace = true
 arbitrary-int.workspace = true
 bitbybit.workspace = true
-bitvec = "1.0.1"
+bitvec = "1.1.1"
 byteorder = "1.5.0"
 derive_more = { version = "2.1.1", features = ["add", "debug", "deref", "display", "full"] }
-dynasm = "5.0.0"
-dynasmrt = "5.0.0"
+dynasm = "5.1.0"
+dynasmrt = "5.1.0"
 enum_dispatch = "0.3.13"
 heapless = "0.9.3"
-rapidhash = { version = "4.4.1", features = ["nightly"] }
+rapidhash = { version = "4.5.1", features = ["nightly"] }
 smallbox = { version = "0.8.8", features = ["nightly"] }
-smallvec = { version = "1.15.1", features = ["const_new"] }
-strum = { version = "0.27.2", features = ["derive"] }
-thiserror = "2.0.18"
-glam = "0.32.1"
+smallvec = { version = "1.16.1", features = ["const_new"] }
+strum = { version = "0.28.0", features = ["derive"] }
+thiserror = "2.0.21"
+glam = "0.33.9"
 slab = "*"
 
 [dev-dependencies]

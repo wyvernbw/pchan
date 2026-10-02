@@ -5,6 +5,7 @@ use pchan_utils::tracy::TracyClient;
 pub(crate) mod render_pass;
 
 use std::mem::offset_of;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -16,6 +17,7 @@ use pchan_emu::gpu::draw_call::{
 use pchan_emu::gpu::{Conn, DrawPixels, GpuStatReg, IVramCoord, TextureColorMode, VramCoord};
 use thiserror::Error;
 use tracing::Level;
+pub use wgpu;
 use wgpu::*;
 
 #[derive(Debug)]
@@ -25,6 +27,7 @@ pub struct Renderer {
     pub device: Device,
     pub queue: Queue,
     pub tracy: TracyClient,
+    reset_flag: AtomicBool,
 
     pipeline_layout: PipelineLayout,
     render_pipeline: RenderPipeline,
@@ -336,7 +339,13 @@ impl Renderer {
             display_uniforms: Mutex::new(DisplayUniforms::default()),
             display_format,
             tracy: TracyClient::default(),
+            reset_flag: AtomicBool::new(false),
         })
+    }
+
+    pub fn reset(&self) {
+        self.reset_flag
+            .store(true, std::sync::atomic::Ordering::Release);
     }
 
     pub async fn try_new() -> Result<Self, InitError> {
@@ -360,7 +369,8 @@ impl Renderer {
         let (device, queue) = adapter
             .request_device(&DeviceDescriptor {
                 label: None,
-                required_features: Features::default(),
+                required_features: Features::default()
+                    | Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES,
                 required_limits: Limits::defaults(),
                 experimental_features: ExperimentalFeatures::disabled(),
                 memory_hints: MemoryHints::Performance,
@@ -381,8 +391,19 @@ impl Renderer {
         Self::try_new().await.unwrap()
     }
 
-    pub fn connect_emu(&mut self, emu: &mut Emu) {
+    pub fn connect_emu(&self, emu: &mut Emu) {
         emu.gpu.conn = self.conn.clone();
+    }
+
+    fn consume_reset(&self) -> bool {
+        self.reset_flag
+            .compare_exchange(
+                true,
+                false,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Relaxed,
+            )
+            .is_ok()
     }
 
     pub fn start(self: Arc<Self>) {
@@ -413,7 +434,11 @@ impl Renderer {
                                 tracing::warn!("render error: {}", err);
                             };
                             let elapsed = now.elapsed().as_millis_f32();
-                            _ = self.conn.vram_out_chan.0.send(vram).await;
+
+                            if !self.consume_reset() {
+                                _ = self.conn.vram_out_chan.0.send(vram).await;
+                            }
+
                             tracing::info!("finished render ({elapsed:01.2}ms)");
                         }
                         Err(err) => {

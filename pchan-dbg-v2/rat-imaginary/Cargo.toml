@@ -5,10 +5,10 @@ edition = "2024"
 
 [dependencies]
 kittage = { path = "./kittage", version = "0.4.0", default-features = false }
-ratatui = { version = "0.30.0", default-features = false }
-thiserror = { version = "2.0.18", default-features = false }
+ratatui = { version = "0.30.2", default-features = false }
+thiserror = { version = "2.0.21", default-features = false }
 
 [dev-dependencies]
 crossterm = "0.29.0"
-ratatui = "0.30.0"
+ratatui = "0.30.2"
 image = { version = "*", default-features = false }
