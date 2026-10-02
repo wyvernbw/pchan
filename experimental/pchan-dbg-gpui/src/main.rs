@@ -16,6 +16,7 @@ use core::num::ParseIntError;
 use core::ops::Range;
 use core::time::Duration;
 use core::{fmt, mem};
+use pchan_emu::debug::{Breakpoint, BreakpointKind};
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -23,7 +24,7 @@ use bumpalo::Bump;
 use gpui::prelude::*;
 use gpui::{AppContext, Render, *};
 use gpui_base::{Disableable, IndexPath, TextSelectionLayer};
-use gpui_component::button::{Button, ButtonVariants};
+use gpui_component::button::{Button, ButtonVariants, Toggle, ToggleVariants};
 use gpui_component::checkbox::Checkbox;
 use gpui_component::collapsible::Collapsible;
 use gpui_component::input::{Input, InputState};
@@ -367,6 +368,13 @@ impl Debugger {
 
                             while !emucx.emu.consume_vblank_signal() {
                                 emucx.runner.execute(&mut emucx.emu);
+                                if emucx
+                                    .emu
+                                    .dbg
+                                    .break_on(emucx.emu.cpu.pc, BreakpointKind::EXECUTE)
+                                {
+                                    emucx.running = false;
+                                }
                             }
 
                             surface_state.wait_for_display_draw(&emucx.renderer);
@@ -708,9 +716,7 @@ impl Debugger {
                         panel(&theme)
                             .v_flex()
                             .flex_grow_1()
-                            .w(rems(28.))
-                            .max_w(rems(28.))
-                            .min_w_0()
+                            .min_w(rems(24.))
                             .when(self.exec_control_panel_open, |this| this.min_h_full())
                             .gap_2()
                             .child(
@@ -774,7 +780,8 @@ impl Debugger {
                                 )
                                 .child(surface),
                         )
-                    }),
+                    })
+                    .child(self.breakpoints(win, cx, &theme).min_w(rems(20.)).h_full()),
             )
             // bottom panel
             .child(
@@ -851,6 +858,159 @@ impl Debugger {
                                     .child(self.mem_inspector(cx, &theme)),
                             ),
                     ),
+            )
+    }
+
+    fn breakpoints(
+        &self,
+        win: &mut Window,
+        cx: &mut Context<Self>,
+        theme: &Theme,
+    ) -> impl IntoElement + Styled {
+        fn bp_toggle(
+            id: impl Into<ElementId>,
+            address: u32,
+            kind: BreakpointKind,
+            bp: Breakpoint,
+            label: &'static str,
+            cx: &Context<Debugger>,
+        ) -> Toggle {
+            Toggle::new(id)
+                .checked(bp.kind.contains(kind))
+                .label(label)
+                .aspect_square()
+                .min_w_0()
+                .w_8()
+                .outline()
+                .flex_grow_0()
+                .on_click(cx.listener(move |view, ev, _, cx| {
+                    view.emucx.update(cx, |emucx, _| {
+                        let Some(bp) = emucx.emu.dbg.breakpoints.get_mut(&address) else {
+                            return;
+                        };
+                        match *ev {
+                            true => {
+                                bp.kind |= kind;
+                            }
+                            false => {
+                                bp.kind = bp.kind.difference(kind);
+                            }
+                        }
+                    })
+                }))
+        }
+
+        let add_bp_input = win.use_state(cx, |win, cx| {
+            InputState::new(win, cx).placeholder("Add breakpoint...")
+        });
+
+        let emucx = self.emucx.clone();
+        win.use_state(cx, {
+            let add_bp_input = add_bp_input.clone();
+            move |win, cx| {
+                use gpui_component::input::InputEvent;
+
+                cx.subscribe_in(
+                    &add_bp_input,
+                    win,
+                    move |(), state, ev: &InputEvent, win, cx| {
+                        let _ = state.update(cx, |state, cx| -> miette::Result<()> {
+                            let InputEvent::PressEnter { .. } = ev else {
+                                return Ok(());
+                            };
+                            let address = parse_hex_word(&state.value()).into_diagnostic()?;
+                            let address = address & 0x1fff_ffff;
+                            state.clean(win, cx);
+
+                            emucx.update(cx, |emucx, _| {
+                                emucx.emu.dbg.breakpoints.insert(
+                                    address,
+                                    Breakpoint {
+                                        address,
+                                        kind: BreakpointKind::EXECUTE,
+                                        enabled: true,
+                                    },
+                                )
+                            });
+                            Ok(())
+                        });
+                    },
+                )
+                .detach();
+            }
+        });
+        let breakpoints = self
+            .emucx
+            .read(cx)
+            .emu
+            .dbg
+            .breakpoints
+            .iter()
+            .map(|(address, bp)| {
+                let address = *address;
+                let idn = u64::from(address);
+                panel(theme)
+                    .h_flex()
+                    .gap_2()
+                    .child(
+                        div()
+                            .child(SharedString::from(hex(address).as_str()))
+                            .font_family(&theme.mono_font_family),
+                    )
+                    .child(bp_toggle(
+                        ElementId::NamedInteger("bp-read".into(), idn),
+                        address,
+                        BreakpointKind::READ,
+                        *bp,
+                        "R",
+                        cx,
+                    ))
+                    .child(bp_toggle(
+                        ElementId::NamedInteger("bp-write".into(), idn),
+                        address,
+                        BreakpointKind::WRITE,
+                        *bp,
+                        "W",
+                        cx,
+                    ))
+                    .child(bp_toggle(
+                        ElementId::NamedInteger("bp-execute".into(), idn),
+                        address,
+                        BreakpointKind::EXECUTE,
+                        *bp,
+                        "X",
+                        cx,
+                    ))
+                    .child(div().flex_grow_1())
+                    .child(
+                        Button::new(ElementId::NamedInteger("bp-delete".into(), idn))
+                            .outline()
+                            .icon(IconName::Close)
+                            .on_click(cx.listener(move |state, _, _, cx| {
+                                state.emucx.update(cx, |emucx, _| {
+                                    emucx.emu.dbg.remove_breakpoint(address);
+                                })
+                            })),
+                    )
+            });
+        panel(theme)
+            .v_flex()
+            .gap_2()
+            .child(
+                div()
+                    .child("Breakpoints")
+                    .text_color(theme.muted_foreground),
+            )
+            .child(Input::new(&add_bp_input))
+            .child(
+                div()
+                    .v_flex()
+                    .gap_2()
+                    .w_full()
+                    .h_full()
+                    .overflow_y_scrollbar()
+                    .min_h_0()
+                    .children(breakpoints),
             )
     }
 }
@@ -1002,53 +1162,59 @@ impl Debugger {
             self.pc = pc;
         }
 
-        VirtualList::new(
-            "mips-dump-list",
-            u64::from(u32::MAX) / 4,
-            move |idx, _, cx| {
-                let address_label: SharedString = "mips-dump-address".into();
+        v_flex()
+            .child(sel_text(format!("$pc: {}", hex(pc))).font_family(&theme.mono_font_family))
+            .child(
+                VirtualList::new(
+                    "mips-dump-list",
+                    u64::from(u32::MAX) / 4,
+                    move |idx, _, cx| {
+                        let address_label: SharedString = "mips-dump-address".into();
 
-                let view = entity.read(cx);
-                let addr = idx as u32 * 4;
-                let instr = view.emucx.read(cx).emu.fastmem_read::<OpCode>(addr);
-                let instr = instr
-                    .map(DecodedOp::new)
-                    .map_or(Cow::Borrowed("N/A"), |instr| Cow::Owned(format!("{instr}")));
-                let is_pc = pc & 0x1fff_ffff == addr & 0x1fff_ffff;
-                h_flex()
-                    .w_full()
-                    .whitespace_nowrap()
-                    .overflow_hidden()
-                    .font_family(&theme.mono_font_family)
-                    .bg(theme
-                        .foreground
-                        .opacity(if idx.is_multiple_of(2) { 0.0 } else { 0.08 }))
-                    .child(
-                        sel_text_keyed(
-                            ElementId::NamedInteger(
-                                "mipds-dump-list-address-column".into(),
-                                u64::from(addr),
-                            ),
-                            hex(addr).to_string(),
-                        )
-                        .opacity(0.5),
-                    )
-                    .child(
-                        div()
-                            .text_center()
-                            .min_w_4()
-                            .w_4()
-                            .when(is_pc, |this| this.child(">")),
-                    )
-                    .child(sel_text_keyed(
-                        ElementId::NamedInteger(address_label, idx),
-                        instr,
-                    ))
-                    .when(is_pc, |this| this.text_color(theme.colors.info))
-                    .h_4()
-            },
-        )
-        .track_scroll(&self.mips_dump_scroll_handle)
+                        let view = entity.read(cx);
+                        let addr = idx as u32 * 4;
+                        let instr = view.emucx.read(cx).emu.fastmem_read::<OpCode>(addr);
+                        let instr = instr
+                            .map(DecodedOp::new)
+                            .map_or(Cow::Borrowed("N/A"), |instr| Cow::Owned(format!("{instr}")));
+                        let is_pc = pc & 0x1fff_ffff == addr & 0x1fff_ffff;
+                        h_flex()
+                            .w_full()
+                            .whitespace_nowrap()
+                            .overflow_hidden()
+                            .font_family(&theme.mono_font_family)
+                            .bg(theme.foreground.opacity(if idx.is_multiple_of(2) {
+                                0.0
+                            } else {
+                                0.08
+                            }))
+                            .child(
+                                sel_text_keyed(
+                                    ElementId::NamedInteger(
+                                        "mipds-dump-list-address-column".into(),
+                                        u64::from(addr),
+                                    ),
+                                    hex(addr).to_string(),
+                                )
+                                .opacity(0.5),
+                            )
+                            .child(
+                                div()
+                                    .text_center()
+                                    .min_w_4()
+                                    .w_4()
+                                    .when(is_pc, |this| this.child(">")),
+                            )
+                            .child(sel_text_keyed(
+                                ElementId::NamedInteger(address_label, idx),
+                                instr,
+                            ))
+                            .when(is_pc, |this| this.text_color(theme.colors.info))
+                            .h_4()
+                    },
+                )
+                .track_scroll(&self.mips_dump_scroll_handle),
+            )
     }
 
     fn open_disc_button(cx: &mut Context<Debugger>, _theme: &Theme) -> Button {

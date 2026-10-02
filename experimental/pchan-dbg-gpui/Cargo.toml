@@ -15,7 +15,7 @@ gpui_platform = { package = "gpui_ce_platform", version = "0.1.0", features = ["
 gpui-component = { package = "gpui_ce_components", version = "0.2.0" }
 gpui-base = { package = "gpui_ce_components_base", version = "0.2.0" }
 gpui-kit-assets = { package = "gpui_ce_components_assets", version = "0.2.0" }
-pchan-emu.workspace = true
+pchan-emu = { workspace = true, features = ["debugger-ext"] }
 pchan-gpu.workspace = true
 miette = "7.6.0"
 kanal.workspace = true

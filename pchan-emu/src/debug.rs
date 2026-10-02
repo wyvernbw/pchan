@@ -39,18 +39,31 @@ impl BreakpointKind {
     pub fn contains(self, other: BreakpointKind) -> bool {
         self & other != Self::NONE
     }
+
+    #[must_use]
+    pub fn difference(self, other: BreakpointKind) -> Self {
+        BreakpointKind(self.0 ^ other.0)
+    }
 }
 
 impl DebuggerState {
-    pub fn break_on(&mut self, addr: u32, kind: BreakpointKind) {
+    pub fn break_on(&mut self, addr: u32, kind: BreakpointKind) -> bool {
         if let Some(brk) = self.breakpoints.get(&(addr & 0x1fff_ffff)) {
             if !brk.enabled {
-                return;
+                return self.stopped_on.is_some();
             }
 
             if brk.kind.contains(kind) {
                 self.stopped_on = Some(*brk);
             }
         }
+        self.stopped_on.is_some()
+    }
+
+    pub fn remove_breakpoint(&mut self, addr: u32) {
+        if self.stopped_on.as_ref() == self.breakpoints.get(&addr) {
+            self.stopped_on = None;
+        }
+        self.breakpoints.remove(&addr);
     }
 }
