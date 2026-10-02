@@ -29,3 +29,4 @@ objc2-io-surface = "0.3.2"
 objc2-core-foundation = "0.3.2"
 event-listener = "5.4.2"
 futures-lite = "2.6.1"
+bumpalo = { version = "3.20.3", features = ["allocator_api"] }

@@ -1,6 +1,7 @@
-use std::fmt::Display;
-use std::mem::offset_of;
-use std::ops::{Index, IndexMut};
+use core::fmt;
+use core::fmt::Display;
+use core::mem::offset_of;
+use core::ops::{Index, IndexMut};
 
 use bitbybit::{bitenum, bitfield};
 use derive_more as d;
@@ -33,12 +34,11 @@ pub struct Cpu {
 }
 
 impl Cpu {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 }
-
-use std::fmt;
 
 #[derive(d::Deref, d::DerefMut, d::AsMut, d::AsRef, Hash, Clone)]
 pub struct Regs<const N: usize, const NAMED: bool>([u32; N]);
@@ -202,7 +202,7 @@ impl Cop0StatusReg {
 }
 
 impl Display for Cpu {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let gpr = self
             .gpr
             .iter()

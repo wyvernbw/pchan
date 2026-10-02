@@ -4,6 +4,7 @@
 #[path = "game-surface.rs"]
 pub mod game_surface;
 
+use core::alloc::Allocator;
 use core::cell::RefCell;
 use core::num::ParseIntError;
 use core::ops::Range;
@@ -14,6 +15,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
 
+use bumpalo::Bump;
 use gpui::prelude::*;
 use gpui::{AppContext, Render, *};
 use gpui_base::{Disableable, IndexPath, TextSelectionLayer};
@@ -55,6 +57,7 @@ fn main() -> miette::Result<()> {
     let _profiler = dhat::Profiler::new_heap();
     #[cfg(feature = "dhat-heap")]
     let _profiler_ptr = &_profiler as *const dhat::Profiler as *mut dhat::Profiler;
+    let arena: &'static Bump = Box::leak(Box::new(Bump::new()));
 
     gpui_platform::application()
         .with_assets(PchanAssets::new())
@@ -99,7 +102,7 @@ fn main() -> miette::Result<()> {
                     ..Default::default()
                 },
                 |win, cx| {
-                    let view = Debugger::new(win, cx).unwrap();
+                    let view = Debugger::new(win, cx, arena).unwrap();
                     let view = cx.new(|_| view);
                     let theme = cx.theme().clone();
 
@@ -164,8 +167,8 @@ struct Debugger {
 }
 
 pub struct EmuContext {
-    emu:                Emu,
-    runner:             Runner,
+    emu:                Emu<'static>,
+    runner:             Runner<'static>,
     running:            bool,
     running_notify:     event_listener::Event,
     renderer:           Arc<pchan_gpu::Renderer>,
@@ -235,10 +238,14 @@ use pchan_emu::run::{Runner, RunnerMode};
 use crate::game_surface::{GameSurface, SurfaceState, create_target};
 
 impl Debugger {
-    pub fn new(window: &mut Window, cx: &mut App) -> miette::Result<Self> {
+    pub fn new(
+        window: &mut Window,
+        cx: &mut App,
+        alloc: impl Allocator + 'static,
+    ) -> miette::Result<Self> {
         let mut emu = Emu::new();
         emu.set_bios_path(std::env::var("PCHAN_BIOS").into_diagnostic()?);
-        emu.load_bios().into_diagnostic()?;
+        emu.load_bios(&alloc).into_diagnostic()?;
         emu.cpu.jump_to_bios();
         emu.tty.set_tracing();
 
@@ -416,7 +423,7 @@ impl Debugger {
                         emucx.renderer.reset();
                         emucx.emu = Emu::new();
                         emucx.emu.set_bios_path(bios_path);
-                        emucx.emu.load_bios().into_diagnostic()?;
+                        emucx.emu.load_bios(&alloc).into_diagnostic()?;
                         emucx.emu.gpu.vram = pchan_emu::gpu::create_vram();
                         emucx.emu.cpu.jump_to_bios();
                         emucx.renderer.connect_emu(&mut emucx.emu);

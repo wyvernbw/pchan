@@ -128,7 +128,7 @@ pub struct AdvanceTimerSummary {
     timer_0_new: u16,
 }
 
-impl Emu {
+impl Emu<'_> {
     fn timers_init(&mut self) {
         let timers = self.timers_mut();
         timers.timer_0.irq = Irq::Irq4Timer0;

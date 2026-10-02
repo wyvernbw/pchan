@@ -1,3 +1,5 @@
+use core::ptr;
+
 use crate::Emu;
 use crate::io::UnhandledIO;
 use crate::memory::{MEM_MAP, kb};
@@ -86,7 +88,7 @@ pub fn util_fast_map_address(address: u32) -> Option<u32> {
 
 pub type FastmemResult<T> = Result<T, UnhandledIO>;
 
-impl Emu {
+impl Emu<'_> {
     pub fn fastmem_read<T: Copy>(&self, address: u32) -> FastmemResult<T> {
         let page = address >> 16;
         let offset = address & 0x0000_FFFF;
@@ -98,7 +100,7 @@ impl Emu {
             // fastmem
             Some(region_ptr) => unsafe {
                 let ptr = mem.add(region_ptr as usize).add(offset as usize);
-                Ok(std::ptr::read(ptr as *const T))
+                Ok(ptr::read(ptr as *const T))
             },
             // memcheck
             None => Err(UnhandledIO(address)),
@@ -120,7 +122,7 @@ impl Emu {
             self.dynarec_cache.invalidate(address);
             unsafe {
                 let ptr = mem.add(region_ptr as usize).add(offset as usize);
-                std::ptr::write(ptr as *mut _, value);
+                ptr::write(ptr as *mut _, value);
             }
             Ok(())
         } else {

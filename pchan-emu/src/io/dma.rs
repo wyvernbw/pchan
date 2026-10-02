@@ -66,7 +66,7 @@ impl DmaState {
 /// These ports control DMA at the CPU-side. In most cases, you'll additionally
 /// need to initialize an address (and transfer direction, transfer enabled, etc.)
 /// at the remote-side (eg. at the GPU-side for DMA2).
-impl Emu {
+impl Emu<'_> {
     #[pchan_instrument_read("dma:r")]
     pub fn dma_read<T: Copy>(&self, address: u32) -> IOResult<T> {
         let address = address & 0x1fffffff;
@@ -453,7 +453,7 @@ trait Transfer {
     fn write(&mut self, emu: &mut Emu, address: u32);
     /// device to ram
     fn read(&mut self, emu: &mut Emu, address: u32);
-    fn channel(emu: &mut Emu) -> &mut DmaChannel;
+    fn channel<'a>(emu: &'a mut Emu<'_>) -> &'a mut DmaChannel;
 
     fn write_madr<T: Copy>(emu: &mut Emu, value: T) -> IOResult<()> {
         Self::channel(emu).io_set_madr(value);
@@ -497,7 +497,7 @@ impl Transfer for Dma2Gpu {
         _ = emu.fastmem_write(address, value);
     }
 
-    fn channel(emu: &mut Emu) -> &mut DmaChannel {
+    fn channel<'a>(emu: &'a mut Emu) -> &'a mut DmaChannel {
         &mut emu.dma.dma2
     }
 }
@@ -519,7 +519,7 @@ impl Transfer for Dma3Cdrom {
         tracing::debug!("copied byte {} to memory at {}", hex(value), hex(address));
     }
 
-    fn channel(emu: &mut Emu) -> &mut DmaChannel {
+    fn channel<'a>(emu: &'a mut Emu) -> &'a mut DmaChannel {
         &mut emu.dma.dma3
     }
 }

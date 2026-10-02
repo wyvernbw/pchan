@@ -1,3 +1,5 @@
+use core::{any, mem, ptr};
+
 use arbitrary_int::prelude::*;
 use pchan_utils::hex;
 
@@ -27,7 +29,7 @@ macro_rules! trace_todo {
     }};
 }
 
-impl Emu {
+impl Emu<'_> {
     #[pchan_macros::instrument(level = "trace", "io", skip_all, fields(pc = %hex(self.cpu.pc)))]
     pub fn run_io(&mut self) {
         #[cfg(feature = "amidog-tests")]
@@ -67,7 +69,7 @@ impl Emu {
     }
 }
 
-impl Emu {
+impl Emu<'_> {
     pub fn write_many<T: Copy>(&mut self, mut address: u32, values: &[T]) {
         for value in values.iter().copied() {
             self.write(address, value);
@@ -152,7 +154,7 @@ impl Emu {
 
 pub type IOResult<T> = Result<T, UnhandledIO>;
 
-impl Emu {
+impl Emu<'_> {
     #[pchan_macros::instrument(
         level = "trace",
         skip_all,
@@ -189,7 +191,7 @@ impl Emu {
     }
 }
 
-impl Emu {
+impl Emu<'_> {
     #[pchan_macros::instrument(
         level = "trace",
         skip_all,
@@ -232,7 +234,7 @@ impl Emu {
 #[error("unhandled io at address {}", hex(self.0))]
 pub struct UnhandledIO(#[debug("{}", hex(self.0))] pub u32);
 
-impl Emu {
+impl Emu<'_> {
     pub fn read<T: Copy>(&mut self, address: u32) -> T {
         match self.try_read(address) {
             Ok(value) => value,
@@ -366,7 +368,7 @@ pub trait CastIOInto: Copy {
         );
         let mut buf = original.to_ne_bytes();
         unsafe {
-            std::ptr::copy_nonoverlapping(
+            ptr::copy_nonoverlapping(
                 self as *const Self as *const u8,
                 buf.as_mut_ptr(),
                 size_of::<Self>(),
@@ -384,13 +386,13 @@ impl<T: Copy> CastIOInto for T {}
 
 pub trait CastIOFrom: Copy {
     fn io_from_u32<T>(self) -> T {
-        let typename = std::any::type_name::<T>();
+        let typename = any::type_name::<T>();
         assert!(
             size_of::<T>() <= 4,
             "invalid cast of IO channel value to {typename}. {typename} has size {} >= 4",
             size_of::<T>()
         );
-        unsafe { std::mem::transmute_copy::<Self, T>(&self) }
+        unsafe { mem::transmute_copy::<Self, T>(&self) }
     }
 }
 

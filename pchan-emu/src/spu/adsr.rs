@@ -1,10 +1,7 @@
-use std::{
-    ops::Range,
-    simd::{
-        Select, Simd,
-        cmp::{SimdPartialEq, SimdPartialOrd},
-    },
-};
+use core::ops::Range;
+use core::ptr;
+use core::simd::cmp::{SimdPartialEq, SimdPartialOrd};
+use core::simd::{Select, Simd};
 
 use arbitrary_int::prelude::*;
 use bitbybit::{bitenum, bitfield};
@@ -437,7 +434,7 @@ impl ADSRState {
             let levels = Simd::from_slice(&self.envelopes.level[base..]);
             let sustain_levels = Simd::from_slice(&self.envelopes.sustain_level[base..]);
             let phases = unsafe {
-                std::ptr::read(self.envelopes.phase[base..base + N].as_ptr() as *const Simd<u16, N>)
+                ptr::read(self.envelopes.phase[base..base + N].as_ptr() as *const Simd<u16, N>)
             };
             let is_attack = phases.simd_eq(attack);
             let is_attack_end_level = levels.simd_eq(attack_end_level);
@@ -450,7 +447,7 @@ impl ADSRState {
             let updated = to_sustain.select(sustain, updated);
 
             unsafe {
-                std::ptr::copy_nonoverlapping(
+                ptr::copy_nonoverlapping(
                     updated.as_array() as *const u16,
                     self.envelopes.phase[base..].as_mut_ptr() as *mut u16,
                     N,

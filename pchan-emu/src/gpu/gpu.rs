@@ -1,7 +1,8 @@
 pub mod draw_call;
 
-use std::mem::transmute;
-use std::sync::atomic::AtomicU64;
+use core::mem::{self, transmute};
+use core::sync::atomic::AtomicU64;
+use core::{iter, ops};
 use std::time::Instant;
 
 use arbitrary_int::prelude::*;
@@ -102,7 +103,7 @@ fn mask_bit(value: u16) -> bool {
     value & (1 << 15) != 0
 }
 
-impl Emu {
+impl Emu<'_> {
     #[pchan_macros::instrument(level = "trace", skip(self), "gpu:r")]
     pub fn gpu_read<T: Copy>(&mut self, address: u32) -> IOResult<T> {
         let address = address & 0x1fffffff;
@@ -401,7 +402,7 @@ impl Emu {
             }
             Gp0::DrawPolygonDecode(decoder) => {
                 // we put this back in at the end of the function
-                let decoder = std::mem::take(decoder);
+                let decoder = mem::take(decoder);
 
                 let decoder = decoder.advance(value);
                 match decoder {
@@ -415,7 +416,7 @@ impl Emu {
                 }
             }
             Gp0::DrawLineDecode(decoder) => {
-                let decoder = std::mem::take(decoder);
+                let decoder = mem::take(decoder);
                 let decoder = decoder.advance(value);
                 match decoder {
                     Ok(decoder) => Gp0::DrawLineDecode(decoder),
@@ -673,9 +674,9 @@ impl GpuState {
 
         self.wait_for_render_result();
         tracing::debug!("flushing {} draw calls", self.draw_call_queue.len());
-        let queue = std::mem::take(&mut self.draw_call_queue);
+        let queue = mem::take(&mut self.draw_call_queue);
         // transfer ownership of the vram to the render thread
-        let vram = std::mem::take(&mut self.vram);
+        let vram = mem::take(&mut self.vram);
         let display = self.dp.clone();
         self.conn
             .draw_call_chan
@@ -898,7 +899,7 @@ impl VramCursor {
     }
 
     fn iter(&mut self) -> impl Iterator<Item = VramCoord> {
-        std::iter::from_fn(|| self.next())
+        iter::from_fn(|| self.next())
     }
 }
 
@@ -1106,7 +1107,7 @@ pub enum DrawEvenOdd {
     Odd          = 0x1,
 }
 
-impl std::ops::Not for DrawEvenOdd {
+impl ops::Not for DrawEvenOdd {
     type Output = Self;
 
     fn not(self) -> Self::Output {
@@ -1426,7 +1427,7 @@ pub struct Display {
 /// are not absolute dot positions, but relative timings tied to HSYNC.
 ///
 /// see <https://psx-spx.consoledev.net/graphicsprocessingunitgpu/#gp106h-horizontal-display-range-on-screen>
-impl Emu {
+impl Emu<'_> {
     fn cpu_cycles_to_video_cycles(&mut self, cycles: u64) -> u64 {
         // this might be based on the actual console hardware not on the
         // video mode you set in the gpu

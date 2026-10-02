@@ -3,6 +3,9 @@
 #![allow(long_running_const_eval)]
 #![allow(incomplete_features)]
 #![allow(clippy::collapsible_if)]
+#![allow(clippy::inline_always)]
+#![allow(clippy::missing_errors_doc)]
+#![allow(clippy::missing_panics_doc)]
 // feature flags
 #![feature(arbitrary_self_types_pointers)]
 #![cfg_attr(test, feature(random))]
@@ -25,11 +28,12 @@
 #![feature(arbitrary_self_types)]
 #![feature(alloc_slice_into_array)]
 #![feature(allocator_ext)]
+#![feature(integer_widen_truncate)]
 // allow unused variables in tests to supress the setup tracing warnings
 #![cfg_attr(test, allow(unused_variables))]
-use std::alloc::Global;
-//
 use std::mem::offset_of;
+
+extern crate alloc;
 
 #[cfg(feature = "debugger-ext")]
 use crate::debug::DebuggerState;
@@ -66,11 +70,11 @@ pub mod spu;
 
 #[derive(derive_more::Debug, Clone)]
 #[repr(C)]
-pub struct Emu<A: Allocator> {
+pub struct Emu<'a> {
     pub cpu:           Cpu,
     #[debug(skip)]
-    pub dynarec_cache: DynarecCache<A>,
-    pub mem:           MemoryState<A>,
+    pub dynarec_cache: DynarecCache<'a>,
+    pub mem:           MemoryState<'a>,
     pub boot:          BootloaderState,
     pub tty:           Tty,
     pub gpu:           GpuState,
@@ -96,15 +100,17 @@ pub struct Stats {
 
 use core::alloc::Allocator;
 
-impl<A: Allocator> Emu<A> {
-    const PC_OFFSET: usize = offset_of!(Emu<A>, cpu) + Cpu::PC_OFFSET;
-    const D_CLOCK_OFFSET: usize = offset_of!(Emu<A>, cpu) + Cpu::D_CLOCK_OFFSET;
-    const HILO_OFFSET: usize = offset_of!(Emu<A>, cpu) + Cpu::HILO_OFFSET;
+impl<'a> Emu<'a> {
+    const PC_OFFSET: usize = offset_of!(Emu<'a>, cpu) + Cpu::PC_OFFSET;
+    const D_CLOCK_OFFSET: usize = offset_of!(Emu<'a>, cpu) + Cpu::D_CLOCK_OFFSET;
+    const HILO_OFFSET: usize = offset_of!(Emu<'a>, cpu) + Cpu::HILO_OFFSET;
 
+    #[must_use]
     pub fn reg_offset(reg: u8) -> usize {
         offset_of!(Self, cpu) + Cpu::reg_offset(reg)
     }
 
+    #[allow(clippy::missing_panics_doc)]
     pub fn panic(&self, panic_msg: &str) -> ! {
         self.dma.dump_cdrom_data();
         panic!(
@@ -114,34 +120,35 @@ impl<A: Allocator> Emu<A> {
         )
     }
 
-    pub fn new_in(alloc: &dyn Allocator) -> Self {
+    pub fn new_in(alloc: &'a impl Allocator) -> Self {
         let mut emu = Self {
-            cpu:           Cpu::new(),
+            cpu: Cpu::new(),
             dynarec_cache: DynarecCache::new(alloc),
-            mem:           MemoryState::new(alloc),
-            boot:          BootloaderState::default(),
-            tty:           Tty::default(),
-            gpu:           Default::default(),
-            dma:           Default::default(),
-            timers:        Default::default(),
-            spu:           Default::default(),
-            dbg:           Default::default(),
-            cdrom:         Default::default(),
-            sio:           Default::default(),
-            irq:           Default::default(),
-            evque:         Default::default(),
-            tracy:         Default::default(),
-            stats:         Default::default(),
+            mem: MemoryState::new(alloc),
+            boot: BootloaderState::default(),
+            tty: Tty::default(),
+            gpu: GpuState::default(),
+            dma: DmaState::default(),
+            timers: TimerState::default(),
+            spu: SpuState::default(),
+            #[cfg(feature = "debugger-ext")]
+            dbg: DebuggerState::default(),
+            cdrom: CDRomState::default(),
+            sio: SioState::default(),
+            irq: IrqState::default(),
+            evque: Evque::default(),
+            tracy: TracyClient::default(),
+            stats: Stats::default(),
         };
         emu.handle_ev_spu_clock(io::evque::EvCtx::ZERO);
         emu
     }
 }
 
-impl Emu<std::alloc::Global> {
+impl Emu<'static> {
+    #[must_use]
     pub fn new() -> Self {
-        let emu = Emu::new_in(&std::alloc::Global);
-        emu
+        Emu::new_in(&std::alloc::Global)
     }
 }
 
@@ -161,9 +168,9 @@ impl Stats {
 use pchan_utils::hex;
 use pchan_utils::tracy::TracyClient;
 
-impl<A: Allocator> Emu<A> {
+impl<'a> Emu<'a> {
     #[inline(always)]
-    pub fn mem_mut(&mut self) -> &mut MemoryState<A> {
+    pub fn mem_mut(&mut self) -> &mut MemoryState<'a> {
         &mut self.mem
     }
     #[inline(always)]
@@ -171,7 +178,7 @@ impl<A: Allocator> Emu<A> {
         &self.cpu
     }
     #[inline(always)]
-    pub fn mem(&self) -> &MemoryState<A> {
+    pub fn mem(&self) -> &MemoryState<'_> {
         &self.mem
     }
     #[inline(always)]
@@ -252,7 +259,7 @@ impl<A: Allocator> Emu<A> {
     }
 }
 
-impl Default for Emu<Global> {
+impl Default for Emu<'static> {
     fn default() -> Self {
         Self::new()
     }
@@ -261,13 +268,11 @@ impl Default for Emu<Global> {
 #[cfg(test)]
 pub mod test_utils {
 
-    use std::alloc::Global;
-
     use crate::Emu;
     use rstest::fixture;
 
     #[fixture]
-    pub fn emulator() -> Emu<Global> {
+    pub fn emulator() -> Emu<'static> {
         Emu::new()
     }
 }

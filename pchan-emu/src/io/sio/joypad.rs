@@ -160,7 +160,7 @@ impl DigitalSwitches {
     }
 }
 
-impl Emu {
+impl Emu<'_> {
     pub fn send_input_event(&mut self, event: InputEvent, port: Sio0Port) {
         match event {
             InputEvent::Press(btn) => {

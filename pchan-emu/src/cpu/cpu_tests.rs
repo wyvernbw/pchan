@@ -10,13 +10,13 @@ use rstest::{fixture, rstest};
 use crate::run::{Runner, RunnerConfig, RunnerMode};
 
 #[fixture]
-fn interp() -> Runner {
+fn interp() -> Runner<'static> {
     Runner::new().with_config(RunnerConfig {
         force_mode: Some(RunnerMode::Interpreter),
     })
 }
 #[fixture]
-fn dynarec() -> Runner {
+fn dynarec() -> Runner<'static> {
     Runner::new().with_config(RunnerConfig {
         force_mode: Some(RunnerMode::Dynarec),
     })
@@ -33,7 +33,7 @@ fn test_bltzal_bgezal(#[values(dynarec(), interp())] mut runner: Runner) {
     setup_tracing();
     tracing::info!(bltzal =?DecodedOp::new(bltzal(8, 0x100)));
     {
-        let mut emu = Emu::new();
+        let mut emu = Emu::default();
         emu.cpu.pc = 0x0;
         emu.write_many(
             0x0,

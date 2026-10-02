@@ -70,7 +70,7 @@ impl IrqState {
     }
 }
 
-impl Emu {
+impl Emu<'_> {
     pub fn irq_trigger(&mut self, irq: Irq) {
         self.irq_mut().irq_trigger(irq);
         self.run_irq_io();

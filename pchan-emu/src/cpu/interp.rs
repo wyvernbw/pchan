@@ -3,7 +3,7 @@ use pchan_utils::hex;
 use crate::Emu;
 use crate::cpu::RA;
 use crate::cpu::exceptions::Exception;
-use crate::cpu::ops::*;
+use crate::cpu::ops::{Nop, OpCode};
 use crate::dynarec_v2::emitters::{DecodedOp, DynarecOp};
 use crate::memory::ext;
 
@@ -73,9 +73,9 @@ impl Interpreter {
     }
 
     fn run_delay_slots(&mut self, emu: &mut Emu) {
-        emu.run_op_delay_slot(std::mem::replace(&mut self.delay_queue[0], DelaySlot::Nop));
+        emu.run_op_delay_slot(core::mem::replace(&mut self.delay_queue[0], DelaySlot::Nop));
         self.delay_queue.swap(0, 1);
-        debug_assert!(self.delay_queue[1] == DelaySlot::Nop);
+        debug_assert_eq!(self.delay_queue[1], DelaySlot::Nop);
     }
 
     pub fn run_instruction(&mut self, emu: &mut Emu) -> (InterpreterResult, u32, DecodedOp) {
@@ -139,7 +139,7 @@ impl Interpreter {
     }
 }
 
-impl Emu {
+impl Emu<'_> {
     pub(super) fn set_reg(&mut self, idx: u8, value: u32) {
         self.cpu.gpr[idx as usize] = value;
     }

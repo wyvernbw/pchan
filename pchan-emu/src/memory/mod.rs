@@ -24,12 +24,12 @@ pub fn buffer<A: Allocator>(size: usize, alloc: A) -> Box<[u8], A> {
     unsafe { Box::new_zeroed_slice_in(size, alloc).assume_init() }
 }
 
-pub type Buffer<A: Allocator> = Box<[u8], A>;
+pub type Buffer<'a> = Box<[u8], &'a dyn Allocator>;
 
 #[derive(derive_more::Debug, Clone)]
 #[debug("memory:{}kb", MEM_SIZE/1024)]
-pub struct MemoryState<A: Allocator> {
-    pub buf: Buffer<A>,
+pub struct MemoryState<'a> {
+    pub buf: Buffer<'a>,
 }
 
 pub struct MemMap {
@@ -67,10 +67,10 @@ static MEM_SIZE: usize = kb(2048 + 8192) + kb(1) + kb(8) + kb(8) + kb(2048) + kb
 // const MEM_SIZE: usize = 600 * 1024 * 1024;
 static MEM_KB: usize = from_kb(MEM_SIZE) + 1;
 
-impl<A: Allocator> MemoryState<A> {
-    pub fn new(alloc: A) -> Self {
+impl<'a> MemoryState<'a> {
+    pub fn new(alloc: &'a impl Allocator) -> Self {
         Self {
-            buf: buffer(MEM_SIZE, alloc),
+            buf: buffer(MEM_SIZE, alloc as &'a dyn Allocator),
         }
     }
     #[inline(always)]
@@ -97,7 +97,7 @@ impl<A: Allocator> MemoryState<A> {
     }
 }
 
-impl Emu {
+impl<'a> Emu<'a> {
     #[pchan_macros::instrument(
         level = "trace",
         skip_all,

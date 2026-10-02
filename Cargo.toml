@@ -27,6 +27,8 @@ pedantic = { level = "warn", priority = -1 }
 std_instead_of_core = "deny"
 std_instead_of_alloc = "deny"
 unreadable-literal = "allow"
+match-bool = "allow"
+too-many-lines = "allow"
 
 [workspace.dependencies]
 arbitrary-int = "2.2.0"

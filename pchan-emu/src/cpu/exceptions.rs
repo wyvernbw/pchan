@@ -59,7 +59,7 @@ pub enum Exception {
     RI        = 0xa,
 }
 
-impl<A: Allocator> Emu<A> {
+impl<'a> Emu<'a> {
     fn handle_exception(&mut self, exception: Exception) {
         let mut sr = Cop0StatusReg::new_with_raw_value(self.cpu().cop0.reg[12]);
         if !sr.iec() && exception == Exception::Interrupt {

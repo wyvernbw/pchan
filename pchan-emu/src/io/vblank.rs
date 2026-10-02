@@ -5,7 +5,7 @@ use crate::io::irq::Irq;
 pub const CPU_FREQ: u32 = 33_868_800;
 pub const NTSC_CYCLES: u32 = CPU_FREQ / 60;
 
-impl Emu {
+impl Emu<'_> {
     #[deprecated]
     fn run_poll_vblank(&mut self) {
         let even_odd = self.gpu().gpustat.even_odd_in_vblank();
@@ -37,7 +37,7 @@ impl Emu {
 
         self.gpu_mut().flip_even_odd(Some(even_odd));
 
-        VBLANK_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        VBLANK_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     }
 
     #[inline(always)]

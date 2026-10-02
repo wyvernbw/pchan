@@ -1,3 +1,5 @@
+use core::cmp;
+
 use heapless::BinaryHeap;
 use heapless::binary_heap::Min;
 
@@ -43,13 +45,13 @@ impl<T> Default for Evque<T> {
 }
 
 impl<T: ?Sized> Ord for PchanEvent<T> {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+    fn cmp(&self, other: &Self) -> cmp::Ordering {
         self.at_cycle.cmp(&other.at_cycle)
     }
 }
 
 impl<T: ?Sized> PartialOrd for PchanEvent<T> {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
@@ -62,7 +64,7 @@ impl<T: ?Sized> PartialEq for PchanEvent<T> {
 
 impl<T: ?Sized> Eq for PchanEvent<T> {}
 
-impl Emu {
+impl Emu<'_> {
     pub fn evque_advance(&mut self, d_clock: u64) {
         self.evque_mut().clock = self.evque_mut().clock.wrapping_add(d_clock);
         let clock = self.cpu().cycles;

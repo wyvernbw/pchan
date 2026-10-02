@@ -1,4 +1,4 @@
-use std::mem::transmute;
+use core::mem::transmute;
 
 use crate::gpu::{DrawPixels, GpuStatReg, IVramCoord, TexpageCmd, VramCoord};
 use crate::io::CastIOInto;

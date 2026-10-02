@@ -1,13 +1,13 @@
+use alloc::borrow::Cow;
+use alloc::string::FromUtf8Error;
 use byteorder::{LE, ReadBytesExt};
 use core::alloc::Allocator;
+use core::marker::PhantomData;
 use pchan_macros::instrument;
 use pchan_utils::hex;
-use std::borrow::Cow;
 use std::fs;
 use std::io::{BufRead, Cursor, Read};
-use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
-use std::string::FromUtf8Error;
 use thiserror::Error;
 
 use crate::memory::{GUEST_MEM_MAP, MEM_MAP, buffer, from_kb, kb};
@@ -45,11 +45,11 @@ pub enum BootError {
     SideloadErr(#[from] ExeHeaderParseErr),
 }
 
-impl<A: Allocator> Emu<A> {
+impl Emu<'_> {
     pub fn set_bios_path(&mut self, path: impl AsRef<Path>) {
         self.bootloader_mut().bios_path = path.as_ref().to_path_buf();
     }
-    pub fn load_bios(&mut self, alloc: A) -> Result<(), BootError> {
+    pub fn load_bios(&mut self, alloc: &impl Allocator) -> Result<(), BootError> {
         let mut bios_file =
             fs::File::open(&self.bootloader().bios_path).map_err(BootError::BiosFileOpenError)?;
         let mut bios = buffer(kb(524), alloc);
@@ -168,7 +168,7 @@ pub struct ExeHeader {
 
 fn ascii_str(buf: &[u8]) -> &str {
     debug_assert!(buf.is_ascii());
-    std::str::from_utf8(buf).unwrap_or("invalid utf8")
+    core::str::from_utf8(buf).unwrap_or("invalid utf8")
 }
 
 #[derive(Debug, Error)]

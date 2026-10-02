@@ -7,7 +7,7 @@ mod cdrom_format;
 #[path = "./cdrom-ver.rs"]
 mod cdrom_ver;
 
-use std::collections::VecDeque;
+use alloc::collections::VecDeque;
 
 use crate::io::cdrom::cdrom_cmds::{CdromResponse, Response};
 use crate::io::cdrom::cdrom_drive::{CdromDrive, CommandState};
@@ -61,7 +61,7 @@ enum DriveStatus {
 /// - [x] W CD cmd reg
 /// - [x] R CD Irq flag
 /// - [x] R res fifo
-impl Emu {
+impl Emu<'_> {
     #[pchan_macros::pchan_instrument_write]
     pub fn cdrom_write<T: Copy>(&mut self, address: u32, value: T) -> Result<(), UnhandledIO> {
         let address = address & 0x1fffffff;
@@ -240,12 +240,12 @@ impl Emu {
     }
 }
 
-struct CdromScheduler<'a> {
-    evque:     &'a mut Evque<Emu>,
+struct CdromScheduler<'a, 'e> {
+    evque:     &'a mut Evque<Emu<'e>>,
     responses: &'a mut Slab<Response>,
 }
 
-impl<'a> CdromScheduler<'a> {
+impl CdromScheduler<'_, '_> {
     fn schedule(&mut self, in_cycles: u64, res: Response) {
         let res = self.responses.insert(res);
         self.evque

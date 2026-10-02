@@ -1,3 +1,8 @@
+use alloc::sync::Arc;
+use core::cell::Cell;
+use core::ptr::NonNull;
+use core::sync::atomic::{AtomicU64, Ordering};
+use core::{cmp, iter, mem};
 use derive_more as d;
 use dynasm::dynasm;
 use dynasmrt::{Assembler, DynasmApi, DynasmLabelApi, ExecutableBuffer};
@@ -5,13 +10,8 @@ use heapless::binary_heap::Min;
 use pchan_utils::{default, hex, max_simd_elements};
 use smallbox::SmallBox;
 use smallvec::SmallVec;
-use std::alloc::Global;
-use std::cell::Cell;
 use std::collections::HashSet;
-use std::ptr::NonNull;
 use std::simd::Simd;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use thiserror::Error;
 use tracing::{Instrument, Level, enabled};
 
@@ -44,8 +44,9 @@ pub fn cache_hitrate() -> f32 {
 
 #[cfg(feature = "fetch-channel")]
 pub mod fetch_map {
+    use alloc::sync::Arc;
     use std::collections::HashMap;
-    use std::sync::{Arc, LazyLock, RwLock};
+    use std::sync::{LazyLock, RwLock};
 
     use crate::dynarec_v2::emitters::DecodedOp;
 
@@ -66,36 +67,46 @@ type Reloc = dynasmrt::aarch64::Aarch64Relocation;
 #[cfg(target_arch = "x86_64")]
 type Reloc = dynasmrt::x64::X64Relocation;
 
-type DynEmitter<A: Allocator> = SmallBox<dyn Fn(EmitCtx<A>) -> EmitSummary, [usize; 1]>;
+type DynEmitter = SmallBox<dyn for<'a, 'd> Fn(EmitCtx<'a, 'd>) -> EmitSummary, [usize; 1]>;
 
 #[derive(derive_more::Debug)]
-pub struct Dynarec<A: Allocator = Global> {
+pub struct Dynarec<'a> {
     pub(crate) reg_alloc:  RegAlloc,
-    pub(crate) scheduler:  Box<Scheduler<A>, A>,
+    pub(crate) scheduler:  Box<Scheduler, &'a dyn Allocator>,
     pub last_ran_function: Option<DynarecFunction>,
     #[debug(skip)]
     asm:                   Assembler<Reloc>,
 }
 
-#[derive(Default)]
-pub struct CreateDynarecParams<A: Allocator> {
+pub struct CreateDynarecParams<'a> {
     reg_alloc: Option<RegAlloc>,
-    scheduler: Option<Box<Scheduler<A>, A>>,
+    scheduler: Option<Box<Scheduler, &'a dyn Allocator>>,
     asm:       Option<Assembler<Reloc>>,
-    alloc:     A,
+    alloc:     &'a dyn Allocator,
 }
 
-unsafe impl<A: Allocator> Send for Dynarec<A> {}
-unsafe impl<A: Allocator> Sync for Dynarec<A> {}
+impl<'a> CreateDynarecParams<'a> {
+    pub fn new(alloc: &'a impl Allocator) -> Self {
+        Self {
+            reg_alloc: None,
+            scheduler: None,
+            asm: None,
+            alloc,
+        }
+    }
+}
 
-impl<A: Allocator> Dynarec<A> {
+unsafe impl<'a> Send for Dynarec<'a> {}
+unsafe impl<'a> Sync for Dynarec<'a> {}
+
+impl<'a> Dynarec<'a> {
     pub fn new(
         CreateDynarecParams {
             reg_alloc,
             scheduler,
             asm,
             alloc,
-        }: CreateDynarecParams<A>,
+        }: CreateDynarecParams<'a>,
     ) -> Self {
         let reg_alloc = reg_alloc.unwrap_or_default();
         let scheduler = scheduler.unwrap_or_else(|| Box::new_in(Scheduler::default(), alloc));
@@ -110,7 +121,7 @@ impl<A: Allocator> Dynarec<A> {
         }
     }
 
-    pub fn reset(&mut self, alloc: A) {
+    pub fn reset(&mut self, alloc: &'a impl Allocator) {
         self.reg_alloc = default();
         self.scheduler = Box::new_in(Scheduler::default(), alloc);
         self.asm =
@@ -120,7 +131,7 @@ impl<A: Allocator> Dynarec<A> {
 
 #[derive(Debug, Clone)]
 pub struct DynarecFunction {
-    pub func: fn(*mut Emu),
+    pub func: fn(*mut Emu<'_>),
     pub exec: Arc<ExecutableBuffer>,
 }
 
@@ -131,7 +142,7 @@ pub struct DynarecBlock {
     pub(crate) op_count: u32,
 }
 
-type DynarecBlockArgs<'a> = (&'a mut Emu, bool);
+type DynarecBlockArgs<'a, 'e> = (&'a mut Emu<'e>, bool);
 
 impl DynarecBlock {
     pub fn call_block(&self, (emu, instrument): DynarecBlockArgs) {
@@ -178,20 +189,20 @@ impl DynarecBlock {
     }
 }
 
-impl FnMut<DynarecBlockArgs<'_>> for DynarecBlock {
+impl FnMut<DynarecBlockArgs<'_, '_>> for DynarecBlock {
     extern "rust-call" fn call_mut(&mut self, args: DynarecBlockArgs) -> Self::Output {
         self.call_block(args)
     }
 }
 
-impl FnOnce<DynarecBlockArgs<'_>> for DynarecBlock {
+impl FnOnce<DynarecBlockArgs<'_, '_>> for DynarecBlock {
     type Output = ();
     extern "rust-call" fn call_once(mut self, args: DynarecBlockArgs) -> Self::Output {
         self.call_mut(args)
     }
 }
 
-impl Fn<DynarecBlockArgs<'_>> for DynarecBlock {
+impl Fn<DynarecBlockArgs<'_, '_>> for DynarecBlock {
     extern "rust-call" fn call(&self, args: DynarecBlockArgs) -> Self::Output {
         self.call_block(args);
     }
@@ -205,11 +216,11 @@ pub(crate) enum FinalizeError {
     IoError(#[from] std::io::Error),
 }
 
-impl<A: Allocator> Dynarec<A> {
+impl Dynarec<'_> {
     pub(crate) fn finalize(&mut self) -> Result<DynarecFunction, FinalizeError> {
         self.scheduler.queue.clear();
         self.reg_alloc = RegAlloc::default();
-        let asm = std::mem::replace(
+        let asm = mem::replace(
             &mut self.asm,
             Assembler::new_with_capacity(ASM_CAPACITY).unwrap(),
         );
@@ -228,7 +239,7 @@ impl<A: Allocator> Dynarec<A> {
             tracing::trace!("Wrote {} bytes to /tmp/jit_code.bin", exec.len());
         }
 
-        let func = unsafe { std::mem::transmute::<*const u8, fn(_)>(exec.as_ptr()) };
+        let func = unsafe { mem::transmute::<*const u8, fn(*mut Emu<'_>)>(exec.as_ptr()) };
         Ok(DynarecFunction {
             func,
             exec: Arc::new(exec),
@@ -272,7 +283,7 @@ impl<A: Allocator> Dynarec<A> {
                 ; -> handle_rfe:
                 ; .u64 Emu::handle_rfe as *const () as _
                 ; -> jump:
-                ; .u64 DynarecCache::<A>::jump as *const () as _
+                ; .u64 DynarecCache::<'_>::jump as *const () as _
                 ; -> run_io:
                 ; .u64 Emu::ext_run_io as *const () as _
                 ; after_table:
@@ -699,7 +710,7 @@ impl LoadedReg<AllocResult> {
     fn reg(&self) -> Reg {
         self.reg
     }
-    fn restore<A: Allocator>(&self, dynarec: &mut Dynarec<A>) {
+    fn restore(&self, dynarec: &mut Dynarec<'_>) {
         debug_assert!(!self.restored.get(), "loaded reg already restored.");
 
         self.restored.set(true);
@@ -721,49 +732,41 @@ impl LoadedReg<AllocResult> {
 }
 
 #[derive(d::Debug)]
-pub struct ScheduledEmitter<A: Allocator> {
+pub struct ScheduledEmitter {
     #[debug(skip)]
-    pub(crate) emitter:  DynEmitter<A>,
+    pub(crate) emitter:  DynEmitter,
     #[debug("{}", hex(self.schedule))]
     pub(crate) schedule: u32,
     pub(crate) pc:       u32,
 }
 
-impl<A: Allocator> PartialEq for ScheduledEmitter<A> {
+impl PartialEq for ScheduledEmitter {
     fn eq(&self, other: &Self) -> bool {
         self.schedule == other.schedule
     }
 }
-impl<A: Allocator> Eq for ScheduledEmitter<A> {}
+impl Eq for ScheduledEmitter {}
 
-impl<A: Allocator> PartialOrd for ScheduledEmitter<A> {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+impl PartialOrd for ScheduledEmitter {
+    fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
-impl<A: Allocator> Ord for ScheduledEmitter<A> {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+impl Ord for ScheduledEmitter {
+    fn cmp(&self, other: &Self) -> cmp::Ordering {
         self.schedule.cmp(&other.schedule)
     }
 }
 
-#[derive(d::Debug)]
-pub struct Scheduler<A: Allocator> {
-    pub(crate) queue: heapless::BinaryHeap<ScheduledEmitter<A>, Min, 4>,
+#[derive(d::Debug, Default)]
+pub struct Scheduler {
+    pub(crate) queue: heapless::BinaryHeap<ScheduledEmitter, Min, 4>,
 }
 
-impl<A: Allocator> Default for Scheduler<A> {
-    fn default() -> Self {
-        Self {
-            queue: Default::default(),
-        }
-    }
-}
+unsafe impl Send for Scheduler {}
+unsafe impl Sync for Scheduler {}
 
-unsafe impl<A: Allocator> Send for Scheduler<A> {}
-unsafe impl<A: Allocator> Sync for Scheduler<A> {}
-
-impl<A: Allocator> Dynarec<A> {
+impl Dynarec<'_> {
     pub fn lock_register(&mut self, reg: &LoadedReg<AllocResultStackless>) {
         debug_assert!(self.reg_alloc.allocatable[**reg as usize]);
         self.reg_alloc.evict_at(reg.reg);
@@ -773,7 +776,7 @@ impl<A: Allocator> Dynarec<A> {
         debug_assert!(!self.reg_alloc.allocatable[**reg as usize]);
         self.reg_alloc.allocatable.set(**reg as _, true);
     }
-    pub fn pop_scheduled_at(&mut self, pc: u32) -> Option<ScheduledEmitter<A>> {
+    pub fn pop_scheduled_at<'a, 'd>(&mut self, pc: u32) -> Option<ScheduledEmitter> {
         if let Some(emitter) = self.scheduler.queue.peek() {
             if emitter.schedule <= pc {
                 return self.scheduler.queue.pop();
@@ -794,13 +797,13 @@ impl<A: Allocator> Dynarec<A> {
 //     }
 // }
 
-impl Emu {
+impl Emu<'_> {
     fn linear_fetch(&self) -> impl Iterator<Item = (OpCode, DecodedOp)> {
         let mut iter = self
             .linear_fetch_no_decode()
             .map(|op| (op, DecodedOp::new(op)));
         let mut taking: Option<i32> = None;
-        std::iter::from_fn(move || {
+        iter::from_fn(move || {
             taking = taking.map(|x| x - 1);
             if matches!(taking, Some(0)) {
                 return None;
@@ -825,7 +828,7 @@ impl Emu {
     }
 }
 
-pub fn run_step<A: Allocator>(emu: &mut Emu, dynarec: &mut Dynarec<A>) {
+pub fn run_step<'a, 'e>(emu: &'a mut Emu<'e>, dynarec: &mut Dynarec<'_>) {
     let pc = emu.cpu.pc;
     let block = match emu.dynarec_cache.remove(pc) {
         None => {
@@ -862,28 +865,28 @@ pub fn run_step<A: Allocator>(emu: &mut Emu, dynarec: &mut Dynarec<A>) {
 ))]
 #[strum_discriminants(name(PipelineV2Stage))]
 #[strum_discriminants(repr(u8))]
-pub enum PipelineV2<A: Allocator> {
+pub enum PipelineV2<'a> {
     Uninit,
     Init {
-        dynarec: Box<Dynarec<A>>,
+        dynarec: Box<Dynarec<'a>>,
         pc:      u32,
     },
     Compiled {
         pc:        u32,
         func:      DynarecBlock,
-        dynarec:   Option<Box<Dynarec<A>>>,
-        scheduler: Option<Box<Scheduler<A>>>,
+        dynarec:   Option<Box<Dynarec<'a>>>,
+        scheduler: Option<Box<Scheduler>>,
     },
     Called {
         pc:        u32,
         times:     usize,
         func:      DynarecBlock,
-        dynarec:   Option<Box<Dynarec<A>>>,
-        scheduler: Option<Box<Scheduler<A>>>,
+        dynarec:   Option<Box<Dynarec<'a>>>,
+        scheduler: Option<Box<Scheduler>>,
     },
     Cached {
-        dynarec:   Option<Box<Dynarec<A>>>,
-        scheduler: Option<Box<Scheduler<A>>>,
+        dynarec:   Option<Box<Dynarec<'a>>>,
+        scheduler: Option<Box<Scheduler>>,
     },
 }
 
@@ -891,9 +894,9 @@ pub enum PipelineV2<A: Allocator> {
 #[error("failed to compile block.")]
 pub struct PipelineCompileError;
 
-pub(crate) fn fetch_and_compile_single_threaded<A: Allocator>(
+pub(crate) fn fetch_and_compile_single_threaded(
     emu: &Emu,
-    dynarec: &mut Dynarec<A>,
+    dynarec: &mut Dynarec<'_>,
 ) -> Result<DynarecBlock, PipelineCompileError> {
     dynarec.emit_block_prelude();
     let initial_pc = emu.cpu.pc;
@@ -1023,7 +1026,7 @@ impl Default for CachePage {
 }
 
 impl<'a> DynarecCache<'a> {
-    fn new(alloc: &'a impl Allocator) -> Self {
+    pub fn new(alloc: &'a impl Allocator) -> Self {
         let mut block = Vec::new_in(alloc as &dyn Allocator);
         block.resize(PAGE_LEN * PAGE_COUNT, None);
         Self {
@@ -1033,7 +1036,7 @@ impl<'a> DynarecCache<'a> {
     }
 }
 
-impl<A: Allocator> DynarecCache<A> {
+impl DynarecCache<'_> {
     const PROB: Option<usize> = Self::map_addr_to_idx(0x8004f434);
     const RAM_END: usize = Self::map_addr_to_idx(0x200000).unwrap();
     const BIOS_START: usize = Self::map_addr_to_idx(0xbfc0_0000).unwrap();
@@ -1118,7 +1121,12 @@ mod tests {
     fn dynarec_minimal_test() -> Result<()> {
         setup_tracing();
         let mut emu = Emu::default();
-        let mut dynarec = Dynarec::<Global>::new(CreateDynarecParams::default());
+        let mut dynarec = Dynarec::new(CreateDynarecParams {
+            reg_alloc: None,
+            scheduler: None,
+            asm:       None,
+            alloc:     &Global,
+        });
 
         #[cfg(target_arch = "aarch64")]
         {

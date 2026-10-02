@@ -5,7 +5,7 @@ mod gauss_interp;
 use std::sync::Mutex;
 
 use bitbybit::bitfield;
-use pchan_bind::ringbuf::traits::*;
+use pchan_bind::ringbuf::traits::Producer;
 use pchan_bind::{AudioProducer, BindAudioProducer};
 use pchan_utils::hex;
 
@@ -143,7 +143,7 @@ fn voice_idx(addr: u32, base: u32, stride: u32) -> Option<usize> {
     }
 }
 
-impl Emu {
+impl Emu<'_> {
     #[pchan_macros::instrument(level = "trace", skip(self), "spu:r")]
     pub fn spu_read<T: Copy>(&mut self, address: u32) -> IOResult<T> {
         let address = address & 0x1fffffff;
@@ -363,12 +363,12 @@ impl Emu {
             let sample = apply_volume(voice.current_sample, adsr.envelopes.level[i]);
             let left = apply_volume(sample, adsr.voice_left.internal[i]);
             let right = apply_volume(sample, adsr.voice_right.internal[i]);
-            mixed_l += left as i32;
-            mixed_r += right as i32;
+            mixed_l += i32::from(left);
+            mixed_r += i32::from(right);
         }
 
-        let mixed_l = mixed_l.clamp(-0x8000, 0x7fff) as i16;
-        let mixed_r = mixed_r.clamp(-0x8000, 0x7fff) as i16;
+        let mixed_l = mixed_l.clamp(-0x8000, 0x7fff).truncate::<i16>();
+        let mixed_r = mixed_r.clamp(-0x8000, 0x7fff).truncate::<i16>();
 
         let mixed_l = apply_volume(mixed_l, spu.main_vol_left);
         let mixed_r = apply_volume(mixed_r, spu.main_vol_right);
@@ -476,14 +476,13 @@ impl Voice {
     }
 }
 
-impl BindAudioProducer for Emu {
+impl BindAudioProducer for Emu<'_> {
     fn bind_producer(&mut self, prod: AudioProducer) {
         self.spu.prod = Some(prod.into());
     }
 }
 
 impl SpuState {
-    #[inline(always)]
     fn set_keys<const ON: bool>(&mut self, key_idx: usize, value: u16) {
         let keys = match ON {
             true => &mut self.voice_flags.key_on,

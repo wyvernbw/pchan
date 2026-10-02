@@ -1,4 +1,5 @@
-use std::mem::transmute;
+use core::mem::{self, transmute};
+use core::ptr;
 
 use arbitrary_int::prelude::*;
 use bitbybit::bitfield;
@@ -81,10 +82,8 @@ pub fn decode_adpcm(from: &[u16; 8], to: &mut [i16], s1: &mut i16, s2: &mut i16)
     // to have 7 u16 elements, so 14 bytes (u8). casting it to this type
     // and not a plain slice allows the compiler to remove bounds checks
     let samples = unsafe {
-        (std::ptr::slice_from_raw_parts(
-            samples.as_ptr() as *const u8,
-            std::mem::size_of_val(samples),
-        ) as *const [u8; 14])
+        ptr::slice_from_raw_parts(samples.as_ptr().cast::<u8>(), mem::size_of_val(samples))
+            .cast::<[u8; 14]>()
             .as_ref_unchecked()
     };
 
@@ -119,8 +118,10 @@ fn test_adpcm_decode() {
     ];
 
     let values = unsafe {
-        (std::ptr::slice_from_raw_parts(values.as_ptr(), std::mem::size_of_val(&values))
-            as *const [u16; 8])
+        use core::{mem, ptr};
+
+        ptr::slice_from_raw_parts(values.as_ptr(), mem::size_of_val(&values))
+            .cast::<[u16; 8]>()
             .as_ref_unchecked()
     };
 

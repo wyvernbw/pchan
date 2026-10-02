@@ -1,6 +1,9 @@
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::time::{Duration, Instant};
+use alloc::sync::Arc;
+use core::alloc::Allocator;
+use core::sync::atomic::{AtomicU32, Ordering};
+use core::time::Duration;
+use std::alloc::Global;
+use std::time::Instant;
 
 use kanal::Sender;
 use pchan_bind::ringbuf::storage::Heap;
@@ -12,19 +15,23 @@ use pchan_utils::{Chan, hex};
 use crate::Emu;
 use crate::cpu::interp::{Interpreter, InterpreterResult};
 use crate::dynarec_v2::emitters::{DecodedOp, DynarecOp, EmitCtx};
-use crate::dynarec_v2::{Dynarec, DynarecBlock, PipelineCompileError, run_step};
+use crate::dynarec_v2::{
+    CreateDynarecParams, Dynarec, DynarecBlock, PipelineCompileError, run_step,
+};
 use crate::memory::mb;
 
 #[derive(derive_more::Debug)]
-pub struct Runner {
+pub struct Runner<'a> {
     interpreter:     Interpreter,
     pub(crate) mode: RunnerMode,
     pub config:      RunnerConfig,
     transport:       Transport,
     #[debug(skip)]
     actor_tx:        Caching<Arc<SharedRb<Heap<CompileActorMsg>>>, true, false>,
-    own_dynarec:     Dynarec,
+    own_dynarec:     Dynarec<'a>,
     actor_handle:    ActorHandle,
+    #[debug(skip)]
+    alloc:           &'a (dyn Allocator + Send),
 }
 
 #[derive(Default, Debug, Clone, Copy)]
@@ -73,8 +80,14 @@ impl Default for Transport {
     }
 }
 
-impl Runner {
+impl Runner<'static> {
     pub fn new() -> Self {
+        Self::new_in(&Global)
+    }
+}
+
+impl<'a> Runner<'a> {
+    pub fn new_in(alloc: &'a (impl Allocator + Send + Sync)) -> Self {
         let transport = Transport::new();
         let rb = HeapRb::<CompileActorMsg>::new(mb(32));
         let (prod, cons) = rb.split();
@@ -82,18 +95,20 @@ impl Runner {
         let actor_handle = ActorHandle {
             currently_compiling: Arc::new(AtomicU32::new(u32::MAX)),
         };
-        let ah = actor_handle.clone();
-        std::thread::spawn(move || {
-            Self::compile_actor(cons, transport_2.out_chan.0, ah);
-        });
+        // TODO: modularize
+        // let ah = actor_handle.clone();
+        // std::thread::spawn(move || {
+        //     Self::compile_actor(cons, transport_2.out_chan.0, ah, alloc);
+        // });
         Self {
             interpreter: Interpreter::default(),
             mode: RunnerMode::default(),
             config: RunnerConfig::default(),
             transport,
             actor_tx: prod,
-            own_dynarec: Dynarec::default(),
+            own_dynarec: Dynarec::new(CreateDynarecParams::new(alloc)),
             actor_handle,
+            alloc,
         }
     }
 
@@ -186,6 +201,7 @@ impl Runner {
         mut rx: Caching<Arc<SharedRb<Heap<CompileActorMsg>>>, false, true>,
         tx: Sender<CompileActorResponse>,
         handle: ActorHandle,
+        alloc: &impl Allocator,
     ) {
         enum ActorState {
             Idle,
@@ -258,7 +274,7 @@ impl Runner {
         }
 
         let mut state = ActorState::Idle;
-        let mut dynarec = Dynarec::default();
+        let mut dynarec = Dynarec::new(CreateDynarecParams::new(alloc));
         let sleep_duration = Duration::from_millis(2);
         let mut last_packet = Instant::now();
         loop {
@@ -277,7 +293,7 @@ impl Runner {
                 CompileActorMsg::Op(pc, op) => {
                     match state {
                         ActorState::Idle => {
-                            dynarec.reset();
+                            dynarec.reset(alloc);
                             dynarec.emit_block_prelude();
                             let compile_state = CompileState::new(pc);
                             handle.currently_compiling.store(pc, Ordering::Release);
@@ -335,7 +351,7 @@ impl Runner {
     }
 }
 
-impl Default for Runner {
+impl Default for Runner<'static> {
     fn default() -> Self {
         Self::new()
     }

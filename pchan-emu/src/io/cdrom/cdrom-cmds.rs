@@ -1,3 +1,5 @@
+use core::iter;
+
 use crate::cpu::Cpu;
 use crate::io::cdrom::cdrom_drive::CommandState;
 use crate::io::cdrom::cdrom_format::{Bcd, Mss};
@@ -78,12 +80,13 @@ pub type ResponseList = SmallVec<[CdromResponse; 2]>;
 
 impl CDRomState {
     fn drain_params(&mut self) -> impl Iterator<Item = u8> {
-        std::iter::from_fn(|| self.param_fifo.pop_front())
+        iter::from_fn(|| self.param_fifo.pop_front())
     }
     pub fn send_cmd(&mut self, cmd: u8) -> ResponseList {
         self.status.set_busy_status(true);
         self.result_fifo.clear();
 
+        #[expect(clippy::items_after_statements)]
         fn diskerr(data: &[u8]) -> SmallVec<[CdromResponse; 2]> {
             smallvec![CdromResponse::Immediate(Response {
                 int:  HInt::Int5DiskErr,

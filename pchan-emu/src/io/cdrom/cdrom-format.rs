@@ -1,8 +1,9 @@
+use core::fmt;
+use core::str::FromStr;
 use std::marker::Destruct;
-use std::str::FromStr;
 
 use arbitrary_int::prelude::*;
-use bitbybit::*;
+use bitbybit::bitfield;
 
 #[bitfield(u8, debug)]
 pub struct Bcd {
@@ -14,8 +15,8 @@ pub struct Bcd {
     digit_02: u4,
 }
 
-impl std::fmt::Display for Bcd {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for Bcd {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:02}", self.unpack())
     }
 }

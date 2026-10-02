@@ -1,5 +1,4 @@
-use core::alloc::Allocator;
-use std::ptr::NonNull;
+use core::ptr::NonNull;
 
 use crate::Emu;
 
@@ -8,7 +7,7 @@ use crate::Emu;
 pub struct NonNullRecv<T>(NonNull<T>);
 
 use crate::memory::ext;
-impl<A: Allocator> Emu<A> {
+impl Emu<'_> {
     /// # Safety
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn urread32(self: *mut Self, address: u32, overwrite: u32) -> u32 {
@@ -49,7 +48,8 @@ impl<A: Allocator> Emu<A> {
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn write8v2(self: *mut Self, address: u32, value: i32) {
         unsafe {
-            self.as_mut_unchecked().write::<i8>(address, value as _);
+            self.as_mut_unchecked()
+                .write::<i8>(address, value.truncate());
         }
     }
 
@@ -57,7 +57,8 @@ impl<A: Allocator> Emu<A> {
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn write16v2(self: *mut Self, address: u32, value: i32) {
         unsafe {
-            self.as_mut_unchecked().write::<i16>(address, value as _);
+            self.as_mut_unchecked()
+                .write::<i16>(address, value.truncate());
         }
     }
 
@@ -65,7 +66,8 @@ impl<A: Allocator> Emu<A> {
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn write32v2(self: *mut Self, address: u32, value: i32) {
         unsafe {
-            self.as_mut_unchecked().write::<i32>(address, value as _);
+            self.as_mut_unchecked()
+                .write::<i32>(address, value.truncate());
         }
     }
 

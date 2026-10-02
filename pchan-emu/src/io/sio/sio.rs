@@ -1,7 +1,9 @@
 pub mod joypad;
 
+use core::cmp;
+
 use arbitrary_int::prelude::*;
-use bitbybit::*;
+use bitbybit::{bitenum, bitfield};
 use derive_more as d;
 use heapless::Deque;
 use pchan_utils::hex;
@@ -42,7 +44,7 @@ pub enum SioEvent {
 }
 
 impl SioEvent {
-    fn to_callback(&self) -> PchanEventFn<Emu> {
+    fn to_callback<'e>(&self) -> PchanEventFn<Emu<'e>> {
         match self {
             SioEvent::Sio0ProcTx => Emu::handle_ev_sio0_tx_proc,
             SioEvent::Sio0Irq => Emu::handle_ev_sio0_irq,
@@ -58,13 +60,13 @@ struct ScheduledSioEvent {
 }
 
 impl PartialOrd for ScheduledSioEvent {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
 impl Ord for ScheduledSioEvent {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+    fn cmp(&self, other: &Self) -> cmp::Ordering {
         self.clock.cmp(&other.clock)
     }
 }
@@ -108,7 +110,7 @@ pub trait Peripheral {
 #[derive(d::Deref, d::DerefMut, Debug, Default, Clone)]
 pub struct Sio0Rx(Deque<u8, 4>);
 
-impl Emu {
+impl Emu<'_> {
     #[pchan_macros::instrument(skip_all, fields(pc = %hex(self.cpu().pc)))]
     pub fn sio_write<T: Copy>(&mut self, address: u32, value: T) -> Result<(), UnhandledIO> {
         let address = address & 0x1fffffff;
@@ -271,12 +273,12 @@ impl Emu {
     }
 
     fn sio_schedule_event_from(&mut self, ev: SioEvent, from_clock: u64, in_cycles: u64) {
-        self.evque_mut()
-            .schedule_from(ev.to_callback(), 0, from_clock, in_cycles);
+        let cb = ev.to_callback();
+        self.evque.schedule_from(cb, 0, from_clock, in_cycles);
     }
 
     fn sio_schedule_event(&mut self, ev: SioEvent, in_cycles: u64) {
-        self.evque_mut().schedule(ev.to_callback(), 0, in_cycles);
+        self.evque.schedule(ev.to_callback(), 0, in_cycles);
     }
 
     fn handle_ev_sio0_tx_proc(&mut self, _: EvCtx) {

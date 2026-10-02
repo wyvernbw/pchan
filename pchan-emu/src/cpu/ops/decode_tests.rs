@@ -1,5 +1,7 @@
 #![cfg(test)]
 
+use std::alloc::Global;
+
 use pchan_utils::{hex, setup_tracing as st};
 use pretty_assertions::assert_eq;
 use rstest::rstest;
@@ -16,7 +18,7 @@ fn setup_tracing() {
 #[rstest]
 fn test_bios_ops(setup_tracing: ()) -> color_eyre::Result<()> {
     let mut emu = Emu::default();
-    emu.load_bios()?;
+    emu.load_bios(&Global)?;
 
     let ops = (0xbfc0_0000u32..0xbfc0_0000u32 + 32 * 4)
         .step_by(4)
