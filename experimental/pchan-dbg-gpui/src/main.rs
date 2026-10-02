@@ -1,16 +1,14 @@
 #![allow(clippy::type_complexity)]
 #![allow(recursion_depth_exceeding_limit)]
-#![feature(const_type_name)]
-#![feature(portable_simd)]
 
 #[path = "game-surface.rs"]
 pub mod game_surface;
 
 use core::cell::RefCell;
 use core::num::ParseIntError;
+use core::ops::Range;
 use core::time::Duration;
 use std::borrow::Cow;
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -30,7 +28,6 @@ use gpui_component::separator::Separator;
 use gpui_component::spinner::Spinner;
 use gpui_component::tab::TabBar;
 use gpui_component::table::{Table, TableBody, TableCell, TableHead, TableHeader, TableRow};
-use gpui_component::text::{TextView, markdown};
 use gpui_component::{
     ActiveTheme, Icon, IconName, Root, Sizable, StyledExt, Theme, ThemeRegistry, h_flex, v_flex,
 };
@@ -64,6 +61,7 @@ fn main() -> miette::Result<()> {
         .with_quit_mode(QuitMode::LastWindowClosed)
         .run(move |cx| {
             gpui_component::init(cx);
+            GlobalSelection::init(cx);
 
             let theme_reg = ThemeRegistry::global_mut(cx);
             let gruvbox = include_str!("./assets/themes/gruvbox.json");
@@ -340,6 +338,7 @@ impl Debugger {
             let emucx = emucx.clone();
             async move |cx| {
                 let mut yield_time = Duration::ZERO;
+                let yield_max = Duration::from_micros(16_667);
                 loop {
                     let run_listener = cx.read_entity(&emucx, |emucx, _| match emucx.running {
                         false => Some(emucx.running_notify.listen()),
@@ -354,7 +353,7 @@ impl Debugger {
                     }
                     let start = Instant::now();
                     let old_cycles = cx.read_entity(&emucx, |emucx, _| emucx.emu.cpu.cycles);
-                    let (frame_time, frame_limit) = emucx.update(cx, |emucx, cx| {
+                    emucx.update(cx, |emucx, cx| {
                         if emucx.running {
                             let surface_state = surface_state.as_mut(cx);
                             surface_state.start_display_draw(&emucx.renderer);
@@ -368,6 +367,15 @@ impl Debugger {
                             drop(surface_state);
                             cx.emit(RenderedFrame);
                         }
+                    });
+                    let emu_frame_time = start.elapsed();
+
+                    if yield_time > yield_max {
+                        yield_time = Duration::ZERO;
+                        futures_lite::future::yield_now().await;
+                    }
+
+                    let (frame_time, frame_limit) = emucx.update(cx, |emucx, _| {
                         let frame_time = start.elapsed();
                         emucx.frame_time = frame_time;
                         yield_time += frame_time;
@@ -383,13 +391,15 @@ impl Debugger {
 
                         (frame_time, frame_limit)
                     });
+                    println!(
+                        "emu: {}ms, emu+gpui: {}ms",
+                        emu_frame_time.as_millis(),
+                        frame_time.as_millis()
+                    );
 
                     let yielded = spin_sleep(cx, frame_limit.saturating_sub(frame_time)).await;
+                    yield_time += frame_time;
                     if yielded {
-                        yield_time = Duration::ZERO
-                    }
-                    if yield_time > Duration::from_micros(16_667 * 2) {
-                        futures_lite::future::yield_now().await;
                         yield_time = Duration::ZERO;
                     }
                 }
@@ -403,12 +413,12 @@ impl Debugger {
                 emucx
                     .update(cx, |emucx, _| -> miette::Result<()> {
                         let bios_path = emucx.emu.bootloader().bios_path.clone();
+                        emucx.renderer.reset();
                         emucx.emu = Emu::new();
                         emucx.emu.set_bios_path(bios_path);
                         emucx.emu.load_bios().into_diagnostic()?;
                         emucx.emu.gpu.vram = pchan_emu::gpu::create_vram();
                         emucx.emu.cpu.jump_to_bios();
-                        emucx.renderer.reset();
                         emucx.renderer.connect_emu(&mut emucx.emu);
                         emucx.emu.tty.set_tracing();
 
@@ -452,7 +462,7 @@ impl Debugger {
 }
 
 async fn spin_sleep(cx: &AsyncApp, duration: Duration) -> bool {
-    let sleep_for = duration.saturating_sub(Duration::from_millis(7));
+    let sleep_for = duration.saturating_sub(Duration::from_millis(3));
     let deadline = Instant::now() + duration;
 
     let mut yielded = false;
@@ -693,7 +703,9 @@ impl Debugger {
                         panel(&theme)
                             .v_flex()
                             .flex_grow_1()
-                            .max_w_96()
+                            .w(rems(28.))
+                            .max_w(rems(28.))
+                            .min_w_0()
                             .when(self.exec_control_panel_open, |this| this.min_h_full())
                             .gap_2()
                             .child(
@@ -781,7 +793,9 @@ impl Debugger {
                                     .items_center()
                                     .flex_grow_0()
                                     .gap_2()
-                                    .child(markdown("Registers").text_color(theme.muted_foreground))
+                                    .child(
+                                        div().child("Registers").text_color(theme.muted_foreground),
+                                    )
                                     .child(self.cpu_control_tabbar(cx)),
                             )
                             .child(self.cpu_controls(win, cx).min_h_0().flex_grow_1()),
@@ -941,7 +955,7 @@ impl Debugger {
                     .items_center()
                     .h(rems(1.))
                     .w(rems(9.0))
-                    .child(markdown(reg_id).text_ellipsis().w(rems(2.)))
+                    .child(div().child(reg_id.clone()).text_ellipsis().w(rems(2.)))
                     .child(
                         Input::new(&input_state)
                             .appearance(input_state.focus_handle(cx).is_focused(window))
@@ -984,7 +998,6 @@ impl Debugger {
 
         VirtualList::new("mips-dump-list", u32::MAX as u64 / 4, move |idx, _, cx| {
             let address_label: SharedString = "mips-dump-address".into();
-            let op_label: SharedString = "mips-dump-op".into();
 
             let view = entity.read(cx);
             let addr = idx as u32 * 4;
@@ -1003,23 +1016,26 @@ impl Debugger {
                     .foreground
                     .opacity(if idx.is_multiple_of(2) { 0.0 } else { 0.08 }))
                 .child(
-                    TextView::markdown(
-                        ElementId::NamedInteger(op_label, idx),
+                    sel_text_keyed(
+                        ElementId::NamedInteger(
+                            "mipds-dump-list-address-column".into(),
+                            addr as u64,
+                        ),
                         hex(addr).to_string(),
                     )
-                    .selectable(true)
                     .opacity(0.5),
                 )
                 .child(
                     div()
                         .text_center()
+                        .min_w_4()
                         .w_4()
                         .when(is_pc, |this| this.child(">")),
                 )
-                .child(
-                    TextView::markdown(ElementId::NamedInteger(address_label, idx), instr)
-                        .selectable(true),
-                )
+                .child(sel_text_keyed(
+                    ElementId::NamedInteger(address_label, idx),
+                    instr,
+                ))
                 .when(is_pc, |this| this.text_color(theme.colors.info))
                 .h_4()
         })
@@ -1358,11 +1374,10 @@ impl Render for MemviewTable {
                 .whitespace_nowrap()
                 .overflow_hidden()
                 .child(
-                    TextView::markdown(
+                    sel_text_keyed(
                         ElementId::NamedInteger("mem-view-row-address".into(), row_idx),
                         caddress.as_str(),
                     )
-                    .selectable(true)
                     .text_color(theme.muted_foreground)
                     .mx_2(),
                 )
@@ -1458,8 +1473,8 @@ impl Render for MemviewTable {
                 };
 
                 result = result.child(
-                    TextView::markdown(id, word)
-                        .selectable(true)
+                    div()
+                        .child(text!(word).with_id(id))
                         .text_color(*color)
                         .w(rems(2.5)),
                 );
@@ -1626,15 +1641,16 @@ impl Element for VirtualList {
     ) -> Self::PrepaintState {
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
         let state = self.init_state(window, cx);
-        let (top_row, frac_px) = state.read_with(cx, |state, _| (state.top_row, state.frac_px));
+        let top_row = state.read(cx).top_row;
+        let frac_px = state.read(cx).frac_px;
 
-        let mut first = (self.render_row)(top_row, window, cx);
         let row_h: f32 = state.read(cx).row_height.unwrap_or_else(|| {
+            let mut first = (self.render_row)(top_row, window, cx);
             first
                 .layout_as_root(
                     Size::new(
-                        AvailableSpace::MinContent,
                         AvailableSpace::Definite(bounds.size.width),
+                        AvailableSpace::MinContent,
                     ),
                     window,
                     cx,
@@ -1770,5 +1786,220 @@ impl Styled for VirtualList {
 impl InteractiveElement for VirtualList {
     fn interactivity(&mut self) -> &mut Interactivity {
         &mut self.interactivity
+    }
+}
+
+struct GlobalSelection {
+    state: Entity<GlobalSelectionState>,
+}
+
+struct GlobalSelectionState {
+    currently_selected: Option<EntityId>,
+}
+
+impl Global for GlobalSelection {}
+
+struct SelectionChanged(Option<EntityId>);
+
+impl EventEmitter<SelectionChanged> for GlobalSelectionState {}
+
+impl GlobalSelection {
+    pub fn init(cx: &mut App) {
+        let sel = cx.new(|_| GlobalSelectionState {
+            currently_selected: None,
+        });
+        cx.subscribe(&sel, |sel, ev, cx| {
+            sel.update(cx, |sel, _| {
+                sel.currently_selected = ev.0;
+            })
+        })
+        .detach();
+        let sel = GlobalSelection { state: sel };
+        cx.set_global(sel);
+    }
+}
+
+pub struct Selection {
+    text:       SharedString,
+    focus:      FocusHandle,
+    anchor:     usize,
+    head:       usize,
+    dragging:   bool,
+    global_sub: Option<Subscription>,
+}
+
+impl Selection {
+    fn range(&self) -> Range<usize> {
+        self.anchor.min(self.head)..self.anchor.max(self.head)
+    }
+}
+
+fn index_at(layout: &TextLayout, position: gpui::Point<gpui::Pixels>) -> usize {
+    match layout.index_for_position(position) {
+        Ok(ix) | Err(ix) => ix,
+    }
+}
+
+/// Read-only text the pointer can select and copy.
+#[derive(IntoElement)]
+pub struct SelectableText {
+    state: Option<Entity<Selection>>,
+    id:    ElementId,
+    text:  SharedString,
+    style: StyleRefinement,
+}
+
+impl SelectableText {
+    pub fn new(state: Entity<Selection>, text: impl Into<SharedString>) -> Self {
+        let entity_id = state.entity_id();
+        Self {
+            state: Some(state),
+            id:    ElementId::View(entity_id),
+            text:  text.into(),
+            style: Default::default(),
+        }
+    }
+}
+
+#[track_caller]
+pub fn sel_text(text: impl Into<SharedString>) -> SelectableText {
+    let id = ElementId::CodeLocation(*core::panic::Location::caller());
+    SelectableText {
+        state: None,
+        id,
+        text: text.into(),
+        style: Default::default(),
+    }
+}
+
+pub fn sel_text_keyed(id: impl Into<ElementId>, text: impl Into<SharedString>) -> SelectableText {
+    SelectableText {
+        state: None,
+        id:    id.into(),
+        text:  text.into(),
+        style: Default::default(),
+    }
+}
+
+impl Styled for SelectableText {
+    #[doc = " Returns a reference to the style memory of this element."]
+    fn style(&mut self) -> &mut StyleRefinement {
+        &mut self.style
+    }
+}
+
+impl RenderOnce for SelectableText {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let state = match self.state {
+            Some(state) => state,
+            None => window.use_keyed_state(self.id.clone(), cx, |_, cx| Selection {
+                text:       self.text.clone(),
+                focus:      cx.focus_handle(),
+                anchor:     0,
+                head:       0,
+                dragging:   false,
+                global_sub: None,
+            }),
+        };
+        if state.read(cx).text != self.text {
+            state.update(cx, |selection, _| {
+                selection.text = self.text.clone();
+                selection.anchor = 0;
+                selection.head = 0;
+            });
+        }
+        let (focus, range) = {
+            let selection = state.read(cx);
+            (selection.focus.clone(), selection.range())
+        };
+        let highlight = HighlightStyle {
+            background_color: Some(cx.theme().colors.selection),
+            ..Default::default()
+        };
+        let styled = StyledText::new(self.text.clone())
+            .with_highlights((!range.is_empty()).then_some((range, highlight)));
+        let layout = styled.layout().clone();
+        let (down, drag, up, keys) = (state.clone(), state.clone(), state.clone(), state.clone());
+        let (down_layout, drag_layout) = (layout.clone(), layout);
+        let text = self.text;
+
+        let global_sel = GlobalSelection::global(cx).state.clone();
+        let eid = state.entity_id();
+        state.update(cx, |state, cx| {
+            if state.global_sub.is_none() {
+                let sub = cx.subscribe(&global_sel, {
+                    move |state, _, ev, _| {
+                        if ev.0 != Some(eid) {
+                            state.head = state.anchor;
+                        }
+                    }
+                });
+                state.global_sub = Some(sub);
+            }
+        });
+
+        div()
+            .id(self.id)
+            .track_focus(&focus)
+            .cursor(CursorStyle::IBeam)
+            .refine_style(&self.style)
+            .on_mouse_down(MouseButton::Left, {
+                let global_sel = global_sel.clone();
+                move |event, window, cx| {
+                    let ix = index_at(&down_layout, event.position);
+                    down.update(cx, |selection, cx| {
+                        window.focus(&selection.focus, cx);
+                        if !event.modifiers.shift {
+                            selection.anchor = ix;
+                        }
+                        selection.head = ix;
+                        selection.dragging = true;
+                        cx.notify();
+                    });
+
+                    cx.emit(&global_sel, SelectionChanged(Some(eid)));
+                }
+            })
+            .on_mouse_move(move |event, _, cx| {
+                drag.update(cx, |selection, cx| {
+                    if selection.dragging && event.dragging() {
+                        selection.head = index_at(&drag_layout, event.position);
+                        cx.notify();
+                    }
+                })
+            })
+            .on_mouse_up(MouseButton::Left, {
+                let up = up.clone();
+                move |_, _, cx| {
+                    up.update(cx, |selection, _| selection.dragging = false);
+                    cx.emit(&global_sel, SelectionChanged(Some(eid)));
+                }
+            })
+            .on_mouse_up_out(MouseButton::Left, move |_, _, cx| {
+                up.update(cx, |selection, _| selection.dragging = false)
+            })
+            .on_key_down(move |event, _, cx| {
+                let stroke = &event.keystroke;
+                if !stroke.modifiers.secondary() {
+                    return;
+                }
+                match stroke.key.as_str() {
+                    "c" => {
+                        let range = keys.read(cx).range();
+                        if !range.is_empty() {
+                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                text[range].to_string(),
+                            ));
+                        }
+                    }
+                    "a" => keys.update(cx, |selection, cx| {
+                        selection.anchor = 0;
+                        selection.head = text.len();
+                        cx.notify();
+                    }),
+                    _ => {}
+                }
+            })
+            .child(styled)
     }
 }
