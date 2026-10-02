@@ -179,6 +179,7 @@ pub struct EmuContext {
     renderer:           Arc<pchan_gpu::Renderer>,
     frame_time:         Duration,
     frame_time_limited: Duration,
+    real_time_running:  Duration,
     cycles_per_run:     u64,
     start:              Instant,
     speed_limit:        EmuSpeed,
@@ -291,6 +292,7 @@ impl Debugger {
             start: Instant::now(),
             cycles_per_run: 0,
             speed_limit: EmuSpeed::Percent(100),
+            real_time_running: Duration::ZERO,
         });
 
         let surface_state = cx.new(|_| SurfaceState::new(target.clone(), target_buf.clone()));
@@ -357,6 +359,7 @@ impl Debugger {
                         emucx.update(cx, |emucx, _| {
                             emucx.start = Instant::now();
                             emucx.cycles_per_run = 0;
+                            emucx.real_time_running = Duration::ZERO;
                         });
                     }
                     let start = Instant::now();
@@ -405,6 +408,7 @@ impl Debugger {
                             }
                         };
                         emucx.frame_time_limited = frame_time.max(frame_limit);
+                        emucx.real_time_running += emu_frame_time.max(frame_limit);
 
                         (frame_time, frame_limit)
                     });
@@ -524,7 +528,7 @@ impl Render for Debugger {
                 emucx.frame_time,
                 emucx.frame_time_limited,
                 emucx.cycles_per_run,
-                emucx.start.elapsed(),
+                emucx.real_time_running,
             ))
             .child(
                 div()
