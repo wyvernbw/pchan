@@ -36,6 +36,7 @@ glam = "0.33.9"
 slab = "*"
 
 [dev-dependencies]
+pchan-utils = { workspace = true, features = ["tracing-subscriber"] }
 pretty_assertions = {version = "1.4.1", features = ["unstable"]}
 rstest = "*"
 color-eyre = "*" 

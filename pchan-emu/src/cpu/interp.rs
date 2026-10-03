@@ -138,8 +138,8 @@ impl Interpreter {
             return (InterpreterResult::Exception, op.0, op.1);
         }
 
-        (InterpreterResult::Exception, op.0, op.1)
-        // InterpreterResult::None
+        // (InterpreterResult::Exception, op.0, op.1)
+        (InterpreterResult::None, op.0, op.1)
     }
 }
 

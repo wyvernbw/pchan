@@ -34,7 +34,7 @@ pub struct Runner<A: Allocator + Copy> {
     alloc:           A,
 }
 
-#[derive(Default, Debug, Clone, Copy)]
+#[derive(Default, Debug, Clone, Copy, PartialEq)]
 pub enum RunnerMode {
     #[default]
     Dynarec,
@@ -43,7 +43,7 @@ pub enum RunnerMode {
 
 #[derive(Default, Debug, Clone, Copy)]
 pub struct RunnerConfig {
-    pub force_mode: Option<RunnerMode>,
+    pub force_mode: Option<RunnerMode> = Some(RunnerMode::Dynarec),
 }
 
 #[derive(Debug, Clone)]
@@ -117,6 +117,14 @@ impl<A: Allocator + Copy + Clone> Runner<A> {
     pub fn with_config(mut self, config: RunnerConfig) -> Self {
         self.config = config;
         self
+    }
+
+    pub fn config(&self) -> RunnerConfig {
+        self.config
+    }
+
+    pub fn set_config(&mut self, config: RunnerConfig) {
+        self.config = config;
     }
 
     pub fn mode(&self) -> RunnerMode {

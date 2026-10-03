@@ -16,21 +16,6 @@ fn setup_tracing() {
 }
 
 #[rstest]
-fn test_bios_ops(setup_tracing: ()) -> color_eyre::Result<()> {
-    let mut emu = Emu::default();
-    emu.load_bios(Global)?;
-
-    let ops = (0xbfc0_0000u32..0xbfc0_0000u32 + 32 * 4)
-        .step_by(4)
-        .map(|address| (address, emu.read::<OpCode>(address)))
-        .map(|(address, op)| (address, DecodedOp::new(op)))
-        .inspect(|(address, op)| tracing::info!("{}: {}", hex(*address), op))
-        .collect::<Vec<_>>();
-
-    Ok(())
-}
-
-#[rstest]
 #[case::nop(DecodedOp::new(nop()), "nop")]
 #[case::lb(DecodedOp::new(lb(8, 9, 4)), "lb $t0, $t1, 0x0004")]
 #[case::lbu(DecodedOp::new(lbu(8, 9, 4)), "lbu $t0, $t1, 0x0004")]

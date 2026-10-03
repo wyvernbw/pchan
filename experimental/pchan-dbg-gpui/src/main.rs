@@ -1,4 +1,5 @@
 #![allow(clippy::missing_panics_doc)]
+#![allow(clippy::missing_errors_doc)]
 #![allow(clippy::redundant_closure_for_method_calls)]
 #![allow(clippy::type_complexity)]
 #![allow(recursion_depth_exceeding_limit)]
@@ -16,6 +17,8 @@ use core::num::ParseIntError;
 use core::ops::Range;
 use core::time::Duration;
 use core::{fmt, mem};
+use futures_lite::AsyncReadExt;
+use futures_lite::io::BufReader;
 use pchan_emu::debug::{Breakpoint, BreakpointKind};
 use std::path::PathBuf;
 use std::time::Instant;
@@ -30,7 +33,9 @@ use gpui_component::collapsible::Collapsible;
 use gpui_component::input::{Input, InputState};
 use gpui_component::menu::DropdownMenu;
 use gpui_component::scroll::ScrollableElement;
-use gpui_component::select::{Select as SelectView, SelectEvent, SelectItem, SelectState};
+use gpui_component::select::{
+    SearchableVec, Select as SelectView, SelectEvent, SelectItem, SelectState,
+};
 use gpui_component::separator::Separator;
 use gpui_component::spinner::Spinner;
 use gpui_component::tab::TabBar;
@@ -165,10 +170,16 @@ struct Debugger {
 
     exec_control_panel_open: bool,
     mips_dump_scroll_handle: VirtualListScrollHandle,
-    disc_path:               Option<PathBuf>,
+    content_path:            ContentPath,
 
     memview: Entity<MemviewTable>,
     pc:      u32,
+}
+
+enum ContentPath {
+    None,
+    Disc(PathBuf),
+    Exe(PathBuf),
 }
 
 pub struct EmuContext {
@@ -184,11 +195,35 @@ pub struct EmuContext {
     cycles_per_run:     u64,
     start:              Instant,
     speed_limit:        EmuSpeed,
+    alloc:              &'static Bump,
 }
 
-struct RenderedFrame;
+struct RenderedFrameEvent;
+struct ResetEvent;
 
-impl EventEmitter<RenderedFrame> for EmuContext {}
+impl EventEmitter<RenderedFrameEvent> for EmuContext {}
+impl EventEmitter<ResetEvent> for EmuContext {}
+
+impl EmuContext {
+    pub fn hard_reset(&mut self) -> miette::Result<()> {
+        let bios_path = self.emu.bootloader().bios_path.clone();
+        self.renderer.reset();
+        self.emu = Emu::new_in(self.alloc);
+        self.emu.set_bios_path(bios_path);
+        self.emu.load_bios(self.alloc).into_diagnostic()?;
+        self.emu.gpu.vram = pchan_emu::gpu::create_vram();
+        self.emu.cpu.jump_to_bios();
+        self.renderer.connect_emu(&mut self.emu);
+        self.emu.tty.set_tracing();
+
+        let mut audio_task = AudioTask::new()?;
+        pchan_bind::bind_audio(&mut audio_task, &mut self.emu);
+        let audio_stream = audio_task.start()?;
+        mem::forget(audio_stream);
+
+        Ok(())
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum EmuSpeed {
@@ -236,6 +271,25 @@ impl SelectItem for SurfaceMode {
 impl EmuContext {
     pub fn runner_mode(&self) -> RunnerMode {
         self.runner.mode()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct RunnerModeWrapper(Option<RunnerMode>);
+
+impl SelectItem for RunnerModeWrapper {
+    type Value = Option<RunnerMode>;
+
+    fn title(&self) -> SharedString {
+        match self.0 {
+            Some(RunnerMode::Dynarec) => "Dynarec".into(),
+            Some(RunnerMode::Interpreter) => "Interpreter".into(),
+            None => "Hybrid".into(),
+        }
+    }
+
+    fn value(&self) -> &Self::Value {
+        &self.0
     }
 }
 
@@ -295,13 +349,14 @@ impl Debugger {
             speed_limit: EmuSpeed::Percent(100),
             real_time_running: Duration::ZERO,
             run_for_one_frame: false,
+            alloc,
         });
 
         let surface_state = cx.new(|_| SurfaceState::new(target.clone(), target_buf.clone()));
 
         let memview = cx.new(|cx| {
             let mut memview_scroll = VirtualListScrollHandle::new();
-            memview_scroll.scroll_to(0x0000_0000, cx);
+            memview_scroll.scroll_to(cx, 0x0000_0000, ScrollStrategy::Top);
             MemviewTable {
                 scroll:   memview_scroll,
                 emucx:    emucx.clone(),
@@ -350,7 +405,9 @@ impl Debugger {
             let emucx = emucx.clone();
             async move |cx| {
                 let mut yield_time = Duration::ZERO;
+                let mut first_frame_rendered = false;
                 let yield_max = Duration::from_micros(16_667);
+
                 loop {
                     let run_listener = cx.read_entity(&emucx, |emucx, _| match emucx.running {
                         false => Some(emucx.running_notify.listen()),
@@ -385,7 +442,7 @@ impl Debugger {
                             surface_state.wait_for_display_draw(&emucx.renderer);
                             surface_state.start_convert_render(&emucx.renderer);
                             drop(surface_state);
-                            cx.emit(RenderedFrame);
+                            cx.emit(RenderedFrameEvent);
 
                             if emucx.run_for_one_frame {
                                 emucx.run_for_one_frame = false;
@@ -415,7 +472,13 @@ impl Debugger {
                             }
                         };
                         emucx.frame_time_limited = frame_time.max(frame_limit);
-                        emucx.real_time_running += emu_frame_time.max(frame_limit);
+                        if first_frame_rendered {
+                            emucx.real_time_running += emu_frame_time.max(frame_limit);
+                        } else {
+                            emucx.cycles_per_run = 0;
+                            emucx.real_time_running = Duration::ZERO;
+                            first_frame_rendered = true;
+                        }
 
                         (frame_time, frame_limit)
                     });
@@ -438,26 +501,7 @@ impl Debugger {
         cx.on_action::<HardReset>({
             let emucx = emucx.clone();
             move |_, cx| {
-                emucx
-                    .update(cx, |emucx, _| -> miette::Result<()> {
-                        let bios_path = emucx.emu.bootloader().bios_path.clone();
-                        emucx.renderer.reset();
-                        emucx.emu = Emu::new_in(alloc);
-                        emucx.emu.set_bios_path(bios_path);
-                        emucx.emu.load_bios(alloc).into_diagnostic()?;
-                        emucx.emu.gpu.vram = pchan_emu::gpu::create_vram();
-                        emucx.emu.cpu.jump_to_bios();
-                        emucx.renderer.connect_emu(&mut emucx.emu);
-                        emucx.emu.tty.set_tracing();
-
-                        let mut audio_task = AudioTask::new()?;
-                        pchan_bind::bind_audio(&mut audio_task, &mut emucx.emu);
-                        let audio_stream = audio_task.start()?;
-                        mem::forget(audio_stream);
-
-                        Ok(())
-                    })
-                    .unwrap();
+                emucx.update(cx, |emucx, _| emucx.hard_reset()).unwrap();
             }
         });
 
@@ -493,7 +537,7 @@ impl Debugger {
             cpu_control_subs: [const { None }; 32],
             cpu_control_reg_tab: 0,
             exec_control_panel_open: true,
-            disc_path: None,
+            content_path: ContentPath::None,
             mips_dump_scroll_handle: VirtualListScrollHandle::new(),
             pc: 0,
             emu_speed_select,
@@ -543,6 +587,7 @@ impl Render for Debugger {
             .child(TextSelectionLayer)
             .h(window_height)
             .child(self.header(
+                window,
                 cx,
                 emucx.frame_time,
                 emucx.frame_time_limited,
@@ -574,15 +619,15 @@ impl Debugger {
         .min_w_4()
     }
 
-    fn header<T: 'static>(
+    fn header(
         &self,
-        cx: &mut Context<T>,
+        win: &mut Window,
+        cx: &mut Context<Debugger>,
         frame_time: Duration,
         frame_time_limited: Duration,
         cycles: u64,
         real_time: Duration,
     ) -> impl IntoElement {
-        let theme = cx.theme();
         let sim_time_ms = cycles * 1000 / u64::from(pchan_emu::cpu::Cpu::CLOCK);
         let sim_time_s = sim_time_ms as f64 / 1000.0;
         let real_time_s = real_time.as_millis() as f64 / 1000.0;
@@ -590,13 +635,48 @@ impl Debugger {
 
         let speed_percent = 16.667 / (frame_time_limited.as_micros() as f64 / 1000.0) * 100.0;
 
+        let runner_mode_select = win.use_state(cx, |win, cx| {
+            SelectState::new(
+                SearchableVec::new(vec![
+                    RunnerModeWrapper(Some(RunnerMode::Dynarec)),
+                    RunnerModeWrapper(Some(RunnerMode::Interpreter)),
+                    RunnerModeWrapper(None),
+                ]),
+                Some(IndexPath::default()),
+                win,
+                cx,
+            )
+            .searchable(true)
+        });
+        let view = cx.entity();
+        win.use_state(cx, |win, cx| {
+            cx.subscribe_in(
+                &runner_mode_select,
+                win,
+                move |_, _, ev: &SelectEvent<SearchableVec<RunnerModeWrapper>>, _, cx| {
+                    if let SelectEvent::Confirm(Some(mode)) = ev {
+                        view.read(cx).emucx.clone().update(cx, |emucx, _| {
+                            #[allow(clippy::needless_update)]
+                            emucx.runner.set_config(pchan_emu::run::RunnerConfig {
+                                force_mode: *mode,
+                                ..emucx.runner.config()
+                            })
+                        });
+                    }
+                },
+            )
+            .detach();
+        });
+
+        let theme = cx.theme();
+
         h_flex()
             .text_sm()
             .bg(theme.title_bar)
             .px_4()
             .pl(rems(4.5))
             .py_1()
-            .gap_4()
+            .gap_2()
             .items_center()
             .border_color(theme.title_bar_border)
             .border_b_1()
@@ -620,6 +700,19 @@ impl Debugger {
                 div().child(
                     SelectView::new(&self.surface_mode)
                         .title_prefix("Game: ")
+                        .items_center()
+                        .small()
+                        .h_6()
+                        .min_h_0()
+                        .min_w_0()
+                        .flex_shrink_1()
+                        .flex_grow_0(),
+                ),
+            )
+            .child(
+                div().child(
+                    SelectView::new(&runner_mode_select)
+                        .title_prefix("CPU: ")
                         .items_center()
                         .small()
                         .h_6()
@@ -685,7 +778,9 @@ impl Debugger {
                 move |value, cx| -> Option<()> {
                     let value = value?;
                     memview.update(cx, |memview, cx| {
-                        memview.scroll.scroll_to(u64::from(value) / 16, cx);
+                        memview
+                            .scroll
+                            .scroll_to(cx, u64::from(value) / 16, ScrollStrategy::Top);
                     });
                     None
                 }
@@ -804,7 +899,13 @@ impl Debugger {
                                 .child(surface),
                         )
                     })
-                    .child(self.breakpoints(win, cx, &theme).min_w(rems(20.)).h_full()),
+                    .child(
+                        self.breakpoints(win, cx, &theme)
+                            .max_w(rems(20.))
+                            .min_w(rems(18.))
+                            .flex_grow_1()
+                            .h_full(),
+                    ),
             )
             // bottom panel
             .child(
@@ -821,6 +922,7 @@ impl Debugger {
                         v_flex()
                             .h_full()
                             .min_h_0()
+                            .min_w_64()
                             .gap_2()
                             .child(
                                 div()
@@ -833,7 +935,7 @@ impl Debugger {
                                     )
                                     .child(self.cpu_control_tabbar(cx)),
                             )
-                            .child(self.cpu_controls(win, cx).min_h_0().flex_grow_1()),
+                            .child(self.cpu_controls(win, cx).min_h_0().min_w_0().flex_grow_1()),
                     )
                     .child(
                         v_flex()
@@ -848,6 +950,7 @@ impl Debugger {
                                         .child("Memory")
                                         .text_color(theme.muted_foreground)
                                         .child(self.memview_jumpbar(win, cx).w_64())
+                                        .child(div().w(rems(6.)))
                                         .child(div().child("Ascii")),
                                 ),
                             )
@@ -1044,6 +1147,7 @@ fn panel(theme: &Theme) -> Div {
         .bg(theme.background)
         .border_color(theme.border)
         .corner_radii(Corners::all(8.0.into()))
+        .overflow_hidden()
         .p_2()
 }
 
@@ -1141,6 +1245,7 @@ impl Debugger {
                     .font_family(&theme.mono_font_family)
                     .justify_between()
                     .items_center()
+                    .min_w_0()
                     .h(rems(1.))
                     .w(rems(9.0))
                     .child(div().child(reg_id.clone()).text_ellipsis().w(rems(2.)))
@@ -1158,14 +1263,15 @@ impl Debugger {
             .v_flex()
             .id("cpu-scroll-container")
             .gap_2()
+            .min_w_0()
             .child(
                 div()
                     .gap_1()
                     .v_flex()
                     .flex_wrap()
-                    .min_h_0()
+                    .min_w_0()
+                    .overflow_x_scrollbar()
                     .flex_grow_1()
-                    .w_full()
                     .children(gpr),
             )
     }
@@ -1180,8 +1286,11 @@ impl Debugger {
         let pc = self.emucx.read(cx).emu.cpu.pc;
 
         if pc != self.pc {
-            self.mips_dump_scroll_handle
-                .scroll_to(u64::from(pc) / 4, cx);
+            self.mips_dump_scroll_handle.scroll_to(
+                cx,
+                u64::from(pc) / 4,
+                ScrollStrategy::TopOffset(4),
+            );
             self.pc = pc;
         }
 
@@ -1240,8 +1349,8 @@ impl Debugger {
             )
     }
 
-    fn open_disc_button(cx: &mut Context<Debugger>, _theme: &Theme) -> Button {
-        Button::new("disc-path-button")
+    fn open_content_button(cx: &mut Context<Debugger>, _theme: &Theme) -> Button {
+        Button::new("content-path-button")
             .secondary()
             .on_click(cx.listener(|_, _, _, cx| {
                 let path_recv = cx.prompt_for_paths(PathPromptOptions {
@@ -1257,22 +1366,52 @@ impl Debugger {
                     let res = path_recv.await.into_diagnostic()?;
                     let res = res.map_err(|err| miette!("error: {err}"))?;
                     let mut res = res.ok_or_else(|| miette!("no file selected"))?;
-                    let disc_path = res
+                    let content_path = res
                         .pop()
                         .ok_or_else(|| miette!("expected at least one disc path"))?;
 
-                    view.update(cx, move |view, cx| -> miette::Result<()> {
-                        view.emucx.update(cx, |emucx, _| -> miette::Result<()> {
-                            let fsm = emucx.emu.open_disc(&disc_path, false).into_diagnostic()?;
-                            emucx
-                                .emu
-                                .advance_open_disc(&disc_path, fsm, false)
-                                .into_diagnostic()?;
-                            Ok(())
-                        })?;
-                        view.disc_path = Some(disc_path);
-                        Ok(())
-                    })?;
+                    match content_path
+                        .extension()
+                        .map(|ext| ext.to_string_lossy())
+                        .as_deref()
+                    {
+                        Some("bin" | "cue") => {
+                            view.update(cx, move |view, cx| -> miette::Result<()> {
+                                view.emucx.update(cx, |emucx, _| -> miette::Result<()> {
+                                    let fsm = emucx
+                                        .emu
+                                        .open_disc(&content_path, false)
+                                        .into_diagnostic()?;
+                                    emucx
+                                        .emu
+                                        .advance_open_disc(&content_path, fsm, false)
+                                        .into_diagnostic()?;
+                                    Ok(())
+                                })?;
+                                view.content_path = ContentPath::Disc(content_path);
+                                Ok(())
+                            })?;
+                        }
+                        _ => {
+                            let mut file = BufReader::new(
+                                async_fs::File::open(&content_path)
+                                    .await
+                                    .into_diagnostic()?,
+                            );
+                            let mut exe = Vec::new();
+                            file.read_to_end(&mut exe).await.into_diagnostic()?;
+
+                            view.update(cx, move |view, cx| -> miette::Result<()> {
+                                view.emucx.update(cx, |emucx, _| -> miette::Result<()> {
+                                    emucx.hard_reset()?;
+                                    emucx.emu.sideload_exe(&exe).into_diagnostic()?;
+                                    Ok(())
+                                })?;
+                                view.content_path = ContentPath::Exe(content_path);
+                                Ok(())
+                            })?;
+                        }
+                    }
 
                     Ok(())
                 })
@@ -1285,26 +1424,27 @@ impl Debugger {
         cx: &mut Context<Debugger>,
         theme: &Theme,
     ) -> impl IntoElement + Styled {
-        let open_disc = Debugger::open_disc_button(cx, theme);
-        match self.disc_path.as_ref() {
-            None => h_flex().flex_grow_1().child(
-                open_disc
-                    .label("Load Disc")
+        let open_content = Debugger::open_content_button(cx, theme);
+        match &self.content_path {
+            ContentPath::None => h_flex().flex_grow_1().child(
+                open_content
+                    .label("Load Content")
+                    .w_full()
                     .icon(Icon::empty().path("disc-3.svg")),
             ),
-            Some(path) => h_flex()
+            ContentPath::Disc(path) | ContentPath::Exe(path) => h_flex()
                 .min_w_0()
                 .gap_2()
                 .w_full()
+                .child(Button::new("eject-disc-button").icon(Icon::empty().path("eject.svg")))
                 .child(
                     div().min_w_0().flex_grow_1().child(
-                        open_disc.w_full().text_ellipsis().flex().label(
+                        open_content.w_full().text_ellipsis().flex().label(
                             path.file_name()
                                 .map_or(Cow::Borrowed("Unknown"), |f| f.to_string_lossy()),
                         ),
                     ),
-                )
-                .child(Button::new("eject-disc-button").icon(Icon::empty().path("eject.svg"))),
+                ),
         }
     }
 
@@ -1317,8 +1457,6 @@ impl Debugger {
         h_flex()
             .gap_2()
             .items_center()
-            .min_w_0()
-            .flex_grow_1()
             .child(
                 Button::new("reset-button")
                     .icon(Icon::empty().path("rotate-ccw.svg"))
@@ -1773,6 +1911,7 @@ impl VirtualList {
             if let Some(deferred) = scroll.handle.borrow_mut().deferred.take() {
                 state.update(cx, |state, cx| {
                     state.top_row = deferred;
+                    state.frac_px = 0.0;
                     cx.notify();
                 });
             }
@@ -1790,8 +1929,20 @@ impl VirtualListScrollState {
         }
     }
 }
+
+#[derive(Debug, Clone, Copy, Default)]
+pub enum ScrollStrategy {
+    #[default]
+    Top,
+    TopOffset(i64),
+}
+
 impl VirtualListScrollHandle {
-    pub fn scroll_to(&mut self, idx: u64, cx: &mut impl AppContext) {
+    pub fn scroll_to(&mut self, cx: &mut impl AppContext, idx: u64, strategy: ScrollStrategy) {
+        let idx = match strategy {
+            ScrollStrategy::Top => idx,
+            ScrollStrategy::TopOffset(offset) => idx.saturating_add_signed(-offset),
+        };
         if let Some(state) = self.handle.borrow().state.upgrade() {
             state.update(cx, |state, _| state.top_row = idx)
         }

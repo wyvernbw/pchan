@@ -31,6 +31,7 @@
 #![feature(alloc_slice_into_array)]
 #![feature(integer_widen_truncate)]
 #![feature(allocator_ext)]
+#![feature(default_field_values)]
 // allow unused variables in tests to supress the setup tracing warnings
 #![cfg_attr(test, allow(unused_variables))]
 use core::alloc::Allocator;
@@ -116,11 +117,15 @@ impl<A: Allocator + Copy> Emu<A> {
     #[allow(clippy::missing_panics_doc)]
     pub fn panic(&self, panic_msg: &str) -> ! {
         self.dma.dump_cdrom_data();
-        panic!(
+        tracing::trace!(
             "emulator panicked at pc={} with:\n{panic_msg}\n\nstate = {:#?}",
             hex(self.cpu.pc),
             self
-        )
+        );
+        panic!(
+            "emulator panicked at pc={} with:\n{panic_msg}. state dumped to trace.",
+            hex(self.cpu.pc),
+        );
     }
 
     pub fn new_in(alloc: A) -> Self {

@@ -4,19 +4,22 @@ use crate::Emu;
 use crate::cpu::ops::*;
 use crate::cpu::program;
 use crate::dynarec_v2::regalloc::Guest;
+use alloc::alloc::Global;
 use pchan_utils::setup_tracing;
 use rstest::{fixture, rstest};
 
-use crate::run::{Runner, RunnerConfig, RunnerMode};
+use crate::run::{Runner as RunnerInner, RunnerConfig, RunnerMode};
+
+type Runner = RunnerInner<Global>;
 
 #[fixture]
-fn interp() -> Runner<'static> {
+fn interp() -> Runner {
     Runner::new().with_config(RunnerConfig {
         force_mode: Some(RunnerMode::Interpreter),
     })
 }
 #[fixture]
-fn dynarec() -> Runner<'static> {
+fn dynarec() -> Runner {
     Runner::new().with_config(RunnerConfig {
         force_mode: Some(RunnerMode::Dynarec),
     })
@@ -151,7 +154,7 @@ pub fn test_mul_div(
     #[case] rs: (u8, u32),
     #[case] rt: (u8, u32),
     #[case] expected: u64,
-) -> color_eyre::Result<()> {
+) {
     use crate::Emu;
     use crate::cpu::program;
     use assert_hex::*;
@@ -173,7 +176,6 @@ pub fn test_mul_div(
 
     assert_eq_hex!(emu.cpu.hilo, expected);
     assert_eq_hex!(emu.cpu.pc, 16);
-    Ok(())
 }
 
 #[rstest]
@@ -240,7 +242,7 @@ fn test_alu_reg(
     #[case] expected: (Guest, u32),
     #[case] a: (Guest, u32),
     #[case] b: (Guest, u32),
-) -> color_eyre::Result<()> {
+) {
     use crate::Emu;
     use crate::cpu::program;
     use pchan_utils::setup_tracing;
@@ -257,7 +259,6 @@ fn test_alu_reg(
     tracing::info!(?emu.cpu);
     assert_eq!(emu.cpu.gpr[expected.0 as usize], expected.1);
     assert_eq!(emu.cpu.pc, 0x8);
-    Ok(())
 }
 
 #[rstest]
@@ -300,7 +301,7 @@ fn test_alu_imm<I: Into<i16>>(
     #[case] expected: (Guest, u32),
     #[case] a: (Guest, u32),
     #[case] b: I,
-) -> color_eyre::Result<()> {
+) {
     use crate::Emu;
     use crate::cpu::program;
     use pchan_utils::setup_tracing;
@@ -316,8 +317,6 @@ fn test_alu_imm<I: Into<i16>>(
     tracing::info!(?emu.cpu);
     assert_eq!(emu.cpu.gpr[expected.0 as usize], expected.1);
     assert_eq!(emu.cpu.pc, 0x8);
-
-    Ok(())
 }
 
 #[rstest]
@@ -329,7 +328,7 @@ fn test_mtcn(
     #[case] cop: u8,
     #[case] rd: u8,
     #[case] rt: u8,
-) -> color_eyre::Result<()> {
+) {
     use crate::Emu;
     use crate::cpu::program;
     use pchan_utils::setup_tracing;
@@ -350,8 +349,6 @@ fn test_mtcn(
         2 => assert_eq!(emu.cpu.cop2.reg[rd as usize], 69),
         _ => panic!("get out"),
     }
-
-    Ok(())
 }
 
 #[rstest]
@@ -363,7 +360,7 @@ fn test_mfcn(
     #[case] cop: u8,
     #[case] rd: u8,
     #[case] rt: u8,
-) -> color_eyre::Result<()> {
+) {
     use crate::Emu;
     use crate::cpu::program;
     use pchan_utils::setup_tracing;
@@ -380,8 +377,6 @@ fn test_mfcn(
     runner.execute(&mut emu);
     tracing::info!(?emu.cpu);
     assert_eq!(emu.get_reg(rt), 69);
-
-    Ok(())
 }
 #[rstest]
 #[case(2, 5, 10)]
@@ -391,7 +386,7 @@ fn test_ctcn(
     #[case] cop: u8,
     #[case] rd: u8,
     #[case] rt: u8,
-) -> color_eyre::Result<()> {
+) {
     use crate::Emu;
     use crate::cpu::program;
     use pchan_utils::setup_tracing;
@@ -411,14 +406,10 @@ fn test_ctcn(
         2 => assert_eq!(emu.cpu.cop2.reg[rd as usize + 32], 69),
         _ => panic!("get out"),
     }
-
-    Ok(())
 }
 
 #[rstest]
-fn test_mtcn_enable_isc(
-    #[values(dynarec(), interp())] mut runner: Runner,
-) -> color_eyre::Result<()> {
+fn test_mtcn_enable_isc(#[values(dynarec(), interp())] mut runner: Runner) {
     use crate::Emu;
     use crate::cpu::program;
     use pchan_utils::setup_tracing;
@@ -436,14 +427,10 @@ fn test_mtcn_enable_isc(
 
     assert_eq!(emu.cpu.cop0.reg[12], 0x0001_0000);
     assert!(emu.cpu.isc());
-
-    Ok(())
 }
 
 #[rstest]
-fn test_mtcn_enable_irq(
-    #[values(dynarec(), interp())] mut runner: Runner,
-) -> color_eyre::Result<()> {
+fn test_mtcn_enable_irq(#[values(dynarec(), interp())] mut runner: Runner) {
     use crate::Emu;
     use crate::cpu::program;
     use pchan_utils::{hex, setup_tracing};
@@ -481,8 +468,6 @@ fn test_mtcn_enable_irq(
     }
 
     emu.run_io();
-
-    Ok(())
 }
 
 #[rstest]
@@ -493,7 +478,7 @@ pub fn test_mthilo(
     #[case] instr: impl Fn(u8) -> OpCode,
     #[case] (rs, rs_value): (u8, u32),
     #[case] expected: u64,
-) -> color_eyre::Result<()> {
+) {
     use crate::Emu;
     use crate::cpu::program;
     use pchan_utils::{hex, setup_tracing};
@@ -510,7 +495,6 @@ pub fn test_mthilo(
     tracing::info!(?emu.cpu);
     tracing::info!(hilo = %hex(emu.cpu.hilo));
     assert_eq!(emu.cpu.hilo, expected);
-    Ok(())
 }
 
 /// Note: After accessing the lo/hi registers, there seems to be a strange rule
@@ -518,7 +502,7 @@ pub fn test_mthilo(
 /// yet understood if/when/how that rule applies...?
 #[cfg(false)]
 #[rstest]
-pub fn test_mthi_mfhi(#[values(dynarec(), interp())] mut runner: Runner) -> color_eyre::Result<()> {
+pub fn test_mthi_mfhi(#[values(dynarec(), interp())] mut runner: Runner) {
     use pchan_utils::hex;
 
     use crate::Emu;
@@ -570,8 +554,6 @@ pub fn test_mthi_mfhi(#[values(dynarec(), interp())] mut runner: Runner) -> colo
     tracing::info!(hilo = %hex(emu.cpu.hilo));
     assert_ne!(emu.cpu.hilo, 0);
     assert_eq!(emu.cpu.gpr[10], 69);
-
-    Ok(())
 }
 
 #[rstest]
@@ -580,7 +562,7 @@ fn test_j(
     #[values(dynarec(), interp())] mut runner: Runner,
     #[case] initial_pc: u32,
     #[case] jump_imm: u32,
-) -> color_eyre::Result<()> {
+) {
     use crate::Emu;
     use crate::cpu::program;
     use pchan_utils::setup_tracing;
@@ -612,14 +594,10 @@ fn test_j(
             assert_eq!(emu.cpu.pc, new_pc + 4);
         }
     };
-
-    Ok(())
 }
 
 #[rstest]
-fn test_branch_and_store(
-    #[values(dynarec(), interp())] mut runner: Runner,
-) -> color_eyre::Result<()> {
+fn test_branch_and_store(#[values(dynarec(), interp())] mut runner: Runner) {
     use crate::Emu;
     use crate::cpu::program;
     use assert_hex::*;
@@ -644,14 +622,10 @@ fn test_branch_and_store(
     runner.execute(&mut emu);
 
     assert_eq_hex!(emu.read::<u32>(0x200), 0x12);
-
-    Ok(())
 }
 
 #[rstest]
-fn test_0x8004f454_move_in_jump_delay(
-    #[values(dynarec(), interp())] mut runner: Runner,
-) -> color_eyre::Result<()> {
+fn test_0x8004f454_move_in_jump_delay(#[values(dynarec(), interp())] mut runner: Runner) {
     use crate::cpu::program;
     use crate::{Emu, cpu};
     use assert_hex::*;
@@ -682,12 +656,10 @@ fn test_0x8004f454_move_in_jump_delay(
     runner.execute(&mut emu);
 
     assert_eq_hex!(emu.cpu.gpr[5], 0x12);
-
-    Ok(())
 }
 
 #[rstest]
-fn test_weird_load_01(#[values(dynarec(), interp())] mut runner: Runner) -> color_eyre::Result<()> {
+fn test_weird_load_01(#[values(dynarec(), interp())] mut runner: Runner) {
     use crate::Emu;
     use crate::cpu::program;
     use assert_hex::*;
@@ -722,7 +694,6 @@ fn test_weird_load_01(#[values(dynarec(), interp())] mut runner: Runner) -> colo
     assert_eq_hex!(emu.cpu.gpr[10], 0x0000);
 
     tracing::info!("returning from test...");
-    Ok(())
 }
 
 #[rstest]
@@ -734,7 +705,7 @@ fn test_lwcn(
     #[case] cop: u8,
     #[case] rt: u8,
     #[case] rs: u8,
-) -> color_eyre::Result<()> {
+) {
     use crate::Emu;
     use crate::cpu::program;
     use pchan_utils::setup_tracing;
@@ -752,8 +723,6 @@ fn test_lwcn(
     runner.execute(&mut emu);
     tracing::info!(?emu.cpu);
     assert_eq!(emu.get_cop(cop, rt), 0xcafebabe);
-
-    Ok(())
 }
 
 // DONE: on interpreter, consecutive branches are additive ;-;
@@ -810,10 +779,10 @@ mod test_unaligned_load_stores {
 
     use rstest::rstest;
 
+    use super::Runner;
     use crate::cpu::cpu_tests::{dynarec, interp};
     use crate::cpu::ops::{OpCode, lui, lwl, lwr, nop, ori, swl, swr};
     use crate::cpu::{SP, program};
-    use crate::run::Runner;
 
     const fn load_par_program_one_imm(imm: i16) -> [u32; 4] {
         program([lwl(9, SP, imm), lwr(10, SP, imm), nop(), nop()])
@@ -838,7 +807,7 @@ mod test_unaligned_load_stores {
         #[case] prog: [u32; N],
         #[case] t1: u32,
         #[case] t2: u32,
-    ) -> color_eyre::Result<()> {
+    ) {
         use crate::Emu;
         use assert_hex::assert_eq_hex;
         use pchan_utils::setup_tracing;
@@ -861,8 +830,6 @@ mod test_unaligned_load_stores {
 
         assert_eq_hex!(emu.cpu.gpr[9], t1);
         assert_eq_hex!(emu.cpu.gpr[10], t2);
-
-        Ok(())
     }
 
     #[rstest]
@@ -880,9 +847,8 @@ mod test_unaligned_load_stores {
         #[values(dynarec(), interp())] mut runner: Runner,
         #[case] prog: [u32; N],
         #[case] t1: u32,
-    ) -> color_eyre::Result<()> {
+    ) {
         use crate::Emu;
-        use crate::dynarec_v2::PipelineV2;
         use assert_hex::assert_eq_hex;
         use pchan_utils::setup_tracing;
 
@@ -902,8 +868,6 @@ mod test_unaligned_load_stores {
         tracing::info!(?emu.cpu);
 
         assert_eq_hex!(emu.cpu.gpr[9], t1);
-
-        Ok(())
     }
 
     fn single_write_program(imm: i16, op: impl const Fn(u8, u8, i16) -> OpCode) -> [u32; 3] {
@@ -938,7 +902,7 @@ mod test_unaligned_load_stores {
         #[values(dynarec(), interp())] mut runner: Runner,
         #[case] prog: [u32; N],
         #[case] word: u32,
-    ) -> color_eyre::Result<()> {
+    ) {
         use crate::Emu;
         use assert_hex::assert_eq_hex;
         use pchan_utils::setup_tracing;
@@ -959,8 +923,6 @@ mod test_unaligned_load_stores {
 
         let written = emu.read::<u32>(emu.cpu["$sp"]);
         assert_eq_hex!(written, word);
-
-        Ok(())
     }
 }
 

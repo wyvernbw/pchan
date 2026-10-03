@@ -42,6 +42,7 @@ needless_pass_by_value = "allow"
 similar_names = "allow"
 wildcard_imports = "allow"
 redundant_closure_for_method_calls = "allow"
+ignored_unit_patterns = "allow"
 
 # causes problems with dynasm
 semicolon_if_nothing_returned = "allow"

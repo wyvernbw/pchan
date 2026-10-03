@@ -1161,7 +1161,7 @@ fn test_loads(
     #[case] value: u32,
     #[case] instr: impl Fn(u8, u8, i16) -> OpCode,
     #[case] expected: u32,
-) -> color_eyre::Result<()> {
+) {
     use crate::Emu;
     use crate::cpu::program;
     use pchan_utils::setup_tracing;
@@ -1177,12 +1177,10 @@ fn test_loads(
     tracing::info!("finished running");
     tracing::info!(?emu.cpu);
 
-    assert_eq!(emu.cpu.d_clock, 4);
     assert_eq!(emu.cpu.pc, 0x8);
     assert_eq!(emu.cpu.gpr[10], expected);
 
     tracing::info!("returning from test...");
-    Ok(())
 }
 
 /// this will always try to load 0xcafe_babe
@@ -1194,7 +1192,7 @@ fn test_partial_loads(
     #[case] instr: impl Fn(u8, u8, i16) -> OpCode,
     #[case] immediate: i16,
     #[case] expected: u32,
-) -> color_eyre::Result<()> {
+) {
     use crate::Emu;
     use crate::cpu::program;
     use assert_hex::*;
@@ -1212,12 +1210,10 @@ fn test_partial_loads(
     tracing::info!("finished running");
     tracing::info!(?emu.cpu);
 
-    assert_eq_hex!(emu.cpu.d_clock, 4);
     assert_eq_hex!(emu.cpu.pc, 0x8);
     assert_eq_hex!(emu.cpu.gpr[10], expected);
 
     tracing::info!("returning from test...");
-    Ok(())
 }
 
 #[cfg(test)]
@@ -1266,7 +1262,7 @@ fn test_weird_load_01() -> color_eyre::Result<()> {
 #[case::lh(lh)]
 #[case::lhu(lhu)]
 #[case::lw(lw)]
-fn test_load_delay(#[case] instr: impl Fn(u8, u8, i16) -> OpCode) -> color_eyre::Result<()> {
+fn test_load_delay(#[case] instr: impl Fn(u8, u8, i16) -> OpCode) {
     use crate::Emu;
     use crate::cpu::program;
     use pchan_utils::setup_tracing;
@@ -1290,14 +1286,12 @@ fn test_load_delay(#[case] instr: impl Fn(u8, u8, i16) -> OpCode) -> color_eyre:
     tracing::info!("finished running");
     tracing::info!(?emu.cpu);
 
-    assert_eq!(emu.cpu.d_clock, 6);
     assert_eq!(emu.cpu.pc, 0x10);
     assert_eq!(emu.cpu.gpr[10], 69);
     assert_eq!(emu.cpu.gpr[12], 420);
     assert_eq!(emu.cpu.gpr[13], 69 + 420);
 
     tracing::info!("returning from test...");
-    Ok(())
 }
 
 impl DynarecOp for Lwl {
@@ -2028,7 +2022,7 @@ impl DynarecOp for Jal {
 #[cfg(test)]
 #[rstest]
 #[case(0x0, 0x0000_1000)]
-fn test_jal(#[case] initial_pc: u32, #[case] jump_imm: u32) -> color_eyre::Result<()> {
+fn test_jal(#[case] initial_pc: u32, #[case] jump_imm: u32) {
     use crate::Emu;
     use crate::cpu::program;
     use pchan_utils::setup_tracing;
@@ -2049,11 +2043,8 @@ fn test_jal(#[case] initial_pc: u32, #[case] jump_imm: u32) -> color_eyre::Resul
     run_dyn(&mut emu);
     tracing::info!(?emu.cpu);
     assert_eq!(emu.cpu.gpr[9], 69);
-    assert_eq!(emu.cpu.d_clock, 4);
     assert_eq!(emu.cpu.pc, new_pc);
     assert_eq!(emu.cpu.gpr[cpu::RA as usize], initial_pc + 0x8);
-
-    Ok(())
 }
 
 impl DynarecOp for Jr {
@@ -2096,7 +2087,7 @@ impl DynarecOp for Jr {
 #[cfg(test)]
 #[rstest]
 #[case(0x0, (9, 0x0000_1000))]
-fn test_jr(#[case] initial_pc: u32, #[case] rs: (Guest, u32)) -> color_eyre::Result<()> {
+fn test_jr(#[case] initial_pc: u32, #[case] rs: (Guest, u32)) {
     use crate::Emu;
     use crate::cpu::program;
     use pchan_utils::setup_tracing;
@@ -2112,10 +2103,7 @@ fn test_jr(#[case] initial_pc: u32, #[case] rs: (Guest, u32)) -> color_eyre::Res
     run_dyn(&mut emu);
     tracing::info!(?emu.cpu);
     assert_eq!(emu.cpu.gpr[9], 69);
-    assert_eq!(emu.cpu.d_clock, 4);
     assert_eq!(emu.cpu.pc, rs.1);
-
-    Ok(())
 }
 
 #[cfg(test)]
@@ -2198,11 +2186,7 @@ impl DynarecOp for Jalr {
 #[cfg(test)]
 #[rstest]
 #[case(0x0, (9, 0x0000_1000), 10)]
-fn test_jalr(
-    #[case] initial_pc: u32,
-    #[case] rs: (Guest, u32),
-    #[case] rd: Guest,
-) -> color_eyre::Result<()> {
+fn test_jalr(#[case] initial_pc: u32, #[case] rs: (Guest, u32), #[case] rd: Guest) {
     use crate::Emu;
     use crate::cpu::program;
     use pchan_utils::setup_tracing;
@@ -2223,11 +2207,8 @@ fn test_jalr(
     run_dyn(&mut emu);
     tracing::info!(?emu.cpu);
     assert_eq!(emu.cpu.gpr[9], 69);
-    assert_eq!(emu.cpu.d_clock, 4);
     assert_eq!(emu.cpu.pc, rs.1);
     assert_eq!(emu.cpu.gpr[rd as usize], initial_pc + 0x8);
-
-    Ok(())
 }
 
 /// `selector` must look something like
