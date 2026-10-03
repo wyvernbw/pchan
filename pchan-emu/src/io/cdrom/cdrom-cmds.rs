@@ -150,7 +150,7 @@ impl CDRomState {
                             data: smallvec![0x08, 0x40],
                             done: true,
                         });
-                        todo!("subscribe");
+                        self.drive.cmd_subscribe_to(res1);
                         smallvec![
                             CdromResponse::Immediate(self.int3_status(false)),
                             CdromResponse::InCycles(0x0004a00, res1),

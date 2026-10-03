@@ -86,7 +86,14 @@ impl<A: Allocator + Copy> Emu<A> {
                 Ok(chcr.io_from_u32())
             }
 
-            0x1f8010b0..=0x1f8010bf => trace_todo!(0x0, "read at dma3 (cdrom)"),
+            0x1f8010b0 => Ok(self.dma().dma3.madr.addr().io_from_u32()),
+            0x1f8010b4 => Ok(self.dma().dma3.bcr.io_from_u32()),
+            0x1f8010b8 => {
+                let chcr = self.dma().dma3.chcr;
+                tracing::trace!("read at dma3chcr (cdrom chcr): {:?}", chcr.transfer());
+                Ok(chcr.io_from_u32())
+            }
+            // 0x1f8010b0..=0x1f8010bf => trace_todo!(0x0, "read at dma3 (cdrom)"),
             0x1f8010c0..=0x1f8010cf => trace_todo!(0x0, "read at dma4 (spu)"),
             0x1f8010d0..=0x1f8010df => trace_todo!(0x0, "read at dma5 (pio)"),
 
