@@ -258,6 +258,7 @@ impl CDRomState {
 
     /// `ReadN` - Command 06h --> INT3(stat) --> INT1(stat) --> datablock
     fn readn_cmd(&mut self) -> ResponseList {
+        tracing::info!("ReadN");
         self.drive.status_code.set_spindle_mot(true);
         self.drive.readn();
         smallvec![CdromResponse::Immediate(self.int3_status(true))]

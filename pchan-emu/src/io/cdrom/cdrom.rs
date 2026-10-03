@@ -160,7 +160,7 @@ impl<A: Allocator + Copy> Emu<A> {
             (0x1f801800, _) => Ok(self.cdrom().status.io_from_u32()),
             (0x1f801801, _) => match self
                 .cdrom_mut()
-                .pop_response()
+                .pop_result()
                 .inspect(|value| tracing::info!("cdrom: return response {}", hex(*value)))
             {
                 Some(value) => Ok(value.io_from_u32()),
@@ -486,7 +486,7 @@ impl CDRomState {
         }
     }
     #[pchan_macros::instrument(skip_all, ret)]
-    fn pop_response(&mut self) -> Option<u8> {
+    fn pop_result(&mut self) -> Option<u8> {
         let res = self.result_fifo.pop_front();
         if self.result_fifo.is_empty() {
             self.status.set_result_rready(false);

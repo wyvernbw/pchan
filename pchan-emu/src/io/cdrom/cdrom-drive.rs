@@ -300,7 +300,10 @@ impl<A: Allocator + Copy> Emu<A> {
                 .cdrom
                 .drive
                 .open_disc_bin(path, streamed)
-                .map(|_| OpenDiscFSM::Done),
+                .map(|disc_reader| {
+                    self.cdrom.drive.disc = Some(Disc::Raw(disc_reader));
+                    OpenDiscFSM::Done
+                }),
         }
     }
 

@@ -218,7 +218,8 @@ use core::mem::size_of;
 
 const PTR_SIZE: usize = size_of::<usize>();
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, derive_more::Debug)]
+#[debug("{}", self)]
 pub struct Hex<const PREFIX: bool> {
     buf: [u8; PTR_SIZE * 2 + 2],
     len: usize,
