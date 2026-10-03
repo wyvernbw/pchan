@@ -36,11 +36,37 @@ impl GameSurface {
     }
 
     pub fn clear<T>(&self, cx: &Context<'_, T>) {
+        let state = self.state.read(cx);
+        state.clear(&self.renderer);
+    }
+}
+
+pub struct SurfaceState {
+    pub target:         PchanTexture,
+    pub target_buf:     wgpu::Buffer,
+    rendered_once:      Cell<bool>,
+    display_submission: Cell<Option<wgpu::SubmissionIndex>>,
+
+    #[cfg(target_os = "macos")]
+    metal_ypcbcr: Option<MetalYpCbCrComputeState>,
+}
+
+impl SurfaceState {
+    #[must_use]
+    pub fn new(target: PchanTexture, target_buf: wgpu::Buffer) -> Self {
+        Self {
+            target,
+            target_buf,
+            display_submission: Cell::new(None),
+            metal_ypcbcr: None,
+            rendered_once: Cell::new(false),
+        }
+    }
+
+    pub fn clear(&self, gpu: &pchan_gpu::Renderer) {
         use wgpu::*;
 
-        let state = self.state.read(cx);
-        let mut encoder = self
-            .renderer
+        let mut encoder = gpu
             .device
             .create_command_encoder(&CommandEncoderDescriptor::default());
         let range = &ImageSubresourceRange {
@@ -50,11 +76,11 @@ impl GameSurface {
             base_array_layer:  0,
             array_layer_count: None,
         };
-        encoder.clear_texture(&state.target.wgpu, range);
+        encoder.clear_texture(&self.target.wgpu, range);
 
         #[cfg(target_os = "macos")]
         {
-            let buf = &state.target.metal.pixel_buffer;
+            let buf = &self.target.metal.pixel_buffer;
             let ret = buf.lock_base_address(0);
             if ret == 0 {
                 let y_value = 0;
@@ -81,37 +107,13 @@ impl GameSurface {
         }
 
         let cmd_buf = encoder.finish();
-        let sub = self.renderer.queue.submit([cmd_buf]);
-        self.renderer
-            .device
+        let sub = gpu.queue.submit([cmd_buf]);
+        gpu.device
             .poll(wgt::PollType::Wait {
                 submission_index: Some(sub),
                 timeout:          None,
             })
             .unwrap();
-    }
-}
-
-pub struct SurfaceState {
-    pub target:         PchanTexture,
-    pub target_buf:     wgpu::Buffer,
-    rendered_once:      Cell<bool>,
-    display_submission: Cell<Option<wgpu::SubmissionIndex>>,
-
-    #[cfg(target_os = "macos")]
-    metal_ypcbcr: Option<MetalYpCbCrComputeState>,
-}
-
-impl SurfaceState {
-    #[must_use]
-    pub fn new(target: PchanTexture, target_buf: wgpu::Buffer) -> Self {
-        Self {
-            target,
-            target_buf,
-            display_submission: Cell::new(None),
-            metal_ypcbcr: None,
-            rendered_once: Cell::new(false),
-        }
     }
 }
 
@@ -696,7 +698,7 @@ pub(crate) fn draw_display(
             view:           &target_view,
             resolve_target: None,
             ops:            wgpu::Operations {
-                load:  wgpu::LoadOp::Clear(Color::BLACK),
+                load:  wgpu::LoadOp::Load,
                 store: wgpu::StoreOp::Store,
             },
             depth_slice:    None,

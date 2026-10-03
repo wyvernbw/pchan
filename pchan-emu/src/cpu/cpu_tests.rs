@@ -952,3 +952,38 @@ fn load_and_compare(#[values(dynarec(), interp())] mut runner: Runner) {
     runner.execute(&mut emu);
     assert_eq!(emu.read::<u32>(0x100), 0)
 }
+
+#[cfg(test)]
+#[rstest]
+#[case(0x0, (11, 0x0000_1000), 10)]
+fn test_jalr(
+    #[values(dynarec(), interp())] mut runner: Runner,
+    #[case] initial_pc: u32,
+    #[case] rs: (Guest, u32),
+    #[case] rd: Guest,
+) {
+    use crate::Emu;
+    use crate::cpu::program;
+    use pchan_utils::setup_tracing;
+
+    setup_tracing();
+    let mut emu = Emu::default();
+    emu.cpu.pc = initial_pc;
+    emu.cpu.gpr[rs.0 as usize] = rs.1;
+    emu.write_many(
+        initial_pc,
+        &program([
+            jalr(rd, rs.0),
+            addiu(9, 0, 69),
+            addiu(9, 0, 420),
+            OpCode::HALT,
+        ]),
+    );
+    emu.write(rs.1, OpCode::HALT);
+    runner.execute(&mut emu);
+    tracing::info!(?emu.cpu);
+    assert_eq!(emu.cpu.gpr[9], 69);
+    // interpreter will increment pc after jump, but dynarec doesn't
+    assert!(emu.cpu.pc == rs.1 || emu.cpu.pc == rs.1 + 0x4);
+    assert_eq!(emu.cpu.gpr[rd as usize], initial_pc + 0x8);
+}

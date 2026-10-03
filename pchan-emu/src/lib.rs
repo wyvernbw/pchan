@@ -87,7 +87,7 @@ pub struct Emu<A: Allocator + Copy = Global> {
     #[debug(skip)]
     pub spu:           SpuState,
     #[cfg(feature = "debugger-ext")]
-    pub dbg:           DebuggerState,
+    pub dbg:           DebuggerState<A>,
     pub cdrom:         CDRomState,
     pub sio:           SioState,
     pub irq:           IrqState,
@@ -140,7 +140,7 @@ impl<A: Allocator + Copy> Emu<A> {
             timers: TimerState::default(),
             spu: SpuState::default(),
             #[cfg(feature = "debugger-ext")]
-            dbg: DebuggerState::default(),
+            dbg: DebuggerState::new(alloc),
             cdrom: CDRomState::default(),
             sio: SioState::default(),
             irq: IrqState::default(),

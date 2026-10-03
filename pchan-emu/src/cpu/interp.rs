@@ -144,10 +144,10 @@ impl Interpreter {
 }
 
 impl<A: Allocator + Copy> Emu<A> {
-    pub(super) fn set_reg(&mut self, idx: u8, value: u32) {
+    pub(crate) fn set_reg(&mut self, idx: u8, value: u32) {
         self.cpu.gpr[idx as usize] = value;
     }
-    pub(super) fn get_reg(&self, idx: u8) -> u32 {
+    pub(crate) fn get_reg(&self, idx: u8) -> u32 {
         self.cpu.gpr[idx as usize]
     }
     pub(super) fn set_cop(&mut self, cop: u8, idx: u8, value: u32) {

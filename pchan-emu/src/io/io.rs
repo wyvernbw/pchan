@@ -65,8 +65,57 @@ impl<A: Allocator + Copy> Emu<A> {
             (0xa0, 0x3c) | (0xb0, 0x3d) => {
                 self.tty.putchar(self.cpu.gpr[4] as u8 as _);
             }
+            (0xa0, 0xa1) => self.kernel_system_error(self.cpu.gpr[4] as u8, self.cpu.gpr[5]),
             _ => {}
         }
+
+        #[cfg(feature = "debugger-ext")]
+        {
+            // TODO: make sure frames get popped when guest returns from function
+            if pc == 0xa0 || pc == 0xb0 || pc == 0xc0 {
+                use crate::cpu;
+                use crate::debug::KernelFrame;
+
+                self.dbg.kernel_fn_stack.push(KernelFrame::new(
+                    pc,
+                    self.cpu.gpr[9],
+                    self.cpu.gpr[usize::from(cpu::RA)],
+                    [
+                        self.cpu.gpr[4],
+                        self.cpu.gpr[5],
+                        self.cpu.gpr[6],
+                        self.cpu.gpr[7],
+                        self.cpu.gpr[usize::from(cpu::SP)],
+                    ],
+                ));
+                // FIXME: remove this
+                if self.dbg.kernel_fn_stack.len() > 5 {
+                    self.dbg.kernel_fn_stack.remove(0);
+                }
+            }
+        }
+    }
+
+    fn kernel_system_error(&self, ty: u8, errorcode: u32) {
+        match ty {
+            b'B' => {
+                tracing::error!("(guest.kernel) System Error: Boot, code {}", hex(errorcode))
+            }
+            b'D' => {
+                tracing::error!("(guest.kernel) System Error: Disk, code {}", hex(errorcode))
+            }
+            _ => {
+                tracing::error!(
+                    "(guest.kernel) System Error: Unknown, code {}",
+                    hex(errorcode)
+                )
+            }
+        };
+        #[cfg(feature = "debugger-ext")]
+        {
+            tracing::error!("kernel fn stack:{:#?}", self.dbg.kernel_fn_stack);
+        }
+        panic!("treating kernel system error as fatal. dumped kernel frames.")
     }
 }
 

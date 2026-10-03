@@ -507,7 +507,11 @@ impl Debugger {
 
         cx.on_action::<Step>({
             let emucx = emucx.clone();
+            let surface_state = surface_state.clone();
             move |_, cx| {
+                surface_state.update(cx, |surface, _| {
+                    surface.clear(&gpu);
+                });
                 emucx.update(cx, |emucx, _| {
                     emucx.runner.execute(&mut emucx.emu);
                     emucx.running_notify.notify(usize::MAX);
