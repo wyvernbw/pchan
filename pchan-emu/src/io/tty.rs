@@ -10,9 +10,9 @@ const TTY_CAP: usize = kb(16);
 #[derive(derive_more::Debug, Clone)]
 pub struct Tty {
     #[debug("buf: {}/{}", self.end, TTY_CAP)]
-    buf:  Box<[u8]>,
-    end:  usize,
-    mode: TtyMode,
+    pub buf: Box<[u8]>,
+    end:     usize,
+    mode:    TtyMode,
 }
 
 #[derive(derive_more::Debug, Clone)]

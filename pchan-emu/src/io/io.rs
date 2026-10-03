@@ -115,7 +115,7 @@ impl<A: Allocator + Copy> Emu<A> {
         {
             tracing::error!("kernel fn stack:{:#?}", self.dbg.kernel_fn_stack);
         }
-        panic!("treating kernel system error as fatal. dumped kernel frames.")
+        self.panic("treating kernel system error as fatal. dumped kernel frames.")
     }
 }
 

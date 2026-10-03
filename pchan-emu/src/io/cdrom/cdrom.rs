@@ -10,18 +10,18 @@ mod cdrom_ver;
 use core::alloc::Allocator;
 
 use alloc::collections::VecDeque;
+use slotmap::SlotMap;
 
 use crate::io::cdrom::cdrom_cmds::{CdromResponse, Response};
 use crate::io::cdrom::cdrom_drive::{CdromDrive, CommandState};
 use crate::io::cdrom::cdrom_ver::CDRomVerPtr;
-use crate::io::evque::{EvCtx, Evque};
+use crate::io::evque::{EvCtx, EventId, Evque};
 use crate::io::irq::{self};
 use crate::io::{CastIOFrom, CastIOInto, UnhandledIO};
 use crate::{Emu, trace_todo};
 use arbitrary_int::prelude::*;
 use bitbybit::{bitenum, bitfield};
 use pchan_utils::hex;
-use slab::Slab;
 
 #[derive(Default, derive_more::Debug, Clone)]
 pub struct CDRomState {
@@ -37,7 +37,7 @@ pub struct CDRomState {
     data_fifo:   VecDeque<u8>,
     ver:         CDRomVerPtr,
 
-    responses: Slab<Response>,
+    responses: SlotMap<EventId, Response>,
 
     drive: CdromDrive,
 }
@@ -78,19 +78,15 @@ impl<A: Allocator + Copy> Emu<A> {
             }
 
             (0x1f801801, 0) => {
+                tracing::info!("send cmd: {}", hex(value));
                 for response in self.cdrom_mut().send_cmd(value) {
                     match response {
                         CdromResponse::None => {}
                         CdromResponse::Immediate(response) => {
-                            // DONE: dedup this code
                             self.cdrom_send_response(response);
-
-                            self.cdrom.drive.run(&mut CdromScheduler {
-                                evque:     &mut self.evque,
-                                responses: &mut self.cdrom.responses,
-                            });
                         }
                         CdromResponse::InCycles(in_cycles, id) => {
+                            tracing::info!("queuing event#{:?}", id);
                             self.evque_mut().schedule(
                                 Self::handle_ev_cdrom_response,
                                 id,
@@ -99,7 +95,7 @@ impl<A: Allocator + Copy> Emu<A> {
                         }
                     }
                 }
-                self.cdrom_mut().param_fifo.clear();
+                self.cdrom.param_clear();
                 Ok(())
             }
             (0x1f801801, 1) => Ok(()), // unused
@@ -112,6 +108,7 @@ impl<A: Allocator + Copy> Emu<A> {
 
             (0x1f801802, 0) => {
                 self.cdrom_mut().param_push(value);
+                tracing::info!("param push: {}", hex(value));
                 Ok(())
             }
             (0x1f801802, 1) => {
@@ -129,11 +126,6 @@ impl<A: Allocator + Copy> Emu<A> {
             (0x1f801803, 0) => {
                 let req = CDRomReqRegister::new_with_raw_value(value);
                 self.cdrom.request = req;
-                if self.cdrom.request.bfrd() {
-                    self.cdrom
-                        .drive
-                        .request_data(&mut self.cdrom.status, &mut self.cdrom.data_fifo);
-                }
                 Ok(())
             }
             (0x1f801803, 1) => {
@@ -149,7 +141,7 @@ impl<A: Allocator + Copy> Emu<A> {
             }
             _ => Err(UnhandledIO(address)),
         }
-        .inspect(|()| tracing::info!("w(cdrom) @ {}:{}", hex(address), bank))
+        // .inspect(|()| tracing::info!("|- w(cdrom) @ {}:{}", hex(address), bank))
     }
 
     #[pchan_macros::pchan_instrument_read]
@@ -175,7 +167,7 @@ impl<A: Allocator + Copy> Emu<A> {
             (0x1f801803, 1 | 3) => Ok(self.cdrom().hint_status.io_from_u32()),
             _ => Err(UnhandledIO(address)),
         }
-        .inspect(|_| tracing::info!("r(cdrom) @ {}:{}", hex(address), bank))
+        // .inspect(|_| tracing::info!("|- r(cdrom) @ {}:{}", hex(address), bank))
     }
 
     fn cdrom_send_response(&mut self, response: Response) {
@@ -188,6 +180,7 @@ impl<A: Allocator + Copy> Emu<A> {
         } else {
             tracing::info!("cdrom: response irq masked out")
         }
+
         if response.done {
             self.cdrom.drive.set_command_state(CommandState::Idle);
             self.cdrom_mut().status.set_busy_status(false);
@@ -195,7 +188,8 @@ impl<A: Allocator + Copy> Emu<A> {
     }
 
     fn cdrom_schedule_irq(&mut self) {
-        self.evque_mut().schedule(Self::irq_trigger_cdrom, 0, 1000);
+        self.evque_mut()
+            .schedule(Self::irq_trigger_cdrom, EventId::default(), 1000);
     }
 
     fn irq_trigger_cdrom(&mut self, _: EvCtx) {
@@ -212,14 +206,19 @@ impl<A: Allocator + Copy> Emu<A> {
                 }
             }
         }
+        tracing::info!("handling event#{:?}", ctx.id);
 
-        let response = self.cdrom_mut().responses.remove(ctx.id);
+        let Some(response) = self.cdrom_mut().responses.remove(ctx.id) else {
+            tracing::warn!("event {:?} lost.", ctx.id);
+            return;
+        };
         self.cdrom_send_response(response);
 
         tracing::info!("HINT_STAT={}", hex(self.cdrom().hint_status));
         tracing::info!("trigger cdrom irq!");
 
         self.cdrom.drive.run(&mut CdromScheduler {
+            id:        ctx.id,
             evque:     &mut self.evque,
             responses: &mut self.cdrom.responses,
         });
@@ -231,7 +230,7 @@ impl<A: Allocator + Copy> Emu<A> {
             let value = self
                 .cdrom
                 .data_fifo
-                .pop_back()
+                .pop_front()
                 .unwrap_or(self.cdrom.data_last);
             self.cdrom.data_last = value;
             *byte = value;
@@ -244,8 +243,9 @@ impl<A: Allocator + Copy> Emu<A> {
 }
 
 struct CdromScheduler<'a, A: Allocator + Copy> {
+    id:        EventId,
     evque:     &'a mut Evque<Emu<A>>,
-    responses: &'a mut Slab<Response>,
+    responses: &'a mut SlotMap<EventId, Response>,
 }
 
 impl<A: Allocator + Copy> CdromScheduler<'_, A> {
@@ -443,9 +443,7 @@ impl CDRomState {
             hintsts.set_buf_wrdy(false);
         }
         if hclrctl.clr_param_fifo() {
-            self.param_fifo.clear();
-            self.status.set_param_empty(true);
-            self.status.set_param_wready(true);
+            self.param_clear();
         }
         // TODO: smap, reset decoder
     }
@@ -456,9 +454,7 @@ impl CDRomState {
         match self.param_fifo.push_back(param) {
             Ok(()) => {
                 self.status.set_param_empty(false);
-                if self.param_fifo.is_full() {
-                    self.status.set_param_wready(false);
-                }
+                self.status.set_param_wready(!self.param_fifo.is_full());
             }
             Err(param) => {
                 // overwrite last
@@ -466,6 +462,11 @@ impl CDRomState {
                 become self.param_push(param);
             }
         }
+    }
+    fn param_clear(&mut self) {
+        self.param_fifo.clear();
+        self.status.set_param_empty(true);
+        self.status.set_param_wready(true);
     }
     fn result_push(&mut self, result: u8) {
         match self.result_fifo.push_back(result) {
@@ -492,5 +493,10 @@ impl CDRomState {
             self.status.set_result_rready(false);
         }
         res
+    }
+
+    fn result_clear(&mut self) {
+        self.result_fifo.clear();
+        self.status.set_result_rready(false);
     }
 }

@@ -33,7 +33,7 @@ smallvec = { version = "1.16.1", features = ["const_new"] }
 strum = { version = "0.28.0", features = ["derive"] }
 thiserror = "2.0.21"
 glam = "0.33.9"
-slab = "*"
+slotmap = "1.1.1"
 
 [dev-dependencies]
 pchan-utils = { workspace = true, features = ["tracing-subscriber"] }

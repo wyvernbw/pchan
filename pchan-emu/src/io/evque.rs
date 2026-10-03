@@ -3,6 +3,7 @@ use core::cmp;
 
 use heapless::BinaryHeap;
 use heapless::binary_heap::Min;
+use slotmap::new_key_type;
 
 use crate::Emu;
 
@@ -13,18 +14,13 @@ pub struct Evque<T: ?Sized> {
     queue: Box<BinaryHeap<PchanEvent<T>, Min, 512>>,
 }
 
+new_key_type! { pub struct EventId; }
+
+#[derive(Default)]
 pub struct EvCtx {
-    pub id:        usize,
+    pub id:        EventId,
     pub clock:     u64,
     pub overshoot: u64,
-}
-
-impl EvCtx {
-    pub const ZERO: EvCtx = EvCtx {
-        id:        0,
-        clock:     0,
-        overshoot: 0,
-    };
 }
 
 pub type PchanEventFn<T> = fn(&mut T, ctx: EvCtx);
@@ -33,7 +29,7 @@ pub type PchanEventFn<T> = fn(&mut T, ctx: EvCtx);
 pub struct PchanEvent<T: ?Sized> {
     at_cycle: u64,
     fnptr:    PchanEventFn<T>,
-    id:       usize,
+    id:       EventId,
 }
 
 impl<T> Default for Evque<T> {
@@ -92,7 +88,7 @@ impl<T: ?Sized> Evque<T> {
     pub fn schedule_from(
         &mut self,
         cb: PchanEventFn<T>,
-        id: usize,
+        id: EventId,
         from_clock: u64,
         in_cycles: u64,
     ) {
@@ -105,7 +101,7 @@ impl<T: ?Sized> Evque<T> {
         debug_assert!(res.is_ok(), "evque is too small");
     }
 
-    pub fn schedule(&mut self, cb: PchanEventFn<T>, id: usize, in_cycles: u64) {
+    pub fn schedule(&mut self, cb: PchanEventFn<T>, id: EventId, in_cycles: u64) {
         self.schedule_from(cb, id, self.clock, in_cycles);
     }
 }

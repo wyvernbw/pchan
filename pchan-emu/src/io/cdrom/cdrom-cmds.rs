@@ -1,9 +1,10 @@
 use core::iter;
 
 use crate::cpu::Cpu;
-use crate::io::cdrom::cdrom_drive::CommandState;
+use crate::io::cdrom::cdrom_drive::DriveState;
 use crate::io::cdrom::cdrom_format::{Bcd, Mss};
 use crate::io::cdrom::{CDRomState, DriveStatus};
+use crate::io::evque::EventId;
 use bitbybit::{bitenum, bitfield};
 use pchan_utils::hex;
 use smallvec::{SmallVec, smallvec};
@@ -23,13 +24,11 @@ impl Response {
     }
 }
 
-pub type ResponseId = usize;
-
 #[derive(Debug, Clone)]
 pub enum CdromResponse {
     None,
     Immediate(Response),
-    InCycles(u64, ResponseId),
+    InCycles(u64, EventId),
 }
 
 /// ```plaintext
@@ -84,7 +83,8 @@ impl CDRomState {
     }
     pub fn send_cmd(&mut self, cmd: u8) -> ResponseList {
         self.status.set_busy_status(true);
-        self.result_fifo.clear();
+        self.result_clear();
+        self.drive.cmd_clear();
 
         #[expect(clippy::items_after_statements)]
         fn diskerr(data: &[u8]) -> SmallVec<[CdromResponse; 2]> {
@@ -111,7 +111,11 @@ impl CDRomState {
                     // 20h INT3(yy,mm,dd,ver) Get cdrom BIOS date/version (yy,mm,dd,ver)
                     0x20 => {
                         self.status.set_busy_status(false);
-                        smallvec![CdromResponse::Immediate(self.int3_status(true))]
+                        smallvec![CdromResponse::Immediate(Response {
+                            int:  HInt::Int3Ack,
+                            data: self.ver.as_slice().into(),
+                            done: true,
+                        })]
                     }
 
                     _ => {
@@ -141,30 +145,29 @@ impl CDRomState {
                     }
                     DriveStatus::NoDisk => {
                         self.status.set_busy_status(false);
+                        let res1 = self.responses.insert(Response {
+                            int:  HInt::Int5DiskErr,
+                            data: smallvec![0x08, 0x40],
+                            done: true,
+                        });
+                        todo!("subscribe");
                         smallvec![
-                            CdromResponse::Immediate(Response {
-                                int:  HInt::Int3Ack,
-                                data: smallvec![0x08, 0x40],
-                                done: false,
-                            }),
-                            CdromResponse::Immediate(Response {
-                                int:  HInt::Int5DiskErr,
-                                data: smallvec![],
-                                done: true,
-                            }),
+                            CdromResponse::Immediate(self.int3_status(false)),
+                            CdromResponse::InCycles(0x0004a00, res1),
                         ]
                     }
                     DriveStatus::AudioDisk => todo!(),
                     // INT3(stat), INT2(02h,00h, 20h,00h, 53h,43h,45h,4xh)
                     DriveStatus::LicensedMode2 => {
-                        self.status.set_busy_status(false);
+                        let res2 = self.responses.insert(Response {
+                            int:  HInt::Int2Complete,
+                            data: smallvec![0x02, 0x00, 0x20, 0x00, 0x53, 0x43, 0x45, 0x49],
+                            done: true,
+                        });
+                        self.drive.cmd_subscribe_to(res2);
                         smallvec![
                             CdromResponse::Immediate(self.int3_status(false)),
-                            CdromResponse::Immediate(Response {
-                                int:  HInt::Int2Complete,
-                                data: smallvec![0x02, 0x00, 0x20, 0x00, 0x53, 0x43, 0x45, 0x49],
-                                done: true,
-                            }),
+                            CdromResponse::InCycles(0x0004a00, res2)
                         ]
                     }
                 }
@@ -174,8 +177,8 @@ impl CDRomState {
                 tracing::info!("ReadTOC");
                 let res1 = self.responses.insert(self.int3_status(false));
                 let res2 = self.responses.insert(self.int2_status(true));
-                self.drive
-                    .set_command_state(CommandState::responding([res1, res2]));
+                self.drive.cmd_subscribe_to(res1);
+                self.drive.cmd_subscribe_to(res2);
                 smallvec![
                     CdromResponse::InCycles(105, res1),
                     CdromResponse::InCycles(u64::from(Cpu::CLOCK), res2),
@@ -238,8 +241,9 @@ impl CDRomState {
         self.drive.status_code.set_seek(true);
         self.drive.seek_to_cursor();
         let res2 = self.responses.insert(self.int2_status(true));
-        self.drive
-            .set_command_state(CommandState::responding([res1, res2]));
+        self.drive.cmd_subscribe_to(res1);
+        self.drive.cmd_subscribe_to(res2);
+        self.drive.drive_state = DriveState::SeekL(res2);
         smallvec![
             CdromResponse::InCycles(0x000c4e1, res1),
             CdromResponse::InCycles(SEEK_TIME, res2)
@@ -251,7 +255,7 @@ impl CDRomState {
         self.status.set_busy_status(false);
         let res = self.int3_status(true);
         let setmode = self.get_param::<SetMode>();
-        tracing::info!("Setmode\t{setmode:?}");
+        tracing::info!("Setmode\t{} {setmode:?}", hex(setmode));
         self.drive.setmode(setmode);
         smallvec![CdromResponse::Immediate(res)]
     }
@@ -260,21 +264,26 @@ impl CDRomState {
     fn readn_cmd(&mut self) -> ResponseList {
         tracing::info!("ReadN");
         self.drive.status_code.set_spindle_mot(true);
-        self.drive.readn();
-        smallvec![CdromResponse::Immediate(self.int3_status(true))]
+        let res1 = self.responses.insert(self.int3_status(false));
+        self.drive.cmd_clear();
+        self.drive.cmd_subscribe_to(res1);
+        self.drive.drive_state = DriveState::ReadN(res1);
+        smallvec![CdromResponse::InCycles(0x000c4e1, res1)]
+        // smallvec![CdromResponse::Immediate(self.int3_status(true))]
     }
 
     /// Pause - Command 09h --> INT3(stat) --> INT2(stat)
     fn pause_cmd(&mut self) -> ResponseList {
         tracing::info!("Pause");
         let current_stat = self.int3_status(false);
+        let res1 = self.responses.insert(current_stat);
         self.drive.pause();
         let res2 = self.responses.insert(self.int2_status(true));
-        self.drive
-            .set_command_state(CommandState::responding([res2]));
+        self.drive.cmd_subscribe_to(res1);
+        self.drive.cmd_subscribe_to(res2);
         smallvec![
-            CdromResponse::Immediate(current_stat),
-            CdromResponse::InCycles(220, res2)
+            CdromResponse::InCycles(0x000c4e1, res1),
+            CdromResponse::InCycles(0x000c4e1 + 0x010bd93, res2)
         ]
     }
 
@@ -286,8 +295,8 @@ impl CDRomState {
         self.drive.status_code.set_spindle_mot(true);
         let res1 = self.responses.insert(self.int3_status(false));
         let res2 = self.responses.insert(self.int2_status(true));
-        self.drive
-            .set_command_state(CommandState::responding([res1, res2]));
+        self.drive.cmd_subscribe_to(res1);
+        self.drive.cmd_subscribe_to(res2);
         smallvec![
             CdromResponse::InCycles(105, res1),
             CdromResponse::InCycles(0x000f820, res2),

@@ -11,7 +11,7 @@ use pchan_bind::{AudioProducer, BindAudioProducer};
 use pchan_utils::hex;
 
 use crate::Emu;
-use crate::io::evque::EvCtx;
+use crate::io::evque::{EvCtx, EventId};
 use crate::io::{CastIOFrom, CastIOInto, IOResult, UnhandledIO};
 use crate::memory::kb;
 use crate::spu::adpcm::{ADPCMCurrent, ADPCMHeader, ADPCMRepeat, ADPCMSampleRate, ADPCMStart};
@@ -330,7 +330,7 @@ impl<A: Allocator + Copy> Emu<A> {
         let last_clock = self.spu.clock_idx * SpuState::CLOCK_CYCLES;
         self.evque_mut().schedule_from(
             Self::handle_ev_spu_clock,
-            0,
+            EventId::default(),
             last_clock,
             SpuState::CLOCK_CYCLES,
         );

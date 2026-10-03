@@ -1,6 +1,7 @@
 use core::alloc::Allocator;
 
 use crate::gpu::GpuCmd;
+use crate::io::evque::EventId;
 use crate::io::irq::Irq;
 use crate::io::{CastIOFrom, CastIOInto, IOResult, UnhandledIO};
 use crate::{Emu, trace_todo};
@@ -204,7 +205,7 @@ impl<A: Allocator + Copy> Emu<A> {
                             emu.handle_dma_event(transfer);
                         }
                     },
-                    0,
+                    EventId::default(),
                     event.in_cycles,
                 );
             }

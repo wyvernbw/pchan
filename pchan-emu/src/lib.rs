@@ -149,7 +149,7 @@ impl<A: Allocator + Copy> Emu<A> {
             stats: Stats::default(),
             alloc,
         };
-        emu.handle_ev_spu_clock(io::evque::EvCtx::ZERO);
+        emu.handle_ev_spu_clock(io::evque::EvCtx::default());
         emu
     }
 }

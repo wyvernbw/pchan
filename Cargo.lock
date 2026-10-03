@@ -6736,7 +6736,7 @@ dependencies = [
  "pretty_assertions",
  "rapidhash",
  "rstest",
- "slab",
+ "slotmap",
  "smallbox",
  "smallvec",
  "strum 0.28.0",

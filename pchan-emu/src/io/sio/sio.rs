@@ -9,7 +9,7 @@ use derive_more as d;
 use heapless::Deque;
 use pchan_utils::hex;
 
-use crate::io::evque::{EvCtx, PchanEventFn};
+use crate::io::evque::{EvCtx, EventId, PchanEventFn};
 use crate::io::irq::Irq;
 use crate::io::sio::joypad::Joypad;
 use crate::io::{CastIOFrom, CastIOInto, UnhandledIO};
@@ -122,8 +122,11 @@ impl<A: Allocator + Copy> Emu<A> {
             0x1f801040 => {
                 let value = value as u8;
                 self.sio_mut().sio0_tx_send(value);
-                self.evque_mut()
-                    .schedule(Self::handle_ev_sio0_transfer, 0, 250_000);
+                self.evque_mut().schedule(
+                    Self::handle_ev_sio0_transfer,
+                    EventId::default(),
+                    250_000,
+                );
                 Ok(())
             }
             // 1/4  SIO_DATA Serial Port Data (R/W)
@@ -271,11 +274,13 @@ impl<A: Allocator + Copy> Emu<A> {
 
     fn sio_schedule_event_from(&mut self, ev: SioEvent, from_clock: u64, in_cycles: u64) {
         let cb = ev.to_callback();
-        self.evque.schedule_from(cb, 0, from_clock, in_cycles);
+        self.evque
+            .schedule_from(cb, EventId::default(), from_clock, in_cycles);
     }
 
     fn sio_schedule_event(&mut self, ev: SioEvent, in_cycles: u64) {
-        self.evque.schedule(ev.to_callback(), 0, in_cycles);
+        self.evque
+            .schedule(ev.to_callback(), EventId::default(), in_cycles);
     }
 
     fn handle_ev_sio0_tx_proc(&mut self, _: EvCtx) {

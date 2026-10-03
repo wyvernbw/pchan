@@ -1384,11 +1384,11 @@ impl Debugger {
                                 view.emucx.update(cx, |emucx, _| -> miette::Result<()> {
                                     let fsm = emucx
                                         .emu
-                                        .open_disc(&content_path, false)
+                                        .open_disc(&content_path, true)
                                         .into_diagnostic()?;
                                     emucx
                                         .emu
-                                        .advance_open_disc(&content_path, fsm, false)
+                                        .advance_open_disc(&content_path, fsm, true)
                                         .into_diagnostic()?;
                                     Ok(())
                                 })?;
