@@ -139,6 +139,10 @@ impl<A: Allocator + Copy> Emu<A> {
             != 0
         {
             self.raise_irq_exception();
+        } else {
+            self.cpu
+                .cop0
+                .update_cause(|cause| cause.with_irq_pending(2, false));
         }
     }
 }
