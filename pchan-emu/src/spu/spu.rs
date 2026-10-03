@@ -19,13 +19,11 @@ use crate::spu::adsr::{ADSRState, EnvelopePhase, apply_volume};
 
 #[derive(derive_more::Debug)]
 pub struct SpuState {
-    voices:         Box<[Voice; 24]>,
-    adsr:           ADSRState,
-    main_vol_left:  i16,
-    main_vol_right: i16,
-    voice_flags:    VoiceFlags,
+    voices:      Box<[Voice; 24]>,
+    adsr:        ADSRState,
+    voice_flags: VoiceFlags,
     #[debug(skip)]
-    mem:            Box<[u16]>,
+    mem:         Box<[u16]>,
 
     ram_start:   u16,
     /// internal register
@@ -39,17 +37,15 @@ pub struct SpuState {
 impl Default for SpuState {
     fn default() -> Self {
         Self {
-            voices:         Box::default(),
-            voice_flags:    VoiceFlags::default(),
-            mem:            create_spu_mem(),
-            ram_start:      0,
-            ram_current:    0,
-            clock:          0,
-            prod:           None,
-            adsr:           ADSRState::default(),
-            main_vol_left:  0x0,
-            main_vol_right: 0x0,
-            clock_idx:      0,
+            voices:      Box::default(),
+            voice_flags: VoiceFlags::default(),
+            mem:         create_spu_mem(),
+            ram_start:   0,
+            ram_current: 0,
+            clock:       0,
+            prod:        None,
+            adsr:        ADSRState::default(),
+            clock_idx:   0,
         }
     }
 }
@@ -57,17 +53,15 @@ impl Default for SpuState {
 impl Clone for SpuState {
     fn clone(&self) -> Self {
         Self {
-            voices:         self.voices.clone(),
-            voice_flags:    self.voice_flags.clone(),
-            mem:            self.mem.clone(),
-            ram_start:      self.ram_start,
-            ram_current:    self.ram_current,
-            clock:          self.clock,
-            prod:           None,
-            adsr:           self.adsr.clone(),
-            main_vol_left:  self.main_vol_left,
-            main_vol_right: self.main_vol_right,
-            clock_idx:      0,
+            voices:      self.voices.clone(),
+            voice_flags: self.voice_flags.clone(),
+            mem:         self.mem.clone(),
+            ram_start:   self.ram_start,
+            ram_current: self.ram_current,
+            clock:       self.clock,
+            prod:        None,
+            adsr:        self.adsr.clone(),
+            clock_idx:   0,
         }
     }
 }
@@ -111,8 +105,6 @@ struct Voice {
     current_sample: i16,
     pitch_counter:  u16,
     current_idx:    u8,
-
-    adsr: ADSRState,
 }
 
 #[derive(Default, derive_more::Debug, Clone)]
@@ -182,13 +174,17 @@ impl<A: Allocator + Copy> Emu<A> {
                 Ok(endx.io_from_u32())
             }
             // main volume left
-            0x1f801d80 => Ok(self.spu().main_vol_left.io_from_u32()),
+            0x1f801d80 => Ok(self.spu.adsr.main_l.registers[0].io_from_u32()),
             // main volume right
-            0x1f801d82 => Ok(self.spu().main_vol_right.io_from_u32()),
+            0x1f801d82 => Ok(self.spu.adsr.main_r.registers[0].io_from_u32()),
 
-            0x1f801db8 => todo!("todo(spu): read from current main volume l/r"),
-            addr @ 0x1f801e00..=0x1f801e5c if let Some(_) = voice_idx(addr, 0x1f801e00, 0x4) => {
-                todo!("todo(spu): read from current voice volume l/r")
+            0x1f801db8 => Ok(self.spu.adsr.main_l.internal[0].io_from_u32()),
+            0x1f801dba => Ok(self.spu.adsr.main_r.internal[0].io_from_u32()),
+            addr @ 0x1f801e00..=0x1f801e5c if let Some(n) = voice_idx(addr, 0x1f801e00, 0x4) => {
+                Ok(self.spu.adsr.voice_left.internal[n].io_from_u32())
+            }
+            addr @ 0x1f801e02..=0x1f801e62 if let Some(n) = voice_idx(addr, 0x1f801e02, 0x4) => {
+                Ok(self.spu.adsr.voice_right.internal[n].io_from_u32())
             }
 
             _ => Err(crate::io::UnhandledIO(address)),
@@ -298,17 +294,29 @@ impl<A: Allocator + Copy> Emu<A> {
             }
             // main volume left
             0x1f801d80 => {
-                self.spu_mut().main_vol_left = value as i16;
+                self.spu.adsr.main_l.set_register(0, value);
                 Ok(())
             }
             // main volume right
             0x1f801d82 => {
-                self.spu_mut().main_vol_right = value as i16;
+                self.spu.adsr.main_r.set_register(0, value);
                 Ok(())
             }
-            0x1f801db8 => todo!("todo(spu): write to current main volume l/r"),
-            addr @ 0x1f801e00..=0x1f801e5c if let Some(_) = voice_idx(addr, 0x1f801e00, 0x4) => {
-                todo!("todo(spu): write to current voice volume l/r")
+            0x1f801db8 => {
+                self.spu.adsr.main_l.internal[0] = value as i16;
+                Ok(())
+            }
+            0x1f801dba => {
+                self.spu.adsr.main_r.internal[0] = value as i16;
+                Ok(())
+            }
+            addr @ 0x1f801e00..=0x1f801e5c if let Some(n) = voice_idx(addr, 0x1f801e00, 0x4) => {
+                self.spu.adsr.voice_left.internal[n] = value as i16;
+                Ok(())
+            }
+            addr @ 0x1f801e02..=0x1f801e62 if let Some(n) = voice_idx(addr, 0x1f801e02, 0x4) => {
+                self.spu.adsr.voice_right.internal[n] = value as i16;
+                Ok(())
             }
             _ => Err(UnhandledIO(address)),
         }
@@ -371,8 +379,8 @@ impl<A: Allocator + Copy> Emu<A> {
         let mixed_l = mixed_l.clamp(-0x8000, 0x7fff).truncate::<i16>();
         let mixed_r = mixed_r.clamp(-0x8000, 0x7fff).truncate::<i16>();
 
-        let mixed_l = apply_volume(mixed_l, spu.main_vol_left);
-        let mixed_r = apply_volume(mixed_r, spu.main_vol_right);
+        let mixed_l = apply_volume(mixed_l, spu.adsr.main_l.internal[0]);
+        let mixed_r = apply_volume(mixed_r, spu.adsr.main_r.internal[0]);
 
         if let Some(prod) = &mut spu.prod {
             _ = prod.get_mut().unwrap().prod.try_push(mixed_l);

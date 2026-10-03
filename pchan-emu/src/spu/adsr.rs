@@ -191,25 +191,29 @@ impl VolumeRegister {
 
 #[repr(align(64))]
 #[derive(derive_more::Debug, Clone)]
-pub struct VolumeState {
-    pub registers:     [VolumeRegister; 24],
-    pub queued_vol:    [i16; 24],
-    pub internal:      [i16; 24],
-    pub sweep_counter: [u32; 24],
+pub struct VolumeState<const N: usize> {
+    pub registers:     [VolumeRegister; N],
+    pub queued_vol:    [i16; N],
+    pub internal:      [i16; N],
+    pub sweep_counter: [u32; N],
 }
 
-impl Default for VolumeState {
+impl<const N: usize> Default for VolumeState<N> {
     fn default() -> Self {
         Self {
-            registers:     Default::default(),
-            queued_vol:    [Self::QUEUE_NONE; 24],
-            internal:      Default::default(),
-            sweep_counter: [ADSRState::ENVELOPE_COUNTER_MAX; 24],
+            registers:     [VolumeRegister::default(); N],
+            queued_vol:    [Self::QUEUE_NONE; N],
+            internal:      [0; N],
+            sweep_counter: [ADSRState::ENVELOPE_COUNTER_MAX; N],
         }
     }
 }
 
-impl VolumeState {
+impl<const N: usize> VolumeState<N> {
+    const HALFWORDS: usize = MAX_SIMD_WIDTH / size_of::<i16>();
+    const CHUNKS: usize = N / Self::HALFWORDS;
+    const REM: usize = N % Self::HALFWORDS;
+
     // using this allows for easy simd
     const QUEUE_NONE: i16 = i16::MAX;
 
@@ -223,13 +227,9 @@ impl VolumeState {
     }
 
     pub fn clock(&mut self) {
-        const N: usize = MAX_SIMD_WIDTH / 2;
-        const CHUNKS: usize = 24 / N;
-        const REM: usize = 24 % N;
-
         let none = Simd::splat(Self::QUEUE_NONE);
-        for ch in 0..CHUNKS {
-            let base = ch * N;
+        for ch in 0..Self::CHUNKS {
+            let base = ch * Self::HALFWORDS;
             let queued = Simd::<i16, 8>::from_slice(&self.queued_vol[base..base + 8]);
             let internal = Simd::<i16, 8>::from_slice(&self.internal[base..base + 8]);
 
@@ -240,7 +240,7 @@ impl VolumeState {
         }
 
         #[allow(clippy::reversed_empty_ranges)]
-        for i in CHUNKS * N..24 {
+        for i in (Self::CHUNKS * Self::HALFWORDS)..N {
             let q = self.queued_vol[i];
             if q != Self::QUEUE_NONE {
                 self.internal[i] = q;
@@ -248,7 +248,7 @@ impl VolumeState {
             }
         }
 
-        for i in 0..24 {
+        for i in 0..N {
             let TypedVolumeRegister::Sweep(sweep) = self.registers[i].typed() else {
                 continue;
             };
@@ -297,8 +297,10 @@ impl VolumeState {
 pub struct ADSRState {
     pub adsr:        [ADSRRegister; 24],
     pub envelopes:   EnvelopeState,
-    pub voice_left:  VolumeState,
-    pub voice_right: VolumeState,
+    pub voice_left:  VolumeState<24>,
+    pub voice_right: VolumeState<24>,
+    pub main_l:      VolumeState<1>,
+    pub main_r:      VolumeState<1>,
 }
 
 #[derive(derive_more::Debug, Default, Clone)]
@@ -355,11 +357,13 @@ impl ADSRState {
             }
             _ => panic!("invalid nibble {nibble}"),
         }
-        self.envelopes.sustain_level[idx] = self.adsr[idx].sustain_lvl().as_i16() * 0x800;
+        self.envelopes.sustain_level[idx] = (self.adsr[idx].sustain_lvl().as_i16()) * 0x800;
     }
 
     pub fn clock(&mut self) {
         self.phase_transitions();
+        self.main_l.clock();
+        self.main_r.clock();
         self.voice_left.clock();
         self.voice_right.clock();
         // TODO: try rayon
