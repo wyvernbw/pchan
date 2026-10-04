@@ -132,7 +132,7 @@ pub struct AdvanceTimerSummary {
     timer_0_new: u16,
 }
 
-impl<A: Allocator + Copy> Emu<A> {
+impl<A: Allocator> Emu<A> {
     fn timers_init(&mut self) {
         let timers = self.timers_mut();
         timers.timer_0.irq = Irq::Irq4Timer0;

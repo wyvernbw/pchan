@@ -45,7 +45,7 @@ pub enum SioEvent {
 }
 
 impl SioEvent {
-    fn to_callback<A: Allocator + Copy>(&self) -> PchanEventFn<Emu<A>> {
+    fn to_callback<A: Allocator>(&self) -> PchanEventFn<Emu<A>> {
         match self {
             SioEvent::Sio0ProcTx => Emu::<A>::handle_ev_sio0_tx_proc,
             SioEvent::Sio0Irq => Emu::<A>::handle_ev_sio0_irq,
@@ -111,7 +111,7 @@ pub trait Peripheral {
 #[derive(d::Deref, d::DerefMut, Debug, Default, Clone)]
 pub struct Sio0Rx(Deque<u8, 4>);
 
-impl<A: Allocator + Copy> Emu<A> {
+impl<A: Allocator> Emu<A> {
     #[pchan_macros::instrument(skip_all, fields(pc = %hex(self.cpu().pc)))]
     pub fn sio_write<T: Copy>(&mut self, address: u32, value: T) -> Result<(), UnhandledIO> {
         let address = address & 0x1fffffff;

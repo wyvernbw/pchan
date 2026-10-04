@@ -61,7 +61,7 @@ impl<T: ?Sized> PartialEq for PchanEvent<T> {
 
 impl<T: ?Sized> Eq for PchanEvent<T> {}
 
-impl<A: Allocator + Copy> Emu<A> {
+impl<A: Allocator> Emu<A> {
     pub fn evque_advance(&mut self, d_clock: u64) {
         self.evque_mut().clock = self.evque_mut().clock.wrapping_add(d_clock);
         let clock = self.cpu().cycles;

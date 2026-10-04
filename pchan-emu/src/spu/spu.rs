@@ -136,7 +136,7 @@ fn voice_idx(addr: u32, base: u32, stride: u32) -> Option<usize> {
     }
 }
 
-impl<A: Allocator + Copy> Emu<A> {
+impl<A: Allocator> Emu<A> {
     #[pchan_macros::instrument(level = "trace", skip(self), "spu:r")]
     pub fn spu_read<T: Copy>(&mut self, address: u32) -> IOResult<T> {
         let address = address & 0x1fffffff;

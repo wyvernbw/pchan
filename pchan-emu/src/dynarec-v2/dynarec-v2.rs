@@ -133,13 +133,13 @@ impl<A: Allocator + Copy> Dynarec<A> {
 }
 
 #[derive(Debug, Clone)]
-pub struct DynarecFunction<A: Allocator + Copy> {
+pub struct DynarecFunction<A: Allocator> {
     pub func: fn(*mut Emu<A>),
     pub exec: Arc<ExecutableBuffer>,
 }
 
 #[derive(Debug, Clone)]
-pub struct DynarecBlock<A: Allocator + Copy> {
+pub struct DynarecBlock<A: Allocator> {
     pub(crate) function: DynarecFunction<A>,
     pub(crate) pc:       u32,
     pub(crate) op_count: u32,
@@ -147,7 +147,7 @@ pub struct DynarecBlock<A: Allocator + Copy> {
 
 type DynarecBlockArgs<'a, A> = (&'a mut Emu<A>, bool);
 
-impl<A: Allocator + Copy> DynarecBlock<A> {
+impl<A: Allocator> DynarecBlock<A> {
     pub fn call_block(&self, (emu, instrument): DynarecBlockArgs<A>) {
         #[cfg(debug_assertions)]
         {
@@ -1013,7 +1013,7 @@ const PAGE_LEN: usize = kb(16);
 ///
 /// maps the entire psx ram and bios losslessly into a a flat, paged, ~320kb buffer
 #[derive(derive_more::Debug, Clone)]
-pub struct DynarecCache<A: Allocator + Copy> {
+pub struct DynarecCache<A: Allocator> {
     blocks:   Box<[Option<DynarecBlock<A>>; PAGE_LEN * PAGE_COUNT], A>,
     metadata: [CachePage; PAGE_COUNT],
 }
@@ -1033,7 +1033,7 @@ impl Default for CachePage {
     }
 }
 
-impl<A: Allocator + Copy> DynarecCache<A> {
+impl<A: Allocator> DynarecCache<A> {
     pub fn new(alloc: A) -> Self {
         let mut buf = Box::new_uninit_slice_in(PAGE_LEN * PAGE_COUNT, alloc);
         for el in &mut buf {
@@ -1047,7 +1047,7 @@ impl<A: Allocator + Copy> DynarecCache<A> {
     }
 }
 
-impl<A: Allocator + Copy> DynarecCache<A> {
+impl<A: Allocator> DynarecCache<A> {
     const PROB: Option<usize> = Self::map_addr_to_idx(0x8004f434);
     const RAM_END: usize = Self::map_addr_to_idx(0x200000).unwrap();
     const BIOS_START: usize = Self::map_addr_to_idx(0xbfc0_0000).unwrap();

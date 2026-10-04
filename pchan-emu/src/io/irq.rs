@@ -75,7 +75,7 @@ impl IrqState {
 #[cfg(feature = "trace")]
 use pchan_utils::hex;
 
-impl<A: Allocator + Copy> Emu<A> {
+impl<A: Allocator> Emu<A> {
     pub fn irq_trigger(&mut self, irq: Irq) {
         self.irq_mut().irq_trigger(irq);
         self.run_irq_io();

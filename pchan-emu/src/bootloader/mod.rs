@@ -46,9 +46,6 @@ pub enum BootError {
 }
 
 impl<A: Allocator + Copy> Emu<A> {
-    pub fn set_bios_path(&mut self, path: impl AsRef<Path>) {
-        self.bootloader_mut().bios_path = path.as_ref().to_path_buf();
-    }
     pub fn load_bios(&mut self, alloc: A) -> Result<(), BootError> {
         let mut bios_file =
             fs::File::open(&self.bootloader().bios_path).map_err(BootError::BiosFileOpenError)?;
@@ -71,7 +68,12 @@ impl<A: Allocator + Copy> Emu<A> {
 
         Ok(())
     }
+}
 
+impl<A: Allocator> Emu<A> {
+    pub fn set_bios_path(&mut self, path: impl AsRef<Path>) {
+        self.bootloader_mut().bios_path = path.as_ref().to_path_buf();
+    }
     pub fn run_sideloading(&mut self) {
         if self.cpu().pc == 0x80030000 {
             self.trigger_sideload_exe();

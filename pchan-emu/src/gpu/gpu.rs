@@ -105,7 +105,7 @@ fn mask_bit(value: u16) -> bool {
     value & (1 << 15) != 0
 }
 
-impl<A: Allocator + Copy> Emu<A> {
+impl<A: Allocator> Emu<A> {
     #[pchan_macros::instrument(level = "trace", skip(self), "gpu:r")]
     pub fn gpu_read<T: Copy>(&mut self, address: u32) -> IOResult<T> {
         let address = address & 0x1fffffff;
@@ -1452,7 +1452,7 @@ pub struct Display {
 /// are not absolute dot positions, but relative timings tied to HSYNC.
 ///
 /// see <https://psx-spx.consoledev.net/graphicsprocessingunitgpu/#gp106h-horizontal-display-range-on-screen>
-impl<A: Allocator + Copy> Emu<A> {
+impl<A: Allocator> Emu<A> {
     fn cpu_cycles_to_video_cycles(&mut self, cycles: u64) -> u64 {
         // this might be based on the actual console hardware not on the
         // video mode you set in the gpu

@@ -74,7 +74,7 @@ pub mod spu;
 
 #[derive(derive_more::Debug, Clone)]
 #[repr(C)]
-pub struct Emu<A: Allocator + Copy = Global> {
+pub struct Emu<A: Allocator = Global> {
     pub cpu:           Cpu,
     #[debug(skip)]
     pub dynarec_cache: DynarecCache<A>,
@@ -103,31 +103,7 @@ pub struct Stats {
     pub blocks_compiled: u64,
     pub blocks_ran:      u64,
 }
-
 impl<A: Allocator + Copy> Emu<A> {
-    const PC_OFFSET: usize = offset_of!(Emu<A>, cpu) + Cpu::PC_OFFSET;
-    const D_CLOCK_OFFSET: usize = offset_of!(Emu<A>, cpu) + Cpu::D_CLOCK_OFFSET;
-    const HILO_OFFSET: usize = offset_of!(Emu<A>, cpu) + Cpu::HILO_OFFSET;
-
-    #[must_use]
-    pub fn reg_offset(reg: u8) -> usize {
-        offset_of!(Self, cpu) + Cpu::reg_offset(reg)
-    }
-
-    #[allow(clippy::missing_panics_doc)]
-    pub fn panic(&self, panic_msg: &str) -> ! {
-        self.dma.dump_cdrom_data();
-        tracing::trace!(
-            "emulator panicked at pc={} with:\n{panic_msg}\n\nstate = {:#?}",
-            hex(self.cpu.pc),
-            self
-        );
-        panic!(
-            "emulator panicked at pc={} with:\n{panic_msg}. state dumped to trace.",
-            hex(self.cpu.pc),
-        );
-    }
-
     pub fn new_in(alloc: A) -> Self {
         let mut emu = Self {
             cpu: Cpu::new(),
@@ -151,6 +127,31 @@ impl<A: Allocator + Copy> Emu<A> {
         };
         emu.handle_ev_spu_clock(io::evque::EvCtx::default());
         emu
+    }
+}
+
+impl<A: Allocator> Emu<A> {
+    const PC_OFFSET: usize = offset_of!(Emu<A>, cpu) + Cpu::PC_OFFSET;
+    const D_CLOCK_OFFSET: usize = offset_of!(Emu<A>, cpu) + Cpu::D_CLOCK_OFFSET;
+    const HILO_OFFSET: usize = offset_of!(Emu<A>, cpu) + Cpu::HILO_OFFSET;
+
+    #[must_use]
+    pub fn reg_offset(reg: u8) -> usize {
+        offset_of!(Self, cpu) + Cpu::reg_offset(reg)
+    }
+
+    #[allow(clippy::missing_panics_doc)]
+    pub fn panic(&self, panic_msg: &str) -> ! {
+        self.dma.dump_cdrom_data();
+        tracing::trace!(
+            "emulator panicked at pc={} with:\n{panic_msg}\n\nstate = {:#?}",
+            hex(self.cpu.pc),
+            self
+        );
+        panic!(
+            "emulator panicked at pc={} with:\n{panic_msg}. state dumped to trace.",
+            hex(self.cpu.pc),
+        );
     }
 }
 
@@ -178,7 +179,7 @@ use alloc::alloc::Global;
 use pchan_utils::hex;
 use pchan_utils::tracy::TracyClient;
 
-impl<A: Allocator + Copy> Emu<A> {
+impl<A: Allocator> Emu<A> {
     #[inline(always)]
     pub fn mem_mut(&mut self) -> &mut MemoryState<A> {
         &mut self.mem

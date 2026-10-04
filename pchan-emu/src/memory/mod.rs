@@ -35,7 +35,7 @@ pub type Buffer<A> = Box<[u8], A>;
 
 #[derive(derive_more::Debug, Clone)]
 #[debug("memory:{}kb", MEM_SIZE/1024)]
-pub struct MemoryState<A: Allocator + Copy> {
+pub struct MemoryState<A: Allocator> {
     pub buf: Buffer<A>,
 }
 
@@ -80,6 +80,9 @@ impl<A: Allocator + Copy> MemoryState<A> {
             buf: buffer(MEM_SIZE, alloc),
         }
     }
+}
+
+impl<A: Allocator> MemoryState<A> {
     #[inline(always)]
     pub fn read_region<T: Copy>(&self, host_region: usize, guest_region: usize, address: u32) -> T {
         let offset = (address & 0x1fff_ffff) as usize - (guest_region & 0x1fff_ffff);
@@ -104,7 +107,7 @@ impl<A: Allocator + Copy> MemoryState<A> {
     }
 }
 
-impl<A: Allocator + Copy> Emu<A> {
+impl<A: Allocator> Emu<A> {
     #[pchan_macros::instrument(
         level = "trace",
         skip_all,

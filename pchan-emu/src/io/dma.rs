@@ -69,7 +69,7 @@ impl DmaState {
 /// These ports control DMA at the CPU-side. In most cases, you'll additionally
 /// need to initialize an address (and transfer direction, transfer enabled, etc.)
 /// at the remote-side (eg. at the GPU-side for DMA2).
-impl<A: Allocator + Copy> Emu<A> {
+impl<A: Allocator> Emu<A> {
     #[pchan_instrument_read("dma:r")]
     pub fn dma_read<T: Copy>(&self, address: u32) -> IOResult<T> {
         let address = address & 0x1fffffff;
@@ -459,22 +459,22 @@ trait Transfer {
     const TRANSPORT_KIND: DmaTransportKind;
 
     /// ram to device
-    fn write<A: Allocator + Copy>(&mut self, emu: &mut Emu<A>, address: u32);
+    fn write<A: Allocator>(&mut self, emu: &mut Emu<A>, address: u32);
     /// device to ram
-    fn read<A: Allocator + Copy>(&mut self, emu: &mut Emu<A>, address: u32);
-    fn channel<A: Allocator + Copy>(emu: &mut Emu<A>) -> &mut DmaChannel;
+    fn read<A: Allocator>(&mut self, emu: &mut Emu<A>, address: u32);
+    fn channel<A: Allocator>(emu: &mut Emu<A>) -> &mut DmaChannel;
 
-    fn write_madr<T: Copy, A: Allocator + Copy>(emu: &mut Emu<A>, value: T) -> IOResult<()> {
+    fn write_madr<T: Copy, A: Allocator>(emu: &mut Emu<A>, value: T) -> IOResult<()> {
         Self::channel(emu).io_set_madr(value);
         Ok(())
     }
 
-    fn write_bcr<T: Copy, A: Allocator + Copy>(emu: &mut Emu<A>, value: T) -> IOResult<()> {
+    fn write_bcr<T: Copy, A: Allocator>(emu: &mut Emu<A>, value: T) -> IOResult<()> {
         Self::channel(emu).io_set_bcr(value);
         Ok(())
     }
 
-    fn write_chcr<T: Copy, A: Allocator + Copy>(emu: &mut Emu<A>, value: T) -> IOResult<()> {
+    fn write_chcr<T: Copy, A: Allocator>(emu: &mut Emu<A>, value: T) -> IOResult<()> {
         let dma = Self::channel(emu);
         let chcr = DmaChcr::new_with_raw_value(value.io_into_u32());
         dma.chcr = chcr;
@@ -494,19 +494,19 @@ struct Dma2Gpu;
 impl Transfer for Dma2Gpu {
     const TRANSPORT_KIND: DmaTransportKind = DmaTransportKind::Gpu;
 
-    fn write<A: Allocator + Copy>(&mut self, emu: &mut Emu<A>, address: u32) {
+    fn write<A: Allocator>(&mut self, emu: &mut Emu<A>, address: u32) {
         let cmd = emu
             .fastmem_read::<GpuCmd>(address)
             .expect("address outside of ram/bios");
         emu.gpu_gp0_cmd(cmd);
     }
 
-    fn read<A: Allocator + Copy>(&mut self, emu: &mut Emu<A>, address: u32) {
+    fn read<A: Allocator>(&mut self, emu: &mut Emu<A>, address: u32) {
         let value = emu.gpu_read::<u32>(0x1f801810).unwrap();
         _ = emu.fastmem_write(address, value);
     }
 
-    fn channel<A: Allocator + Copy>(emu: &mut Emu<A>) -> &mut DmaChannel {
+    fn channel<A: Allocator>(emu: &mut Emu<A>) -> &mut DmaChannel {
         &mut emu.dma.dma2
     }
 }
@@ -516,19 +516,19 @@ struct Dma3Cdrom;
 impl Transfer for Dma3Cdrom {
     const TRANSPORT_KIND: DmaTransportKind = DmaTransportKind::Cdrom;
 
-    fn write<A: Allocator + Copy>(&mut self, _emu: &mut Emu<A>, _address: u32) {
+    fn write<A: Allocator>(&mut self, _emu: &mut Emu<A>, _address: u32) {
         todo!()
     }
 
-    fn read<A: Allocator + Copy>(&mut self, emu: &mut Emu<A>, address: u32) {
-        let value = emu.cdrom_read_data::<4>();
+    fn read<A: Allocator>(&mut self, emu: &mut Emu<A>, address: u32) {
+        let value = emu.cdrom_read_buffered_data::<4>();
         emu.dma.debug_cdrom_data.extend_from_slice(&value);
         let value = u32::from_le_bytes(value);
         _ = emu.fastmem_write(address, value);
         tracing::debug!("copied byte {} to memory at {}", hex(value), hex(address));
     }
 
-    fn channel<A: Allocator + Copy>(emu: &mut Emu<A>) -> &mut DmaChannel {
+    fn channel<A: Allocator>(emu: &mut Emu<A>) -> &mut DmaChannel {
         &mut emu.dma.dma3
     }
 }
@@ -832,7 +832,7 @@ struct SliceTransferState {
 }
 
 impl DmaEvent {
-    fn cycles<A: Allocator + Copy>(&self, emu: &Emu<A>) -> u64 {
+    fn cycles<A: Allocator>(&self, emu: &Emu<A>) -> u64 {
         let sync_mode = self.init_chan.chcr.sync_mode();
         match sync_mode {
             SyncMode::Burst => self.init_chan.burst_cycles(self.dma_t),
@@ -844,7 +844,7 @@ impl DmaEvent {
 }
 
 impl DmaChannel {
-    fn linked_list_cycles<A: Allocator + Copy>(&self, emu: &Emu<A>) -> u64 {
+    fn linked_list_cycles<A: Allocator>(&self, emu: &Emu<A>) -> u64 {
         let mut addr = self.madr.addr().as_u32();
         let mut visited = heapless::index_set::FnvIndexSet::<u32, 2048>::new();
         let mut count = 0;

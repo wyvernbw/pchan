@@ -70,6 +70,8 @@ impl<A: Allocator + Copy> DebuggerState<A> {
             kernel_fn_stack: Vec::new_in(alloc),
         }
     }
+}
+impl<A: Allocator> DebuggerState<A> {
     pub fn break_on(&mut self, addr: u32, kind: BreakpointKind) -> bool {
         if let Some(brk) = self.breakpoints.get(&(addr & 0x1fff_ffff)) {
             if !brk.enabled {
