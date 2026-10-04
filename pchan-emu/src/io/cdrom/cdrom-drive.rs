@@ -105,8 +105,6 @@ impl CdromDrive {
         match self.drive_state {
             DriveState::Idle => {}
             DriveState::ReadN(id) => {
-                self.status_code.reset_state();
-                self.status_code.set_read(true);
                 let cycles_per_sector = self.sector_cycles();
 
                 let int1 = Response::new(
@@ -126,11 +124,13 @@ impl CdromDrive {
                         if current_id != ctx.id {
                             return;
                         }
+                        emu.cdrom.drive.status_code.reset_state();
+                        emu.cdrom.drive.status_code.set_read(true);
                         let res = emu.cdrom.responses.remove(current_id);
-                        emu.cdrom_send_response(res.expect("event lost"));
                         emu.cdrom
                             .drive
                             .request_data(&mut emu.cdrom.status, &mut emu.cdrom.data_fifo);
+                        emu.cdrom_send_response(res.expect("event lost"));
                         emu.cdrom.drive.run(&mut CdromScheduler {
                             id:        ctx.id,
                             evque:     &mut emu.evque,
