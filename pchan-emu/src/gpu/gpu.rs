@@ -373,7 +373,7 @@ impl<A: Allocator> Emu<A> {
                     let size = size.fill_cmd_size_mask();
                     if size.x != 0 && size.y != 0 {
                         let mut cursor = VramCursor::new(pos, pos + size);
-                        tracing::info!(pc = %hex(self.cpu().pc), "started vram fill: {cursor:#?}");
+                        tracing::trace!(pc = %hex(self.cpu().pc), "started vram fill: {cursor:?}");
                         let mut lock = self.gpu_mut().lock_vram_mut();
                         for dest in cursor.iter() {
                             let color = color >> 3u16;
@@ -383,7 +383,6 @@ impl<A: Allocator> Emu<A> {
                                 .with_b(color.z.as_());
                             lock.vram_write(dest, rgb5.raw_value());
                         }
-                        tracing::info!("finished vram fill");
                     }
 
                     Gp0::WaitingForCmd
@@ -676,6 +675,7 @@ impl GpuState {
 
         self.wait_for_render_result();
         tracing::debug!("flushing {} draw calls", self.draw_call_queue.len());
+        tracing::info!(?self.gpustat);
         let queue = mem::take(&mut self.draw_call_queue);
         // transfer ownership of the vram to the render thread
         let vram = mem::take(&mut self.vram);
@@ -995,9 +995,8 @@ pub struct GpuCmd {
 ///
 /// Credits to PSX-SPX by Martin Korth [Gpu Status Register](https://problemkaputt.de/psx-spx.htm#gpustatusregister)
 ///
-#[bitfield(u32)]
-#[derive(derive_more::Debug, Default, derive_more::Into)]
-#[debug("{}", hex(self.raw_value))]
+#[bitfield(u32, debug)]
+#[derive(Default, derive_more::Into)]
 #[must_use]
 pub struct GpuStatReg {
     #[bits(0..=3, rw)]
@@ -1350,8 +1349,9 @@ pub enum VRes {
 }
 
 #[bitenum(u1, exhaustive = true)]
-#[derive(Debug)]
+#[derive(Default, Debug)]
 pub enum DisplayColorDepth {
+    #[default]
     Depth15Bit,
     Depth24Bit,
 }

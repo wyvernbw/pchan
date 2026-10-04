@@ -6,6 +6,7 @@
 
 extern crate alloc;
 
+use arbitrary_int::prelude::Integer;
 pub use glam;
 use pchan_utils::tracy::TracyClient;
 pub(crate) mod render_pass;
@@ -22,7 +23,9 @@ use pchan_emu::Emu;
 use pchan_emu::gpu::draw_call::{
     DrawCallCollection, DrawCallKind, DrawPolygon, DrawRect, GpuInternalDrawReg, RectSize, Shading,
 };
-use pchan_emu::gpu::{Conn, DrawPixels, GpuStatReg, IVramCoord, TextureColorMode, VramCoord};
+use pchan_emu::gpu::{
+    Conn, DisplayColorDepth, DrawPixels, GpuStatReg, IVramCoord, TextureColorMode, VramCoord,
+};
 use thiserror::Error;
 use tracing::Level;
 pub use wgpu;
@@ -64,6 +67,7 @@ pub struct DisplayUniforms {
     pub screen_rect: U16Vec2,
     pub dp_debug: bool,
     pub dp_srgb: bool,
+    dp_color_depth: DisplayColorDepth,
 }
 
 impl Default for DisplayUniforms {
@@ -74,6 +78,7 @@ impl Default for DisplayUniforms {
             screen_rect: U16Vec2::default(),
             dp_debug: Default::default(),
             dp_srgb: true,
+            dp_color_depth: DisplayColorDepth::Depth15Bit,
         }
     }
 }
@@ -435,6 +440,8 @@ impl Renderer {
                             };
                             tracing::debug!("received vram");
                             let scene = Scene::new_from_draw_calls(draw_calls);
+                            self.display_uniforms.lock().unwrap().dp_color_depth =
+                                scene.dp_color_depth;
                             let mut pass = self.create_render_pass(scene);
                             pass.draw(&vram);
                             if let Err(err) = pass.finish(&mut vram).await {
@@ -477,6 +484,7 @@ struct Vertex {
     draw_area_top_left: VramCoord,
     draw_area_bottom_right: VramCoord,
     draw_offset: IVramCoord,
+    gpustat: GpuStatReg,
 }
 
 struct VertexSpec {
@@ -490,6 +498,7 @@ struct VertexSpec {
     draw_area_top_left: VramCoord,
     draw_area_bottom_right: VramCoord,
     draw_offset: IVramCoord,
+    gpustat: GpuStatReg,
 }
 
 impl Vertex {
@@ -506,6 +515,7 @@ impl Vertex {
             draw_area_top_left: spec.draw_area_top_left,
             draw_area_bottom_right: spec.draw_area_bottom_right,
             draw_offset: spec.draw_offset,
+            gpustat: spec.gpustat,
         }
     }
     fn desc() -> &'static [VertexAttribute] {
@@ -564,6 +574,12 @@ impl Vertex {
                 offset: offset_of!(Vertex, draw_offset) as _,
                 shader_location: 8,
             },
+            // gpustat @location(9)
+            VertexAttribute {
+                format: VertexFormat::Uint32,
+                offset: offset_of!(Vertex, gpustat) as _,
+                shader_location: 9,
+            },
         ]
     }
 }
@@ -595,6 +611,7 @@ pub struct Scene {
     vertex_buf: Vec<Vertex>,
     dp_start: U16Vec2,
     dp_res: U16Vec2,
+    dp_color_depth: DisplayColorDepth,
 }
 
 impl From<VramCoord> for Vertex {
@@ -693,7 +710,8 @@ impl Scene {
         let mut scene = Scene {
             dp_res: gpustat.resolution(),
             dp_start: cmds.display.display_vram_start,
-            ..Default::default()
+            dp_color_depth: gpustat.display_color_depth(),
+            vertex_buf: Vec::new(),
         };
         for cmd in cmds.draw_calls {
             if tracing::enabled!(Level::DEBUG) {
@@ -738,6 +756,7 @@ impl Scene {
             draw_area_top_left: draw_reg.draw_area_top_left,
             draw_area_bottom_right: draw_reg.draw_area_bottom_right,
             draw_offset: draw_reg.draw_offset,
+            gpustat,
         });
 
         let quad: Quad = match (draw_rect.color.size(), draw_rect.var_size) {
@@ -792,6 +811,7 @@ impl Scene {
                     draw_area_top_left: draw_reg.draw_area_top_left,
                     draw_area_bottom_right: draw_reg.draw_area_bottom_right,
                     draw_offset: draw_reg.draw_offset,
+                    gpustat,
                 };
                 match shading {
                     Shading::Flat => {}
@@ -846,7 +866,7 @@ fn ensure_vertex_order(vertex_buf: &mut [Vertex], indices: [usize; 3]) {
     }
 }
 
-pub type DisplayUniformData = (UVec2, UVec2, UVec2, u32, u32);
+pub type DisplayUniformData = (UVec2, UVec2, UVec2, u32, u32, u32, u32);
 
 impl DisplayUniforms {
     pub const DATASIZE: usize = size_of::<DisplayUniformData>();
@@ -857,6 +877,7 @@ impl DisplayUniforms {
             screen_rect,
             dp_debug,
             dp_srgb,
+            dp_color_depth,
         } = self;
         (
             dp_start.as_uvec2(),
@@ -864,6 +885,8 @@ impl DisplayUniforms {
             screen_rect.as_uvec2(),
             u32::from(*dp_debug),
             u32::from(*dp_srgb),
+            dp_color_depth.raw_value().as_u32(),
+            0u32,
         )
     }
 }

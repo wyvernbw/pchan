@@ -14,7 +14,8 @@ struct DisplayUniforms {
     resolution: vec2<u32>,
     screen_rect: vec2<u32>,
     debug_display: u32,
-    srgb: u32
+    srgb: u32,
+    color_depth: u32,
 }
 
 @group(0) @binding(2)
@@ -64,9 +65,25 @@ fn vs_main(
     return out;
 }
 
+fn read_24bit(coord: vec2<f32>) -> u32 {
+    let texcoord = vec2<u32>(u32(coord.x), u32(coord.y));
+    let texcoord_next = vec2<u32>(texcoord.x + 1, texcoord.y);
+    let left = textureLoad(render_t, texcoord, 0).r;
+    let right = textureLoad(render_t, texcoord_next, 0).r;
+    if texcoord.x % 2 == 0 {
+        return (left) | ((right & 0xffu) << 16);
+    } else {
+        return (left >> 8u) | (right << 8u);
+    }
+}
+
 fn read_16bit(coord: vec2<f32>) -> u32 {
     let texcoord = vec2<u32>(u32(coord.x), u32(coord.y));
     return textureLoad(render_t, texcoord, 0).r;
+}
+
+fn rgb8_split_color(value: u32) -> vec3<f32> {
+    return unpack4x8unorm(value).rgb;
 }
 
 fn rgb5_split_color(value: u32) -> vec3<f32> {
@@ -96,14 +113,31 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         uv.y = f32(display.resolution.y) - uv.y;
     }
 
-    var col = read_16bit(uv);
-    var out = rgb5_split_color(col);
-    if display.srgb != 0 {
-        out.r = srgb_to_linear(out.r);
-        out.g = srgb_to_linear(out.g);
-        out.b = srgb_to_linear(out.b);
-    }
+    switch display.color_depth {
+        case 0, default: {
+            var col = read_16bit(uv);
+            var out = rgb5_split_color(col);
+            if display.srgb != 0 {
+                out.r = srgb_to_linear(out.r);
+                out.g = srgb_to_linear(out.g);
+                out.b = srgb_to_linear(out.b);
+            }
 
-    return vec4<f32>(out, 1.0);
+            return vec4<f32>(out, 1.0);
+        
+        }
+        case 1: {
+            var col = read_24bit(uv);
+            var out = rgb8_split_color(col);
+            if display.srgb != 0 {
+                out.r = srgb_to_linear(out.r);
+                out.g = srgb_to_linear(out.g);
+                out.b = srgb_to_linear(out.b);
+            }
+
+            return vec4<f32>(out, 1.0);
+        }
+        
+    }
 }
 
