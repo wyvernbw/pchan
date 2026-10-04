@@ -1,34 +1,323 @@
+use core::alloc::Allocator;
 use core::iter;
 
+use crate::Emu;
 use crate::cpu::Cpu;
-use crate::io::cdrom::cdrom_drive::DriveState;
 use crate::io::cdrom::cdrom_format::{Bcd, CdromCursor, Mss};
 use crate::io::cdrom::{CDRomState, DriveStatus};
 use crate::io::evque::EventId;
 use bitbybit::{bitenum, bitfield};
 use pchan_utils::hex;
-use smallvec::{SmallVec, smallvec};
 
 use super::HInt;
 
 #[derive(Debug, Clone)]
-pub struct Response {
+pub struct ResponseV2 {
     pub int:  HInt,
-    pub data: SmallVec<[u8; 8]>,
-    pub done: bool,
+    pub data: heapless::Vec<u8, 8>,
 }
 
-impl Response {
-    pub fn new(int: HInt, data: SmallVec<[u8; 8]>, done: bool) -> Self {
-        Self { int, data, done }
+impl ResponseV2 {
+    pub fn new(int: HInt, data: impl Into<heapless::Vec<u8, 8>>) -> Self {
+        Self {
+            int,
+            data: data.into(),
+        }
     }
 }
 
-#[derive(Debug, Clone)]
-pub enum CdromResponse {
-    None,
-    Immediate(Response),
-    InCycles(u64, EventId),
+fn int1(data: impl Into<heapless::Vec<u8, 8>>) -> ResponseV2 {
+    ResponseV2::new(HInt::Int1DataReady, data.into())
+}
+fn int2(data: impl Into<heapless::Vec<u8, 8>>) -> ResponseV2 {
+    ResponseV2::new(HInt::Int2Complete, data.into())
+}
+fn int3(data: impl Into<heapless::Vec<u8, 8>>) -> ResponseV2 {
+    ResponseV2::new(HInt::Int3Ack, data.into())
+}
+fn int4(data: impl Into<heapless::Vec<u8, 8>>) -> ResponseV2 {
+    ResponseV2::new(HInt::Int4DataEnd, data.into())
+}
+fn int5(data: impl Into<heapless::Vec<u8, 8>>) -> ResponseV2 {
+    ResponseV2::new(HInt::Int5DiskErr, data.into())
+}
+
+impl<const N: usize> From<StatusCode> for heapless::Vec<u8, N> {
+    fn from(value: StatusCode) -> Self {
+        Self::from_array([value.raw_value()])
+    }
+}
+
+#[derive(Default, derive_more::Debug)]
+pub(crate) enum CommandStateV2 {
+    #[default]
+    Idle,
+    Nop,
+    GetIdInt3_5,
+    GetIdInt2_5,
+
+    TestHC05BiosDateInt3,
+
+    ReadTOCInt3,
+    ReadTOCInt2,
+
+    SetlocInt3(Mss<Bcd>),
+
+    SeekLInt3,
+    SeekLInt2,
+
+    SetModeInt3(SetMode),
+
+    PauseInt3,
+    PauseInt2,
+
+    ReadNInt3,
+    ReadNInt1,
+
+    InitInt3,
+    InitInt2,
+}
+
+impl CDRomState {
+    const NOP_TIMING: u32 = 0x000c4e1;
+    const GETID_RES_2_TIMING: u32 = 0x0004a00;
+    const INIT_TIMING: u32 = 0x0013cce;
+    const PAUSE_2X_TIMING: u32 = 0x010bd93;
+}
+
+impl<A: Allocator> Emu<A> {
+    pub(super) fn cdrom_send_cmd_v2(&mut self, cmd: u8) {
+        self.cdrom.status.set_busy_status(true);
+        match cmd {
+            // nop
+            0x01 => {
+                self.cdrom_continue_cmd(CommandStateV2::Nop);
+                self.cdrom_queue_response(CDRomState::NOP_TIMING);
+            }
+            // Setloc - Command 02h,amm,ass,asect --> INT3(stat)
+            0x02 => {
+                let min = self.cdrom.get_param::<Bcd>();
+                let sec = self.cdrom.get_param::<Bcd>();
+                let sect = self.cdrom.get_param::<Bcd>();
+                self.cdrom_continue_cmd(CommandStateV2::SetlocInt3(Mss::new(min, sec, sect)));
+                self.cdrom_queue_response(CDRomState::NOP_TIMING);
+            }
+            // `ReadN` - Command 06h --> INT3(stat) --> INT1(stat) --> datablock
+            0x06 => {
+                self.cdrom_continue_cmd(CommandStateV2::ReadNInt3);
+                self.cdrom_queue_response(CDRomState::NOP_TIMING);
+            }
+            // Setmode - Command 0Eh,mode --> INT3(stat)
+            0x0e => {
+                let setmode = self.cdrom.get_param::<SetMode>();
+                self.cdrom_continue_cmd(CommandStateV2::SetModeInt3(setmode));
+                self.cdrom_queue_response(CDRomState::NOP_TIMING);
+            }
+            // Pause - Command 09h --> INT3(stat) --> INT2(stat)
+            0x09 => {
+                self.cdrom_continue_cmd(CommandStateV2::PauseInt3);
+                self.cdrom_queue_response(CDRomState::NOP_TIMING);
+            }
+            // Init - Command 0Ah --> INT3(stat) --> INT2(stat)
+            0x0a => {
+                self.cdrom_continue_cmd(CommandStateV2::InitInt3);
+                self.cdrom_queue_response(CDRomState::INIT_TIMING);
+            }
+            // `SeekL` - Command 15h --> INT3(stat) --> INT2(stat)
+            0x15 => {
+                self.cdrom_continue_cmd(CommandStateV2::SeekLInt3);
+                self.cdrom_queue_response(CDRomState::NOP_TIMING);
+            }
+            // test
+            0x19 => {
+                let Some(sub) = self.cdrom.drain_params().next() else {
+                    self.cdrom_end_cmd();
+                    return;
+                };
+                match sub {
+                    // 20h INT3(yy,mm,dd,ver) Get cdrom BIOS date/version (yy,mm,dd,ver)
+                    0x20 => {
+                        self.cdrom_continue_cmd(CommandStateV2::TestHC05BiosDateInt3);
+                        self.cdrom_queue_response(CDRomState::NOP_TIMING);
+                    }
+                    _ => {
+                        tracing::warn!(
+                            "todo(cdrom): cmd 0x19 (test) unhandled sub value: {}",
+                            hex(sub)
+                        );
+                        self.cdrom_end_cmd();
+                    }
+                }
+            }
+            // GetID
+            0x1a => {
+                tracing::info!("0x1a GetID");
+                self.cdrom_continue_cmd(CommandStateV2::GetIdInt3_5);
+                self.cdrom_queue_response(CDRomState::NOP_TIMING);
+            }
+
+            // ReadTOC - Command 1Eh --> INT3(stat) --> INT2(stat)
+            0x1e => {
+                tracing::info!("ReadTOC");
+                self.cdrom_continue_cmd(CommandStateV2::ReadTOCInt3);
+                self.cdrom_queue_response(CDRomState::INIT_TIMING);
+            }
+
+            cmd => todo!("cdrom cmd not implemented: {}", hex(cmd)),
+        }
+    }
+    fn cdrom_end_cmd(&mut self) {
+        self.cdrom.drive.cmd_state_v2 = CommandStateV2::Idle;
+        self.cdrom.status.set_busy_status(false);
+    }
+    fn cdrom_continue_cmd(&mut self, state: CommandStateV2) {
+        self.cdrom.drive.cmd_state_v2 = state;
+    }
+    fn cdrom_queue_response(&mut self, in_cycles: u32) {
+        self.evque.schedule(
+            |emu, _| {
+                emu.cdrom_proc_cmd_response();
+            },
+            EventId::default(),
+            u64::from(in_cycles),
+        );
+    }
+    #[allow(clippy::match_same_arms)]
+    fn cdrom_proc_cmd_response(&mut self) {
+        let status = self.cdrom.drive.status_code;
+        match self.cdrom.drive.cmd_state_v2 {
+            CommandStateV2::Idle => {}
+
+            CommandStateV2::Nop => {
+                self.cdrom_send_response_v2(int3(status));
+                self.cdrom_end_cmd();
+            }
+
+            CommandStateV2::GetIdInt3_5 => match self.cdrom.drive.drive_status {
+                DriveStatus::LidOpen => {
+                    self.cdrom_send_response_v2(int5([0x11, 0x80]));
+                    self.cdrom_end_cmd();
+                }
+                DriveStatus::SpinUp => {
+                    self.cdrom_send_response_v2(int5([0x01, 0x80]));
+                    self.cdrom_end_cmd();
+                }
+                DriveStatus::DetectBusy => {
+                    self.cdrom_send_response_v2(int5([0x03, 0x80]));
+                    self.cdrom_end_cmd();
+                }
+                _ => {
+                    self.cdrom_send_response_v2(int3(status));
+                    self.cdrom_queue_response(CDRomState::GETID_RES_2_TIMING);
+                    self.cdrom_continue_cmd(CommandStateV2::GetIdInt2_5);
+                }
+            },
+            CommandStateV2::GetIdInt2_5 => {
+                match self.cdrom.drive.drive_status {
+                    DriveStatus::NoDisk => {
+                        self.cdrom_send_response_v2(int5([0x80, 0x40]));
+                        self.cdrom_end_cmd();
+                    }
+                    DriveStatus::AudioDisk => todo!(),
+                    // INT3(stat), INT2(02h,00h, 20h,00h, 53h,43h,45h,4xh)
+                    DriveStatus::LicensedMode2 => {
+                        self.cdrom_send_response_v2(int2([
+                            0x02, 0x00, 0x20, 0x00, 0x53, 0x43, 0x45, 0x49,
+                        ]));
+                        self.cdrom_end_cmd();
+                    }
+                    _ => unreachable!(),
+                }
+            }
+
+            CommandStateV2::TestHC05BiosDateInt3 => {
+                self.cdrom_send_response_v2(int3(self.cdrom.ver));
+                self.cdrom_end_cmd();
+            }
+
+            CommandStateV2::ReadTOCInt3 => {
+                self.cdrom_send_response_v2(int3(status));
+                self.cdrom_continue_cmd(CommandStateV2::ReadTOCInt2);
+                self.cdrom_queue_response(CDRomState::INIT_TIMING);
+            }
+            CommandStateV2::ReadTOCInt2 => {
+                self.cdrom_send_response_v2(int2(status));
+                self.cdrom_end_cmd();
+            }
+
+            CommandStateV2::SetlocInt3(mss) => {
+                self.cdrom.drive.setloc(mss);
+                self.cdrom_send_response_v2(int3(status));
+                self.cdrom_end_cmd();
+            }
+
+            CommandStateV2::SeekLInt3 => {
+                const SEEK_TIME: u32 = Cpu::CLOCK / 75;
+                self.cdrom_send_response_v2(int3(status));
+                self.cdrom_continue_cmd(CommandStateV2::SeekLInt2);
+                self.cdrom_queue_response(SEEK_TIME);
+                self.cdrom.drive.status_code.set_spindle_mot(true);
+                self.cdrom.drive.status_code.reset_state();
+                self.cdrom.drive.status_code.set_seek(true);
+                self.cdrom.drive.seek_to_cursor();
+            }
+            CommandStateV2::SeekLInt2 => {
+                self.cdrom_send_response_v2(int2(status));
+                self.cdrom_end_cmd();
+            }
+
+            CommandStateV2::SetModeInt3(setmode) => {
+                self.cdrom_send_response_v2(int3(status));
+                self.cdrom_end_cmd();
+                debug_assert!(!setmode.xa_adpcm(), "xa-adpcm not yet implemented");
+                self.cdrom.drive.setmode(setmode);
+            }
+
+            CommandStateV2::PauseInt3 => {
+                self.cdrom_send_response_v2(int3(status));
+                self.cdrom_continue_cmd(CommandStateV2::PauseInt2);
+                self.cdrom_queue_response(CDRomState::PAUSE_2X_TIMING);
+            }
+            CommandStateV2::PauseInt2 => {
+                self.cdrom.drive.pause();
+                self.cdrom_send_response_v2(int2(status));
+                self.cdrom_end_cmd();
+            }
+
+            CommandStateV2::ReadNInt3 => {
+                self.cdrom_send_response_v2(int3(status));
+                self.cdrom_continue_cmd(CommandStateV2::ReadNInt1);
+                let cycles_per_sector = self.cdrom.drive.sector_cycles();
+                self.cdrom_queue_response(cycles_per_sector as u32);
+            }
+            CommandStateV2::ReadNInt1 => {
+                let cycles_per_sector = self.cdrom.drive.sector_cycles();
+                self.cdrom_send_response_v2(int1(status));
+                self.cdrom_continue_cmd(CommandStateV2::ReadNInt1);
+                self.cdrom_queue_response(cycles_per_sector as u32);
+
+                self.cdrom.drive.status_code.set_spindle_mot(true);
+                self.cdrom.drive.seek_to_cursor();
+                self.cdrom
+                    .drive
+                    .request_data(&mut self.cdrom.status, &mut self.cdrom.data_fifo);
+            }
+
+            CommandStateV2::InitInt3 => {
+                self.cdrom_send_response_v2(int3(status));
+                self.cdrom_continue_cmd(CommandStateV2::InitInt2);
+                self.cdrom_queue_response(CDRomState::GETID_RES_2_TIMING);
+            }
+            CommandStateV2::InitInt2 => {
+                self.cdrom.drive.mode = SetMode::new_with_raw_value(0x20);
+                self.cdrom.drive.status_code.reset_state();
+                self.cdrom.drive.status_code.set_spindle_mot(true);
+                self.cdrom.drive.cursor = CdromCursor::default();
+                self.cdrom_send_response_v2(int2(status));
+                self.cdrom_end_cmd();
+            }
+        }
+    }
 }
 
 /// ```plaintext
@@ -75,241 +364,13 @@ impl Default for StatusCode {
     }
 }
 
-pub type ResponseList = SmallVec<[CdromResponse; 2]>;
-
 impl CDRomState {
     fn drain_params(&mut self) -> impl Iterator<Item = u8> {
         iter::from_fn(|| self.param_fifo.pop_front())
     }
-    pub fn send_cmd(&mut self, cmd: u8) -> ResponseList {
-        self.status.set_busy_status(true);
-        self.result_clear();
-        self.drive.cmd_clear();
-
-        #[expect(clippy::items_after_statements)]
-        fn diskerr(data: &[u8]) -> SmallVec<[CdromResponse; 2]> {
-            smallvec![CdromResponse::Immediate(Response {
-                int:  HInt::Int5DiskErr,
-                data: SmallVec::from_slice(data),
-                done: true,
-            })]
-        }
-
-        match cmd {
-            0x01 => {
-                tracing::info!("0x01 nop");
-                let res1 = self.responses.insert(self.int3_status(true));
-                self.drive.cmd_subscribe_to(res1);
-                smallvec![CdromResponse::InCycles(0x000c4e1, res1)]
-            }
-            0x19 => {
-                tracing::info!("0x19 test command");
-                let Some(sub) = self.drain_params().next() else {
-                    return smallvec![CdromResponse::None];
-                };
-                tracing::info!("cdrom: cmd 0x19");
-                match sub {
-                    // 20h INT3(yy,mm,dd,ver) Get cdrom BIOS date/version (yy,mm,dd,ver)
-                    0x20 => {
-                        self.status.set_busy_status(false);
-                        smallvec![CdromResponse::Immediate(Response {
-                            int:  HInt::Int3Ack,
-                            data: self.ver.as_slice().into(),
-                            done: true,
-                        })]
-                    }
-
-                    _ => {
-                        tracing::warn!(
-                            "todo(cdrom): cmd 0x19 (test) uhandled sub value: {}",
-                            hex(sub)
-                        );
-                        smallvec![CdromResponse::None]
-                    }
-                }
-            }
-            // 0x1a INT3(stat) --> INT2/5 (stat,flags,type,atip,"SCEx")
-            0x1a => {
-                tracing::info!("0x1a GetID");
-                match self.drive.drive_status {
-                    DriveStatus::LidOpen => {
-                        self.status.set_busy_status(false);
-                        diskerr(&[0x11, 0x80])
-                    }
-                    DriveStatus::SpinUp => {
-                        self.status.set_busy_status(false);
-                        diskerr(&[0x01, 0x80])
-                    }
-                    DriveStatus::DetectBusy => {
-                        self.status.set_busy_status(false);
-                        diskerr(&[0x03, 0x80])
-                    }
-                    DriveStatus::NoDisk => {
-                        self.status.set_busy_status(false);
-                        let res1 = self.responses.insert(Response {
-                            int:  HInt::Int5DiskErr,
-                            data: smallvec![0x08, 0x40],
-                            done: true,
-                        });
-                        self.drive.cmd_subscribe_to(res1);
-                        smallvec![
-                            CdromResponse::Immediate(self.int3_status(false)),
-                            CdromResponse::InCycles(0x0004a00, res1),
-                        ]
-                    }
-                    DriveStatus::AudioDisk => todo!(),
-                    // INT3(stat), INT2(02h,00h, 20h,00h, 53h,43h,45h,4xh)
-                    DriveStatus::LicensedMode2 => {
-                        let res2 = self.responses.insert(Response {
-                            int:  HInt::Int2Complete,
-                            data: smallvec![0x02, 0x00, 0x20, 0x00, 0x53, 0x43, 0x45, 0x49],
-                            done: true,
-                        });
-                        self.drive.cmd_subscribe_to(res2);
-                        smallvec![
-                            CdromResponse::Immediate(self.int3_status(false)),
-                            CdromResponse::InCycles(0x0004a00, res2)
-                        ]
-                    }
-                }
-            }
-            // ReadTOC - Command 1Eh --> INT3(stat) --> INT2(stat)
-            0x1e => {
-                tracing::info!("ReadTOC");
-                let res1 = self.responses.insert(self.int3_status(false));
-                let res2 = self.responses.insert(self.int2_status(true));
-                self.drive.cmd_subscribe_to(res1);
-                self.drive.cmd_subscribe_to(res2);
-                smallvec![
-                    CdromResponse::InCycles(0x0013cce, res1),
-                    CdromResponse::InCycles(0x0013cce + 0x0004a00, res2),
-                ]
-            }
-            0x02 => self.setloc_cmd(),
-            0x15 => self.seekl_cmd(),
-            0x0e => self.setmode_cmd(),
-            0x06 => self.readn_cmd(),
-            0x09 => self.pause_cmd(),
-            0x0a => self.init_cmd(),
-            cmd => {
-                todo!("todo(cdrom): unhandled cmd: {}", hex(cmd));
-            }
-        }
-    }
-
-    fn int3_status(&self, done: bool) -> Response {
-        Response {
-            int: HInt::Int3Ack,
-            data: smallvec![self.drive.status_code.raw_value()],
-            done,
-        }
-    }
-    fn int2_status(&self, done: bool) -> Response {
-        Response {
-            int: HInt::Int2Complete,
-            data: smallvec![self.drive.status_code.raw_value()],
-            done,
-        }
-    }
 
     fn get_param<T: From<u8>>(&mut self) -> T {
         self.param_fifo.pop_front().unwrap_or_default().into()
-    }
-
-    /// Setloc - Command 02h,amm,ass,asect --> INT3(stat)
-    fn setloc_cmd(&mut self) -> ResponseList {
-        let min = self.get_param::<Bcd>();
-        let sec = self.get_param::<Bcd>();
-        let sect = self.get_param::<Bcd>();
-
-        let res = self.responses.insert(self.int3_status(true));
-
-        let mss = Mss::new(min, sec, sect);
-        tracing::info!("Setloc\t{mss}");
-        self.drive.setloc(mss);
-        self.drive.cmd_subscribe_to(res);
-
-        smallvec![CdromResponse::InCycles(0x000c4e1, res)]
-    }
-
-    /// `SeekL` - Command 15h --> INT3(stat) --> INT2(stat)
-    fn seekl_cmd(&mut self) -> ResponseList {
-        const SEEK_TIME: u64 = Cpu::CLOCK as u64 / 75;
-
-        tracing::info!("SeekL");
-        let res1 = self.responses.insert(self.int3_status(false));
-        self.drive.status_code.set_spindle_mot(true);
-        self.drive.status_code.reset_state();
-        self.drive.status_code.set_seek(true);
-        self.drive.seek_to_cursor();
-        let res2 = self.responses.insert(self.int2_status(true));
-        self.drive.cmd_subscribe_to(res1);
-        self.drive.cmd_subscribe_to(res2);
-        self.drive.drive_state = DriveState::SeekL(res2);
-        smallvec![
-            CdromResponse::InCycles(0x000c4e1, res1),
-            CdromResponse::InCycles(0x000c4e1 + SEEK_TIME, res2)
-        ]
-    }
-
-    /// Setmode - Command 0Eh,mode --> INT3(stat)
-    fn setmode_cmd(&mut self) -> ResponseList {
-        self.status.set_busy_status(false);
-        let res = self.int3_status(true);
-        let res = self.responses.insert(res);
-        let setmode = self.get_param::<SetMode>();
-        debug_assert!(!setmode.xa_adpcm(), "xa-adpcm not yet implemented");
-        tracing::info!("Setmode\t{} {setmode:?}", hex(setmode));
-        self.drive.setmode(setmode);
-        self.drive.cmd_subscribe_to(res);
-
-        smallvec![CdromResponse::InCycles(0x000c4e1, res)]
-    }
-
-    /// `ReadN` - Command 06h --> INT3(stat) --> INT1(stat) --> datablock
-    fn readn_cmd(&mut self) -> ResponseList {
-        tracing::info!("ReadN");
-        self.drive.status_code.set_spindle_mot(true);
-        let res1 = self.responses.insert(self.int3_status(false));
-        self.drive.cmd_clear();
-        self.drive.cmd_subscribe_to(res1);
-        self.drive.drive_state = DriveState::ReadN(res1);
-        smallvec![CdromResponse::InCycles(0x000c4e1, res1)]
-        // smallvec![CdromResponse::Immediate(self.int3_status(true))]
-    }
-
-    /// Pause - Command 09h --> INT3(stat) --> INT2(stat)
-    fn pause_cmd(&mut self) -> ResponseList {
-        tracing::info!("Pause");
-        let current_stat = self.int3_status(false);
-        let res1 = self.responses.insert(current_stat);
-        self.drive.pause();
-        let res2 = self.responses.insert(self.int2_status(true));
-        self.drive.cmd_subscribe_to(res1);
-        self.drive.cmd_subscribe_to(res2);
-        smallvec![
-            CdromResponse::InCycles(0x000c4e1, res1),
-            CdromResponse::InCycles(0x000c4e1 + 0x010bd93, res2)
-        ]
-    }
-
-    /// Init - Command 0Ah --> INT3(stat) --> INT2(stat)
-    fn init_cmd(&mut self) -> ResponseList {
-        tracing::info!("Init");
-        self.param_clear();
-        self.result_clear();
-        let res1 = self.responses.insert(self.int3_status(false));
-        self.drive.mode = SetMode::new_with_raw_value(0x20);
-        self.drive.status_code.reset_state();
-        self.drive.status_code.set_spindle_mot(true);
-        self.drive.cursor = CdromCursor::default();
-        let res2 = self.responses.insert(self.int2_status(true));
-        self.drive.cmd_subscribe_to(res1);
-        self.drive.cmd_subscribe_to(res2);
-        smallvec![
-            CdromResponse::InCycles(0x0013cce, res1),
-            CdromResponse::InCycles(0x0013cce + 0x0004a00, res2),
-        ]
     }
 }
 

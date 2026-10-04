@@ -28,3 +28,9 @@ impl CDRomVerPtr {
         self.0.as_slice()
     }
 }
+
+impl<const N: usize> From<CDRomVerPtr> for heapless::Vec<u8, N> {
+    fn from(value: CDRomVerPtr) -> Self {
+        Self::from(value.to_owned())
+    }
+}

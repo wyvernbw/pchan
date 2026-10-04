@@ -8,11 +8,11 @@ use smallvec::{SmallVec, smallvec};
 
 use crate::Emu;
 use crate::cpu::Cpu;
-use crate::io::cdrom::cdrom_cmds::{Response, SetMode, SetModeSpeed, StatusCode};
+use crate::io::cdrom::cdrom_cmds::{CommandStateV2, SetMode, SetModeSpeed, StatusCode};
 use crate::io::cdrom::cdrom_format::{
     CdromCursor, CueFormat, CueFormatParseErr, Mss, SECTOR_USER_SIZE,
 };
-use crate::io::cdrom::{CDRomStatusReg, CdromScheduler, DriveStatus};
+use crate::io::cdrom::{CDRomStatusReg, DriveStatus};
 use crate::io::evque::EventId;
 
 use super::cdrom_cmds::SetModeSectSize;
@@ -20,12 +20,13 @@ use super::cdrom_cmds::SetModeSectSize;
 #[derive(Default, derive_more::Debug)]
 pub struct CdromDrive {
     pub cursor:        CdromCursor,
-    setloc_armed:      bool,
+    pub setloc_armed:  bool,
     pub status_code:   StatusCode,
     pub drive_status:  DriveStatus,
     pub mode:          SetMode,
     pub drive_state:   DriveState,
     pub command_state: CommandState,
+    pub cmd_state_v2:  CommandStateV2,
     disc:              Option<Disc>,
     host_disc_err:     Option<std::io::Error>,
 
@@ -45,6 +46,7 @@ impl Clone for CdromDrive {
             host_disc_err:   None,
             open_disc_state: None,
             setloc_armed:    false,
+            cmd_state_v2:    CommandStateV2::Idle,
         }
     }
 }
@@ -101,55 +103,6 @@ impl CdromDrive {
         self.status_code.reset_state();
     }
 
-    pub fn run<A: Allocator + Copy>(&mut self, scheduler: &mut CdromScheduler<'_, A>) {
-        match self.drive_state {
-            DriveState::Idle => {}
-            DriveState::ReadN(id) => {
-                let cycles_per_sector = self.sector_cycles();
-
-                let int1 = Response::new(
-                    super::HInt::Int1DataReady,
-                    smallvec![self.status_code.raw_value()],
-                    false,
-                );
-                let int1 = scheduler.responses.insert(int1);
-                self.drive_state = DriveState::ReadN(int1);
-                self.cmd_subscribe_to(int1);
-
-                scheduler.evque.schedule(
-                    |emu, ctx| {
-                        let DriveState::ReadN(current_id) = emu.cdrom.drive.drive_state else {
-                            return;
-                        };
-                        if current_id != ctx.id {
-                            return;
-                        }
-                        emu.cdrom.drive.status_code.reset_state();
-                        emu.cdrom.drive.status_code.set_read(true);
-                        let res = emu.cdrom.responses.remove(current_id);
-                        emu.cdrom
-                            .drive
-                            .request_data(&mut emu.cdrom.status, &mut emu.cdrom.data_fifo);
-                        emu.cdrom_send_response(res.expect("event lost"));
-                        emu.cdrom.drive.run(&mut CdromScheduler {
-                            id:        ctx.id,
-                            evque:     &mut emu.evque,
-                            responses: &mut emu.cdrom.responses,
-                        });
-                    },
-                    int1,
-                    cycles_per_sector,
-                );
-            }
-            DriveState::SeekL(id) => {
-                if id == scheduler.id {
-                    self.drive_state = DriveState::Idle;
-                    self.status_code.reset_state();
-                }
-            }
-        }
-    }
-
     pub fn request_data(&mut self, status: &mut CDRomStatusReg, result_fifo: &mut VecDeque<u8>) {
         status.set_data_req(true);
         if let Some(disc) = &mut self.disc {
@@ -187,7 +140,7 @@ impl CdromDrive {
         }
     }
 
-    fn sector_cycles(&self) -> u64 {
+    pub fn sector_cycles(&self) -> u64 {
         let mult = match self.mode.speed() {
             SetModeSpeed::Normal => CYCLES_PER_BYTE,
             SetModeSpeed::Double => CYCLES_PER_BYTE_2X,
