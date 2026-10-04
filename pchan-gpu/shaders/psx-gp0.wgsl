@@ -114,7 +114,7 @@ fn read_4bit(coord: vec2<f32>) -> u32 {
 fn read_8bit(coord: vec2<f32>) -> u32 {
     var packed = read_16bit(vec2(coord.x / 2, coord.y));
     let bit_idx = u32(coord.x) % 2;
-    let shift_amt = bit_idx * 2;
+    let shift_amt = bit_idx * 8;
 
     return (packed >> shift_amt) & 0xFFu;
 }
