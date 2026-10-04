@@ -498,6 +498,16 @@ impl Debugger {
         })
         .detach();
 
+        cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
+
+        cx.on_action({
+            let emucx = emucx.clone();
+            move |_: &Quit, cx| {
+                emucx.read(cx).emu.dma.dump_cdrom_data();
+                cx.quit();
+            }
+        });
+
         cx.on_action::<HardReset>({
             let emucx = emucx.clone();
             move |_, cx| {
