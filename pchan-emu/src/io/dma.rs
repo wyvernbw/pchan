@@ -17,6 +17,7 @@ pub struct DmaState {
     // TODO: dma channels
     dma2: DmaChannel,
     dma3: DmaChannel,
+    dma4: DmaChannel,
     dma6: DmaChannel,
 
     // events: Slab<DmaEvent>,
@@ -33,6 +34,7 @@ impl Default for DmaState {
             dicr:             Dicr::default(),
             dma2:             DmaChannel::default(),
             dma3:             DmaChannel::default(),
+            dma4:             DmaChannel::default(),
             dma6:             DmaChannel::default(),
             // queue: DmaQueue::default(),
             // events:           Slab::with_capacity(1024),
@@ -93,8 +95,13 @@ impl<A: Allocator> Emu<A> {
                 tracing::trace!("read at dma3chcr (cdrom chcr): {:?}", chcr.transfer());
                 Ok(chcr.io_from_u32())
             }
-            // 0x1f8010b0..=0x1f8010bf => trace_todo!(0x0, "read at dma3 (cdrom)"),
-            0x1f8010c0..=0x1f8010cf => trace_todo!(0x0, "read at dma4 (spu)"),
+            0x1f8010c0 => Ok(self.dma().dma4.madr.addr().io_from_u32()),
+            0x1f8010c4 => Ok(self.dma().dma4.bcr.io_from_u32()),
+            0x1f8010c8 => {
+                let chcr = self.dma().dma4.chcr;
+                tracing::trace!("read at dma4chcr (spu chcr): {:?}", chcr.transfer());
+                Ok(chcr.io_from_u32())
+            }
             0x1f8010d0..=0x1f8010df => trace_todo!(0x0, "read at dma5 (pio)"),
 
             // dma 6
@@ -130,8 +137,11 @@ impl<A: Allocator> Emu<A> {
             0x1f8010b4 => Dma3Cdrom::write_bcr(self, value),
             0x1f8010b8 => Dma3Cdrom::write_chcr(self, value),
 
-            // 0x1f8010b0..=0x1f8010bf => trace_todo!("write at dma3 (cdrom)"),
-            0x1f8010c0..=0x1f8010cf => trace_todo!("write at dma4 (spu)"),
+            // dma 4
+            0x1f8010c0 => Dma4Spu::write_madr(self, value),
+            0x1f8010c4 => Dma4Spu::write_bcr(self, value),
+            0x1f8010c8 => Dma4Spu::write_chcr(self, value),
+
             0x1f8010d0..=0x1f8010df => trace_todo!("write at dma5 (pio)"),
 
             // dma 6
@@ -230,6 +240,9 @@ impl<A: Allocator> Emu<A> {
             }
             DmaTransportKind::Cdrom => {
                 self.dma3_write_data(event);
+            }
+            DmaTransportKind::Spu => {
+                self.dma4_write_data(event);
             }
         }
     }
@@ -427,6 +440,10 @@ impl<A: Allocator> Emu<A> {
         self.dma_write_data(event, &mut Dma3Cdrom);
     }
 
+    fn dma4_write_data(&mut self, event: DmaEvent) {
+        self.dma_write_data(event, &mut Dma4Spu);
+    }
+
     fn dma6_write_data(&mut self, event: DmaEvent) {
         let channel = event.init_chan;
         let mut word_count = u32::from(channel.bcr.s0_word_count());
@@ -530,6 +547,33 @@ impl Transfer for Dma3Cdrom {
 
     fn channel<A: Allocator>(emu: &mut Emu<A>) -> &mut DmaChannel {
         &mut emu.dma.dma3
+    }
+}
+
+struct Dma4Spu;
+
+impl Transfer for Dma4Spu {
+    const TRANSPORT_KIND: DmaTransportKind = DmaTransportKind::Spu;
+
+    fn write<A: Allocator>(&mut self, emu: &mut Emu<A>, address: u32) {
+        let values = emu
+            .fastmem_read::<u32>(address)
+            .expect("address outside of ram/bios");
+        let values: [u16; 2] = values.io_from_u32();
+        for half in values {
+            emu.spu.push(half);
+        }
+    }
+
+    fn read<A: Allocator>(&mut self, emu: &mut Emu<A>, address: u32) {
+        let h1 = emu.spu.pop();
+        let h2 = emu.spu.pop();
+        let _ = emu.fastmem_write(address, h1);
+        let _ = emu.fastmem_write(address + 0x2, h2);
+    }
+
+    fn channel<A: Allocator>(emu: &mut Emu<A>) -> &mut DmaChannel {
+        &mut emu.dma.dma4
     }
 }
 
@@ -809,15 +853,17 @@ pub enum DmaTransportKind {
     Otc,
     Gpu,
     Cdrom,
+    Spu,
 }
 
 impl DmaTransportKind {
     #[must_use]
     pub fn idx(&self) -> u8 {
         match self {
-            DmaTransportKind::Otc => 6,
             DmaTransportKind::Gpu => 2,
             DmaTransportKind::Cdrom => 3,
+            DmaTransportKind::Spu => 4,
+            DmaTransportKind::Otc => 6,
         }
     }
 }
@@ -874,6 +920,7 @@ impl DmaChannel {
         match dma_t {
             DmaTransportKind::Otc | DmaTransportKind::Gpu => u64::from(self.bcr.s0_word_count()),
             DmaTransportKind::Cdrom => u64::from(self.bcr.s0_word_count()) * 24,
+            DmaTransportKind::Spu => u64::from(self.bcr.s0_word_count()) * 4,
         }
     }
 

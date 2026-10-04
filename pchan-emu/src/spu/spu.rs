@@ -399,6 +399,20 @@ impl SpuState {
     fn key_off(&mut self, idx: usize) {
         self.adsr.envelopes.phase[idx] = EnvelopePhase::Release;
     }
+
+    #[inline(always)]
+    pub fn push(&mut self, value: u16) {
+        let current = self.ram_current;
+        self.mem[current] = value;
+        self.ram_current += 1;
+    }
+
+    #[inline(always)]
+    pub fn pop(&mut self) -> u16 {
+        let value = self.mem[self.ram_current];
+        self.ram_current += 1;
+        value
+    }
 }
 
 impl Voice {
