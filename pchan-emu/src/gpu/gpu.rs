@@ -83,9 +83,9 @@ impl Default for GpuState {
             draw_reg: GpuInternalDrawReg::default(),
             draw_call_queue: vec![],
             conn: Conn {
-                draw_call_chan: kanal::bounded_async(0),
-                vram_in_chan:   kanal::bounded_async(0),
-                vram_out_chan:  kanal::bounded_async(1),
+                draw_call_chan: kanal::bounded_async(3),
+                vram_in_chan:   kanal::bounded_async(3),
+                vram_out_chan:  kanal::bounded_async(3),
             },
             dp: Display::default(),
             waiting_on_render: false,
