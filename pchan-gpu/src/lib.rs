@@ -17,7 +17,7 @@ use std::mem::offset_of;
 use std::sync::Mutex;
 use std::time::Instant;
 
-use glam::{I16Vec2, U8Vec2, U8Vec3, U16Vec2, UVec2, i16vec2, u8vec2, u16vec2};
+use glam::prelude::*;
 use pchan_emu::Emu;
 use pchan_emu::gpu::draw_call::{
     DrawCallCollection, DrawCallKind, DrawPolygon, DrawRect, GpuInternalDrawReg, RectSize, Shading,
@@ -429,11 +429,11 @@ impl Renderer {
                                 draw_calls
                             );
                             tracing::trace!("waiting on vram...");
+
                             let Ok(mut vram) = self.conn.vram_in_chan.1.recv().await else {
                                 continue;
                             };
                             tracing::debug!("received vram");
-
                             let scene = Scene::new_from_draw_calls(draw_calls);
                             let mut pass = self.create_render_pass(scene);
                             pass.draw(&vram);
@@ -649,13 +649,13 @@ impl Quad {
             top_left,
             top_right: top_left
                 .with_pos(top_left.pos + i16vec2(size.x as i16, 0))
-                .with_uv(top_left.uv + u8vec2(tex_size.x, 0)),
+                .with_uv(top_left.uv.wrapping_add(u8vec2(tex_size.x, 0))),
             bottom_left: top_left
                 .with_pos(top_left.pos + i16vec2(0, size.y as i16))
-                .with_uv(top_left.uv + u8vec2(0, tex_size.y)),
+                .with_uv(top_left.uv.wrapping_add(u8vec2(0, tex_size.y))),
             bottom_right: top_left
                 .with_pos(top_left.pos + i16vec2(size.x as i16, size.y as i16))
-                .with_uv(top_left.uv + u8vec2(tex_size.x, tex_size.y)),
+                .with_uv(top_left.uv.wrapping_add(u8vec2(tex_size.x, tex_size.y))),
         }
     }
     fn vertices(self) -> [Vertex; 4] {
