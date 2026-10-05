@@ -1,6 +1,6 @@
 use core::mem::transmute;
 
-use crate::gpu::{DrawPixels, GpuStatReg, IVramCoord, TexpageCmd, VramCoord};
+use crate::gpu::{DrawPixels, Gp0TexWindowCmd, GpuStatReg, IVramCoord, TexpageCmd, VramCoord};
 use crate::io::CastIOInto;
 use arbitrary_int::prelude::*;
 use bitbybit::{bitenum, bitfield};
@@ -17,9 +17,10 @@ pub struct DrawCallCollection {
 
 #[derive(Debug, Clone)]
 pub struct DrawCall {
-    pub gpustat:  GpuStatReg,
-    pub draw_reg: GpuInternalDrawReg,
-    pub inner:    DrawCallKind,
+    pub gpustat:    GpuStatReg,
+    pub tex_window: Gp0TexWindowCmd,
+    pub draw_reg:   GpuInternalDrawReg,
+    pub inner:      DrawCallKind,
 }
 
 #[derive(Debug, Clone)]

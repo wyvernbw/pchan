@@ -24,8 +24,8 @@ use pchan_emu::gpu::draw_call::{
     DrawCallCollection, DrawCallKind, DrawPolygon, DrawRect, GpuInternalDrawReg, RectSize, Shading,
 };
 use pchan_emu::gpu::{
-    Conn, Display, DisplayColorDepth, DrawPixels, GpuStatReg, IVramCoord, TextureColorMode,
-    VramCoord,
+    Conn, Display, DisplayColorDepth, DrawPixels, Gp0TexWindowCmd, GpuStatReg, IVramCoord,
+    TextureColorMode, VramCoord,
 };
 use thiserror::Error;
 use tracing::Level;
@@ -524,6 +524,7 @@ struct Vertex {
     draw_area_bottom_right: VramCoord,
     draw_offset: IVramCoord,
     gpustat: GpuStatReg,
+    tex_window: Gp0TexWindowCmd,
 }
 
 struct VertexSpec {
@@ -538,6 +539,7 @@ struct VertexSpec {
     draw_area_bottom_right: VramCoord,
     draw_offset: IVramCoord,
     gpustat: GpuStatReg,
+    tex_window: Gp0TexWindowCmd,
 }
 
 impl Vertex {
@@ -555,6 +557,7 @@ impl Vertex {
             draw_area_bottom_right: spec.draw_area_bottom_right,
             draw_offset: spec.draw_offset,
             gpustat: spec.gpustat,
+            tex_window: spec.tex_window,
         }
     }
     fn desc() -> &'static [VertexAttribute] {
@@ -618,6 +621,12 @@ impl Vertex {
                 format: VertexFormat::Uint32,
                 offset: offset_of!(Vertex, gpustat) as _,
                 shader_location: 9,
+            },
+            // tex_window @location(10)
+            VertexAttribute {
+                format: VertexFormat::Uint32,
+                offset: offset_of!(Vertex, tex_window) as _,
+                shader_location: 10,
             },
         ]
     }
@@ -698,18 +707,36 @@ pub struct Quad {
 
 impl Quad {
     fn new_with_topleft_and_size(top_left: Vertex, size: U16Vec2) -> Self {
-        let tex_size = Vertex::repeat_tex_window(size);
+        let tex_size = size;
         Quad {
             top_left,
             top_right: top_left
                 .with_pos(top_left.pos + i16vec2(size.x as i16, 0))
-                .with_uv(top_left.uv.wrapping_add(u8vec2(tex_size.x, 0))),
+                .with_uv(
+                    top_left
+                        .uv
+                        .as_u16vec2()
+                        .wrapping_add(u16vec2(tex_size.x, 0))
+                        .as_u8vec2(),
+                ),
             bottom_left: top_left
                 .with_pos(top_left.pos + i16vec2(0, size.y as i16))
-                .with_uv(top_left.uv.wrapping_add(u8vec2(0, tex_size.y))),
+                .with_uv(
+                    top_left
+                        .uv
+                        .as_u16vec2()
+                        .wrapping_add(u16vec2(0, tex_size.y))
+                        .as_u8vec2(),
+                ),
             bottom_right: top_left
                 .with_pos(top_left.pos + i16vec2(size.x as i16, size.y as i16))
-                .with_uv(top_left.uv.wrapping_add(u8vec2(tex_size.x, tex_size.y))),
+                .with_uv(
+                    top_left
+                        .uv
+                        .as_u16vec2()
+                        .wrapping_add(u16vec2(tex_size.x, tex_size.y))
+                        .as_u8vec2(),
+                ),
         }
     }
     fn vertices(self) -> [Vertex; 4] {
@@ -751,10 +778,20 @@ impl Scene {
             }
             match cmd.inner {
                 DrawCallKind::Rect(draw_rect) => {
-                    _ = scene.add_draw_rect_draw_call(&draw_rect, cmd.gpustat, cmd.draw_reg);
+                    _ = scene.add_draw_rect_draw_call(
+                        &draw_rect,
+                        cmd.gpustat,
+                        cmd.draw_reg,
+                        cmd.tex_window,
+                    );
                 }
                 DrawCallKind::Polygon(draw_polygon) => {
-                    scene.add_draw_polygon_draw_call(&draw_polygon, cmd.gpustat, cmd.draw_reg);
+                    scene.add_draw_polygon_draw_call(
+                        &draw_polygon,
+                        cmd.gpustat,
+                        cmd.draw_reg,
+                        cmd.tex_window,
+                    );
                 }
                 DrawCallKind::Line(_draw_line) => {}
             }
@@ -769,7 +806,13 @@ impl Scene {
         draw_rect: &DrawRect,
         gpustat: GpuStatReg,
         draw_reg: GpuInternalDrawReg,
+        tex_window: Gp0TexWindowCmd,
     ) -> Result<(), DrawRectError> {
+        tracing::info!(
+            "draw_rect.gpustat.texpage: ({:?}, {:?})",
+            gpustat.texpage_x_base(),
+            gpustat.texpage_y_base()
+        );
         let rgb = draw_rect.color.rgb().to_ne_bytes();
         let color_mode = match draw_rect.color.textured() {
             true => gpustat.texpage_colors(),
@@ -789,6 +832,7 @@ impl Scene {
             draw_area_bottom_right: draw_reg.draw_area_bottom_right,
             draw_offset: draw_reg.draw_offset,
             gpustat,
+            tex_window,
         });
 
         let quad: Quad = match (draw_rect.color.size(), draw_rect.var_size) {
@@ -813,7 +857,13 @@ impl Scene {
         draw_polygon: &DrawPolygon,
         gpustat: GpuStatReg,
         draw_reg: GpuInternalDrawReg,
+        tex_window: Gp0TexWindowCmd,
     ) {
+        tracing::info!(
+            "draw_poly.gpustat.texpage: ({:?}, {:?})",
+            gpustat.texpage_x_base(),
+            gpustat.texpage_y_base()
+        );
         let header = draw_polygon.header;
         let clut = draw_polygon.clut;
         let texpage = draw_polygon.texpage;
@@ -844,6 +894,7 @@ impl Scene {
                     draw_area_bottom_right: draw_reg.draw_area_bottom_right,
                     draw_offset: draw_reg.draw_offset,
                     gpustat,
+                    tex_window,
                 };
                 match shading {
                     Shading::Flat => {}

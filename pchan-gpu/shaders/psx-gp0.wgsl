@@ -9,6 +9,7 @@ struct VertexInput {
     @location(7) draw_area_bottom_right: vec2<u32>,
     @location(8) draw_offset: vec2<i32>,
     @location(9) gpustat: u32,
+    @location(10) tex_window: u32,
 };
 
 struct VertexOutput {
@@ -23,7 +24,8 @@ struct VertexOutput {
     @interpolate(flat) @location(11) draw_area_top_left: vec2<f32>,
     @interpolate(flat) @location(12) draw_area_bottom_right: vec2<f32>,
     @interpolate(flat) @location(13) draw_offset: vec2<f32>,
-    @interpolate(flat) @location(14) gpustat: u32
+    @interpolate(flat) @location(14) gpustat: u32,
+    @interpolate(flat) @location(15) tex_window: u32
 };
 
 @group(0) @binding(0)
@@ -70,6 +72,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     out.color_mode = color_mode;
     out.flags = in.flags;
     out.gpustat = in.gpustat;
+    out.gpustat = in.gpustat;
     out.draw_area_top_left = vec2<f32>(in.draw_area_top_left);
     out.draw_area_bottom_right = vec2<f32>(in.draw_area_bottom_right);
     out.draw_offset = vec2<f32>(in.draw_offset);
@@ -83,6 +86,32 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     out.color = rgb8_split_color(color);
 
     return out;
+}
+
+/// # GP0(E2h) - Texture Window setting
+///
+///   0-4    Texture window Mask X   (in 8 pixel steps)
+///   5-9    Texture window Mask Y   (in 8 pixel steps)
+///   10-14  Texture window Offset X (in 8 pixel steps)
+///   15-19  Texture window Offset Y (in 8 pixel steps)
+///   20-23  Not used (zero)
+///   24-31  Command  (E2h)
+struct TexWindow {
+    mask: vec2<u32>,
+    offset: vec2<u32>
+}
+
+fn unpack_tex_window(p: u32) -> TexWindow {
+    var t: TexWindow;
+    t.mask = vec2(extractBits(p, 0, 5), extractBits(p, 5, 5));
+    t.offset = vec2(extractBits(p, 10, 5), extractBits(p, 15, 5));
+    return t;
+}
+
+fn apply_tex_window(texcoord: vec2<f32>, t: TexWindow) -> vec2<f32> {
+    var p = vec2<u32>(texcoord);
+    p = (p & (~(t.mask * 8))) | ((t.offset & t.mask) * 8);
+    return vec2<f32>(p);
 }
 
 fn pack_color(color: vec4<f32>) -> u32 {
@@ -156,10 +185,16 @@ fn get_textured(flags: u32) -> bool {
     return get_flag(flags, 3);
 }
 
+fn wrap2(x: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
+    let r = b - a;
+    return a + (x - a) % r;
+}
+
 fn get_color(in: VertexOutput) -> u32 {
     var in_color = in.color;
     var set_mask = get_set_mask(in.flags);
     let textured = get_textured(in.flags);
+    let tex_window = unpack_tex_window(in.tex_window);
 
     var tex_color_packed: u32;
     var tex_color: vec4<f32>;
@@ -167,21 +202,30 @@ fn get_color(in: VertexOutput) -> u32 {
     if textured {
         switch in.color_mode {
             case COLOR_MODE_4BIT: {
-                var clut_idx = read_4bit(pack_h(in.texpage_base, 4) + pack_h(in.uv, 1));
-                clut_idx = clamp(clut_idx, 0, 15);
-                let coord = vec2(in.clut.x + f32(clut_idx), in.clut.y);
+                let base = pack_h(in.texpage_base, 4);
+                var texcoord = base  + in.uv;
+                texcoord = apply_tex_window(texcoord, tex_window);
+                var clut_idx = read_4bit(texcoord);
+
+                var coord = vec2(in.clut.x + f32(clut_idx), in.clut.y);
                 let clut_color = read_16bit(coord);
                 tex_color_packed = clut_color;
             }
             case COLOR_MODE_8BIT: {
-                var clut_idx = read_8bit(pack_h(in.texpage_base, 2) + pack_h(in.uv, 1));
-                clut_idx = clamp(clut_idx, 0, 256);
+                let base = pack_h(in.texpage_base, 2);
+                var texcoord = base  + in.uv;
+                texcoord = apply_tex_window(texcoord, tex_window);
+                var clut_idx = read_8bit(texcoord);
+
                 let coord = vec2(in.clut.x + f32(clut_idx), in.clut.y);
                 let clut_color = read_16bit(coord);
                 tex_color_packed = clut_color;
             }
             case COLOR_MODE_15BIT, COLOR_MODE_24BIT, default: {
-                tex_color_packed = read_16bit(in.texpage_base + in.uv);
+                let base = in.texpage_base;
+                var texcoord = base  + in.uv;
+                texcoord = apply_tex_window(texcoord, tex_window);
+                tex_color_packed = read_16bit(texcoord);
             }
         }
         tex_color = rgb5_split_color(tex_color_packed);

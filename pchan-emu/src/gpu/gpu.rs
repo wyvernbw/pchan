@@ -410,6 +410,19 @@ impl<A: Allocator> Emu<A> {
                     Ok(decoder) => Gp0::DrawPolygonDecode(decoder),
                     Err(draw_call) => {
                         tracing::trace!(?draw_call, "decoded");
+
+                        if draw_call.header.textured() {
+                            self.gpu
+                                .gpustat
+                                .set_texpage_x_base(draw_call.texpage.texpage_x_base());
+                            self.gpu
+                                .gpustat
+                                .set_texpage_y_base(draw_call.texpage.texpage_y_base());
+                            self.gpu
+                                .gpustat
+                                .set_texpage_colors(draw_call.texpage.texpage_colors());
+                        }
+
                         self.gpu_mut().gpustat.set_ready_recv_cmd(true);
                         self.gpu_issue_draw_call(DrawCallKind::Polygon(draw_call));
                         Gp0::WaitingForCmd
@@ -528,9 +541,10 @@ impl<A: Allocator> Emu<A> {
 
     pub fn gpu_create_draw_call(&self, kind: DrawCallKind) -> DrawCall {
         DrawCall {
-            gpustat:  self.gpu().gpustat,
-            inner:    kind,
-            draw_reg: self.gpu().draw_reg.clone(),
+            gpustat:    self.gpu().gpustat,
+            tex_window: self.gpu.tex_window,
+            inner:      kind,
+            draw_reg:   self.gpu().draw_reg.clone(),
         }
     }
 
@@ -1289,17 +1303,17 @@ pub enum GpuInfoCmd {
 ///   15-19  Texture window Offset Y (in 8 pixel steps)
 ///   20-23  Not used (zero)
 ///   24-31  Command  (E2h)
-#[bitfield(u32)]
-#[derive(Debug, Default)]
+#[bitfield(u32, debug)]
+#[derive(Default)]
 #[must_use]
 pub struct Gp0TexWindowCmd {
-    #[bits(0..=4)]
+    #[bits(0..=4, r)]
     mask_x:   u5,
-    #[bits(5..=9)]
+    #[bits(5..=9, r)]
     mask_y:   u5,
-    #[bits(10..=14)]
+    #[bits(10..=14, r)]
     offset_x: u5,
-    #[bits(15..=19)]
+    #[bits(15..=19, r)]
     offset_y: u5,
     #[bits(20..=23)]
     _pad:     u4,
