@@ -11,6 +11,8 @@ use smallvec::SmallVec;
 pub struct DrawCallCollection {
     pub draw_calls: Vec<DrawCall>,
     pub display:    crate::gpu::Display,
+    /// gpustat at vblank
+    pub gpustat:    GpuStatReg,
 }
 
 #[derive(Debug, Clone)]

@@ -103,14 +103,23 @@ fn srgb_to_linear(c: f32) -> f32 {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    var uv: vec2<f32>;
+    var uv: vec2<f32> = in.uv;
 
     if display.debug_display != 0 {
         uv = in.uv * vec2<f32>(1024, 512);
         uv.y = 512 - uv.y;
+        let p = vec2<u32>(uv);
+        let a = display.display_area_pos;
+        let b = display.resolution + display.display_area_pos; 
+        let in_box = p.x >= a.x && p.x <= b.x && p.y >= a.y && p.y <= b.y;
+        let on_edge = p.x == a.x || p.x == b.x || p.y == a.y || p.y == b.y;
+
+        if in_box && on_edge {
+            return vec4(1.0, 0.0, 0.0, 1.0);
+        } 
     } else {
-        uv = in.uv * vec2<f32>(display.resolution - display.display_area_pos) + vec2<f32>(display.display_area_pos);
-        uv.y = f32(display.resolution.y) - uv.y;
+        uv.y = 1.0 - uv.y;
+        uv = uv * vec2<f32>(display.resolution-2) + vec2<f32>(display.display_area_pos);
     }
 
     switch display.color_depth {

@@ -75,12 +75,6 @@ impl RenderPass<'_> {
         let vram_buf =
             unsafe { slice::from_raw_parts(vram.as_ptr().cast::<u8>(), mem::size_of_val(vram)) };
 
-        {
-            let mut dp = self.renderer.display_uniforms.lock().unwrap();
-            dp.dp_start = self.scene.dp_start;
-            dp.dp_res = self.scene.dp_res;
-        }
-
         let init_buffer = self
             .renderer
             .device

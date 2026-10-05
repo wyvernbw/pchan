@@ -315,8 +315,8 @@ impl Debugger {
         let gpu = cx.foreground_executor().block_on(gpu).into_diagnostic()?;
 
         let mut dp = gpu.display_uniforms.lock().unwrap();
-        dp.screen_rect.x = 320;
-        dp.screen_rect.y = 240;
+        dp.app.screen_rect.x = 320;
+        dp.app.screen_rect.y = 240;
         drop(dp);
 
         gpu.connect_emu(&mut emu);
@@ -826,6 +826,7 @@ impl Debugger {
             .display_uniforms
             .lock()
             .unwrap()
+            .app
             .dp_debug;
 
         v_flex()

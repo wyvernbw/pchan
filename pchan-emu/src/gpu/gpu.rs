@@ -670,6 +670,16 @@ impl GpuState {
 
     pub fn flush_draw_calls(&mut self) {
         if self.draw_call_queue.is_empty() {
+            self.conn
+                .draw_call_chan
+                .0
+                .as_sync()
+                .send(DrawCallCollection {
+                    draw_calls: Vec::new(),
+                    display:    self.dp.clone(),
+                    gpustat:    self.gpustat,
+                })
+                .expect("render channel closed");
             return;
         }
 
@@ -686,6 +696,7 @@ impl GpuState {
             .as_sync()
             .send(DrawCallCollection {
                 draw_calls: queue,
+                gpustat: self.gpustat,
                 display,
             })
             .unwrap();
@@ -1443,8 +1454,6 @@ pub struct Display {
     fract_01: u64,
 
     pub display_vram_start: U16Vec2,
-    /// unused
-    pub display_vram_size:  U16Vec2,
 }
 
 /// The functionality in this trait largely deals with video cycles (or video clock units).
