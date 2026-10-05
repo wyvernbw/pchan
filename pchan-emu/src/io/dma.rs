@@ -313,8 +313,8 @@ impl<A: Allocator> Emu<A> {
                         .slice
                         .expect("event with sync mode slice has no slice state. this is a bug.");
                     let mut addr = slice.addr;
-                    T::channel(self).madr.set_addr(addr.as_());
                     let len = init_chan.bcr.s1_block_size();
+                    debug_assert_ne!(len, 0);
                     for _ in 0..len {
                         match direction {
                             TransferDir::DeviceToRam => {
@@ -324,8 +324,9 @@ impl<A: Allocator> Emu<A> {
                                 transfer.write(self, addr);
                             }
                         }
-                        addr += 0x4;
+                        init_chan.advance(&mut addr);
                     }
+                    T::channel(self).madr.set_addr(addr.as_());
 
                     // do not mark as done until final event is reached
                     tracing::debug!(
@@ -337,7 +338,8 @@ impl<A: Allocator> Emu<A> {
 
                     if slice.idx >= u32::from(init_chan.bcr.s1_block_count()) - 1 {
                         tracing::info!(
-                            "dma event.{} finished",
+                            "dma{} event.{} finished",
+                            idx,
                             hex(init_chan.madr.addr().as_u32())
                         );
 
@@ -356,11 +358,10 @@ impl<A: Allocator> Emu<A> {
                     }
 
                     let cycles_per_step = event.init_chan.slice_cycles();
-                    let addr_step = event.init_chan.bcr.s1_block_size();
                     let upcoming = clock + cycles_per_step;
                     let slice = SliceTransferState {
-                        addr: slice.addr + u32::from(addr_step) * 0x4,
-                        idx:  slice.idx + 1,
+                        addr,
+                        idx: slice.idx + 1,
                     };
                     let next_event = DmaEvent {
                         in_cycles: cycles_per_step,
@@ -389,7 +390,7 @@ impl<A: Allocator> Emu<A> {
                             transfer.write(self, addr);
                         }
                     }
-                    addr += 0x4;
+                    init_chan.advance(&mut addr);
                 }
                 T::channel(self).set_complete();
                 self.dma_irq_raise_complete(idx);
@@ -515,6 +516,7 @@ impl Transfer for Dma2Gpu {
         let cmd = emu
             .fastmem_read::<GpuCmd>(address)
             .expect("address outside of ram/bios");
+        tracing::debug!("dma2({})={}", hex(address), hex(cmd));
         emu.gpu_gp0_cmd(cmd);
     }
 
@@ -837,6 +839,12 @@ impl DmaChannel {
     fn io_set_bcr<T: Copy>(&mut self, value: T) {
         let bcr = DmaBcr::new_with_raw_value(value.io_into_u32());
         self.bcr = bcr;
+    }
+    fn advance(&self, address: &mut u32) {
+        match self.chcr.madr_inc() {
+            MadrInc::Positive => *address += 0x4,
+            MadrInc::Negative => *address = address.wrapping_sub(0x4),
+        }
     }
 }
 

@@ -104,6 +104,12 @@ pub fn create_vram() -> Box<[u16]> {
 fn mask_bit(value: u16) -> bool {
     value & (1 << 15) != 0
 }
+fn set_mask_bit(value: u16, set: bool) -> u16 {
+    match set {
+        true => value | (1 << 15),
+        false => value & (1 << 15),
+    }
+}
 
 impl<A: Allocator> Emu<A> {
     #[pchan_macros::instrument(level = "trace", skip(self), "gpu:r")]
@@ -115,7 +121,8 @@ impl<A: Allocator> Emu<A> {
                 match &self.gpu().gp0 {
                     Gp0::CpRectVramToCpu(Gp0CpRect::RecvData(cursor)) => {
                         let mut cursor = *cursor;
-                        self.gpu_mut().vram_flush_render();
+                        self.gpu.flush_draw_calls();
+                        self.gpu.wait_for_render_result();
                         for (idx, at) in cursor.iter().take(2).enumerate() {
                             self.gpu_mut().vram_read(at, idx);
                         }
@@ -129,11 +136,7 @@ impl<A: Allocator> Emu<A> {
                         };
                         self.gpu_mut().gp0 = gp0;
                     }
-                    Gp0::CpRectCpuToVram(_) => {}
-                    _ => {
-                        // tracing::warn!("read from gp0read, but no copy command initiated");
-                        self.gpu_mut().gpustat.set_ready_recv_cmd(true);
-                    }
+                    _ => {}
                 }
                 Ok(self.gpu().gp0read.io_from_u32())
             }
@@ -303,11 +306,12 @@ impl<A: Allocator> Emu<A> {
             Gp0::CpRectCpuToVram(Gp0CpRect::RecvData(cursor)) => {
                 let mut cursor = *cursor;
                 // let set_mask = self.gpu().gpustat.set_mask();
-                let draw_pixels = self.gpu().gpustat.draw_pixels();
+                let gpustat = self.gpu().gpustat;
                 let mut lock = self.gpu_mut().lock_vram_mut();
                 for (at, halfword) in cursor.iter().take(2).zip(halfwords(value)) {
-                    lock.vram_draw(at, halfword, draw_pixels);
+                    lock.vram_draw(at, halfword, gpustat);
                 }
+
                 match cursor.done() {
                     true => {
                         self.gpu_mut().gpustat.set_ready_recv_cmd(true);
@@ -357,7 +361,7 @@ impl<A: Allocator> Emu<A> {
                 let mut lock = self.gpu_mut().lock_vram_mut();
                 for (src, dest) in src_cursor.iter().zip(dest_cursor.iter()) {
                     let value = lock.vram_read(src);
-                    lock.vram_draw(dest, value, draw_pixels);
+                    lock.vram_draw(dest, value, gpustat);
                 }
 
                 self.gpu_mut().gpustat.set_ready_recv_cmd(true);
@@ -557,14 +561,6 @@ impl<A: Allocator> Emu<A> {
     pub fn gpu_reconnect(&mut self, other: &Emu) {
         self.gpu_mut().conn = other.gpu().conn.clone();
     }
-
-    pub fn gpu_poll_draw_result(&mut self) {
-        if let Ok(Some(vram)) = self.gpu().conn.vram_out_chan.1.try_recv() {
-            tracing::trace!("received gpu result (vram)");
-            self.gpu_mut().vram = vram;
-            self.gpu_mut().waiting_on_render = false;
-        }
-    }
 }
 
 pub struct Read;
@@ -602,7 +598,9 @@ impl VramAccessType for ReadWrite {
     type SignalRef<'a> = &'a mut bool;
 }
 
+#[derive(derive_more::Deref)]
 pub struct VramGuard<'a, T: VramAccessType> {
+    #[deref]
     vram:   T::VramRef<'a>,
     signal: T::SignalRef<'a>,
 }
@@ -628,13 +626,17 @@ impl VramGuard<'_, ReadWrite> {
     }
 
     /// like `vram_write`, but takes mask bit into account
-    fn vram_draw(&mut self, coord: VramCoord, value: u16, mode: DrawPixels) {
-        let current = self.vram_read(coord);
-        match mode {
+    fn vram_draw(&mut self, coord: VramCoord, mut value: u16, gpustat: GpuStatReg) {
+        match gpustat.draw_pixels() {
             DrawPixels::Always => {}
             DrawPixels::NotToMaskedAreas => {
+                let current = self.vram_read(coord);
+
                 if mask_bit(current) {
                     return;
+                }
+                if gpustat.set_mask() {
+                    value = set_mask_bit(value, true);
                 }
             }
         }
@@ -668,7 +670,9 @@ impl GpuState {
     }
 
     pub fn lock_vram(&mut self) -> VramGuard<'_, Read> {
-        self.vram_flush_render();
+        self.flush_draw_calls();
+        self.wait_for_render_result();
+        assert!(!self.vram.is_empty());
         VramGuard {
             vram:   &self.vram,
             signal: &self.vram_mutation_signal,
@@ -676,7 +680,9 @@ impl GpuState {
     }
 
     fn lock_vram_mut(&mut self) -> VramGuard<'_, ReadWrite> {
-        self.vram_flush_render();
+        self.flush_draw_calls();
+        self.wait_for_render_result();
+        assert!(!self.vram.is_empty());
         VramGuard {
             vram:   &mut self.vram,
             signal: &mut self.vram_mutation_signal,
@@ -699,8 +705,9 @@ impl GpuState {
         }
 
         self.wait_for_render_result();
+        assert!(!self.vram.is_empty());
+
         tracing::debug!("flushing {} draw calls", self.draw_call_queue.len());
-        tracing::info!(?self.gpustat);
         let queue = mem::take(&mut self.draw_call_queue);
         // transfer ownership of the vram to the render thread
         let vram = mem::take(&mut self.vram);
@@ -720,8 +727,8 @@ impl GpuState {
     }
 
     fn vram_flush_render(&mut self) {
-        self.flush_draw_calls();
         self.wait_for_render_result();
+        self.flush_draw_calls();
     }
 
     pub fn wait_for_render_result(&mut self) {
@@ -770,8 +777,7 @@ impl GpuState {
                 self.gpustat.set_dma_request(true);
             }
             DmaDirection::CpuToGp0 => {
-                self.gpustat
-                    .set_dma_request(self.gpustat.ready_recv_dma_block());
+                self.gpustat.set_dma_request(false);
             }
             DmaDirection::CpuReadToCpu => {
                 self.gpustat.set_dma_request(self.gpustat.ready_send_vram());

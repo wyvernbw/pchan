@@ -808,11 +808,6 @@ impl Scene {
         draw_reg: GpuInternalDrawReg,
         tex_window: Gp0TexWindowCmd,
     ) -> Result<(), DrawRectError> {
-        tracing::info!(
-            "draw_rect.gpustat.texpage: ({:?}, {:?})",
-            gpustat.texpage_x_base(),
-            gpustat.texpage_y_base()
-        );
         let rgb = draw_rect.color.rgb().to_ne_bytes();
         let color_mode = match draw_rect.color.textured() {
             true => gpustat.texpage_colors(),
@@ -859,11 +854,6 @@ impl Scene {
         draw_reg: GpuInternalDrawReg,
         tex_window: Gp0TexWindowCmd,
     ) {
-        tracing::info!(
-            "draw_poly.gpustat.texpage: ({:?}, {:?})",
-            gpustat.texpage_x_base(),
-            gpustat.texpage_y_base()
-        );
         let header = draw_polygon.header;
         let clut = draw_polygon.clut;
         let texpage = draw_polygon.texpage;
