@@ -349,9 +349,10 @@ impl<A: Allocator> Emu<A> {
             Gp0::CpRectVramToVram(Gp0VramCpRect::RecvSize { src, dest }) => {
                 let size: VramCoord = unsafe { transmute(value) };
                 let size = size.copy_cmd_size_mask();
-                let mut src_cursor = VramCursor::new(*src, size);
-                let mut dest_cursor = VramCursor::new(*dest, size);
-                let draw_pixels = self.gpu().gpustat.draw_pixels();
+                tracing::debug!(?src, ?dest, ?size, "vram->vram blit");
+                let mut src_cursor = VramCursor::new(*src, *src + size);
+                let mut dest_cursor = VramCursor::new(*dest, *dest + size);
+                let gpustat = self.gpu().gpustat;
 
                 let mut lock = self.gpu_mut().lock_vram_mut();
                 for (src, dest) in src_cursor.iter().zip(dest_cursor.iter()) {
