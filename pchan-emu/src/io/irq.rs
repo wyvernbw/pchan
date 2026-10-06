@@ -77,7 +77,7 @@ use pchan_utils::hex;
 
 impl<A: Allocator> Emu<A> {
     pub fn irq_trigger(&mut self, irq: Irq) {
-        self.irq_mut().irq_trigger(irq);
+        self.irq.irq_trigger(irq);
         self.run_irq_io();
     }
     #[pchan_macros::instrument(
@@ -87,8 +87,8 @@ impl<A: Allocator> Emu<A> {
     )]
     pub fn irq_read<T: Copy>(&self, address: u32) -> IOResult<T> {
         match address {
-            0x1f801070 => Ok(self.irq().i_stat.io_from_u32()),
-            0x1f801074 => Ok(self.irq().i_mask.io_from_u32()),
+            0x1f801070 => Ok(self.irq.i_stat.io_from_u32()),
+            0x1f801074 => Ok(self.irq.i_mask.io_from_u32()),
             _ => Err(UnhandledIO(address)),
         }
     }
@@ -97,7 +97,7 @@ impl<A: Allocator> Emu<A> {
         "irq:w",
         skip_all,
         fields(
-            pc=%hex(self.cpu().pc),
+            pc=%hex(self.cpu.pc),
             address=%hex(address),
             value=%hex(value.io_into_u32())
         )
@@ -105,11 +105,10 @@ impl<A: Allocator> Emu<A> {
     pub fn irq_write<T: Copy>(&mut self, address: u32, value: T) -> IOResult<()> {
         match address {
             0x1f801070 => {
-                let irq = self.irq_mut();
-                let flags = irq.i_stat.irq_flags_combined();
+                let flags = self.irq.i_stat.irq_flags_combined();
                 let write = value.io_into_u32();
                 let flags = flags & write.as_();
-                irq.i_stat.set_irq_flags_combined(flags);
+                self.irq.i_stat.set_irq_flags_combined(flags);
                 tracing::trace!("{flags:010b}");
                 if flags.as_u16().count_ones() == 0 {
                     self.clear_irq();
@@ -119,8 +118,8 @@ impl<A: Allocator> Emu<A> {
                 Ok(())
             }
             0x1f801074 => {
-                self.irq_mut().i_mask = IrqField::new_with_raw_value(
-                    value.io_into_u32_overwrite(self.irq_mut().i_mask.raw_value()),
+                self.irq.i_mask = IrqField::new_with_raw_value(
+                    value.io_into_u32_overwrite(self.irq.i_mask.raw_value()),
                 );
                 self.run_irq_io();
                 Ok(())
@@ -134,8 +133,8 @@ impl<A: Allocator> Emu<A> {
     }
 
     pub fn run_irq_io(&mut self) {
-        if self.irq().i_stat.irq_flags_combined().as_u32()
-            & self.irq().i_mask.irq_flags_combined().as_u32()
+        if self.irq.i_stat.irq_flags_combined().as_u32()
+            & self.irq.i_mask.irq_flags_combined().as_u32()
             != 0
         {
             self.raise_irq_exception();

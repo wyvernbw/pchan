@@ -48,7 +48,7 @@ pub enum BootError {
 impl<A: Allocator + Copy> Emu<A> {
     pub fn load_bios(&mut self, alloc: A) -> Result<(), BootError> {
         let mut bios_file =
-            fs::File::open(&self.bootloader().bios_path).map_err(BootError::BiosFileOpenError)?;
+            fs::File::open(&self.boot.bios_path).map_err(BootError::BiosFileOpenError)?;
         let mut bios = buffer(kb(524), alloc);
         let _ = bios_file
             .read(&mut bios)
@@ -60,7 +60,7 @@ impl<A: Allocator + Copy> Emu<A> {
         {
             let this = &mut *self;
             for (address, value) in (0xBFC0_0000..).zip(bios_slice.iter().copied()) {
-                this.mem_mut()
+                this.mem
                     .write_region(MEM_MAP.bios, GUEST_MEM_MAP.bios, address, value);
             }
         };
@@ -72,10 +72,10 @@ impl<A: Allocator + Copy> Emu<A> {
 
 impl<A: Allocator> Emu<A> {
     pub fn set_bios_path(&mut self, path: impl AsRef<Path>) {
-        self.bootloader_mut().bios_path = path.as_ref().to_path_buf();
+        self.boot.bios_path = path.as_ref().to_path_buf();
     }
     pub fn run_sideloading(&mut self) {
-        if self.cpu().pc == 0x80030000 {
+        if self.cpu.pc == 0x80030000 {
             self.trigger_sideload_exe();
         }
     }
@@ -83,22 +83,22 @@ impl<A: Allocator> Emu<A> {
     pub fn sideload_exe(&mut self, exe: &[u8]) -> Result<(), BootError> {
         let exe = Exe::parse(exe)?.to_owned_code();
         tracing::info!("parsed executable");
-        self.bootloader_mut().sideload = Some(exe);
+        self.boot.sideload = Some(exe);
         Ok(())
     }
 
     #[instrument(skip_all)]
     fn trigger_sideload_exe(&mut self) {
-        let Some(exe) = self.bootloader_mut().sideload.take() else {
+        let Some(exe) = self.boot.sideload.take() else {
             return;
         };
-        // self.cpu_mut().pc = exe.header.initial_pc;
-        self.cpu_mut().jump_queue = Some(exe.header.initial_pc);
+        // self.cpu.pc = exe.header.initial_pc;
+        self.cpu.jump_queue = Some(exe.header.initial_pc);
         tracing::info!("header = {:#?}", exe.header);
-        self.cpu_mut().gpr[cpu::GP as usize] = exe.header.initial_gp;
+        self.cpu.gpr[cpu::GP as usize] = exe.header.initial_gp;
         if exe.header.sp_fp_base != 0 {
-            self.cpu_mut().gpr[cpu::SP as usize] = exe.header.sp_fp_base;
-            self.cpu_mut().gpr[cpu::FP as usize] = exe.header.sp_fp_base;
+            self.cpu.gpr[cpu::SP as usize] = exe.header.sp_fp_base;
+            self.cpu.gpr[cpu::FP as usize] = exe.header.sp_fp_base;
         }
 
         // copy code to memory

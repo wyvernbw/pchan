@@ -12,6 +12,7 @@ use derive_more as d;
 use glam::{U8Vec2, U8Vec3, U16Vec2, U64Vec2, u64vec2};
 use heapless::Deque;
 use pchan_utils::{AsyncChan, hex};
+use tracing::Level;
 
 use crate::Emu;
 use crate::gpu::draw_call::{
@@ -134,34 +135,34 @@ impl<A: Allocator> Emu<A> {
         match address {
             0x1f801810 => {
                 #[allow(clippy::single_match)]
-                match &self.gpu().gp0 {
+                match &self.gpu.gp0 {
                     Gp0::CpRectVramToCpu(Gp0CpRect::RecvData(cursor)) => {
                         let mut cursor = *cursor;
                         for (idx, at) in cursor.iter().take(2).enumerate() {
-                            self.gpu_mut().vram_read(at, idx);
+                            self.gpu.vram_read(at, idx);
                         }
                         let gp0 = match cursor.done() {
                             true => {
-                                self.gpu_mut().gpustat.set_ready_send_vram(false);
-                                self.gpu_mut().gpustat.set_ready_recv_cmd(true);
+                                self.gpu.gpustat.set_ready_send_vram(false);
+                                self.gpu.gpustat.set_ready_recv_cmd(true);
                                 Gp0::WaitingForCmd
                             }
                             false => Gp0::CpRectVramToCpu(Gp0CpRect::RecvData(cursor)),
                         };
-                        self.gpu_mut().gp0 = gp0;
+                        self.gpu.gp0 = gp0;
                     }
                     _ => {}
                 }
-                Ok(self.gpu().gp0read.io_from_u32())
+                Ok(self.gpu.gp0read.io_from_u32())
             }
-            0x1f80_1814 => Ok(self.gpu().gpustat.io_from_u32()),
+            0x1f80_1814 => Ok(self.gpu.gpustat.io_from_u32()),
             _ => Err(UnhandledIO(address)),
         }
     }
     pub fn gpu_read_pure<T: Copy>(&self, address: u32) -> IOResult<T> {
         let address = address & 0x1fffffff;
         match address {
-            0x1f80_1814 => Ok(self.gpu().gpustat.io_from_u32()),
+            0x1f80_1814 => Ok(self.gpu.gpustat.io_from_u32()),
             _ => Err(UnhandledIO(address)),
         }
     }
@@ -204,23 +205,23 @@ impl<A: Allocator> Emu<A> {
             }),
 
             0xc0..=0xdf => {
-                self.gpu_mut().gpustat.set_ready_recv_cmd(false);
+                self.gpu.gpustat.set_ready_recv_cmd(false);
                 Gp0::CpRectVramToCpu(Gp0CpRect::RecvDest)
             }
             0x1f => {
-                self.gpu_mut().gpustat.set_irq(true);
+                self.gpu.gpustat.set_irq(true);
                 self.irq_trigger(Irq::Irq1Gpu);
                 Gp0::WaitingForCmd
             }
             0xa0..=0xbf => {
                 tracing::debug!("start cpu to vram copy");
-                self.gpu_mut().gpustat.set_ready_recv_cmd(false);
+                self.gpu.gpustat.set_ready_recv_cmd(false);
                 Gp0::CpRectCpuToVram(Gp0CpRect::RecvDest)
             }
             0xe1 => {
                 let texpage = TexpageCmd::new_with_raw_value(cmd.raw_value());
 
-                let gpustat = &mut self.gpu_mut().gpustat;
+                let gpustat = &mut self.gpu.gpustat;
 
                 gpustat.set_texpage_x_base(texpage.texpage_x_base());
                 gpustat.set_texpage_y_base(texpage.texpage_y_base());
@@ -235,13 +236,13 @@ impl<A: Allocator> Emu<A> {
             // GP0(E2h) - Texture Window setting
             0xe2 => {
                 let cmd = Gp0TexWindowCmd::new_with_raw_value(cmd.raw_value());
-                self.gpu_mut().tex_window = cmd;
+                self.gpu.tex_window = cmd;
 
                 Gp0::WaitingForCmd
             }
             // GP0(E3h) - Set Drawing Area top left (X1,Y1)
             0xe3 => {
-                let opts = &mut self.gpu_mut().draw_reg;
+                let opts = &mut self.gpu.draw_reg;
                 let cmd = Gp0SetDrawAreaCmd::new_with_raw_value(cmd.raw_value());
                 opts.draw_area_top_left.x = cmd.x_coord().as_();
                 opts.draw_area_top_left.y = cmd.y_coord_v2().as_();
@@ -250,7 +251,7 @@ impl<A: Allocator> Emu<A> {
             }
             // GP0(E4h) - Set Drawing Area bottom right (X2,Y2)
             0xe4 => {
-                let opts = &mut self.gpu_mut().draw_reg;
+                let opts = &mut self.gpu.draw_reg;
                 let cmd = Gp0SetDrawAreaCmd::new_with_raw_value(cmd.raw_value());
                 opts.draw_area_bottom_right.x = cmd.x_coord().as_();
                 opts.draw_area_bottom_right.y = cmd.y_coord_v2().as_();
@@ -259,7 +260,7 @@ impl<A: Allocator> Emu<A> {
             }
             // GP0(E5h) - Set Drawing Offset (X,Y)
             0xe5 => {
-                let opts = &mut self.gpu_mut().draw_reg;
+                let opts = &mut self.gpu.draw_reg;
                 let cmd = Gp0SetDrawOffsetCmd::new_with_raw_value(cmd.raw_value());
                 opts.draw_offset.x = cmd.x_offset().as_();
                 opts.draw_offset.y = cmd.y_offset().as_();
@@ -270,7 +271,7 @@ impl<A: Allocator> Emu<A> {
             // GP0(E6h) - Mask Bit Setting
             0xe6 => {
                 let cmd = Gp0SetMaskBitCmd::new_with_raw_value(cmd.raw_value());
-                let gpustat = &mut self.gpu_mut().gpustat;
+                let gpustat = &mut self.gpu.gpustat;
                 gpustat.set_set_mask(cmd.draw_mask());
                 gpustat.set_draw_pixels(cmd.draw_pixels());
 
@@ -278,21 +279,21 @@ impl<A: Allocator> Emu<A> {
             }
             // Draw polygon
             0x20..=0x3f => {
-                self.gpu_mut().gpustat.set_ready_recv_cmd(false);
+                self.gpu.gpustat.set_ready_recv_cmd(false);
                 Gp0::DrawPolygonDecode(DrawPolygonDecoder::new(cmd.raw_value()))
             }
             // Draw line
             0x40..=0x5f => {
-                self.gpu_mut().gpustat.set_ready_recv_cmd(false);
+                self.gpu.gpustat.set_ready_recv_cmd(false);
                 Gp0::DrawLineDecode(DrawLineDecoder::new(cmd.raw_value()))
             }
             // Draw Rect
             0x60..=0x7f => {
-                self.gpu_mut().gpustat.set_ready_recv_cmd(false);
+                self.gpu.gpustat.set_ready_recv_cmd(false);
                 Gp0::DrawRectDecode(DrawRectDecoder::new(cmd.raw_value()))
             }
             0x80..=0x9f => {
-                self.gpu_mut().gpustat.set_ready_recv_cmd(false);
+                self.gpu.gpustat.set_ready_recv_cmd(false);
                 Gp0::CpRectVramToVram(Gp0VramCpRect::RecvSrc)
             }
             value => todo!("gp0 command: {}", hex(value)),
@@ -303,7 +304,7 @@ impl<A: Allocator> Emu<A> {
     pub fn gpu_gp0_cmd(&mut self, cmd: GpuCmd) {
         let value = cmd.raw_value();
         tracing::trace!(gp0cmd = %hex(cmd));
-        let gp0 = match &mut self.gpu_mut().gp0 {
+        let gp0 = match &mut self.gpu.gp0 {
             Gp0::WaitingForCmd => self.gpu_gp0reduce(cmd),
             Gp0::CpRectCpuToVram(Gp0CpRect::RecvDest) => {
                 let dest: VramCoord = unsafe { transmute(value) };
@@ -320,16 +321,16 @@ impl<A: Allocator> Emu<A> {
             }
             Gp0::CpRectCpuToVram(Gp0CpRect::RecvData(cursor)) => {
                 let mut cursor = *cursor;
-                // let set_mask = self.gpu().gpustat.set_mask();
-                let gpustat = self.gpu().gpustat;
-                let mut lock = self.gpu_mut().lock_vram_mut();
+                // let set_mask = self.gpu.gpustat.set_mask();
+                let gpustat = self.gpu.gpustat;
+                let mut lock = self.gpu.lock_vram_mut();
                 for (at, halfword) in cursor.iter().take(2).zip(halfwords(value)) {
                     lock.vram_draw(at, halfword, gpustat);
                 }
 
                 match cursor.done() {
                     true => {
-                        self.gpu_mut().gpustat.set_ready_recv_cmd(true);
+                        self.gpu.gpustat.set_ready_recv_cmd(true);
 
                         Gp0::WaitingForCmd
                     }
@@ -348,11 +349,11 @@ impl<A: Allocator> Emu<A> {
                 let size: VramCoord = unsafe { transmute(value) };
                 let size = size.copy_cmd_size_mask();
 
-                self.gpu_mut().gpustat.set_ready_send_vram(true);
+                self.gpu.gpustat.set_ready_send_vram(true);
                 Gp0::CpRectVramToCpu(Gp0CpRect::RecvData(VramCursor::new(dest, dest + size)))
             }
             // cancel vram to cpu?
-            Gp0::CpRectVramToCpu(Gp0CpRect::RecvData(_)) => self.gpu().gp0.clone(),
+            Gp0::CpRectVramToCpu(Gp0CpRect::RecvData(_)) => self.gpu.gp0.clone(),
 
             // vram to vram copy
             Gp0::CpRectVramToVram(Gp0VramCpRect::RecvSrc) => {
@@ -371,15 +372,15 @@ impl<A: Allocator> Emu<A> {
                 tracing::debug!(?src, ?dest, ?size, "vram->vram blit");
                 let mut src_cursor = VramCursor::new(*src, *src + size);
                 let mut dest_cursor = VramCursor::new(*dest, *dest + size);
-                let gpustat = self.gpu().gpustat;
+                let gpustat = self.gpu.gpustat;
 
-                let mut lock = self.gpu_mut().lock_vram_mut();
+                let mut lock = self.gpu.lock_vram_mut();
                 for (src, dest) in src_cursor.iter().zip(dest_cursor.iter()) {
                     let value = lock.vram_read(src);
                     lock.vram_draw(dest, value, gpustat);
                 }
 
-                self.gpu_mut().gpustat.set_ready_recv_cmd(true);
+                self.gpu.gpustat.set_ready_recv_cmd(true);
                 Gp0::WaitingForCmd
             }
             Gp0::Fill(gp0_vram_rect) => match *gp0_vram_rect {
@@ -393,8 +394,10 @@ impl<A: Allocator> Emu<A> {
                     let size = size.fill_cmd_size_mask();
                     if size.x != 0 && size.y != 0 {
                         let mut cursor = VramCursor::new(pos, pos + size);
-                        tracing::trace!(pc = %hex(self.cpu().pc), "started vram fill: {cursor:?}");
-                        let mut lock = self.gpu_mut().lock_vram_mut();
+                        if tracing::enabled!(Level::TRACE) {
+                            tracing::trace!(pc = %hex(self.cpu.pc), "started vram fill: {cursor:?}");
+                        }
+                        let mut lock = self.gpu.lock_vram_mut();
                         for dest in cursor.iter() {
                             let color = color >> 3u16;
                             let rgb5 = Rgb5::new_with_raw_value(0x0)
@@ -415,7 +418,7 @@ impl<A: Allocator> Emu<A> {
                     Ok(decoder) => Gp0::DrawRectDecode(decoder),
                     Err(draw_call) => {
                         tracing::trace!(?draw_call, "decoded");
-                        self.gpu_mut().gpustat.set_ready_recv_cmd(true);
+                        self.gpu.gpustat.set_ready_recv_cmd(true);
                         self.gpu_issue_draw_call(DrawCallKind::Rect(draw_call));
                         Gp0::WaitingForCmd
                     }
@@ -443,7 +446,7 @@ impl<A: Allocator> Emu<A> {
                                 .set_texpage_colors(draw_call.texpage.texpage_colors());
                         }
 
-                        self.gpu_mut().gpustat.set_ready_recv_cmd(true);
+                        self.gpu.gpustat.set_ready_recv_cmd(true);
                         self.gpu_issue_draw_call(DrawCallKind::Polygon(draw_call));
                         Gp0::WaitingForCmd
                     }
@@ -456,7 +459,7 @@ impl<A: Allocator> Emu<A> {
                     Ok(decoder) => Gp0::DrawLineDecode(decoder),
                     Err(draw_call) => {
                         tracing::trace!(?draw_call, "decoded");
-                        self.gpu_mut().gpustat.set_ready_recv_cmd(true);
+                        self.gpu.gpustat.set_ready_recv_cmd(true);
                         self.gpu_issue_draw_call(DrawCallKind::Line(draw_call));
                         Gp0::WaitingForCmd
                     }
@@ -464,37 +467,37 @@ impl<A: Allocator> Emu<A> {
             }
         };
 
-        self.gpu_mut().gp0 = gp0;
+        self.gpu.gp0 = gp0;
     }
 
     pub fn gpu_gp1_cmd(&mut self, value: GpuCmd) {
         tracing::trace!(cmd = ?value.cmd());
         match value.cmd() {
             0x00 => {
-                // self.gpu_mut().gp0cmd_queue.clear();
-                self.gpu_mut().gpustat = GpuStatReg::new_with_raw_value(0x14802000);
-                self.gpu_mut().gpustat.mock_ready();
+                // self.gpu.gp0cmd_queue.clear();
+                self.gpu.gpustat = GpuStatReg::new_with_raw_value(0x14802000);
+                self.gpu.gpustat.mock_ready();
             }
             0x01 => {
-                // self.gpu_mut().gp0cmd_queue.clear();
+                // self.gpu.gp0cmd_queue.clear();
             }
             0x02 => {
-                self.gpu_mut().gpustat.set_irq(false);
+                self.gpu.gpustat.set_irq(false);
             }
             // GP1(03h) - Display Enable
             0x03 => {
                 let cmd = Gp1DisplayEnableCmd::new_with_raw_value(value.raw_value());
-                self.gpu_mut().gpustat.set_display_enable(cmd.on_off());
+                self.gpu.gpustat.set_display_enable(cmd.on_off());
             }
             0x04 => {
                 let dir = DmaDirection::new_with_raw_value(value.fields().as_());
-                self.gpu_mut().gpustat.set_dma_direction(dir);
-                self.gpu_mut().compute_dma_request();
+                self.gpu.gpustat.set_dma_direction(dir);
+                self.gpu.compute_dma_request();
             }
             // GP1(05h) - Start of Display area (in VRAM)
             0x05 => {
                 let cmd = Gp1StartOfDisplayArea::new_with_raw_value(value.raw_value());
-                self.gpu_mut().dp.display_vram_start = cmd.to_u16vec2();
+                self.gpu.dp.display_vram_start = cmd.to_u16vec2();
                 tracing::debug!("set framebuffer coords");
             }
             0x06 => {
@@ -509,8 +512,8 @@ impl<A: Allocator> Emu<A> {
                 }
 
                 let value = HDisplayRange::new_with_raw_value(value.raw_value());
-                self.gpu_mut().dp.range_start.x = value.start().as_();
-                self.gpu_mut().dp.range_end.x = value.end().as_();
+                self.gpu.dp.range_start.x = value.start().as_();
+                self.gpu.dp.range_end.x = value.end().as_();
                 tracing::debug!("set h framebuffer range");
             }
             0x07 => {
@@ -525,14 +528,14 @@ impl<A: Allocator> Emu<A> {
                     end:   u10,
                 }
                 let value = VDisplayRange::new_with_raw_value(value.raw_value());
-                self.gpu_mut().dp.range_start.y = value.start().as_();
-                self.gpu_mut().dp.range_end.y = value.end().as_();
+                self.gpu.dp.range_start.y = value.start().as_();
+                self.gpu.dp.range_end.y = value.end().as_();
                 tracing::debug!("set v framebuffer range");
             }
             0x08 => {
                 let cmd = DisplayModeCmd::new_with_raw_value(value.raw_value);
                 tracing::debug!(pc = %hex(self.cpu.pc), cmd=%hex(cmd), "GP1(08h) display_mode = {cmd:#?}");
-                let gpustat = &mut self.gpu_mut().gpustat;
+                let gpustat = &mut self.gpu.gpustat;
                 gpustat.set_h_resolution_1(cmd.hres_1());
                 gpustat.set_v_resolution(cmd.vres());
                 gpustat.set_video_mode(cmd.video_mode());
@@ -543,15 +546,14 @@ impl<A: Allocator> Emu<A> {
             }
             // get gpu info
             0x10 => {
-                let Some(cmd) = self.gpu().get_gpu_info_cmd(value) else {
+                let Some(cmd) = self.gpu.get_gpu_info_cmd(value) else {
                     return;
                 };
                 match cmd {
                     GpuInfoCmd::Unused00 | GpuInfoCmd::Unused01 => {}
                     GpuInfoCmd::TexWindow => {
-                        self.gpu_mut().gp0read = unsafe {
-                            transmute::<u32, [u16; 2]>(self.gpu().tex_window.raw_value())
-                        };
+                        self.gpu.gp0read =
+                            unsafe { transmute::<u32, [u16; 2]>(self.gpu.tex_window.raw_value()) };
                     }
                 }
             }
@@ -561,20 +563,20 @@ impl<A: Allocator> Emu<A> {
 
     pub fn gpu_create_draw_call(&self, kind: DrawCallKind) -> DrawCall {
         DrawCall {
-            gpustat:    self.gpu().gpustat,
+            gpustat:    self.gpu.gpustat,
             tex_window: self.gpu.tex_window,
             inner:      kind,
-            draw_reg:   self.gpu().draw_reg.clone(),
+            draw_reg:   self.gpu.draw_reg.clone(),
         }
     }
 
     pub fn gpu_issue_draw_call(&mut self, kind: DrawCallKind) {
         let draw_call = self.gpu_create_draw_call(kind);
-        self.gpu_mut().draw_call_swap.queue_mut().push(draw_call);
+        self.gpu.draw_call_swap.queue_mut().push(draw_call);
     }
 
     pub fn gpu_reconnect(&mut self, other: &Emu) {
-        self.gpu_mut().conn = other.gpu().conn.clone();
+        self.gpu.conn = other.gpu.conn.clone();
     }
 }
 
@@ -1538,19 +1540,19 @@ impl<A: Allocator> Emu<A> {
     fn cpu_cycles_to_video_cycles(&mut self, cycles: u64) -> u64 {
         // this might be based on the actual console hardware not on the
         // video mode you set in the gpu
-        let factor = match self.gpu().gpustat.video_mode() {
+        let factor = match self.gpu.gpustat.video_mode() {
             VideoMode::Ntsc => 715909,
             VideoMode::Pal => 709379,
         };
         let cycles = cycles * factor;
-        let cycles = cycles + self.gpu().dp.fract_01;
-        self.gpu_mut().dp.fract_01 = cycles % 451584;
+        let cycles = cycles + self.gpu.dp.fract_01;
+        self.gpu.dp.fract_01 = cycles % 451584;
 
         cycles / 451584
     }
 
     fn video_cycles_to_cpu_cycles_approx(&self, cycles: u64) -> u64 {
-        let factor = match self.gpu().gpustat.video_mode() {
+        let factor = match self.gpu.gpustat.video_mode() {
             VideoMode::Ntsc => 715909,
             VideoMode::Pal => 709379,
         };
@@ -1559,8 +1561,8 @@ impl<A: Allocator> Emu<A> {
 
     /// returns start (topleft) and end (bottomright)
     pub fn dp_coords(&self) -> (U16Vec2, U16Vec2) {
-        let width = match self.gpu().gpustat.h_resolution_2() {
-            HRes2::Standard => match self.gpu().gpustat.h_resolution_1() {
+        let width = match self.gpu.gpustat.h_resolution_2() {
+            HRes2::Standard => match self.gpu.gpustat.h_resolution_1() {
                 HRes1::Res256 => 256,
                 HRes1::Res320 => 320,
                 HRes1::Res512 => 512,
@@ -1568,49 +1570,49 @@ impl<A: Allocator> Emu<A> {
             },
             HRes2::Res368 => 368,
         };
-        let height = match self.gpu().gpustat.v_resolution() {
+        let height = match self.gpu.gpustat.v_resolution() {
             VRes::Res240 => 240,
             VRes::Res480 => 480,
         };
-        let start = self.gpu().dp.display_vram_start;
+        let start = self.gpu.dp.display_vram_start;
         (start, start + U16Vec2::new(width, height))
     }
 
     pub fn run_video_io(&mut self, by_cpu_cycles: u64) {
         let cycles = self.cpu_cycles_to_video_cycles(by_cpu_cycles);
-        self.gpu_mut().dp.update_ranges();
+        self.gpu.dp.update_ranges();
         self.run_video_events(cycles);
     }
 
     fn run_video_events(&mut self, advance_by: u64) {
-        let cycles_per_scanline = self.gpu().video_cycles_per_scanline();
-        self.gpu_mut().dp.video_cycle_in_scanline += advance_by;
-        if self.gpu_mut().dp.video_cycle_in_scanline < cycles_per_scanline {
+        let cycles_per_scanline = self.gpu.video_cycles_per_scanline();
+        self.gpu.dp.video_cycle_in_scanline += advance_by;
+        if self.gpu.dp.video_cycle_in_scanline < cycles_per_scanline {
             // DONE: Timer 1 update
-            self.timers_mut().trigger_hblank();
+            self.timers.trigger_hblank();
             return;
         }
-        let scanlines_to_run = self.gpu().dp.video_cycle_in_scanline / cycles_per_scanline;
-        self.gpu_mut().dp.video_cycle_in_scanline =
-            self.gpu().dp.video_cycle_in_scanline % cycles_per_scanline;
+        let scanlines_to_run = self.gpu.dp.video_cycle_in_scanline / cycles_per_scanline;
+        self.gpu.dp.video_cycle_in_scanline =
+            self.gpu.dp.video_cycle_in_scanline % cycles_per_scanline;
 
         for _ in 0..scanlines_to_run {
-            let dp = &self.gpu().dp;
+            let dp = &self.gpu.dp;
             let new_vblank = !dp.in_vblank() && dp.in_vblank_with(dp.current_scanline + 1);
 
             // DONE: timer 1 update
-            self.timers_mut().trigger_hblank();
+            self.timers.trigger_hblank();
 
             if new_vblank {
                 self.run_vblank();
             }
 
-            self.gpu_mut().dp.current_scanline += 1;
+            self.gpu.dp.current_scanline += 1;
 
-            let dp = &mut self.gpu_mut().dp;
+            let dp = &mut self.gpu.dp;
             if dp.current_scanline >= Display::NTSC_TOTAL_LINES {
                 dp.current_scanline = 0;
-                self.gpu_mut().flip_even_odd(None);
+                self.gpu.flip_even_odd(None);
             }
         }
     }

@@ -136,23 +136,22 @@ pub struct AdvanceTimerSummary {
 
 impl<A: Allocator> Emu<A> {
     fn timers_init(&mut self) {
-        let timers = self.timers_mut();
-        timers.timer_0.irq = Irq::Irq4Timer0;
-        timers.timer_1.irq = Irq::Irq5Timer1;
-        timers.timer_2.irq = Irq::Irq6Timer2;
+        self.timers.timer_0.irq = Irq::Irq4Timer0;
+        self.timers.timer_1.irq = Irq::Irq5Timer1;
+        self.timers.timer_2.irq = Irq::Irq6Timer2;
     }
     pub fn timers_read<T: Copy>(&self, address: u32) -> Result<T, UnhandledIO> {
         let address = address & 0x1fffffff;
         match address {
-            0x1f801100 => Ok(self.timers().timer_0.value.io_from_u32()),
-            0x1f801104 => Ok(self.timers().timer_0.mode.io_from_u32()),
-            0x1f801108 => Ok(self.timers().timer_0.target.io_from_u32()),
-            0x1f801110 => Ok(self.timers().timer_1.value.io_from_u32()),
-            0x1f801114 => Ok(self.timers().timer_1.mode.io_from_u32()),
-            0x1f801118 => Ok(self.timers().timer_1.target.io_from_u32()),
-            0x1f801120 => Ok(self.timers().timer_2.value.io_from_u32()),
-            0x1f801124 => Ok(self.timers().timer_2.mode.io_from_u32()),
-            0x1f801128 => Ok(self.timers().timer_2.target.io_from_u32()),
+            0x1f801100 => Ok(self.timers.timer_0.value.io_from_u32()),
+            0x1f801104 => Ok(self.timers.timer_0.mode.io_from_u32()),
+            0x1f801108 => Ok(self.timers.timer_0.target.io_from_u32()),
+            0x1f801110 => Ok(self.timers.timer_1.value.io_from_u32()),
+            0x1f801114 => Ok(self.timers.timer_1.mode.io_from_u32()),
+            0x1f801118 => Ok(self.timers.timer_1.target.io_from_u32()),
+            0x1f801120 => Ok(self.timers.timer_2.value.io_from_u32()),
+            0x1f801124 => Ok(self.timers.timer_2.mode.io_from_u32()),
+            0x1f801128 => Ok(self.timers.timer_2.target.io_from_u32()),
             _ => Err(UnhandledIO(address)),
         }
     }
@@ -161,7 +160,7 @@ impl<A: Allocator> Emu<A> {
         let address = address & 0x1fffffff;
         match address {
             0x1f801100 => {
-                self.timers_mut().timer_0.value =
+                self.timers.timer_0.value =
                     TimerCounterValue::new_with_raw_value(value.io_into_u32());
             }
             0x1f801104 => {
@@ -171,11 +170,11 @@ impl<A: Allocator> Emu<A> {
                     .write(TimerCounterMode::new_with_raw_value(value.io_into_u32()));
             }
             0x1f801108 => {
-                self.timers_mut().timer_0.target =
+                self.timers.timer_0.target =
                     TimerTarget(TimerCounterValue::new_with_raw_value(value.io_into_u32()));
             }
             0x1f801110 => {
-                self.timers_mut().timer_1.value =
+                self.timers.timer_1.value =
                     TimerCounterValue::new_with_raw_value(value.io_into_u32());
             }
             0x1f801114 => {
@@ -185,11 +184,11 @@ impl<A: Allocator> Emu<A> {
                     .write(TimerCounterMode::new_with_raw_value(value.io_into_u32()));
             }
             0x1f801118 => {
-                self.timers_mut().timer_1.target =
+                self.timers.timer_1.target =
                     TimerTarget(TimerCounterValue::new_with_raw_value(value.io_into_u32()));
             }
             0x1f801120 => {
-                self.timers_mut().timer_2.value =
+                self.timers.timer_2.value =
                     TimerCounterValue::new_with_raw_value(value.io_into_u32());
             }
             0x1f801124 => {
@@ -199,7 +198,7 @@ impl<A: Allocator> Emu<A> {
                     .write(TimerCounterMode::new_with_raw_value(value.io_into_u32()));
             }
             0x1f801128 => {
-                self.timers_mut().timer_2.target =
+                self.timers.timer_2.target =
                     TimerTarget(TimerCounterValue::new_with_raw_value(value.io_into_u32()));
             }
             _ => return Err(UnhandledIO(address)),
@@ -208,40 +207,38 @@ impl<A: Allocator> Emu<A> {
     }
 
     pub fn run_timer_pipeline(&mut self) {
-        let timers = self.timers_mut();
-        if timers.timer_0.mode.irq() == IrqFlag::Y {
-            let irq = timers.timer_0.irq;
+        if self.timers.timer_0.mode.irq() == IrqFlag::Y {
+            let irq = self.timers.timer_0.irq;
             self.irq_trigger(irq);
         }
-        let timers = self.timers_mut();
-        if timers.timer_1.mode.irq() == IrqFlag::Y {
-            let irq = timers.timer_1.irq;
+        if self.timers.timer_1.mode.irq() == IrqFlag::Y {
+            let irq = self.timers.timer_1.irq;
             self.irq_trigger(irq);
         }
-        let timers = self.timers_mut();
-        if timers.timer_2.mode.irq() == IrqFlag::Y {
-            let irq = timers.timer_2.irq;
+        if self.timers.timer_2.mode.irq() == IrqFlag::Y {
+            let irq = self.timers.timer_2.irq;
             self.irq_trigger(irq);
         }
     }
 
     pub fn timers_advance_by_cpu(&mut self, cycles: u16) {
-        let timers = self.timers_mut();
         // FIXME: add dotclock source
-        if timers.timer_0.mode.source() {
+        if self.timers.timer_0.mode.source() {
             todo!()
         }
-        timers.timer_0.tick_by(cycles);
+        self.timers.timer_0.tick_by(cycles);
 
-        if !timers.timer_1.mode.source() {
-            timers.timer_1.tick_by(cycles);
+        if !self.timers.timer_1.mode.source() {
+            self.timers.timer_1.tick_by(cycles);
         }
 
-        if timers.timer_2.mode.prescaler() {
-            timers.timer_2.tick_by(cycles / 8 + timers.timer_2_fract);
-            timers.timer_2_fract = cycles % 8;
+        if self.timers.timer_2.mode.prescaler() {
+            self.timers
+                .timer_2
+                .tick_by(cycles / 8 + self.timers.timer_2_fract);
+            self.timers.timer_2_fract = cycles % 8;
         } else {
-            timers.timer_2.tick_by(cycles);
+            self.timers.timer_2.tick_by(cycles);
         }
     }
 }

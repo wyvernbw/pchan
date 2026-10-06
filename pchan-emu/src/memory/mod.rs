@@ -121,7 +121,7 @@ impl<A: Allocator> Emu<A> {
             0xbf800000..0xbf800400 => Err(UnhandledIO(address)),
             0x1f800000..0x1f800400 | 0x9f800000..0x9f800400 => {
                 Ok(self
-                    .mem()
+                    .mem
                     .read_region(MEM_MAP.scratch, GUEST_MEM_MAP.scratch, address))
             }
             _ => Err(UnhandledIO(address)),
@@ -139,7 +139,7 @@ impl<A: Allocator> Emu<A> {
             // scratchpad is not mapped in kseg1
             0xbf800000..0xbf801000 => Err(UnhandledIO(address)),
             0x1f800000..0x1f801000 | 0x9f800000..0x9f801000 => {
-                self.mem_mut()
+                self.mem
                     .write_region(MEM_MAP.scratch, GUEST_MEM_MAP.scratch, address, value);
                 Ok(())
             }

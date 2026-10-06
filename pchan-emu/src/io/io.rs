@@ -39,9 +39,9 @@ impl<A: Allocator> Emu<A> {
             self.sideload_exe(AMIDOG_TESTS).unwrap();
         }
 
-        let d_clock = u64::from(self.cpu().d_clock);
-        self.cpu_mut().vblank_timer = self.cpu().vblank_timer.wrapping_add(d_clock as u32);
-        self.cpu_mut().cycles = self.cpu().cycles.wrapping_add(d_clock);
+        let d_clock = u64::from(self.cpu.d_clock);
+        self.cpu.vblank_timer = self.cpu.vblank_timer.wrapping_add(d_clock as u32);
+        self.cpu.cycles = self.cpu.cycles.wrapping_add(d_clock);
         self.evque_advance(d_clock);
 
         self.run_video_io(d_clock);
@@ -215,9 +215,7 @@ impl<A: Allocator> Emu<A> {
         let address = address & 0x1fffffff;
         match address {
             0x1f801000..0x1fa00000 => {
-                Ok(self
-                    .mem()
-                    .read_region(MEM_MAP.io, GUEST_MEM_MAP.io, address))
+                Ok(self.mem.read_region(MEM_MAP.io, GUEST_MEM_MAP.io, address))
             }
             _ => Err(UnhandledIO(address)),
         }
@@ -232,7 +230,7 @@ impl<A: Allocator> Emu<A> {
         let address = address & 0x1fffffff;
         match address {
             0x1f801000..0x1fa00000 => {
-                self.mem_mut()
+                self.mem
                     .write_region(MEM_MAP.io, GUEST_MEM_MAP.io, address, value);
                 Ok(())
             }
@@ -250,7 +248,7 @@ impl<A: Allocator> Emu<A> {
     )]
     fn cache_ctrl_read<T: Copy>(&self, address: u32) -> IOResult<T> {
         match address {
-            0xfffe0130 => Ok(self.mem().read_region(
+            0xfffe0130 => Ok(self.mem.read_region(
                 MEM_MAP.cache_control,
                 GUEST_MEM_MAP.cache_control,
                 address,
@@ -267,7 +265,7 @@ impl<A: Allocator> Emu<A> {
     fn cache_ctrl_write<T: Copy>(&mut self, address: u32, value: T) -> IOResult<()> {
         match address {
             0xfffe0130 => {
-                self.mem_mut().write_region(
+                self.mem.write_region(
                     MEM_MAP.cache_control,
                     GUEST_MEM_MAP.cache_control,
                     address,

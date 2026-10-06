@@ -80,25 +80,25 @@ impl<A: Allocator> Emu<A> {
             0x1f801090..=0x1f80109f => trace_todo!(0x0, "read at dma1 (MDECout)"),
 
             // dma 2
-            0x1f8010a0 => Ok(self.dma().dma2.madr.addr().io_from_u32()),
-            0x1f8010a4 => Ok(self.dma().dma2.bcr.io_from_u32()),
+            0x1f8010a0 => Ok(self.dma.dma2.madr.addr().io_from_u32()),
+            0x1f8010a4 => Ok(self.dma.dma2.bcr.io_from_u32()),
             0x1f8010a8 => {
-                let chcr = self.dma().dma2.chcr;
+                let chcr = self.dma.dma2.chcr;
                 tracing::trace!("read at dma2chcr (gpu chcr): {:?}", chcr.transfer());
                 Ok(chcr.io_from_u32())
             }
 
-            0x1f8010b0 => Ok(self.dma().dma3.madr.addr().io_from_u32()),
-            0x1f8010b4 => Ok(self.dma().dma3.bcr.io_from_u32()),
+            0x1f8010b0 => Ok(self.dma.dma3.madr.addr().io_from_u32()),
+            0x1f8010b4 => Ok(self.dma.dma3.bcr.io_from_u32()),
             0x1f8010b8 => {
-                let chcr = self.dma().dma3.chcr;
+                let chcr = self.dma.dma3.chcr;
                 tracing::trace!("read at dma3chcr (cdrom chcr): {:?}", chcr.transfer());
                 Ok(chcr.io_from_u32())
             }
-            0x1f8010c0 => Ok(self.dma().dma4.madr.addr().io_from_u32()),
-            0x1f8010c4 => Ok(self.dma().dma4.bcr.io_from_u32()),
+            0x1f8010c0 => Ok(self.dma.dma4.madr.addr().io_from_u32()),
+            0x1f8010c4 => Ok(self.dma.dma4.bcr.io_from_u32()),
             0x1f8010c8 => {
-                let chcr = self.dma().dma4.chcr;
+                let chcr = self.dma.dma4.chcr;
                 tracing::trace!("read at dma4chcr (spu chcr): {:?}", chcr.transfer());
                 Ok(chcr.io_from_u32())
             }
@@ -108,13 +108,13 @@ impl<A: Allocator> Emu<A> {
             0x1f8010e0 => trace_todo!(0x0, "read at dma6madr (otc madr)"),
             0x1f8010e4 => trace_todo!(0x0, "read at dma6bcr (otc bcr)"),
             0x1f8010e8 => {
-                let chcr = self.dma().dma6.chcr;
+                let chcr = self.dma.dma6.chcr;
                 tracing::trace!(dma6 = ?chcr.transfer(), "read at dma6chcr (otc chcr)");
                 Ok(chcr.io_from_u32())
             }
 
-            0x1f8010f0 => Ok(self.dma().dpcr.io_from_u32()),
-            0x1f8010f4 => Ok(self.dma().dicr.io_from_u32()),
+            0x1f8010f0 => Ok(self.dma.dpcr.io_from_u32()),
+            0x1f8010f4 => Ok(self.dma.dicr.io_from_u32()),
             0x1f8010f8 => trace_todo!(0x0, "todo(dma): read at dma transfer complete register"),
             0x1f8010fc => trace_todo!(0x0, "todo(dma): read at dma otc fill value"),
             _ => Err(UnhandledIO(address)),
@@ -147,25 +147,25 @@ impl<A: Allocator> Emu<A> {
             // dma 6
             0x1f8010e0 => {
                 let madr = DmaMadr::new_with_raw_value(value.io_into_u32());
-                self.dma_mut().dma6.madr = madr;
+                self.dma.dma6.madr = madr;
                 tracing::trace!("write at dma6madr (otc madr): {:#?}", madr);
                 Ok(())
             }
             0x1f8010e4 => {
                 let bcr = DmaBcr::new_with_raw_value(value.io_into_u32());
-                self.dma_mut().dma6.bcr = bcr;
+                self.dma.dma6.bcr = bcr;
                 tracing::trace!("write at dma6bcr (otc bcr): {:#?}", bcr);
                 Ok(())
             }
             0x1f8010e8 => {
                 let chcr = DmaChcr::new_with_raw_value(value.io_into_u32());
-                self.dma_mut().dma6.chcr = chcr;
+                self.dma.dma6.chcr = chcr;
 
                 tracing::trace!("write at dma6chcr (otc chcr): {:#?}", chcr);
 
                 if chcr.raw_value() == 0x11000002 {
                     self.dma_start_transfer(
-                        self.create_dma_event(self.dma().dma6, DmaTransportKind::Otc),
+                        self.create_dma_event(self.dma.dma6, DmaTransportKind::Otc),
                     );
                     tracing::trace!("dma6 scheduled");
                 }
@@ -174,12 +174,12 @@ impl<A: Allocator> Emu<A> {
 
             // dpcr
             0x1f8010f0 => {
-                self.dma_mut().dpcr = Dpcr::new_with_raw_value(value.io_into_u32());
+                self.dma.dpcr = Dpcr::new_with_raw_value(value.io_into_u32());
                 Ok(())
             }
             // dicr
             0x1f8010f4 => {
-                let dicr = &mut self.dma_mut().dicr;
+                let dicr = &mut self.dma.dicr;
                 let new_dicr = Dicr::new_with_raw_value(value.io_into_u32());
                 let irq_flags = dicr.combined_irq_flags();
                 let new_irq_flags = new_dicr.combined_irq_flags();
@@ -216,7 +216,7 @@ impl<A: Allocator> Emu<A> {
             None => {
                 tracing::debug!("dma: schedulde dma event: {:#?}", event);
                 self.dma.ongoing_transfer = Some(event);
-                self.evque_mut().schedule(
+                self.evque.schedule(
                     |emu, _| {
                         if let Some(transfer) = emu.dma.ongoing_transfer.take() {
                             emu.handle_dma_event(transfer);
@@ -248,20 +248,20 @@ impl<A: Allocator> Emu<A> {
     }
 
     fn dma_irq_raise_complete(&mut self, idx: usize) {
-        let dicr = &mut self.dma_mut().dicr;
+        let dicr = &mut self.dma.dicr;
         if dicr.irq_mask(idx) && dicr.master_chan_irq() {
             dicr.set_irq_flag(idx, true);
         }
         let old_master_irq = dicr.master_irq();
         self.update_dicr_master_irq_flag();
-        let dicr = &mut self.dma_mut().dicr;
+        let dicr = &mut self.dma.dicr;
         if let (false, true) = (old_master_irq, dicr.master_irq()) {
             self.irq_trigger(Irq::Irq3Dma);
         }
     }
 
     fn update_dicr_master_irq_flag(&mut self) {
-        let dicr = &mut self.dma_mut().dicr;
+        let dicr = &mut self.dma.dicr;
         let new_master_irq =
             dicr.bus_error() || (dicr.master_chan_irq() && dicr.combined_irq_flags().as_u8() > 0);
         dicr.set_master_irq(new_master_irq);
@@ -303,7 +303,7 @@ impl<A: Allocator> Emu<A> {
         let init_chan = event.init_chan;
         let direction = init_chan.chcr.direction();
         let sync_mode = init_chan.chcr.sync_mode();
-        let clock = self.cpu().cycles;
+        let clock = self.cpu.cycles;
         let idx = event.dma_t.idx() as usize;
         match sync_mode {
             SyncMode::Slice => {
@@ -403,7 +403,7 @@ impl<A: Allocator> Emu<A> {
                     assert!(
                         count < 1024 + 128,
                         "infinite loop detected, dma n: {init_chan:#?}\ndpcr: {:#?}",
-                        self.dma().dpcr
+                        self.dma.dpcr
                     );
                     let header = self.read::<DmaNodeHeader>(addr);
                     tracing::trace!(header.next = %hex(header.next()), header.len = header.len());
@@ -469,7 +469,7 @@ impl<A: Allocator> Emu<A> {
         let end_node = DmaNodeHeader::new_with_raw_value(DmaNodeHeader::END);
         self.fastmem_write(addr, end_node)
             .expect("dma6 otc write must go to ram!");
-        self.dma_mut().dma6.set_complete();
+        self.dma.dma6.set_complete();
     }
 }
 

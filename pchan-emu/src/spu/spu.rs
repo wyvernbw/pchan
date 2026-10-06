@@ -15,7 +15,7 @@ use crate::io::evque::{EvCtx, EventId};
 use crate::io::{CastIOFrom, CastIOInto, IOResult, UnhandledIO};
 use crate::memory::kb;
 use crate::spu::adpcm::{ADPCMCurrent, ADPCMHeader, ADPCMRepeat, ADPCMSampleRate, ADPCMStart};
-use crate::spu::adsr::{ADSRState, EnvelopePhase, EnvelopeState, apply_volume};
+use crate::spu::adsr::{ADSRState, EnvelopePhase, apply_volume};
 
 #[derive(derive_more::Debug)]
 pub struct SpuState {
@@ -148,33 +148,33 @@ impl<A: Allocator> Emu<A> {
         // TODO add reads
         match address {
             // Sound RAM Data Transfer Address
-            0x1f801da6 => Ok(u32::from(self.spu().ram_start).io_from_u32()),
+            0x1f801da6 => Ok(u32::from(self.spu.ram_start).io_from_u32()),
             // adpcm sample rate
             addr @ 0x1f801c04..=0x1f801d7f if let Some(n) = voice_idx(addr, 0x1f801c04, 0x10) => {
-                Ok(u32::from(self.spu().voices[n].rate.0).io_from_u32())
+                Ok(u32::from(self.spu.voices[n].rate.0).io_from_u32())
             }
             // adpcm start
             addr @ 0x1f801c06..=0x1f801d7f if let Some(n) = voice_idx(addr, 0x1f801c06, 0x10) => {
-                Ok(u32::from(self.spu().voices[n].start.0).io_from_u32())
+                Ok(u32::from(self.spu.voices[n].start.0).io_from_u32())
             }
             // adpcm repeat
             addr @ 0x1f801c0e..=0x1f801d7e if let Some(n) = voice_idx(addr, 0x1f801c0e, 0x10) => {
-                Ok(u32::from(self.spu().voices[n].repeat.0).io_from_u32())
+                Ok(u32::from(self.spu.voices[n].repeat.0).io_from_u32())
             }
             addr @ 0x1f801c00..=0x1f801d70 if let Some(n) = voice_idx(addr, 0x1f801c00, 0x10) => {
-                Ok((self.spu().adsr.voice_left.registers[n]).io_from_u32())
+                Ok((self.spu.adsr.voice_left.registers[n]).io_from_u32())
             }
             addr @ 0x1f801c02..=0x1f801d72 if let Some(n) = voice_idx(addr, 0x1f801c02, 0x10) => {
-                Ok((self.spu().adsr.voice_right.registers[n]).io_from_u32())
+                Ok((self.spu.adsr.voice_right.registers[n]).io_from_u32())
             }
             // ADSR volume
             // TODO: write
             addr @ 0x1f801c0c..=0x1f801d7c if let Some(n) = voice_idx(addr, 0x1f801c0c, 0x10) => {
-                Ok((self.spu().adsr.envelopes.level[n]).io_from_u32())
+                Ok((self.spu.adsr.envelopes.level[n]).io_from_u32())
             }
             // Voice 0..23 ON/OFF (status) (ENDX) (R)
             0x1f801d9c => {
-                let endx = self.spu().voice_flags.endx.raw_value();
+                let endx = self.spu.voice_flags.endx.raw_value();
                 tracing::info!(endx = %hex(endx));
                 Ok(endx.io_from_u32())
             }
@@ -213,53 +213,48 @@ impl<A: Allocator> Emu<A> {
         match address {
             // Sound RAM Data Transfer Address
             0x1f801da6 => {
-                self.spu_mut().ram_start = value;
-                self.spu_mut().ram_current = (value as usize) << 2;
+                self.spu.ram_start = value;
+                self.spu.ram_current = (value as usize) << 2;
                 Ok(())
             }
             // Sound RAM Data Transfer Fifo
             0x1f801da8 => {
-                let spu = self.spu_mut();
-                let current = spu.ram_current;
-                spu.mem[current] = value;
-                spu.ram_current += 1;
+                let current = self.spu.ram_current;
+                self.spu.mem[current] = value;
+                self.spu.ram_current += 1;
                 Ok(())
             }
             // voices - adpcm sample rate
             addr @ 0x1f801c04..=0x1f801d7f if let Some(n) = voice_idx(addr, 0x1f801c04, 0x10) => {
-                let spu = self.spu_mut();
-                spu.voices[n].rate = ADPCMSampleRate(value);
+                self.spu.voices[n].rate = ADPCMSampleRate(value);
                 Ok(())
             }
             // voices - adpcm start
             addr @ 0x1f801c06..=0x1f801d76 if let Some(n) = voice_idx(addr, 0x1f801c06, 0x10) => {
-                let spu = self.spu_mut();
-                spu.voices[n].start = ADPCMStart(value);
+                self.spu.voices[n].start = ADPCMStart(value);
                 Ok(())
             }
             // ADSR volume
             addr @ 0x1f801c0c..=0x1f801d7c if let Some(n) = voice_idx(addr, 0x1f801c0c, 0x10) => {
-                self.spu_mut().adsr.envelopes.level[n] = value as i16;
+                self.spu.adsr.envelopes.level[n] = value as i16;
                 Ok(())
             }
             // voices - adpcm repeat
             addr @ 0x1f801c0e..=0x1f801d7e if let Some(n) = voice_idx(addr, 0x1f801c0e, 0x10) => {
-                let spu = self.spu_mut();
-                spu.voices[n].repeat = ADPCMRepeat(value);
+                self.spu.voices[n].repeat = ADPCMRepeat(value);
                 Ok(())
             }
             // voices - key on
             0x1f801d88 | 0x1f801d8a => {
                 let key_idx = (address - 0x1f801d88) >> 1;
                 let key_idx = key_idx as usize;
-                let spu = self.spu_mut();
 
-                spu.set_keys::<true>(key_idx, value);
+                self.spu.set_keys::<true>(key_idx, value);
 
                 tracing::debug!(
                     "key_on.{} = {}",
                     key_idx,
-                    hex(spu.voice_flags.key_on[key_idx])
+                    hex(self.spu.voice_flags.key_on[key_idx])
                 );
                 Ok(())
             }
@@ -267,34 +262,29 @@ impl<A: Allocator> Emu<A> {
             0x1f801d8c | 0x1f801d8e => {
                 let key_idx = (address - 0x1f801d8c) >> 1;
                 let key_idx = key_idx as usize;
-                let spu = self.spu_mut();
 
-                spu.set_keys::<false>(key_idx, value);
+                self.spu.set_keys::<false>(key_idx, value);
 
                 Ok(())
             }
             // adsr - voice volume left
             addr @ 0x1f801c00..=0x1f801d70 if let Some(n) = voice_idx(addr, 0x1f801c00, 0x10) => {
-                let spu = self.spu_mut();
-                spu.adsr.voice_left.set_register(n, value);
+                self.spu.adsr.voice_left.set_register(n, value);
                 Ok(())
             }
             // adsr - voice volume right
             addr @ 0x1f801c02..=0x1f801d72 if let Some(n) = voice_idx(addr, 0x1f801c02, 0x10) => {
-                let spu = self.spu_mut();
-                spu.adsr.voice_right.set_register(n, value);
+                self.spu.adsr.voice_right.set_register(n, value);
                 Ok(())
             }
             // adsr - envelope n lower bits
             addr @ 0x1f801c08..=0x1f801d78 if let Some(n) = voice_idx(addr, 0x1f801c08, 0x10) => {
-                let spu = self.spu_mut();
-                spu.adsr.set_register(n, 0, value);
+                self.spu.adsr.set_register(n, 0, value);
                 Ok(())
             }
             // adsr - envelope n upper bits
             addr @ 0x1f801c0a..=0x1f801d7a if let Some(n) = voice_idx(addr, 0x1f801c0a, 0x10) => {
-                let spu = self.spu_mut();
-                spu.adsr.set_register(n, 1, value);
+                self.spu.adsr.set_register(n, 1, value);
                 Ok(())
             }
             // main volume left
@@ -329,19 +319,19 @@ impl<A: Allocator> Emu<A> {
 
     #[deprecated]
     fn run_spu(&mut self, mut dclock: u64) {
-        dclock += self.spu().clock;
-        self.spu_mut().clock = 0;
+        dclock += self.spu.clock;
+        self.spu.clock = 0;
         while dclock >= SpuState::CLOCK_CYCLES {
             dclock -= SpuState::CLOCK_CYCLES;
             self.clock();
         }
-        self.spu_mut().clock += dclock;
+        self.spu.clock += dclock;
     }
 
     pub fn handle_ev_spu_clock(&mut self, _ctx: EvCtx) {
         self.clock();
         let last_clock = self.spu.clock_idx * SpuState::CLOCK_CYCLES;
-        self.evque_mut().schedule_from(
+        self.evque.schedule_from(
             Self::handle_ev_spu_clock,
             EventId::default(),
             last_clock,
@@ -351,24 +341,26 @@ impl<A: Allocator> Emu<A> {
     }
 
     fn clock(&mut self) {
-        let spu = self.spu_mut();
-
-        spu.adsr.clock();
-        let adsr = &mut spu.adsr;
-        let flags = &mut spu.voice_flags;
-        spu.voices.iter_mut().enumerate().for_each(|(idx, voice)| {
-            voice.clock(&spu.mem, adsr);
-            if voice.reached_end {
-                voice.reached_end = false;
-                flags.endx.set_on(idx, true);
-            }
-        });
+        self.spu.adsr.clock();
+        let adsr = &mut self.spu.adsr;
+        let flags = &mut self.spu.voice_flags;
+        self.spu
+            .voices
+            .iter_mut()
+            .enumerate()
+            .for_each(|(idx, voice)| {
+                voice.clock(&self.spu.mem, adsr);
+                if voice.reached_end {
+                    voice.reached_end = false;
+                    flags.endx.set_on(idx, true);
+                }
+            });
 
         let mut mixed_l = 0i32;
         let mut mixed_r = 0i32;
         for i in 0..24 {
-            let voice = &spu.voices[i];
-            let adsr = &spu.adsr;
+            let voice = &self.spu.voices[i];
+            let adsr = &self.spu.adsr;
             let sample = voice.current_sample;
 
             let lvol =
@@ -388,10 +380,10 @@ impl<A: Allocator> Emu<A> {
         let mixed_l = mixed_l.clamp(-0x8000, 0x7fff).truncate::<i16>();
         let mixed_r = mixed_r.clamp(-0x8000, 0x7fff).truncate::<i16>();
 
-        let mixed_l = apply_volume(mixed_l, spu.adsr.main_l.internal[0]);
-        let mixed_r = apply_volume(mixed_r, spu.adsr.main_r.internal[0]);
+        let mixed_l = apply_volume(mixed_l, self.spu.adsr.main_l.internal[0]);
+        let mixed_r = apply_volume(mixed_r, self.spu.adsr.main_r.internal[0]);
 
-        if let Some(prod) = &mut spu.prod {
+        if let Some(prod) = &mut self.spu.prod {
             _ = prod.get_mut().unwrap().prod.try_push(mixed_l);
             _ = prod.get_mut().unwrap().prod.try_push(mixed_r);
         }

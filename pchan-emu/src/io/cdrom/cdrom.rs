@@ -64,13 +64,13 @@ impl<A: Allocator> Emu<A> {
     #[pchan_macros::pchan_instrument_write]
     pub fn cdrom_write<T: Copy>(&mut self, address: u32, value: T) -> Result<(), UnhandledIO> {
         let address = address & 0x1fffffff;
-        let bank = self.cdrom().bank();
+        let bank = self.cdrom.bank();
         let value = value.io_into_u32() as u8;
         #[allow(clippy::match_same_arms)]
         match (address, bank) {
             (0x1f801800, _) => {
                 let status = CDRomStatusReg::new_with_raw_value(value);
-                self.cdrom_mut().status.set_bank(status.bank());
+                self.cdrom.status.set_bank(status.bank());
                 Ok(())
             }
 
@@ -89,13 +89,13 @@ impl<A: Allocator> Emu<A> {
             }
 
             (0x1f801802, 0) => {
-                self.cdrom_mut().param_push(value);
+                self.cdrom.param_push(value);
                 tracing::info!("param push: {}", hex(value));
                 Ok(())
             }
             (0x1f801802, 1) => {
                 let hint_mask = CDRomHIntMask::new_with_raw_value(value);
-                self.cdrom_mut().hint_mask.write(hint_mask);
+                self.cdrom.hint_mask.write(hint_mask);
                 Ok(())
             }
             (0x1f801802, 2) => {
@@ -112,7 +112,7 @@ impl<A: Allocator> Emu<A> {
             }
             (0x1f801803, 1) => {
                 let hclrctl = CDRomHClrCtl::new_with_raw_value(value);
-                self.cdrom_mut().write_h_clr_ctl(hclrctl);
+                self.cdrom.write_h_clr_ctl(hclrctl);
                 Ok(())
             }
             (0x1f801803, 2) => {
@@ -129,11 +129,11 @@ impl<A: Allocator> Emu<A> {
     #[pchan_macros::pchan_instrument_read]
     pub fn cdrom_read<T>(&mut self, address: u32) -> Result<T, UnhandledIO> {
         let address = address & 0x1fffffff;
-        let bank = self.cdrom().bank();
+        let bank = self.cdrom.bank();
         match (address, bank) {
-            (0x1f801800, _) => Ok(self.cdrom().status.io_from_u32()),
+            (0x1f801800, _) => Ok(self.cdrom.status.io_from_u32()),
             (0x1f801801, _) => match self
-                .cdrom_mut()
+                .cdrom
                 .pop_result()
                 .inspect(|value| tracing::info!("cdrom: return response {}", hex(*value)))
             {
@@ -146,17 +146,17 @@ impl<A: Allocator> Emu<A> {
             (0x1f801802, _) => trace_todo!(0u32, "todo(cdrom): read from data fifo"),
 
             (0x1f801803, 0 | 2) => Ok(self.cdrom.hint_mask.io_from_u32()),
-            (0x1f801803, 1 | 3) => Ok(self.cdrom().hint_status.io_from_u32()),
+            (0x1f801803, 1 | 3) => Ok(self.cdrom.hint_status.io_from_u32()),
             _ => Err(UnhandledIO(address)),
         }
         // .inspect(|_| tracing::info!("|- r(cdrom) @ {}:{}", hex(address), bank))
     }
 
     fn cdrom_send_response_v2(&mut self, response: ResponseV2) {
-        self.cdrom_mut().result_push_many(response.data);
-        self.cdrom_mut().hint_status.set_intsts(response.int);
-        let hint_status = self.cdrom().hint_status.raw_value();
-        let hint_mask = self.cdrom().hint_mask.raw_value();
+        self.cdrom.result_push_many(response.data);
+        self.cdrom.hint_status.set_intsts(response.int);
+        let hint_status = self.cdrom.hint_status.raw_value();
+        let hint_mask = self.cdrom.hint_mask.raw_value();
         if hint_status & hint_mask != 0 {
             self.cdrom_schedule_irq();
         } else {
@@ -165,7 +165,7 @@ impl<A: Allocator> Emu<A> {
     }
 
     fn cdrom_schedule_irq(&mut self) {
-        self.evque_mut()
+        self.evque
             .schedule(Self::irq_trigger_cdrom, EventId::default(), 1000);
     }
 

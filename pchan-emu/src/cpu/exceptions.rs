@@ -62,42 +62,42 @@ pub enum Exception {
 
 impl<A: Allocator> Emu<A> {
     fn handle_exception(&mut self, exception: Exception) {
-        let mut sr = Cop0StatusReg::new_with_raw_value(self.cpu().cop0.reg[12]);
+        let mut sr = Cop0StatusReg::new_with_raw_value(self.cpu.cop0.reg[12]);
         if !sr.iec() && exception == Exception::Interrupt {
             return;
         }
 
-        let cause = self.cpu().cop0.reg[13];
+        let cause = self.cpu.cop0.reg[13];
         let mut cause = CauseRegister::new_with_raw_value(cause);
 
         cause.set_excode(exception.raw_value());
-        self.cpu_mut().cop0.reg[13] = cause.raw_value();
+        self.cpu.cop0.reg[13] = cause.raw_value();
 
         let epc = match (cause.bd(), exception) {
-            (false, _) => self.cpu().pc,
+            (false, _) => self.cpu.pc,
             (true, _) => {
                 // bd is set, meaning pc was updated to the branch destination
                 // as such, we can simply update the TAR register to the current pc.
-                self.cpu_mut().cop0.reg[6] = self.cpu().pc;
-                self.cpu().pc - 4
+                self.cpu.cop0.reg[6] = self.cpu.pc;
+                self.cpu.pc - 4
             }
         };
-        self.cpu_mut().cop0.reg[14] = epc;
+        self.cpu.cop0.reg[14] = epc;
 
         sr.push_exception_stack();
-        self.cpu_mut().cop0.reg[12] = sr.raw_value();
+        self.cpu.cop0.reg[12] = sr.raw_value();
 
-        let new_pc = match self.cpu().cop0.status().bev() {
+        let new_pc = match self.cpu.cop0.status().bev() {
             false => 0x8000_0080,
             true => 0xbfc0_0180,
         };
-        self.cpu_mut().pc = new_pc;
-        self.cpu_mut().enqueue_jump(new_pc);
+        self.cpu.pc = new_pc;
+        self.cpu.enqueue_jump(new_pc);
         self.cpu.exc_pending = false;
     }
 
     pub extern "C" fn handle_rfe(&mut self) {
-        let mut sr = Cop0StatusReg::new_with_raw_value(self.cpu().cop0.reg[12]);
+        let mut sr = Cop0StatusReg::new_with_raw_value(self.cpu.cop0.reg[12]);
         sr.set_kuc(sr.kup());
         sr.set_iec(sr.iep());
         sr.set_kup(sr.kuo());
@@ -111,10 +111,10 @@ impl<A: Allocator> Emu<A> {
 
     pub extern "C" fn handle_syscall(&mut self, bd: bool) {
         if bd {
-            let cause = self.cpu().cop0.reg[13];
+            let cause = self.cpu.cop0.reg[13];
             let cause = CauseRegister::new_with_raw_value(cause);
             let cause = cause.with_bd(true);
-            self.cpu_mut().cop0.reg[13] = cause.raw_value();
+            self.cpu.cop0.reg[13] = cause.raw_value();
 
             panic!("found bd!")
         }

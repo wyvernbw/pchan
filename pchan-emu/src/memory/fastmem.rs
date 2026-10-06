@@ -96,7 +96,7 @@ impl<A: Allocator> Emu<A> {
         let offset = address & 0x0000_FFFF;
 
         let lut_ptr = LUT.read[page as usize];
-        let mem = self.mem().buf.as_ptr();
+        let mem = self.mem.buf.as_ptr();
 
         match lut_ptr {
             // fastmem
@@ -110,7 +110,7 @@ impl<A: Allocator> Emu<A> {
     }
 
     pub fn fastmem_write<T: Copy>(&mut self, address: u32, value: T) -> FastmemResult<()> {
-        if self.cpu().isc() {
+        if self.cpu.isc() {
             return Ok(());
         }
 
@@ -118,7 +118,7 @@ impl<A: Allocator> Emu<A> {
         let offset = address & 0x0000_FFFF;
 
         let lut_ptr = LUT.write[page as usize];
-        let mem = self.mem_mut().buf.as_mut_ptr();
+        let mem = self.mem.buf.as_mut_ptr();
 
         if let Some(region_ptr) = lut_ptr {
             self.dynarec_cache.invalidate(address);

@@ -206,7 +206,7 @@ impl EventEmitter<ResetEvent> for EmuContext {}
 
 impl EmuContext {
     pub fn hard_reset(&mut self) -> miette::Result<()> {
-        let bios_path = self.emu.bootloader().bios_path.clone();
+        let bios_path = self.emu.boot.bios_path.clone();
         self.renderer.reset();
         self.emu = Emu::new_in(self.alloc);
         self.emu.set_bios_path(bios_path);

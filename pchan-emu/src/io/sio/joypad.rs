@@ -167,15 +167,10 @@ impl<A: Allocator + Copy> Emu<A> {
     pub fn send_input_event(&mut self, event: InputEvent, port: Sio0Port) {
         match event {
             InputEvent::Press(btn) => {
-                self.sio_mut()
-                    .sio0ports
-                    .port_mut(port)
-                    .joypad
-                    .switches
-                    .press(btn);
+                self.sio.sio0ports.port_mut(port).joypad.switches.press(btn);
             }
             InputEvent::Release(btn) => {
-                self.sio_mut()
+                self.sio
                     .sio0ports
                     .port_mut(port)
                     .joypad
