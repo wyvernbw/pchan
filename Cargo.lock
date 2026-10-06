@@ -6768,6 +6768,7 @@ dependencies = [
  "pchan-utils",
  "pretty_assertions",
  "rstest",
+ "smol 2.0.2 (git+https://github.com/wyvernbw/smol.git?branch=wyvernbw-feature-gates)",
  "thiserror 2.0.21",
  "tracing",
  "wgpu 30.0.1",

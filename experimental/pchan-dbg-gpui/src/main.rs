@@ -314,16 +314,17 @@ impl Debugger {
         let gpu = pchan_gpu::Renderer::try_new();
         let gpu = cx.foreground_executor().block_on(gpu).into_diagnostic()?;
 
-        let mut dp = gpu.display_uniforms.lock().unwrap();
-        dp.app.screen_rect.x = 320;
-        dp.app.screen_rect.y = 240;
+        let mut dp = gpu.display_uniforms.app.lock().unwrap();
+        dp.screen_rect.x = 320;
+        dp.screen_rect.y = 240;
         drop(dp);
 
         gpu.connect_emu(&mut emu);
         let gpu = Arc::new(gpu);
         gpu.clone().start();
 
-        let (target, target_buf) = create_target(&gpu, &mut gpu.display_uniforms.lock().unwrap());
+        let (target, target_buf) =
+            create_target(&gpu, &mut gpu.display_uniforms.app.lock().unwrap());
 
         let cached_reg_names = core::array::from_fn(|reg| {
             let reg = match reg as u8 {
@@ -824,9 +825,9 @@ impl Debugger {
             .read(cx)
             .renderer
             .display_uniforms
+            .app
             .lock()
             .unwrap()
-            .app
             .dp_debug;
 
         v_flex()

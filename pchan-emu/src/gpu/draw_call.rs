@@ -1,18 +1,22 @@
 use core::mem::transmute;
 
-use crate::gpu::{DrawPixels, Gp0TexWindowCmd, GpuStatReg, IVramCoord, TexpageCmd, VramCoord};
+use crate::gpu::{
+    DrawPixels, Gp0TexWindowCmd, GpuStatReg, IVramCoord, TexpageCmd, VramCoord, VramMsg,
+};
 use crate::io::CastIOInto;
 use arbitrary_int::prelude::*;
 use bitbybit::{bitenum, bitfield};
 use glam::{I16Vec2, U8Vec2, U8Vec3, U16Vec2};
 use smallvec::SmallVec;
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct DrawCallCollection {
     pub draw_calls: Vec<DrawCall>,
     pub display:    crate::gpu::Display,
     /// gpustat at vblank
     pub gpustat:    GpuStatReg,
+    pub swap_idx:   usize,
+    pub vram:       Option<VramMsg>,
 }
 
 #[derive(Debug, Clone)]

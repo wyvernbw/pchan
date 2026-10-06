@@ -28,26 +28,37 @@ pub static VBLANK_COUNT: AtomicU64 = AtomicU64::new(0);
 #[derive(Debug, Clone)]
 pub struct Conn {
     pub draw_call_chan: AsyncChan<DrawCallCollection>,
-    pub vram_in_chan:   AsyncChan<Box<[u16]>>,
-    pub vram_out_chan:  AsyncChan<Box<[u16]>>,
+    pub vram_out_chan:  AsyncChan<VramRes>,
+}
+
+#[derive(Debug)]
+pub struct VramMsg {
+    pub vram:  Box<[u16]>,
+    pub dirty: bool,
+}
+
+pub struct VramRes {
+    pub vram:          Box<[u16]>,
+    pub draw_call_buf: Vec<DrawCall>,
+    pub swap_idx:      usize,
 }
 
 #[derive(derive_more::Debug, Clone)]
 pub struct GpuState {
     #[debug(skip)]
-    pub vram:            Box<[u16]>,
+    pub vram:           Box<[u16]>,
     #[debug(skip)]
-    pub gpustat:         GpuStatReg,
-    pub gp0:             Gp0,
-    pub gp0read:         [u16; 2],
-    pub gp0read_queue:   Deque<u32, 32>,
-    pub dp:              Display,
+    pub gpustat:        GpuStatReg,
+    pub gp0:            Gp0,
+    pub gp0read:        [u16; 2],
+    pub gp0read_queue:  Deque<u32, 32>,
+    pub dp:             Display,
     /// GP0(0xe2) - Texture Window setting
-    pub tex_window:      Gp0TexWindowCmd,
-    pub draw_reg:        GpuInternalDrawReg,
-    #[debug("{} draw calls", self.draw_call_queue.len())]
-    pub draw_call_queue: Vec<DrawCall>,
-    pub model:           GpuModel,
+    pub tex_window:     Gp0TexWindowCmd,
+    pub draw_reg:       GpuInternalDrawReg,
+    #[debug("{} draw calls", self.draw_call_swap.queue().len())]
+    pub draw_call_swap: DrawCallSwapchain<2>,
+    pub model:          GpuModel,
 
     #[debug(skip)]
     pub conn:          Conn,
@@ -56,6 +67,12 @@ pub struct GpuState {
     pub vblank_signal: bool,
 
     pub vram_mutation_signal: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct DrawCallSwapchain<const N: usize> {
+    queues: [Vec<DrawCall>; N],
+    idx:    usize,
 }
 
 #[derive(derive_more::Debug, Clone, Default)]
@@ -81,10 +98,9 @@ impl Default for GpuState {
             model: GpuModel::default(),
             tex_window: Gp0TexWindowCmd::default(),
             draw_reg: GpuInternalDrawReg::default(),
-            draw_call_queue: vec![],
+            draw_call_swap: DrawCallSwapchain::default(),
             conn: Conn {
                 draw_call_chan: kanal::bounded_async(3),
-                vram_in_chan:   kanal::bounded_async(3),
                 vram_out_chan:  kanal::bounded_async(3),
             },
             dp: Display::default(),
@@ -121,8 +137,6 @@ impl<A: Allocator> Emu<A> {
                 match &self.gpu().gp0 {
                     Gp0::CpRectVramToCpu(Gp0CpRect::RecvData(cursor)) => {
                         let mut cursor = *cursor;
-                        self.gpu.flush_draw_calls();
-                        self.gpu.wait_for_render_result();
                         for (idx, at) in cursor.iter().take(2).enumerate() {
                             self.gpu_mut().vram_read(at, idx);
                         }
@@ -298,10 +312,11 @@ impl<A: Allocator> Emu<A> {
                 Gp0::CpRectCpuToVram(Gp0CpRect::RecvSize { dest })
             }
             Gp0::CpRectCpuToVram(Gp0CpRect::RecvSize { dest }) => {
+                let dest = *dest;
                 let size: VramCoord = unsafe { transmute(value) };
                 let size = size.copy_cmd_size_mask();
                 tracing::debug!("cpu to vram copy size: {size:?}");
-                Gp0::CpRectCpuToVram(Gp0CpRect::RecvData(VramCursor::new(*dest, *dest + size)))
+                Gp0::CpRectCpuToVram(Gp0CpRect::RecvData(VramCursor::new(dest, dest + size)))
             }
             Gp0::CpRectCpuToVram(Gp0CpRect::RecvData(cursor)) => {
                 let mut cursor = *cursor;
@@ -555,11 +570,40 @@ impl<A: Allocator> Emu<A> {
 
     pub fn gpu_issue_draw_call(&mut self, kind: DrawCallKind) {
         let draw_call = self.gpu_create_draw_call(kind);
-        self.gpu_mut().draw_call_queue.push(draw_call);
+        self.gpu_mut().draw_call_swap.queue_mut().push(draw_call);
     }
 
     pub fn gpu_reconnect(&mut self, other: &Emu) {
         self.gpu_mut().conn = other.gpu().conn.clone();
+    }
+}
+
+impl<const N: usize> Default for DrawCallSwapchain<N> {
+    fn default() -> Self {
+        Self {
+            queues: core::array::from_fn(|_| Vec::with_capacity(64)),
+            idx:    Default::default(),
+        }
+    }
+}
+
+impl<const N: usize> DrawCallSwapchain<N> {
+    fn queue(&self) -> &[DrawCall] {
+        &self.queues[self.idx]
+    }
+    fn queue_mut(&mut self) -> &mut Vec<DrawCall> {
+        &mut self.queues[self.idx]
+    }
+    fn submit(&mut self) -> usize {
+        let n = self.idx;
+        self.idx += 1;
+        self.idx %= N;
+        n
+    }
+    fn recall(&mut self, swap_idx: usize, mut buf: Vec<DrawCall>) {
+        assert_ne!(swap_idx, self.idx);
+        buf.clear();
+        self.queues[swap_idx] = buf;
     }
 }
 
@@ -690,7 +734,7 @@ impl GpuState {
     }
 
     pub fn flush_draw_calls(&mut self) {
-        if self.draw_call_queue.is_empty() {
+        if self.draw_call_swap.queue().is_empty() {
             self.conn
                 .draw_call_chan
                 .0
@@ -699,6 +743,8 @@ impl GpuState {
                     draw_calls: Vec::new(),
                     display:    self.dp.clone(),
                     gpustat:    self.gpustat,
+                    swap_idx:   0,
+                    vram:       None,
                 })
                 .expect("render channel closed");
             return;
@@ -707,8 +753,9 @@ impl GpuState {
         self.wait_for_render_result();
         assert!(!self.vram.is_empty());
 
-        tracing::debug!("flushing {} draw calls", self.draw_call_queue.len());
-        let queue = mem::take(&mut self.draw_call_queue);
+        tracing::debug!("flushing {} draw calls", self.draw_call_swap.queue().len());
+        let queue = mem::take(self.draw_call_swap.queue_mut());
+        let swap_idx = self.draw_call_swap.submit();
         // transfer ownership of the vram to the render thread
         let vram = mem::take(&mut self.vram);
         let display = self.dp.clone();
@@ -720,15 +767,14 @@ impl GpuState {
                 draw_calls: queue,
                 gpustat: self.gpustat,
                 display,
+                swap_idx,
+                vram: Some(VramMsg {
+                    vram,
+                    dirty: self.vram_mutation_signal,
+                }),
             })
             .unwrap();
-        self.conn.vram_in_chan.0.as_sync().send(vram).unwrap();
         self.waiting_on_render = true;
-    }
-
-    fn vram_flush_render(&mut self) {
-        self.wait_for_render_result();
-        self.flush_draw_calls();
     }
 
     pub fn wait_for_render_result(&mut self) {
@@ -740,13 +786,17 @@ impl GpuState {
                 .as_sync()
                 .recv()
                 .expect("channel dropped: failed to receive queued render");
-            self.vram = vram;
+            self.vram = vram.vram;
+            self.draw_call_swap
+                .recall(vram.swap_idx, vram.draw_call_buf);
             self.waiting_on_render = false;
+            self.vram_mutation_signal = false;
         }
     }
 
     fn vram_write(&mut self, coord: VramCoord, value: u16) {
-        self.vram_flush_render();
+        self.flush_draw_calls();
+        self.wait_for_render_result();
         let coord = coord.wrap();
         let addr = coord.x as usize + coord.y as usize * kb(1);
         self.vram_mutation_signal = true;
@@ -754,6 +804,8 @@ impl GpuState {
     }
 
     fn vram_read_direct(&mut self, coord: VramCoord) -> u16 {
+        self.flush_draw_calls();
+        self.wait_for_render_result();
         let coord = coord.wrap();
         let addr = coord.x as usize + coord.y as usize * kb(1);
         self.vram[addr]

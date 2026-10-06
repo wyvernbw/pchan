@@ -31,7 +31,7 @@ impl GameSurface {
     }
 
     pub fn set_vram_view(&self, value: bool) {
-        self.renderer.display_uniforms.lock().unwrap().app.dp_debug = value
+        self.renderer.display_uniforms.app.lock().unwrap().dp_debug = value
     }
 
     pub fn clear<T>(&self, cx: &Context<'_, T>) {
@@ -189,11 +189,11 @@ impl Element for GameSurface {
         let height = bounds.size.height;
         let width = width.as_f32() as u16;
         let height = height.as_f32() as u16;
-        let mut dp = self.renderer.display_uniforms.lock().unwrap();
+        let mut dp = self.renderer.display_uniforms.app.lock().unwrap();
 
-        if width != dp.app.screen_rect.x || height != dp.app.screen_rect.y {
-            dp.app.screen_rect.x = width;
-            dp.app.screen_rect.y = height;
+        if width != dp.screen_rect.x || height != dp.screen_rect.y {
+            dp.screen_rect.x = width;
+            dp.screen_rect.y = height;
             let dp = dp.clone();
             let (target, target_buf) = create_target(&self.renderer, &dp);
             self.state.update(cx, |state, _| {
@@ -241,9 +241,9 @@ struct PchanMetalTexture {
 
 pub fn create_target(
     gpu: &Arc<pchan_gpu::Renderer>,
-    dp: &pchan_gpu::DisplayUniforms,
+    dp: &pchan_gpu::AppDisplayUniforms,
 ) -> (PchanTexture, wgpu::Buffer) {
-    let width = dp.app.screen_rect.x * 4;
+    let width = dp.screen_rect.x * 4;
     let width = (width + 255) & !255; // align to 256
 
     #[cfg(not(target_os = "macos"))]
@@ -253,7 +253,7 @@ pub fn create_target(
 
     let target_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
         label:              None,
-        size:               u64::from(width) * u64::from(dp.app.screen_rect.y),
+        size:               u64::from(width) * u64::from(dp.screen_rect.y),
         usage:              wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
@@ -263,7 +263,7 @@ pub fn create_target(
 #[cfg(not(target_os = "macos"))]
 pub fn create_target_texture_linux(
     gpu: &pchan_gpu::Renderer,
-    dp: &pchan_gpu::DisplayUniforms,
+    dp: &pchan_gpu::AppDisplayUniforms,
 ) -> PchanTexture {
     let wgpu = create_target_texture_wgpu(gpu, dp);
     PchanTexture { wgpu }
@@ -271,13 +271,13 @@ pub fn create_target_texture_linux(
 
 pub fn create_target_texture_wgpu(
     gpu: &pchan_gpu::Renderer,
-    dp: &pchan_gpu::DisplayUniforms,
+    dp: &pchan_gpu::AppDisplayUniforms,
 ) -> wgpu::Texture {
     gpu.device.create_texture(&wgpu::TextureDescriptor {
         label:           None,
         size:            wgpu::Extent3d {
-            width:                 u32::from(dp.app.screen_rect.x),
-            height:                u32::from(dp.app.screen_rect.y.max(16)),
+            width:                 u32::from(dp.screen_rect.x),
+            height:                u32::from(dp.screen_rect.y.max(16)),
             depth_or_array_layers: 1,
         },
         mip_level_count: 1,
@@ -297,7 +297,7 @@ pub fn create_target_texture_wgpu(
 #[cfg(target_os = "macos")]
 pub fn create_target_texture_metal(
     gpu: &Arc<pchan_gpu::Renderer>,
-    dp: &pchan_gpu::DisplayUniforms,
+    dp: &pchan_gpu::AppDisplayUniforms,
 ) -> PchanTexture {
     use core_foundation::boolean::*;
     use core_foundation::dictionary::*;
@@ -306,8 +306,8 @@ pub fn create_target_texture_metal(
     use core_video::*;
     use objc2_metal::*;
 
-    let width = dp.app.screen_rect.x as usize & !1;
-    let height = dp.app.screen_rect.y as usize & !1;
+    let width = dp.screen_rect.x as usize & !1;
+    let height = dp.screen_rect.y as usize & !1;
 
     unsafe {
         use objc2_metal::MTLDevice;
@@ -384,8 +384,8 @@ pub fn create_target_texture_metal(
             &wgpu::TextureDescriptor {
                 label:           None,
                 size:            wgpu::Extent3d {
-                    width:                 u32::from(dp.app.screen_rect.x),
-                    height:                u32::from(dp.app.screen_rect.y.max(16)),
+                    width:                 u32::from(dp.screen_rect.x),
+                    height:                u32::from(dp.screen_rect.y.max(16)),
                     depth_or_array_layers: 1,
                 },
                 mip_level_count: 1,

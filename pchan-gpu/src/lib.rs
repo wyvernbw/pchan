@@ -8,15 +8,18 @@ extern crate alloc;
 
 use arbitrary_int::prelude::Integer;
 pub use glam;
+use pchan_emu::memory::{kb, mb};
 use pchan_utils::tracy::TracyClient;
 pub(crate) mod render_pass;
 
 use alloc::sync::Arc;
 use core::alloc::Allocator;
 use core::sync::atomic::{self, AtomicBool};
+use core::time::Duration;
 use std::mem::offset_of;
 use std::sync::Mutex;
 use std::time::Instant;
+use wgpu::util::StagingBelt;
 
 use glam::prelude::*;
 use pchan_emu::Emu;
@@ -25,7 +28,7 @@ use pchan_emu::gpu::draw_call::{
 };
 use pchan_emu::gpu::{
     Conn, Display, DisplayColorDepth, DrawPixels, Gp0TexWindowCmd, GpuStatReg, IVramCoord,
-    TextureColorMode, VramCoord,
+    TextureColorMode, VramCoord, VramRes,
 };
 use thiserror::Error;
 use tracing::Level;
@@ -45,27 +48,25 @@ pub struct Renderer {
     render_pipeline: RenderPipeline,
     pub display_pipeline: RenderPipeline,
     _display_format: TextureFormat,
+    pub vertex_buf: Buffer,
     pub render_texture: Texture,
     pub render_view: TextureView,
     render_bind_group: BindGroup,
     vram_texture: Texture,
+    vram_out_buf: Buffer,
     pub display_bind_group: BindGroup,
     pub display_uniform_buffer: Buffer,
-    pub display_uniforms: Mutex<DisplayUniforms>,
+    pub display_uniforms: DisplayUniforms,
+    belt: Mutex<StagingBelt>,
 
     conn: Conn,
 }
 
-#[derive(Debug, Clone)]
-pub enum UpdateUniforms {
-    Display(DisplayUniforms),
-}
-
 /// Uniforms passed to display shader
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct DisplayUniforms {
-    pub hw: HWDisplayUniforms,
-    pub app: AppDisplayUniforms,
+    pub hw: Mutex<HWDisplayUniforms>,
+    pub app: Mutex<AppDisplayUniforms>,
 }
 
 /// Display uniforms relating to hardware settings
@@ -98,16 +99,16 @@ pub struct AppDisplayUniforms {
 impl Default for DisplayUniforms {
     fn default() -> Self {
         Self {
-            hw: HWDisplayUniforms {
+            hw: Mutex::new(HWDisplayUniforms {
                 dp_start: U16Vec2::default(),
                 dp_res: U16Vec2::default(),
                 dp_color_depth: DisplayColorDepth::Depth15Bit,
-            },
-            app: AppDisplayUniforms {
+            }),
+            app: Mutex::new(AppDisplayUniforms {
                 screen_rect: U16Vec2::default(),
                 dp_debug: Default::default(),
                 dp_srgb: true,
-            },
+            }),
         }
     }
 }
@@ -166,6 +167,12 @@ impl Renderer {
             anisotropy_clamp: 1,
             border_color: None,
         });
+        let vertex_buf = device.create_buffer(&BufferDescriptor {
+            label: Some("pchan-gpu.vertex-buf"),
+            size: kb(256) as u64,
+            usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
 
         // uniform vram texture
         let vram_texture = device.create_texture(&TextureDescriptor {
@@ -183,6 +190,12 @@ impl Renderer {
             view_formats: &[TextureFormat::R32Uint],
         });
         let vram_view = vram_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let vram_out_buf = device.create_buffer(&BufferDescriptor {
+            label: Some("psx.vram.out"),
+            size: 1024 * 512 * size_of::<u16>() as u64,
+            usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
 
         // uniforms
 
@@ -359,6 +372,8 @@ impl Renderer {
             cache: None,
         });
 
+        let belt = StagingBelt::new(device.clone(), mb(4) as u64);
+
         Ok(Self {
             instance,
             adapter,
@@ -372,16 +387,18 @@ impl Renderer {
             render_bind_group,
             conn: Conn {
                 draw_call_chan: kanal::bounded_async(2),
-                vram_in_chan: kanal::bounded_async(2),
                 vram_out_chan: kanal::bounded_async(2),
             },
             display_pipeline,
             display_bind_group,
             display_uniform_buffer,
-            display_uniforms: Mutex::new(DisplayUniforms::default()),
+            display_uniforms: DisplayUniforms::default(),
             _display_format: display_format,
             tracy: TracyClient::default(),
             reset_flag: AtomicBool::new(false),
+            vram_out_buf,
+            vertex_buf,
+            belt: belt.into(),
         })
     }
 
@@ -448,14 +465,17 @@ impl Renderer {
     }
 
     fn set_hw_display(&self, hw_dp: HWDisplayUniforms) {
-        self.display_uniforms.lock().unwrap().hw = hw_dp;
+        *self.display_uniforms.hw.lock().unwrap() = hw_dp;
     }
 
     pub fn start(self: Arc<Self>) {
-        std::thread::spawn(move || {
-            self.tracy.set_thread_name("pchan-gpu");
-            pchan_executor::block_on(self.render_loop());
-        });
+        std::thread::Builder::new()
+            .name("pchan-gpu-hw".into())
+            .spawn(move || {
+                self.tracy.set_thread_name("pchan-gpu");
+                smol::block_on(self.render_loop());
+            })
+            .expect("failed to start hw rasterizer thread");
     }
 
     async fn render_loop(self: Arc<Self>) {
@@ -464,37 +484,53 @@ impl Renderer {
             tracing::trace!("waiting for draw calls...");
             match self.conn.draw_call_chan.1.recv().await {
                 Ok(draw_calls) => {
-                    let now = Instant::now();
-                    tracing::trace!(
-                        "received {} draw_calls: {:#?}",
-                        draw_calls.draw_calls.len(),
-                        draw_calls
-                    );
+                    if tracing::enabled!(Level::TRACE) {
+                        tracing::trace!(
+                            "received {} draw_calls: {:#?}",
+                            draw_calls.draw_calls.len(),
+                            draw_calls
+                        );
+                    }
+                    let draw_calls_len = draw_calls.draw_calls.len();
                     tracing::trace!("waiting on vram...");
 
-                    let scene = Scene::new_from_draw_calls(draw_calls);
+                    let scene = Scene::new_from_draw_calls(&draw_calls);
                     self.set_hw_display(scene.hw_display.clone());
-                    if scene.vertex_buf.is_empty() {
+                    if draw_calls.draw_calls.is_empty() {
                         continue;
                     }
 
-                    let Ok(mut vram) = self.conn.vram_in_chan.1.recv().await else {
+                    let Some(mut vram) = draw_calls.vram else {
                         continue;
                     };
 
+                    let now = Instant::now();
+
                     tracing::debug!("received vram");
                     let mut pass = self.create_render_pass(scene);
-                    pass.draw(&vram);
-                    if let Err(err) = pass.finish(&mut vram).await {
+                    pass.draw(&vram.vram, vram.dirty);
+                    if let Err(err) = pass.finish(&mut vram.vram).await {
                         tracing::warn!("render error: {}", err);
                     };
                     let elapsed = now.elapsed().as_millis_f32();
 
                     if !self.consume_reset() {
-                        _ = self.conn.vram_out_chan.0.send(vram).await;
+                        _ = self
+                            .conn
+                            .vram_out_chan
+                            .0
+                            .send(VramRes {
+                                vram: vram.vram,
+                                draw_call_buf: draw_calls.draw_calls,
+                                swap_idx: draw_calls.swap_idx,
+                            })
+                            .await;
                     }
 
-                    tracing::info!("finished render ({elapsed:01.2}ms)");
+                    tracing::info!(
+                        "finished render ({} draws, {elapsed:01.2}ms)",
+                        draw_calls_len
+                    );
                 }
                 Err(err) => {
                     tracing::error!(%err);
@@ -766,30 +802,30 @@ enum DrawRectError {
 }
 
 impl Scene {
-    pub fn new_from_draw_calls(cmds: DrawCallCollection) -> Scene {
+    pub fn new_from_draw_calls(cmds: &DrawCallCollection) -> Scene {
         let _scene = pchan_utils::tracy::span!("rd-build-scene");
         let mut scene = Scene {
             vertex_buf: Vec::new(),
             hw_display: HWDisplayUniforms::from_hw(&cmds.display, cmds.gpustat),
         };
-        for cmd in cmds.draw_calls {
+        for cmd in &cmds.draw_calls {
             if tracing::enabled!(Level::DEBUG) {
                 tracing::debug!("{:?}", cmd.inner)
             }
-            match cmd.inner {
+            match &cmd.inner {
                 DrawCallKind::Rect(draw_rect) => {
                     _ = scene.add_draw_rect_draw_call(
-                        &draw_rect,
+                        draw_rect,
                         cmd.gpustat,
-                        cmd.draw_reg,
+                        &cmd.draw_reg,
                         cmd.tex_window,
                     );
                 }
                 DrawCallKind::Polygon(draw_polygon) => {
                     scene.add_draw_polygon_draw_call(
-                        &draw_polygon,
+                        draw_polygon,
                         cmd.gpustat,
-                        cmd.draw_reg,
+                        &cmd.draw_reg,
                         cmd.tex_window,
                     );
                 }
@@ -800,12 +836,11 @@ impl Scene {
         scene
     }
 
-    #[tracing::instrument(skip_all, err)]
     fn add_draw_rect_draw_call(
         &mut self,
         draw_rect: &DrawRect,
         gpustat: GpuStatReg,
-        draw_reg: GpuInternalDrawReg,
+        draw_reg: &GpuInternalDrawReg,
         tex_window: Gp0TexWindowCmd,
     ) -> Result<(), DrawRectError> {
         let rgb = draw_rect.color.rgb().to_ne_bytes();
@@ -846,12 +881,11 @@ impl Scene {
         Ok(())
     }
 
-    #[tracing::instrument(skip_all)]
     fn add_draw_polygon_draw_call(
         &mut self,
         draw_polygon: &DrawPolygon,
         gpustat: GpuStatReg,
-        draw_reg: GpuInternalDrawReg,
+        draw_reg: &GpuInternalDrawReg,
         tex_window: Gp0TexWindowCmd,
     ) {
         let header = draw_polygon.header;
@@ -953,26 +987,24 @@ struct DisplayUniformData {
 impl DisplayUniforms {
     pub const DATASIZE: usize = size_of::<DisplayUniformData>();
     fn to_data(&self) -> DisplayUniformData {
-        let DisplayUniforms {
-            hw:
-                HWDisplayUniforms {
-                    dp_start,
-                    dp_res,
-                    dp_color_depth,
-                },
-            app:
-                AppDisplayUniforms {
-                    screen_rect,
-                    dp_debug,
-                    dp_srgb,
-                },
-        } = self;
+        let hw = self.hw.lock().unwrap();
+        let app = self.app.lock().unwrap();
+        let HWDisplayUniforms {
+            dp_start,
+            dp_res,
+            dp_color_depth,
+        } = *hw;
+        let AppDisplayUniforms {
+            screen_rect,
+            dp_debug,
+            dp_srgb,
+        } = *app;
         DisplayUniformData {
             dp_start: dp_start.as_uvec2(),
             dp_res: dp_res.as_uvec2(),
             screen_rect: screen_rect.as_uvec2(),
-            dp_debug: u32::from(*dp_debug),
-            dp_srgb: u32::from(*dp_srgb),
+            dp_debug: u32::from(dp_debug),
+            dp_srgb: u32::from(dp_srgb),
             dp_color_depth: dp_color_depth.raw_value().as_u32(),
             _pad: 0u32,
         }
