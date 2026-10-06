@@ -169,7 +169,7 @@ impl Renderer {
         });
         let vertex_buf = device.create_buffer(&BufferDescriptor {
             label: Some("pchan-gpu.vertex-buf"),
-            size: kb(256) as u64,
+            size: mb(2) as u64,
             usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
