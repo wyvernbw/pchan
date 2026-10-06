@@ -227,11 +227,12 @@ impl<const N: usize> VolumeState<N> {
     }
 
     pub fn clock(&mut self) {
+        const HALFWORDS: usize = MAX_SIMD_WIDTH / size_of::<i16>();
         let none = Simd::splat(Self::QUEUE_NONE);
         for ch in 0..Self::CHUNKS {
             let base = ch * Self::HALFWORDS;
-            let queued = Simd::<i16, 8>::from_slice(&self.queued_vol[base..base + 8]);
-            let internal = Simd::<i16, 8>::from_slice(&self.internal[base..base + 8]);
+            let queued = Simd::<i16, { HALFWORDS }>::from_slice(&self.queued_vol[base..base + 8]);
+            let internal = Simd::<i16, { HALFWORDS }>::from_slice(&self.internal[base..base + 8]);
 
             let updated = queued.simd_ne(none).select(queued, internal);
 
@@ -364,6 +365,14 @@ impl ADSRState {
         self.phase_transitions();
         self.main_l.clock();
         self.main_r.clock();
+        // assert!(matches!(
+        //     self.main_l.registers[0].typed(),
+        //     TypedVolumeRegister::Fixed(_)
+        // ));
+        // assert!(matches!(
+        //     self.main_r.registers[0].typed(),
+        //     TypedVolumeRegister::Fixed(_)
+        // ));
         self.voice_left.clock();
         self.voice_right.clock();
         // TODO: try rayon
