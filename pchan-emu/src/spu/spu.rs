@@ -18,12 +18,12 @@ use crate::spu::adpcm::{ADPCMCurrent, ADPCMHeader, ADPCMRepeat, ADPCMSampleRate,
 use crate::spu::adsr::{ADSRState, EnvelopePhase, apply_volume};
 
 #[derive(derive_more::Debug)]
-pub struct SpuState {
-    voices:      Box<[Voice; 24]>,
+pub struct SpuState<A: Allocator> {
+    voices:      Box<[Voice; 24], A>,
     adsr:        ADSRState,
     voice_flags: VoiceFlags,
     #[debug(skip)]
-    mem:         Box<[u16]>,
+    mem:         Box<[u16], A>,
 
     ram_start:   u16,
     /// internal register
@@ -34,12 +34,12 @@ pub struct SpuState {
     clock_idx: u64,
 }
 
-impl Default for SpuState {
-    fn default() -> Self {
+impl<A: Allocator + Copy> SpuState<A> {
+    pub fn new(alloc: A) -> Self {
         let mut spu = Self {
-            voices:      Box::default(),
+            voices:      Box::new_in(Default::default(), alloc),
             voice_flags: VoiceFlags::default(),
-            mem:         create_spu_mem(),
+            mem:         create_spu_mem(alloc),
             ram_start:   0,
             ram_current: 0,
             clock:       0,
@@ -54,10 +54,10 @@ impl Default for SpuState {
     }
 }
 
-impl Clone for SpuState {
+impl<A: Allocator + Clone> Clone for SpuState<A> {
     fn clone(&self) -> Self {
         Self {
-            voices:      self.voices.clone(),
+            voices:      Box::clone(&self.voices),
             voice_flags: self.voice_flags.clone(),
             mem:         self.mem.clone(),
             ram_start:   self.ram_start,
@@ -70,7 +70,7 @@ impl Clone for SpuState {
     }
 }
 
-impl SpuState {
+impl<A: Allocator> SpuState<A> {
     const MEM_SIZE: usize = kb(512);
     const CLOCK_CYCLES: u64 = 768;
 
@@ -82,8 +82,10 @@ impl SpuState {
     }
 }
 
-fn create_spu_mem() -> Box<[u16]> {
-    vec![0u16; SpuState::MEM_SIZE / 2].into_boxed_slice()
+fn create_spu_mem<A: Allocator>(alloc: A) -> Box<[u16], A> {
+    unsafe {
+        Box::<[u16], A>::new_zeroed_slice_in(SpuState::<A>::MEM_SIZE / 2, alloc).assume_init()
+    }
 }
 
 #[derive(Default, derive_more::Debug, Clone)]
@@ -321,8 +323,8 @@ impl<A: Allocator> Emu<A> {
     fn run_spu(&mut self, mut dclock: u64) {
         dclock += self.spu.clock;
         self.spu.clock = 0;
-        while dclock >= SpuState::CLOCK_CYCLES {
-            dclock -= SpuState::CLOCK_CYCLES;
+        while dclock >= SpuState::<A>::CLOCK_CYCLES {
+            dclock -= SpuState::<A>::CLOCK_CYCLES;
             self.clock();
         }
         self.spu.clock += dclock;
@@ -330,12 +332,12 @@ impl<A: Allocator> Emu<A> {
 
     pub fn handle_ev_spu_clock(&mut self, _ctx: EvCtx) {
         self.clock();
-        let last_clock = self.spu.clock_idx * SpuState::CLOCK_CYCLES;
+        let last_clock = self.spu.clock_idx * SpuState::<A>::CLOCK_CYCLES;
         self.evque.schedule_from(
             Self::handle_ev_spu_clock,
             EventId::default(),
             last_clock,
-            SpuState::CLOCK_CYCLES,
+            SpuState::<A>::CLOCK_CYCLES,
         );
         self.spu.clock_idx += 1;
     }
@@ -390,7 +392,7 @@ impl<A: Allocator> Emu<A> {
     }
 }
 
-impl SpuState {
+impl<A: Allocator> SpuState<A> {
     fn key_on(&mut self, idx: usize) {
         self.voices[idx].key_on(&self.mem, &mut self.adsr);
         self.adsr.envelopes.level[idx] = 0;
@@ -499,13 +501,13 @@ impl Voice {
     }
 }
 
-impl<A: Allocator + Copy> BindAudioProducer for Emu<A> {
+impl<A: Allocator> BindAudioProducer for Emu<A> {
     fn bind_producer(&mut self, prod: AudioProducer) {
         self.spu.prod = Some(prod.into());
     }
 }
 
-impl SpuState {
+impl<A: Allocator> SpuState<A> {
     fn set_keys<const ON: bool>(&mut self, key_idx: usize, value: u16) {
         let keys = match ON {
             true => &mut self.voice_flags.key_on,
