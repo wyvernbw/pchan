@@ -87,8 +87,10 @@ pub struct TimerCounterMode {
     #[bit(7, rw)]
     irq_toggle_mode: TimerIrqRepeatMode,
 
-    #[bits(8..=9, rw)]
-    source: u2,
+    #[bit(8, rw)]
+    source:    bool,
+    #[bit(9, rw)]
+    prescaler: bool,
 
     #[bit(10, rw)]
     irq:              IrqFlag,
@@ -226,19 +228,20 @@ impl<A: Allocator> Emu<A> {
     pub fn timers_advance_by_cpu(&mut self, cycles: u16) {
         let timers = self.timers_mut();
         // FIXME: add dotclock source
-        if timers.timer_0.check_source([0x0, 0x2]) {
-            timers.timer_0.tick_by(cycles);
-        } else {
+        if timers.timer_0.mode.source() {
             todo!()
         }
-        if timers.timer_1.check_source([0x0, 0x2]) {
+        timers.timer_0.tick_by(cycles);
+
+        if !timers.timer_1.mode.source() {
             timers.timer_1.tick_by(cycles);
         }
-        if timers.timer_2.check_source([0x0, 0x1]) {
-            timers.timer_2.tick_by(cycles);
-        } else {
+
+        if timers.timer_2.mode.prescaler() {
             timers.timer_2.tick_by(cycles / 8 + timers.timer_2_fract);
             timers.timer_2_fract = cycles % 8;
+        } else {
+            timers.timer_2.tick_by(cycles);
         }
     }
 }
@@ -274,17 +277,11 @@ impl Timer {
             }
         }
     }
-
-    #[must_use]
-    pub fn check_source(&self, flags: [u8; 2]) -> bool {
-        let source = self.mode.source().as_u8();
-        flags.contains(&source)
-    }
 }
 
 impl TimerState {
     pub fn trigger_hblank(&mut self) {
-        if self.timer_1.check_source([1, 3]) {
+        if self.timer_1.mode.source() {
             self.timer_1.tick_by(1);
         }
     }
