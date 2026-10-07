@@ -1,10 +1,12 @@
 mod adpcm;
 pub mod adsr;
 mod gauss_interp;
+pub mod reverb;
 
 use core::alloc::Allocator;
 use std::sync::Mutex;
 
+use arbitrary_int::prelude::Integer;
 use bitbybit::bitfield;
 use pchan_bind::ringbuf::traits::Producer;
 use pchan_bind::{AudioProducer, BindAudioProducer};
@@ -16,12 +18,15 @@ use crate::io::{CastIOFrom, CastIOInto, IOResult, UnhandledIO};
 use crate::memory::kb;
 use crate::spu::adpcm::{ADPCMCurrent, ADPCMHeader, ADPCMRepeat, ADPCMSampleRate, ADPCMStart};
 use crate::spu::adsr::{ADSRState, EnvelopePhase, apply_volume};
+use crate::spu::reverb::Reverb;
 
 #[derive(derive_more::Debug)]
 pub struct SpuState<A: Allocator> {
     voices:      Box<[Voice; 24], A>,
     adsr:        ADSRState,
     voice_flags: VoiceFlags,
+    ctrl:        SpuCtrl,
+    reverb:      Reverb<A>,
     #[debug(skip)]
     mem:         Box<[u16], A>,
 
@@ -39,6 +44,8 @@ impl<A: Allocator + Copy> SpuState<A> {
         let mut spu = Self {
             voices:      Box::new_in(Default::default(), alloc),
             voice_flags: VoiceFlags::default(),
+            reverb:      Reverb::new(alloc),
+            ctrl:        SpuCtrl::default(),
             mem:         create_spu_mem(alloc),
             ram_start:   0,
             ram_current: 0,
@@ -59,7 +66,9 @@ impl<A: Allocator + Clone> Clone for SpuState<A> {
         Self {
             voices:      Box::clone(&self.voices),
             voice_flags: self.voice_flags.clone(),
+            ctrl:        self.ctrl,
             mem:         self.mem.clone(),
+            reverb:      self.reverb.clone(),
             ram_start:   self.ram_start,
             ram_current: self.ram_current,
             clock:       self.clock,
@@ -116,14 +125,14 @@ struct Voice {
 
 #[derive(Default, derive_more::Debug, Clone)]
 struct VoiceFlags {
-    key_on:  [Key; 2],
-    key_off: [Key; 2],
+    key_on:  [VoiceOnOff; 2],
+    key_off: [VoiceOnOff; 2],
     endx:    Endx,
 }
 
 #[bitfield(u16, debug)]
 #[derive(Default)]
-struct Key {
+struct VoiceOnOff {
     #[bit(0, rw)]
     on: [bool; 16],
 }
@@ -185,8 +194,20 @@ impl<A: Allocator> Emu<A> {
             // main volume right
             0x1f801d82 => Ok(self.spu.adsr.main_r.registers[0].io_from_u32()),
 
+            0x1f801d84 => Ok(self.spu.reverb.io.lr[0].v_out.io_from_u32()),
+            0x1f801d86 => Ok(self.spu.reverb.io.lr[1].v_out.io_from_u32()),
+            0x1f801da2 => Ok(self.spu.reverb.esa.io_from_u32()),
+
+            0x1f801d98 => Ok(self.spu.reverb.on_off.lower().io_from_u32()),
+            0x1f801d9a => Ok(self.spu.reverb.on_off.upper().io_from_u32()),
+
+            0x1f801daa => Ok(self.spu.ctrl.io_from_u32()),
+
             0x1f801db8 => Ok(self.spu.adsr.main_l.internal[0].io_from_u32()),
             0x1f801dba => Ok(self.spu.adsr.main_r.internal[0].io_from_u32()),
+
+            0x1f801dc0..=0x1f801dfe => Ok(self.spu_reverb_read(address).io_from_u32()),
+
             addr @ 0x1f801e00..=0x1f801e5c if let Some(n) = voice_idx(addr, 0x1f801e00, 0x4) => {
                 Ok(self.spu.adsr.voice_left.internal[n].io_from_u32())
             }
@@ -299,6 +320,21 @@ impl<A: Allocator> Emu<A> {
                 self.spu.adsr.main_r.set_register(0, value);
                 Ok(())
             }
+
+            0x1f801d84 => {
+                self.spu.reverb.io.lr[0].v_out = value as i16;
+                Ok(())
+            }
+            0x1f801d86 => {
+                self.spu.reverb.io.lr[1].v_out = value as i16;
+                Ok(())
+            }
+            0x1f801da2 => {
+                self.spu.reverb.esa = value;
+                self.spu.reverb.bfa = value.as_u32() << 2;
+                Ok(())
+            }
+
             0x1f801db8 => {
                 self.spu.adsr.main_l.internal[0] = value as i16;
                 Ok(())
@@ -307,6 +343,26 @@ impl<A: Allocator> Emu<A> {
                 self.spu.adsr.main_r.internal[0] = value as i16;
                 Ok(())
             }
+
+            0x1f801daa => {
+                self.spu.ctrl = SpuCtrl::new_with_raw_value(value);
+                Ok(())
+            }
+
+            0x1f801d98 => {
+                self.spu.reverb.on_off.set_lower(value);
+                Ok(())
+            }
+            0x1f801d9a => {
+                self.spu.reverb.on_off.set_upper(value);
+                Ok(())
+            }
+
+            0x1f801dc0..=0x1f801dfe => {
+                self.spu_reverb_write(address, value);
+                Ok(())
+            }
+
             addr @ 0x1f801e00..=0x1f801e5c if let Some(n) = voice_idx(addr, 0x1f801e00, 0x4) => {
                 self.spu.adsr.voice_left.internal[n] = value as _;
                 Ok(())
@@ -319,15 +375,80 @@ impl<A: Allocator> Emu<A> {
         }
     }
 
-    #[deprecated]
-    fn run_spu(&mut self, mut dclock: u64) {
-        dclock += self.spu.clock;
-        self.spu.clock = 0;
-        while dclock >= SpuState::<A>::CLOCK_CYCLES {
-            dclock -= SpuState::<A>::CLOCK_CYCLES;
-            self.clock();
+    fn spu_reverb_write(&mut self, address: u32, value: u16) {
+        match address {
+            0x1f801dc0 => self.spu.reverb.io.d_apf1 = value as _,
+            0x1f801dc2 => self.spu.reverb.io.d_apf2 = value as _,
+            0x1f801dc4 => self.spu.reverb.io.v_iir = value as _,
+            0x1f801dc6 => self.spu.reverb.io.v_comb1 = value as _,
+            0x1f801dc8 => self.spu.reverb.io.v_comb2 = value as _,
+            0x1f801dca => self.spu.reverb.io.v_comb3 = value as _,
+            0x1f801dcc => self.spu.reverb.io.v_comb4 = value as _,
+            0x1f801dce => self.spu.reverb.io.v_wall = value as _,
+            0x1f801dd0 => self.spu.reverb.io.v_apf1 = value as _,
+            0x1f801dd2 => self.spu.reverb.io.v_apf2 = value as _,
+            0x1f801dd4 => self.spu.reverb.io.lr[0].m_same = value as _,
+            0x1f801dd6 => self.spu.reverb.io.lr[1].m_same = value as _,
+            0x1f801dd8 => self.spu.reverb.io.lr[0].m_comb1 = value as _,
+            0x1f801dda => self.spu.reverb.io.lr[1].m_comb1 = value as _,
+            0x1f801ddc => self.spu.reverb.io.lr[0].m_comb2 = value as _,
+            0x1f801dde => self.spu.reverb.io.lr[1].m_comb2 = value as _,
+            0x1f801de0 => self.spu.reverb.io.lr[0].d_same = value as _,
+            0x1f801de2 => self.spu.reverb.io.lr[1].d_same = value as _,
+            0x1f801de4 => self.spu.reverb.io.lr[0].m_diff = value as _,
+            0x1f801de6 => self.spu.reverb.io.lr[1].m_diff = value as _,
+            0x1f801de8 => self.spu.reverb.io.lr[0].m_comb3 = value as _,
+            0x1f801dea => self.spu.reverb.io.lr[1].m_comb3 = value as _,
+            0x1f801dec => self.spu.reverb.io.lr[0].m_comb4 = value as _,
+            0x1f801dee => self.spu.reverb.io.lr[1].m_comb4 = value as _,
+            0x1f801df0 => self.spu.reverb.io.lr[0].d_diff = value as _,
+            0x1f801df2 => self.spu.reverb.io.lr[1].d_diff = value as _,
+            0x1f801df4 => self.spu.reverb.io.lr[0].m_apf1 = value as _,
+            0x1f801df6 => self.spu.reverb.io.lr[1].m_apf1 = value as _,
+            0x1f801df8 => self.spu.reverb.io.lr[0].m_apf2 = value as _,
+            0x1f801dfa => self.spu.reverb.io.lr[1].m_apf2 = value as _,
+            0x1f801dfc => self.spu.reverb.io.lr[0].v_in = value as _,
+            0x1f801dfe => self.spu.reverb.io.lr[1].v_in = value as _,
+            _ => unreachable!(),
         }
-        self.spu.clock += dclock;
+    }
+
+    fn spu_reverb_read(&mut self, address: u32) -> u16 {
+        match address {
+            0x1f801dc0 => self.spu.reverb.io.d_apf1.io_from_u32(),
+            0x1f801dc2 => self.spu.reverb.io.d_apf2.io_from_u32(),
+            0x1f801dc4 => self.spu.reverb.io.v_iir.io_from_u32(),
+            0x1f801dc6 => self.spu.reverb.io.v_comb1.io_from_u32(),
+            0x1f801dc8 => self.spu.reverb.io.v_comb2.io_from_u32(),
+            0x1f801dca => self.spu.reverb.io.v_comb3.io_from_u32(),
+            0x1f801dcc => self.spu.reverb.io.v_comb4.io_from_u32(),
+            0x1f801dce => self.spu.reverb.io.v_wall.io_from_u32(),
+            0x1f801dd0 => self.spu.reverb.io.v_apf1.io_from_u32(),
+            0x1f801dd2 => self.spu.reverb.io.v_apf2.io_from_u32(),
+            0x1f801dd4 => self.spu.reverb.io.lr[0].m_same.io_from_u32(),
+            0x1f801dd6 => self.spu.reverb.io.lr[1].m_same.io_from_u32(),
+            0x1f801dd8 => self.spu.reverb.io.lr[0].m_comb1.io_from_u32(),
+            0x1f801dda => self.spu.reverb.io.lr[1].m_comb1.io_from_u32(),
+            0x1f801ddc => self.spu.reverb.io.lr[0].m_comb2.io_from_u32(),
+            0x1f801dde => self.spu.reverb.io.lr[1].m_comb2.io_from_u32(),
+            0x1f801de0 => self.spu.reverb.io.lr[0].d_same.io_from_u32(),
+            0x1f801de2 => self.spu.reverb.io.lr[1].d_same.io_from_u32(),
+            0x1f801de4 => self.spu.reverb.io.lr[0].m_diff.io_from_u32(),
+            0x1f801de6 => self.spu.reverb.io.lr[1].m_diff.io_from_u32(),
+            0x1f801de8 => self.spu.reverb.io.lr[0].m_comb3.io_from_u32(),
+            0x1f801dea => self.spu.reverb.io.lr[1].m_comb3.io_from_u32(),
+            0x1f801dec => self.spu.reverb.io.lr[0].m_comb4.io_from_u32(),
+            0x1f801dee => self.spu.reverb.io.lr[1].m_comb4.io_from_u32(),
+            0x1f801df0 => self.spu.reverb.io.lr[0].d_diff.io_from_u32(),
+            0x1f801df2 => self.spu.reverb.io.lr[1].d_diff.io_from_u32(),
+            0x1f801df4 => self.spu.reverb.io.lr[0].m_apf1.io_from_u32(),
+            0x1f801df6 => self.spu.reverb.io.lr[1].m_apf1.io_from_u32(),
+            0x1f801df8 => self.spu.reverb.io.lr[0].m_apf2.io_from_u32(),
+            0x1f801dfa => self.spu.reverb.io.lr[1].m_apf2.io_from_u32(),
+            0x1f801dfc => self.spu.reverb.io.lr[0].v_in.io_from_u32(),
+            0x1f801dfe => self.spu.reverb.io.lr[1].v_in.io_from_u32(),
+            _ => unreachable!(),
+        }
     }
 
     pub fn handle_ev_spu_clock(&mut self, _ctx: EvCtx) {
@@ -360,6 +481,8 @@ impl<A: Allocator> Emu<A> {
 
         let mut mixed_l = 0i32;
         let mut mixed_r = 0i32;
+        let mut reverb_l = 0i32;
+        let mut reverb_r = 0i32;
         for i in 0..24 {
             let voice = &self.spu.voices[i];
             let adsr = &self.spu.adsr;
@@ -373,11 +496,28 @@ impl<A: Allocator> Emu<A> {
             let lvol = lvol as i16;
             let rvol = rvol as i16;
 
-            let right = apply_volume(sample, lvol);
-            let left = apply_volume(sample, rvol);
+            let left = apply_volume(sample, lvol);
+            let right = apply_volume(sample, rvol);
+
+            if self.spu.reverb.on_off.on_off(i) && self.spu.ctrl.reverb_on() {
+                reverb_l += i32::from(left);
+                reverb_r += i32::from(right);
+            }
+
             mixed_l += i32::from(left);
             mixed_r += i32::from(right);
         }
+
+        self.spu.reverb.downsample(
+            reverb_l.saturating_truncate(),
+            reverb_r.saturating_truncate(),
+        );
+        self.spu
+            .reverb
+            .apply_reverb(&mut self.spu.mem, self.spu.clock_idx as usize);
+        self.spu
+            .reverb
+            .upsample_and_apply(&mut mixed_l, &mut mixed_r);
 
         let mixed_l = mixed_l.clamp(-0x8000, 0x7fff).truncate::<i16>();
         let mixed_r = mixed_r.clamp(-0x8000, 0x7fff).truncate::<i16>();
@@ -514,7 +654,7 @@ impl<A: Allocator> SpuState<A> {
             false => &mut self.voice_flags.key_off,
         };
 
-        let new_key = Key::new_with_raw_value(value);
+        let new_key = VoiceOnOff::new_with_raw_value(value);
         keys[key_idx] = new_key;
 
         let voice_offset = key_idx * 16;
@@ -540,4 +680,26 @@ impl<A: Allocator> SpuState<A> {
                 }
             });
     }
+}
+
+/// # `SpuCtrl`
+///
+/// ```plaintext
+///  15    SPU Enable                  (0=Off, 1=On)       (Don't care for CD Audio)
+///  14    Mute SPU                    (0=Mute, 1=Unmute)  (Don't care for CD Audio)
+///  13-10 Noise Frequency Shift       (0..0Fh = Low .. High Frequency)
+///  9-8   Noise Frequency Step        (0..03h = Step "4,5,6,7")
+///  7     Reverb Master Enable        (0=Disabled, 1=Enabled)
+///  6     IRQ9 Enable                 (0=Disabled/Acknowledge, 1=Enabled; only when Bit15=1)
+///  5-4   Sound RAM Transfer Mode     (0=Stop, 1=ManualWrite, 2=DMAwrite, 3=DMAread)
+///  3     I2SB (PIO)    Reverb Enable (0=Off, 1=On)
+///  2     I2SA (CD-ROM) Reverb Enable (0=Off, 1=On) (for CD-DA and XA-ADPCM)
+///  1     I2SB (PIO)    Input Enable  (0=Off, 1=On)
+///  0     I2SA (CD-ROM) Input Enable  (0=Off, 1=On) (for CD-DA and XA-ADPCM)
+/// ```
+#[bitfield(u16, debug)]
+#[derive(Default)]
+struct SpuCtrl {
+    #[bit(7, rw)]
+    reverb_on: bool,
 }

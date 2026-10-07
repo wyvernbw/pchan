@@ -8,11 +8,11 @@ across calls it acts like a counter, but for some reason on pchan it loops back
 to 0 when it shouln't. fixing this should get audio working.
 
 the memory at 0x800dedf0 is largely what it should be. but the emulator
-stores half of $v0 (sh instruction) at 0x80052f58, and $v0 should be 4 (and
+stores half of `$v0` (sh instruction) at 0x80052f58, and `$v0` should be 4 (and
 increasing), but it is 0.
 
-at 0x800524dc, register $t0 is the incrementing counter from which the state of
-$v0 is derived. again, it resets to 0 instead of going to 4.
+at 0x800524dc, register `$t0` is the incrementing counter from which the state of
+`$v0` is derived. again, it resets to 0 instead of going to 4.
 
 there seems to be some kind of memory corruption at address `0x800dea6e` as
 instruction
@@ -71,3 +71,22 @@ acknowledge any old IRQ7, and does then wait for the new IRQ7. Due to that
 bizarre coding, emulators can't trigger IRQ7 immediately within 0 cycles after
 sending the byte.
 ```
+
+# MK2 `0x80076734` crash
+
+pc history:
+
+- `0x80076734`
+- `0x8007672c`
+- `0x80076714`
+- `0x80076704`
+- `0x800766e8`
+- `0x800766f4`
+- `0x800766e4`
+- `0x800766dc`
+- `0x800766d4`
+- `0x800766bc`
+- ...
+
+looks like a memset loop. unhandled write happens because of a buffer overflow,
+cursor `$a1` is greater than the end `$a3` when entering the loop.

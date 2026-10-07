@@ -15,10 +15,13 @@ use alloc::sync::Arc;
 use core::cell::RefCell;
 use core::num::ParseIntError;
 use core::ops::Range;
+use core::panic::AssertUnwindSafe;
 use core::time::Duration;
-use core::{fmt, mem};
+use core::{cmp, fmt, mem};
 use futures_lite::AsyncReadExt;
 use futures_lite::io::BufReader;
+use pchan_bind::ringbuf::StaticRb;
+use pchan_bind::ringbuf::traits::{Consumer, RingBuffer};
 use pchan_emu::debug::{Breakpoint, BreakpointKind};
 use std::path::PathBuf;
 use std::time::Instant;
@@ -115,6 +118,7 @@ fn main() {
                 |win, cx| {
                     let view = Debugger::new(win, cx, arena).unwrap();
                     let view = cx.new(|_| view);
+                    Debugger::start_emu_loop(&view, cx);
                     let theme = cx.theme().clone();
 
                     cx.new(|cx| Root::new(view, win, cx).h_full().bg(theme.background))
@@ -195,6 +199,7 @@ pub struct EmuContext {
     cycles_per_run:     u64,
     start:              Instant,
     speed_limit:        EmuSpeed,
+    pc_history:         StaticRb<u32, 50>,
     alloc:              &'static Bump,
 }
 
@@ -220,6 +225,23 @@ impl EmuContext {
         pchan_bind::bind_audio(&mut audio_task, &mut self.emu);
         let audio_stream = audio_task.start()?;
         mem::forget(audio_stream);
+
+        Ok(())
+    }
+
+    pub fn execute(&mut self) -> miette::Result<()> {
+        std::panic::catch_unwind(AssertUnwindSafe(|| {
+            self.runner.execute(&mut self.emu);
+        }))
+        .map_err(|_| miette!("emulator panicked"))?;
+        self.pc_history.push_overwrite(self.emu.cpu.pc);
+        if self
+            .emu
+            .dbg
+            .break_on(self.emu.cpu.pc, BreakpointKind::EXECUTE)
+        {
+            self.running = false;
+        }
 
         Ok(())
     }
@@ -323,8 +345,7 @@ impl Debugger {
         let gpu = Arc::new(gpu);
         gpu.clone().start();
 
-        let (target, target_buf) =
-            create_target(&gpu, &mut gpu.display_uniforms.app.lock().unwrap());
+        let (target, target_buf) = create_target(&gpu, &gpu.display_uniforms.app.lock().unwrap());
 
         let cached_reg_names = core::array::from_fn(|reg| {
             let reg = match reg as u8 {
@@ -351,6 +372,7 @@ impl Debugger {
             real_time_running: Duration::ZERO,
             run_for_one_frame: false,
             alloc,
+            pc_history: StaticRb::default(),
         });
 
         let surface_state = cx.new(|_| SurfaceState::new(target.clone(), target_buf.clone()));
@@ -401,104 +423,6 @@ impl Debugger {
         })
         .detach();
 
-        cx.spawn_with_priority(Priority::High, {
-            let surface_state = surface_state.clone();
-            let emucx = emucx.clone();
-            async move |cx| {
-                let mut yield_time = Duration::ZERO;
-                let mut first_frame_rendered = false;
-                let yield_max = Duration::from_micros(16_667);
-
-                loop {
-                    let run_listener = cx.read_entity(&emucx, |emucx, _| match emucx.running {
-                        false => Some(emucx.running_notify.listen()),
-                        true => None,
-                    });
-                    if let Some(run_listener) = run_listener {
-                        run_listener.await;
-                        emucx.update(cx, |emucx, _| {
-                            emucx.start = Instant::now();
-                            emucx.cycles_per_run = 0;
-                            emucx.real_time_running = Duration::ZERO;
-                        });
-                    }
-                    let start = Instant::now();
-                    let old_cycles = cx.read_entity(&emucx, |emucx, _| emucx.emu.cpu.cycles);
-                    emucx.update(cx, |emucx, cx| {
-                        if emucx.running {
-                            let surface_state = surface_state.as_mut(cx);
-                            surface_state.start_display_draw(&emucx.renderer);
-
-                            while !emucx.emu.consume_vblank_signal() {
-                                emucx.runner.execute(&mut emucx.emu);
-                                if emucx
-                                    .emu
-                                    .dbg
-                                    .break_on(emucx.emu.cpu.pc, BreakpointKind::EXECUTE)
-                                {
-                                    emucx.running = false;
-                                }
-                            }
-
-                            surface_state.wait_for_display_draw(&emucx.renderer);
-                            surface_state.start_convert_render(&emucx.renderer);
-                            drop(surface_state);
-                            cx.emit(RenderedFrameEvent);
-
-                            if emucx.run_for_one_frame {
-                                emucx.run_for_one_frame = false;
-                                emucx.running = false;
-                            }
-                        }
-                    });
-                    let emu_frame_time = start.elapsed();
-
-                    if yield_time > yield_max {
-                        yield_time = Duration::ZERO;
-                        futures_lite::future::yield_now().await;
-                    }
-
-                    let (frame_time, frame_limit) = emucx.update(cx, |emucx, _| {
-                        let frame_time = start.elapsed();
-                        emucx.frame_time = frame_time;
-                        yield_time += frame_time;
-
-                        let delta_cycles = emucx.emu.cpu.cycles - old_cycles;
-                        emucx.cycles_per_run += delta_cycles;
-
-                        let frame_limit = match emucx.speed_limit {
-                            EmuSpeed::Unlimited => Duration::ZERO,
-                            EmuSpeed::Percent(p) => {
-                                Duration::from_micros(16_667 * 100 / u64::from(p))
-                            }
-                        };
-                        emucx.frame_time_limited = frame_time.max(frame_limit);
-                        if first_frame_rendered {
-                            emucx.real_time_running += emu_frame_time.max(frame_limit);
-                        } else {
-                            emucx.cycles_per_run = 0;
-                            emucx.real_time_running = Duration::ZERO;
-                            first_frame_rendered = true;
-                        }
-
-                        (frame_time, frame_limit)
-                    });
-                    println!(
-                        "emu: {}ms, emu+gpui: {}ms",
-                        emu_frame_time.as_millis(),
-                        frame_time.as_millis()
-                    );
-
-                    let yielded = spin_sleep(cx, frame_limit.saturating_sub(frame_time)).await;
-                    yield_time += frame_time;
-                    if yielded {
-                        yield_time = Duration::ZERO;
-                    }
-                }
-            }
-        })
-        .detach();
-
         cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
 
         cx.on_action({
@@ -524,7 +448,7 @@ impl Debugger {
                     surface.clear(&gpu);
                 });
                 emucx.update(cx, |emucx, _| {
-                    emucx.runner.execute(&mut emucx.emu);
+                    let _ = emucx.execute();
                     emucx.running_notify.notify(usize::MAX);
                 });
             }
@@ -557,6 +481,130 @@ impl Debugger {
             pc: 0,
             emu_speed_select,
         })
+    }
+
+    pub fn start_emu_loop(this: &Entity<Debugger>, cx: &mut App) {
+        let surface_state = this.read(cx).game_surface.clone();
+        let emucx = this.read(cx).emucx.clone();
+        let dbg = this.clone();
+        cx.spawn_with_priority(Priority::High, {
+            async move |cx| {
+                loop {
+                    match Self::emu_loop(cx, &emucx, &surface_state, &dbg).await {
+                        Ok(_) => {}
+                        Err(_) => {
+                            emucx.update(cx, |emucx, _| {
+                                emucx.running = false;
+                                _ = emucx.hard_reset();
+                            });
+                        }
+                    }
+                }
+            }
+        })
+        .detach();
+    }
+
+    async fn emu_loop(
+        cx: &mut AsyncApp,
+        emucx: &Entity<EmuContext>,
+        surface_state: &Entity<SurfaceState>,
+        debugger: &Entity<Debugger>,
+    ) -> miette::Result<()> {
+        let mut yield_time = Duration::ZERO;
+        let mut first_frame_rendered = false;
+
+        loop {
+            let run_listener = cx.read_entity(emucx, |emucx, _| match emucx.running {
+                false => Some(emucx.running_notify.listen()),
+                true => None,
+            });
+            if let Some(run_listener) = run_listener {
+                debugger.update(cx, |_, cx| {
+                    cx.notify();
+                });
+                run_listener.await;
+                emucx.update(cx, |emucx, _| {
+                    emucx.start = Instant::now();
+                    emucx.cycles_per_run = 0;
+                    emucx.real_time_running = Duration::ZERO;
+                });
+            }
+            let start = Instant::now();
+            let old_cycles = cx.read_entity(emucx, |emucx, _| emucx.emu.cpu.cycles);
+            emucx.update(cx, |emucx, cx| -> miette::Result<()> {
+                if emucx.running {
+                    surface_state.as_mut(cx).start_display_draw(&emucx.renderer);
+
+                    while !emucx.emu.consume_vblank_signal() {
+                        emucx.execute()?;
+                        if !emucx.running {
+                            break;
+                        }
+                    }
+
+                    let surface_state = surface_state.as_mut(cx);
+                    surface_state.wait_for_display_draw(&emucx.renderer);
+                    surface_state.start_convert_render(&emucx.renderer);
+                    drop(surface_state);
+                    cx.emit(RenderedFrameEvent);
+
+                    if emucx.run_for_one_frame {
+                        emucx.run_for_one_frame = false;
+                        emucx.running = false;
+                    }
+                }
+                Ok(())
+            })?;
+            let emu_frame_time = start.elapsed();
+            yield_time += emu_frame_time;
+
+            let frame_limit = match cx.read_entity(emucx, |emucx, _| emucx.speed_limit) {
+                EmuSpeed::Unlimited => Duration::ZERO,
+                EmuSpeed::Percent(p) => Duration::from_micros(16_667 * 100 / u64::from(p)),
+            };
+
+            let yield_max = cmp::max(frame_limit * 4, Duration::from_micros(16_667 * 4));
+            if yield_time > yield_max {
+                debugger.update(cx, |_, cx| {
+                    cx.notify();
+                });
+                yield_time = Duration::ZERO;
+                futures_lite::future::yield_now().await;
+            }
+
+            let (frame_time, frame_limit) = emucx.update(cx, |emucx, _| {
+                let frame_time = start.elapsed();
+                emucx.frame_time = frame_time;
+                yield_time += frame_time;
+
+                // cycles get reset when doing a hard reset, so they are not
+                // strictly monotonic
+                let delta_cycles = emucx.emu.cpu.cycles.saturating_sub(old_cycles);
+                emucx.cycles_per_run += delta_cycles;
+
+                emucx.frame_time_limited = frame_time.max(frame_limit);
+                if first_frame_rendered {
+                    emucx.real_time_running += emu_frame_time.max(frame_limit);
+                } else {
+                    emucx.cycles_per_run = 0;
+                    emucx.real_time_running = Duration::ZERO;
+                    first_frame_rendered = true;
+                }
+
+                (frame_time, frame_limit)
+            });
+            println!(
+                "emu: {}ms, emu+gpui: {}ms",
+                emu_frame_time.as_millis(),
+                frame_time.as_millis()
+            );
+
+            let yielded = spin_sleep(cx, frame_limit.saturating_sub(frame_time)).await;
+            if yielded {
+                yield_time = Duration::ZERO;
+            }
+        }
     }
 }
 
@@ -1149,10 +1197,28 @@ impl Debugger {
                     .v_flex()
                     .gap_2()
                     .w_full()
-                    .h_full()
+                    .h_1_2()
                     .overflow_y_scrollbar()
                     .min_h_0()
                     .children(breakpoints),
+            )
+            .child(
+                v_flex().w_full().overflow_y_scrollbar().min_h_0().children(
+                    self.emucx
+                        .read(cx)
+                        .pc_history
+                        .iter()
+                        .rev()
+                        .copied()
+                        .enumerate()
+                        .map(|(i, pc)| {
+                            sel_text_keyed(
+                                ElementId::NamedInteger("pc-history-addr".into(), i as u64),
+                                hex(pc).as_str(),
+                            )
+                            .font_family(&theme.mono_font_family)
+                        }),
+                ),
             )
     }
 }

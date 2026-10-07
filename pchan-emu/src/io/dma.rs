@@ -214,7 +214,7 @@ impl<A: Allocator> Emu<A> {
                 become self.dma_start_transfer(event);
             }
             None => {
-                tracing::debug!("dma: schedulde dma event: {:#?}", event);
+                tracing::trace!("dma: schedule dma event: {:#?}", event);
                 self.dma.ongoing_transfer = Some(event);
                 self.evque.schedule(
                     |emu, _| {
@@ -329,15 +329,15 @@ impl<A: Allocator> Emu<A> {
                     T::channel(self).madr.set_addr(addr.as_());
 
                     // do not mark as done until final event is reached
-                    tracing::debug!(
-                        "dma event.{} [{}/{}]",
-                        hex(init_chan.madr.addr().as_u32()),
-                        slice.idx,
-                        init_chan.bcr.s1_block_count()
-                    );
+                    // tracing::debug!(
+                    //     "dma event.{} [{}/{}]",
+                    //     hex(init_chan.madr.addr().as_u32()),
+                    //     slice.idx,
+                    //     init_chan.bcr.s1_block_count()
+                    // );
 
                     if slice.idx >= u32::from(init_chan.bcr.s1_block_count()) - 1 {
-                        tracing::info!(
+                        tracing::debug!(
                             "dma{} event.{} finished",
                             idx,
                             hex(init_chan.madr.addr().as_u32())
@@ -516,7 +516,6 @@ impl Transfer for Dma2Gpu {
         let cmd = emu
             .fastmem_read::<GpuCmd>(address)
             .expect("address outside of ram/bios");
-        tracing::debug!("dma2({})={}", hex(address), hex(cmd));
         emu.gpu_gp0_cmd(cmd);
     }
 

@@ -809,8 +809,8 @@ impl Scene {
             hw_display: HWDisplayUniforms::from_hw(&cmds.display, cmds.gpustat),
         };
         for cmd in &cmds.draw_calls {
-            if tracing::enabled!(Level::DEBUG) {
-                tracing::debug!("{:?}", cmd.inner)
+            if tracing::enabled!(Level::TRACE) {
+                tracing::trace!("{:?}", cmd.inner)
             }
             match &cmd.inner {
                 DrawCallKind::Rect(draw_rect) => {
