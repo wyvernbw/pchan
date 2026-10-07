@@ -185,7 +185,7 @@ dependencies = [
  "accesskit_macos",
  "accesskit_unix 0.21.1",
  "accesskit_windows 0.32.1",
- "raw-window-handle",
+ "raw-window-handle 0.6.2",
  "winit",
 ]
 
@@ -1403,6 +1403,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "cmake"
+version = "0.1.58"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c0f78a02292a74a88ac736019ab962ece0bc380e3f977bf72e376c5d78ff0678"
+dependencies = [
+ "cc",
+]
+
+[[package]]
+name = "cmk"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8fd5de2a10e31b3ec3e8d75e7ccf8281ab3ee55de68f7ab6ffa9e21be8d82f22"
+
+[[package]]
 name = "cocoa"
 version = "0.25.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1889,6 +1904,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "790eea4361631c5e7d22598ecd5723ff611904e3344ce8720784c93e3d83d40b"
 
 [[package]]
+name = "crossbeam-channel"
+version = "0.5.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "98b0cc327b5bc766e7fda9c9260cc0fa81b43a8e240440422dff70788e3f9ef1"
+dependencies = [
+ "crossbeam-utils",
+]
+
+[[package]]
 name = "crossbeam-deque"
 version = "0.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2004,6 +2028,12 @@ dependencies = [
  "link-section",
  "linktime-proc-macro",
 ]
+
+[[package]]
+name = "cty"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b365fabc795046672053e29c954733ec3b05e4be654ab130fe8f1f94d7051f35"
 
 [[package]]
 name = "cursor-icon"
@@ -2344,7 +2374,7 @@ dependencies = [
  "percent-encoding",
  "pollster 1.0.1",
  "profiling",
- "raw-window-handle",
+ "raw-window-handle 0.6.2",
  "ron",
  "serde",
  "static_assertions",
@@ -2413,7 +2443,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "objc2-ui-kit 0.3.2",
  "profiling",
- "raw-window-handle",
+ "raw-window-handle 0.6.2",
  "serde",
  "smithay-clipboard",
  "web-time",
@@ -2872,6 +2902,31 @@ name = "float_next_after"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8bf7cc16383c4b8d58b9905a8509f02926ce3058053c056376248d958c9df1e8"
+
+[[package]]
+name = "fltk"
+version = "1.5.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "78e4a0494d4c6c020514ae1d0b6cc44beddd5f37f0b81bc8e84334652ee15291"
+dependencies = [
+ "bitflags 2.13.2",
+ "crossbeam-channel",
+ "fltk-sys",
+ "minipaste",
+ "once_cell",
+ "raw-window-handle 0.4.3",
+ "ttf-parser",
+]
+
+[[package]]
+name = "fltk-sys"
+version = "1.5.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6d9c99e29458923abe3f07b7f8a3bc5b5de3a2c04ad82273fd96402b3666ed06"
+dependencies = [
+ "cmake",
+ "cmk",
+]
 
 [[package]]
 name = "fluent-uri"
@@ -3376,7 +3431,7 @@ dependencies = [
  "objc2-core-foundation",
  "objc2-foundation 0.3.2",
  "once_cell",
- "raw-window-handle",
+ "raw-window-handle 0.6.2",
  "wayland-sys",
  "windows-sys 0.52.0",
  "x11-dl",
@@ -3390,7 +3445,7 @@ checksum = "85edca7075f8fc728f28cb8fbb111a96c3b89e930574369e3e9c27eb75d3788f"
 dependencies = [
  "cfg_aliases",
  "glutin",
- "raw-window-handle",
+ "raw-window-handle 0.6.2",
  "winit",
 ]
 
@@ -3515,7 +3570,7 @@ dependencies = [
  "postage",
  "profiling",
  "rand 0.9.5",
- "raw-window-handle",
+ "raw-window-handle 0.6.2",
  "regex",
  "resvg 0.48.1",
  "schemars",
@@ -3583,7 +3638,7 @@ dependencies = [
  "once_cell",
  "palette",
  "paste",
- "raw-window-handle",
+ "raw-window-handle 0.6.2",
  "resvg 0.45.1",
  "ropey",
  "rust-i18n",
@@ -3633,7 +3688,7 @@ dependencies = [
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
  "palette",
- "raw-window-handle",
+ "raw-window-handle 0.6.2",
  "regex",
  "ropey",
  "schemars",
@@ -3702,7 +3757,7 @@ dependencies = [
  "pathfinder_geometry",
  "pollster 0.4.0",
  "profiling",
- "raw-window-handle",
+ "raw-window-handle 0.6.2",
  "smallvec",
  "smol 2.0.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "strum 0.27.2",
@@ -3765,7 +3820,7 @@ dependencies = [
  "palette",
  "parking_lot",
  "pathfinder_geometry",
- "raw-window-handle",
+ "raw-window-handle 0.6.2",
  "semver",
  "smallvec",
  "strum 0.27.2",
@@ -3889,7 +3944,7 @@ dependencies = [
  "js-sys",
  "log",
  "parking_lot",
- "raw-window-handle",
+ "raw-window-handle 0.6.2",
  "uuid",
  "wasm-bindgen",
  "wasm-bindgen-futures",
@@ -3916,7 +3971,7 @@ dependencies = [
  "parking_lot",
  "pollster 0.4.0",
  "profiling",
- "raw-window-handle",
+ "raw-window-handle 0.6.2",
  "smallvec",
  "swash",
  "unicode-bidi",
@@ -3948,7 +4003,7 @@ dependencies = [
  "log",
  "parking_lot",
  "rand 0.9.5",
- "raw-window-handle",
+ "raw-window-handle 0.6.2",
  "smallvec",
  "uuid",
  "windows 0.62.2",
@@ -5365,6 +5420,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
 
 [[package]]
+name = "minipaste"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1bbcafc6544efab7decec8e8e63d6e7cbaac0a699a4adead308a80f9c302d6ae"
+dependencies = [
+ "proc-macro2",
+]
+
+[[package]]
 name = "miniz_oxide"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5523,7 +5587,7 @@ dependencies = [
  "log",
  "ndk-sys",
  "num_enum",
- "raw-window-handle",
+ "raw-window-handle 0.6.2",
  "thiserror 1.0.69",
 ]
 
@@ -6794,6 +6858,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "pchan-mini"
+version = "0.1.0"
+dependencies = [
+ "fltk",
+ "kanal",
+ "miette",
+ "pchan-audio",
+ "pchan-bind",
+ "pchan-emu",
+ "pchan-gpu",
+ "pchan-utils",
+ "smol 2.0.2 (git+https://github.com/wyvernbw/smol.git?branch=wyvernbw-feature-gates)",
+]
+
+[[package]]
 name = "pchan-utils"
 version = "0.1.0"
 dependencies = [
@@ -7724,6 +7803,15 @@ dependencies = [
 
 [[package]]
 name = "raw-window-handle"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b800beb9b6e7d2df1fe337c9e3d04e3af22a124460fb4c30fcc22c9117cefb41"
+dependencies = [
+ "cty",
+]
+
+[[package]]
+name = "raw-window-handle"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "20675572f6f24e9e76ef639bc5552774ed45f1c30e2951e1e99c59888861c539"
@@ -7960,7 +8048,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "percent-encoding",
  "pollster 0.4.0",
- "raw-window-handle",
+ "raw-window-handle 0.6.2",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wayland-backend",
@@ -10769,7 +10857,7 @@ dependencies = [
  "parking_lot",
  "portable-atomic",
  "profiling",
- "raw-window-handle",
+ "raw-window-handle 0.6.2",
  "smallvec",
  "static_assertions",
  "wasm-bindgen",
@@ -10799,7 +10887,7 @@ dependencies = [
  "parking_lot",
  "portable-atomic",
  "profiling",
- "raw-window-handle",
+ "raw-window-handle 0.6.2",
  "smallvec",
  "static_assertions",
  "wasm-bindgen",
@@ -10831,7 +10919,7 @@ dependencies = [
  "parking_lot",
  "portable-atomic",
  "profiling",
- "raw-window-handle",
+ "raw-window-handle 0.6.2",
  "rustc-hash 1.1.0",
  "smallvec",
  "thiserror 2.0.21",
@@ -10865,7 +10953,7 @@ dependencies = [
  "parking_lot",
  "portable-atomic",
  "profiling",
- "raw-window-handle",
+ "raw-window-handle 0.6.2",
  "rustc-hash 1.1.0",
  "smallvec",
  "thiserror 2.0.21",
@@ -10980,7 +11068,7 @@ dependencies = [
  "portable-atomic-util",
  "profiling",
  "range-alloc",
- "raw-window-handle",
+ "raw-window-handle 0.6.2",
  "raw-window-metal",
  "renderdoc-sys",
  "smallvec",
@@ -11035,7 +11123,7 @@ dependencies = [
  "portable-atomic-util",
  "profiling",
  "range-alloc",
- "raw-window-handle",
+ "raw-window-handle 0.6.2",
  "raw-window-metal",
  "renderdoc-sys",
  "smallvec",
@@ -11081,7 +11169,7 @@ dependencies = [
  "bytemuck",
  "js-sys",
  "log",
- "raw-window-handle",
+ "raw-window-handle 0.6.2",
  "web-sys",
 ]
 
@@ -11096,7 +11184,7 @@ dependencies = [
  "js-sys",
  "log",
  "naga-types",
- "raw-window-handle",
+ "raw-window-handle 0.6.2",
  "static_assertions",
  "web-sys",
 ]
@@ -11780,7 +11868,7 @@ dependencies = [
  "orbclient",
  "percent-encoding",
  "pin-project",
- "raw-window-handle",
+ "raw-window-handle 0.6.2",
  "redox_syscall 0.4.1",
  "rustix 0.38.44",
  "sctk-adwaita",

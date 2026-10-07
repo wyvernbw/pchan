@@ -23,7 +23,7 @@ members = [
     "pchan-executor",
     "experimental/pchan-egui-experimental",
     "experimental/pchan-dbg-gpui"
-]
+, "experimental/pchan-mini"]
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }

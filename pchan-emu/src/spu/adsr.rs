@@ -331,7 +331,7 @@ pub fn apply_volume(sample: i16, volume: i16) -> i16 {
 #[inline(always)]
 #[must_use]
 pub fn apply_volume_i32(sample: i32, volume: i32) -> i32 {
-    ((i32::from(sample) * i32::from(volume)) >> 15)
+    (sample * volume) >> 15
 }
 
 struct EnvelopePhaseParams {

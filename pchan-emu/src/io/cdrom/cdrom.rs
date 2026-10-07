@@ -12,7 +12,7 @@ use core::alloc::Allocator;
 use alloc::collections::VecDeque;
 
 use crate::io::cdrom::cdrom_cmds::ResponseV2;
-use crate::io::cdrom::cdrom_drive::{CdromDrive, CommandState};
+use crate::io::cdrom::cdrom_drive::CdromDrive;
 use crate::io::cdrom::cdrom_ver::CDRomVerPtr;
 use crate::io::evque::{EvCtx, EventId};
 use crate::io::irq::{self};

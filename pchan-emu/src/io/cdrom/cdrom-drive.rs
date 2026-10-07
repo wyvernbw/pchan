@@ -109,7 +109,7 @@ impl CdromDrive {
             // TODO: better reporting
             tracing::info!("ReadN\t{}", self.cursor.to_mss::<u8>());
 
-            let mut bytes = match disc.readn::<SECTOR_USER_SIZE>(&mut self.cursor) {
+            let bytes = match disc.readn::<SECTOR_USER_SIZE>(&mut self.cursor) {
                 Ok(res) => res,
                 Err(err) => {
                     self.host_disc_err = Some(err);
@@ -170,6 +170,7 @@ pub struct InMemoryDiskReader {
 }
 
 impl InMemoryDiskReader {
+    #[expect(clippy::unnecessary_wraps)]
     fn seek(&mut self, to: u64) -> Result<(), std::io::Error> {
         self.cursor = to;
         Ok(())
