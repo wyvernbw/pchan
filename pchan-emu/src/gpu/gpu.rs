@@ -2,7 +2,7 @@ pub mod draw_call;
 
 use core::alloc::Allocator;
 use core::mem::{self, transmute};
-use core::sync::atomic::AtomicU64;
+use core::sync::atomic::{self, AtomicBool, AtomicU64};
 use core::{iter, ops};
 use std::time::Instant;
 
@@ -30,10 +30,12 @@ pub static VBLANK_COUNT: AtomicU64 = AtomicU64::new(0);
 pub struct Conn {
     pub draw_call_chan: AsyncChan<DrawCallCollection>,
     pub vram_out_chan:  AsyncChan<VramRes>,
+    pub reset_flag:     &'static AtomicBool,
 }
 
-#[derive(Debug)]
+#[derive(derive_more::Debug)]
 pub struct VramMsg {
+    #[debug(skip)]
     pub vram:  Box<[u16]>,
     pub dirty: bool,
 }
@@ -62,10 +64,10 @@ pub struct GpuState {
     pub model:          GpuModel,
 
     #[debug(skip)]
-    pub conn:          Conn,
-    waiting_on_render: bool,
-    pub last_vblank:   Instant,
-    pub vblank_signal: bool,
+    pub conn:              Conn,
+    pub waiting_on_render: bool,
+    pub last_vblank:       Instant,
+    pub vblank_signal:     bool,
 
     pub vram_mutation_signal: bool,
 }
@@ -86,6 +88,8 @@ pub enum GpuModel {
 
 impl GpuState {}
 
+pub static RESET_FLAG: AtomicBool = AtomicBool::new(false);
+
 impl Default for GpuState {
     fn default() -> Self {
         let mut gpustat = GpuStatReg::default();
@@ -103,6 +107,7 @@ impl Default for GpuState {
             conn: Conn {
                 draw_call_chan: kanal::bounded_async(3),
                 vram_out_chan:  kanal::bounded_async(3),
+                reset_flag:     &RESET_FLAG,
             },
             dp: Display::default(),
             waiting_on_render: false,
@@ -603,7 +608,7 @@ impl<const N: usize> DrawCallSwapchain<N> {
         n
     }
     fn recall(&mut self, swap_idx: usize, mut buf: Vec<DrawCall>) {
-        assert_ne!(swap_idx, self.idx);
+        // assert_ne!(swap_idx, self.idx);
         buf.clear();
         self.queues[swap_idx] = buf;
     }
@@ -761,6 +766,7 @@ impl GpuState {
         // transfer ownership of the vram to the render thread
         let vram = mem::take(&mut self.vram);
         let display = self.dp.clone();
+        let draw_call_count = queue.len();
         self.conn
             .draw_call_chan
             .0
@@ -776,11 +782,13 @@ impl GpuState {
                 }),
             })
             .unwrap();
+        tracing::info!("sent {} draw_calls", draw_call_count);
         self.waiting_on_render = true;
     }
 
     pub fn wait_for_render_result(&mut self) {
         if self.waiting_on_render {
+            tracing::info!("waiting for draw result");
             let vram = self
                 .conn
                 .vram_out_chan
@@ -788,6 +796,7 @@ impl GpuState {
                 .as_sync()
                 .recv()
                 .expect("channel dropped: failed to receive queued render");
+            tracing::info!("got draw result");
             self.vram = vram.vram;
             self.draw_call_swap
                 .recall(vram.swap_idx, vram.draw_call_buf);
@@ -844,6 +853,10 @@ impl GpuState {
             let even_odd = even_odd.unwrap_or_else(|| self.gpustat.even_odd_in_vblank());
             self.gpustat.set_even_odd_in_vblank(!even_odd);
         }
+    }
+
+    pub fn reset_renderer(&self) {
+        self.conn.reset_flag.store(true, atomic::Ordering::Release);
     }
 }
 

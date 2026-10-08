@@ -9,7 +9,7 @@ use bitbybit::{bitenum, bitfield};
 use glam::{I16Vec2, U8Vec2, U8Vec3, U16Vec2};
 use smallvec::SmallVec;
 
-#[derive(Debug)]
+#[derive(derive_more::Debug)]
 pub struct DrawCallCollection {
     pub draw_calls: Vec<DrawCall>,
     pub display:    crate::gpu::Display,

@@ -28,7 +28,7 @@ use pchan_emu::gpu::draw_call::{
 };
 use pchan_emu::gpu::{
     Conn, Display, DisplayColorDepth, DrawPixels, Gp0TexWindowCmd, GpuStatReg, IVramCoord,
-    TextureColorMode, VramCoord, VramRes,
+    TextureColorMode, VramCoord, VramRes, create_vram,
 };
 use thiserror::Error;
 use tracing::Level;
@@ -42,7 +42,6 @@ pub struct Renderer {
     pub device: Device,
     pub queue: Queue,
     pub tracy: TracyClient,
-    reset_flag: AtomicBool,
 
     _pipeline_layout: PipelineLayout,
     render_pipeline: RenderPipeline,
@@ -388,6 +387,7 @@ impl Renderer {
             conn: Conn {
                 draw_call_chan: kanal::bounded_async(2),
                 vram_out_chan: kanal::bounded_async(2),
+                reset_flag: &pchan_emu::gpu::RESET_FLAG,
             },
             display_pipeline,
             display_bind_group,
@@ -395,7 +395,6 @@ impl Renderer {
             display_uniforms: DisplayUniforms::default(),
             _display_format: display_format,
             tracy: TracyClient::default(),
-            reset_flag: AtomicBool::new(false),
             vram_out_buf,
             vertex_buf,
             belt: belt.into(),
@@ -403,7 +402,7 @@ impl Renderer {
     }
 
     pub fn reset(&self) {
-        self.reset_flag.store(true, atomic::Ordering::Release);
+        self.conn.reset_flag.store(true, atomic::Ordering::Release);
     }
 
     pub async fn try_new() -> Result<Self, InitError> {
@@ -454,7 +453,8 @@ impl Renderer {
     }
 
     fn consume_reset(&self) -> bool {
-        self.reset_flag
+        self.conn
+            .reset_flag
             .compare_exchange(
                 true,
                 false,
@@ -490,9 +490,10 @@ impl Renderer {
                             draw_calls.draw_calls.len(),
                             draw_calls
                         );
+                    } else {
+                        tracing::info!("received {} draw_calls", draw_calls.draw_calls.len(),);
                     }
                     let draw_calls_len = draw_calls.draw_calls.len();
-                    tracing::trace!("waiting on vram...");
 
                     let scene = Scene::new_from_draw_calls(&draw_calls);
                     self.set_hw_display(scene.hw_display.clone());
@@ -514,17 +515,28 @@ impl Renderer {
                     };
                     let elapsed = now.elapsed().as_millis_f32();
 
-                    if !self.consume_reset() {
+                    if self.consume_reset() {
                         _ = self
                             .conn
                             .vram_out_chan
                             .0
-                            .send(VramRes {
+                            .try_send(VramRes {
+                                vram: create_vram(),
+                                draw_call_buf: vec![],
+                                swap_idx: draw_calls.swap_idx,
+                            })
+                            .unwrap();
+                    } else {
+                        _ = self
+                            .conn
+                            .vram_out_chan
+                            .0
+                            .try_send(VramRes {
                                 vram: vram.vram,
                                 draw_call_buf: draw_calls.draw_calls,
                                 swap_idx: draw_calls.swap_idx,
                             })
-                            .await;
+                            .unwrap();
                     }
 
                     tracing::info!(

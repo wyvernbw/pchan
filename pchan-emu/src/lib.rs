@@ -96,7 +96,7 @@ pub struct Emu<A: Allocator = Global> {
     pub tracy:         TracyClient,
     pub stats:         Stats,
     #[debug(skip)]
-    alloc:             A,
+    pub alloc:         A,
 }
 
 #[derive(Default, derive_more::Debug, Clone)]

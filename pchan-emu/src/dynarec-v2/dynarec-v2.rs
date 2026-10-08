@@ -73,7 +73,7 @@ type Reloc = dynasmrt::x64::X64Relocation;
 type DynEmitter<A> = SmallBox<dyn for<'a> Fn(EmitCtx<'a, A>) -> EmitSummary, [usize; 1]>;
 
 #[derive(derive_more::Debug)]
-pub struct Dynarec<A: Allocator + Copy> {
+pub struct Dynarec<A: Allocator> {
     pub(crate) reg_alloc:  RegAlloc,
     pub(crate) scheduler:  Box<Scheduler<A>, A>,
     pub last_ran_function: Option<DynarecFunction<A>>,
@@ -732,7 +732,7 @@ impl LoadedReg<AllocResult> {
 }
 
 #[derive(d::Debug)]
-pub struct ScheduledEmitter<A: Allocator + Copy> {
+pub struct ScheduledEmitter<A: Allocator> {
     #[debug(skip)]
     pub(crate) emitter:  DynEmitter<A>,
     #[debug("{}", hex(self.schedule))]
@@ -759,7 +759,7 @@ impl<A: Allocator + Copy> Ord for ScheduledEmitter<A> {
 }
 
 #[derive(d::Debug)]
-pub struct Scheduler<A: Allocator + Copy> {
+pub struct Scheduler<A: Allocator> {
     pub(crate) queue: heapless::BinaryHeap<ScheduledEmitter<A>, Min, 4>,
 }
 

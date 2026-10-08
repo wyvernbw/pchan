@@ -27,8 +27,7 @@ use dynasmrt::{DynasmApi, DynasmLabelApi};
 use super::ScheduledEmitter;
 use core::alloc::Allocator;
 
-#[derive(Debug)]
-pub struct EmitCtx<'a, A: Allocator + Copy> {
+pub struct EmitCtx<'a, A: Allocator> {
     pub dynarec:        &'a mut Dynarec<A>,
     pub pc:             u32,
     pub d_clock:        u32,

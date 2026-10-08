@@ -1,5 +1,6 @@
 use alloc::sync::Arc;
 use core::alloc::Allocator;
+use core::num::NonZeroU16;
 use core::sync::atomic::{AtomicU32, Ordering};
 use core::time::Duration;
 use std::alloc::Global;
@@ -21,10 +22,12 @@ use crate::dynarec_v2::{
 use crate::memory::mb;
 
 #[derive(derive_more::Debug)]
-pub struct Runner<A: Allocator + Copy> {
+pub struct Runner<A: Allocator> {
     interpreter:     Interpreter,
     pub(crate) mode: RunnerMode,
     pub config:      RunnerConfig,
+    pub running:     bool,
+    pub frame_idx:   u64,
     transport:       Transport<A>,
     #[debug(skip)]
     actor_tx:        Caching<Arc<SharedRb<Heap<CompileActorMsg>>>, true, false>,
@@ -44,6 +47,19 @@ pub enum RunnerMode {
 #[derive(Default, Debug, Clone, Copy)]
 pub struct RunnerConfig {
     pub force_mode: Option<RunnerMode> = Some(RunnerMode::Dynarec),
+    pub speed: EmuSpeed
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum EmuSpeed {
+    Unlimited,
+    Percentage(NonZeroU16),
+}
+
+impl Default for EmuSpeed {
+    fn default() -> Self {
+        Self::Percentage(const { NonZeroU16::new(100).unwrap() })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -57,12 +73,12 @@ enum CompileActorMsg {
     Kill,
 }
 
-enum CompileActorResponse<A: Allocator + Copy> {
+enum CompileActorResponse<A: Allocator> {
     Compiled(Result<DynarecBlock<A>, PipelineCompileError>),
 }
 
 #[derive(Debug, Clone)]
-struct Transport<A: Allocator + Copy> {
+struct Transport<A: Allocator> {
     out_chan: Chan<CompileActorResponse<A>>,
 }
 
@@ -110,6 +126,8 @@ impl<A: Allocator + Copy + Clone> Runner<A> {
             own_dynarec: Dynarec::new(CreateDynarecParams::new(alloc)),
             actor_handle,
             alloc,
+            running: true,
+            frame_idx: 0,
         }
     }
 
@@ -358,6 +376,38 @@ impl<A: Allocator + Copy + Clone> Runner<A> {
                 CompileActorMsg::Kill => return,
             }
         }
+    }
+
+    pub fn run_until_vblank(&mut self, emu: &mut Emu<A>) -> Option<Duration> {
+        if !self.running {
+            return None;
+        }
+
+        let start = Instant::now();
+        while !emu.consume_vblank_signal() {
+            self.execute(emu);
+            #[cfg(feature = "debugger-ext")]
+            {
+                use crate::debug::BreakpointKind;
+
+                if emu.dbg.break_on(emu.cpu.pc, BreakpointKind::EXECUTE) {
+                    self.running = false;
+                    break;
+                }
+            }
+        }
+        self.frame_idx = self.frame_idx.wrapping_add(1);
+        Some(start.elapsed())
+    }
+
+    pub fn sleep_time(&self, elapsed: Duration) -> Duration {
+        let frame_time_max = match self.config.speed {
+            EmuSpeed::Unlimited => Duration::ZERO,
+            EmuSpeed::Percentage(non_zero) => {
+                Duration::from_micros(16_667u64 / u64::from(non_zero.get()) * 100)
+            }
+        };
+        frame_time_max.saturating_sub(elapsed)
     }
 }
 
