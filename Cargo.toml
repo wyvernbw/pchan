@@ -23,7 +23,7 @@ members = [
     "pchan-executor",
     "experimental/pchan-egui-experimental",
     "experimental/pchan-dbg-gpui"
-, "experimental/pchan-mini"]
+, "experimental/pchan-mini", "pchan-steel"]
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }
@@ -43,6 +43,8 @@ similar_names = "allow"
 wildcard_imports = "allow"
 redundant_closure_for_method_calls = "allow"
 ignored_unit_patterns = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
 unused_self = "allow"
 
 # causes problems with dynasm
