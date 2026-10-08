@@ -13,8 +13,8 @@ use alloc::borrow::Cow;
 use alloc::rc::Rc;
 use alloc::sync::Arc;
 use core::cell::RefCell;
-use core::num::ParseIntError;
-use core::ops::Range;
+use core::num::{NonZeroU16, ParseIntError};
+use core::ops::{Deref, Range};
 use core::panic::AssertUnwindSafe;
 use core::time::Duration;
 use core::{cmp, fmt, mem};
@@ -44,7 +44,7 @@ use gpui_component::spinner::Spinner;
 use gpui_component::tab::TabBar;
 use gpui_component::table::{Table, TableBody, TableCell, TableHead, TableHeader, TableRow};
 use gpui_component::{
-    ActiveTheme, Icon, IconName, Root, Sizable, StyledExt, Theme, ThemeRegistry, h_flex, v_flex,
+    ActiveTheme, Icon, IconName, Root, Sizable, StyledExt, Theme, h_flex, v_flex,
 };
 use gpui_kit_assets::Assets;
 use pchan_audio::AudioTask;
@@ -52,9 +52,9 @@ use pchan_emu::Emu;
 use pchan_emu::cpu::REG_STR;
 use pchan_emu::cpu::ops::OpCode;
 use pchan_emu::dynarec_v2::emitters::DecodedOp;
-use pchan_utils::{hex, hex_pref, init_tracing};
+use pchan_utils::{default, hex, hex_pref, init_tracing};
 
-actions!(app, [Quit, SoftReset, HardReset, Step, StepFrame]);
+actions!(app, [Quit, SoftReset, HardReset, Step, StepFrame, ViewMIPS]);
 
 #[cfg(feature = "dhat-heap")]
 #[global_allocator]
@@ -80,15 +80,33 @@ fn main() {
             gpui_component::init(cx);
             GlobalSelection::init(cx);
 
-            let theme_reg = ThemeRegistry::global_mut(cx);
-            let gruvbox = include_str!("./assets/themes/gruvbox.json");
-            theme_reg
-                .load_themes_from_str(gruvbox)
-                .expect("failed to load theme from string");
-            let gruvbox = theme_reg.themes().get("Gruvbox Dark").unwrap().clone();
+            cx.set_app_identity("p-chan-gpui", "Pーちゃん");
+            let app = cx.new(|_| PChanApp { mips_window: None });
+            app.update(cx, |app, cx| app.set_menus(cx));
+
+            let emucx = EmuContext::new(arena, cx).unwrap();
+            let emucx = cx.new(|_| emucx);
+            let mips_view = cx.new(|_| MipsView {
+                scroll_handle: VirtualListScrollHandle::new(),
+                emucx:         emucx.clone(),
+                pc:            0xbfc0_0000,
+            });
+
+            set_subwindow::<ViewMIPS, _>(&app, &mips_view, cx, |app| &mut app.mips_window);
+
+            // let theme_reg = ThemeRegistry::global_mut(cx);
+            // let gruvbox = include_str!("./assets/themes/gruvbox.json");
+            // theme_reg
+            //     .load_themes_from_str(gruvbox)
+            //     .expect("failed to load theme from string");
+            // let gruvbox = theme_reg.themes().get("Gruvbox Dark").unwrap().clone();
 
             let theme = Theme::global_mut(cx);
-            theme.apply_config(&gruvbox);
+            theme.apply_config(&Rc::new(gpui_component::ThemeConfig {
+                mode: gpui_component::ThemeMode::Dark,
+                ..default()
+            }));
+            // theme.apply_config(&gruvbox);
             cx.set_window_appearance(Some(WindowAppearance::VibrantDark));
 
             cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
@@ -116,9 +134,10 @@ fn main() {
                     ..Default::default()
                 },
                 |win, cx| {
-                    let view = Debugger::new(win, cx, arena).unwrap();
+                    let mut view = Debugger::new(win, cx, arena).unwrap();
+                    view.emucx = emucx.clone();
                     let view = cx.new(|_| view);
-                    Debugger::start_emu_loop(&view, cx);
+                    Debugger::start_emu_loop(&view, cx, mips_view.clone());
                     let theme = cx.theme().clone();
 
                     cx.new(|cx| Root::new(view, win, cx).h_full().bg(theme.background))
@@ -127,6 +146,126 @@ fn main() {
 
             cx.activate(true);
         });
+}
+
+struct PChanApp {
+    mips_window: Option<Subwindow<MipsView>>,
+}
+
+struct Subwindow<T> {
+    handle: WindowHandle<T>,
+    active: bool,
+}
+
+impl PChanApp {
+    pub fn set_menus(&self, cx: &mut App) {
+        let menus = self.menu();
+        cx.set_menus(menus);
+    }
+
+    pub fn menu(&self) -> impl IntoIterator<Item = Menu> + use<> {
+        [
+            Menu::new("P-chan").items([
+                MenuItem::separator(),
+                MenuItem::SystemMenu(OsMenu {
+                    name:      "Services".into(),
+                    menu_type: SystemMenuType::Services,
+                }),
+            ]),
+            Menu::new("Debug").items([MenuItem::action("MIPS Dump", ViewMIPS)
+                .checked(Self::view_active(self.mips_window.as_ref()))]),
+        ]
+    }
+
+    fn view_active<T>(win: Option<&Subwindow<T>>) -> bool {
+        let Some(win) = win else {
+            return false;
+        };
+        win.active
+    }
+}
+
+fn set_subwindow<T: Action, V: Render>(
+    app: &Entity<PChanApp>,
+    view: &Entity<V>,
+    cx: &mut App,
+    get_field: for<'a> fn(&'a mut PChanApp) -> &'a mut Option<Subwindow<V>>,
+) {
+    cx.on_action({
+        let app = app.clone();
+        let view = view.clone();
+        move |_: &T, cx| {
+            let app_view = app.clone();
+            let mips_view = view.clone();
+            cx.defer(move |cx| {
+                let res: miette::Result<()> = app_view.update(cx, |app, cx| {
+                    let app_view = app_view.clone();
+                    match get_field(app) {
+                        Some(win) => {
+                            let active = win
+                                .handle
+                                .update(cx, |_, win, _| {
+                                    if win.is_window_active() {
+                                        win.minimize_window();
+                                        false
+                                    } else {
+                                        win.activate_window();
+                                        true
+                                    }
+                                })
+                                .map_err(|err| miette!("{err}"))?;
+                            win.active = active;
+                        }
+                        None => {
+                            let app_view = app_view.clone();
+                            let win = cx
+                                .open_window(
+                                    gpui::WindowOptions {
+                                        window_background: WindowBackgroundAppearance::Blurred,
+                                        window_decorations: Some(WindowDecorations::Client),
+                                        window_bounds: Some(WindowBounds::Windowed(bounds(
+                                            Point::new(32.0.into(), 32.0.into()),
+                                            size(320.0.into(), 600.0.into()),
+                                        ))),
+                                        titlebar: Some(TitlebarOptions {
+                                            title:                  None,
+                                            appears_transparent:    true,
+                                            traffic_light_position: Some(Point {
+                                                x: 8.0.into(),
+                                                y: 8.0.into(),
+                                            }),
+                                        }),
+                                        focus: true,
+                                        ..default()
+                                    },
+                                    move |win, cx| {
+                                        win.on_window_should_close(cx, move |_, cx| {
+                                            app_view.update(cx, |app, cx| {
+                                                *get_field(app) = None;
+                                                app.set_menus(cx);
+                                            });
+                                            true
+                                        });
+                                        mips_view
+                                    },
+                                )
+                                .map_err(|err| miette!("{err}"))?;
+
+                            *get_field(app) = Some(Subwindow {
+                                handle: win,
+                                active: true,
+                            });
+                        }
+                    };
+
+                    app.set_menus(cx);
+
+                    Ok(())
+                });
+                res.unwrap();
+            });
+        }
+    });
 }
 
 #[allow(clippy::struct_field_names)]
@@ -173,11 +312,88 @@ struct Debugger {
     cpu_control_subs:    [Option<Subscription>; 32],
 
     exec_control_panel_open: bool,
-    mips_dump_scroll_handle: VirtualListScrollHandle,
     content_path:            ContentPath,
 
     memview: Entity<MemviewTable>,
-    pc:      u32,
+}
+
+struct MipsView {
+    scroll_handle: VirtualListScrollHandle,
+    emucx:         Entity<EmuContext>,
+    pc:            u32,
+}
+
+impl Render for MipsView {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let view = cx.entity();
+        let theme = cx.theme().clone();
+        let pc = self.emucx.read(cx).emu.cpu.pc;
+
+        if pc != self.pc {
+            self.scroll_handle
+                .scroll_to(cx, u64::from(pc) / 4, ScrollStrategy::TopOffset(4));
+            self.pc = pc;
+        }
+
+        let content = v_flex()
+            .w_full()
+            .text_color(theme.foreground)
+            .h_full()
+            .child(sel_text(format!("$pc: {}", hex(pc))).font_family(&theme.mono_font_family))
+            .child(
+                VirtualList::new(
+                    "mips-dump-list",
+                    u64::from(u32::MAX) / 4,
+                    move |idx, _, cx| {
+                        let address_label: SharedString = "mips-dump-address".into();
+
+                        let view = view.read(cx);
+                        let addr = idx as u32 * 4;
+                        let instr = view.emucx.read(cx).emu.fastmem_read::<OpCode>(addr);
+                        let instr = instr
+                            .map(DecodedOp::new)
+                            .map_or(Cow::Borrowed("N/A"), |instr| Cow::Owned(format!("{instr}")));
+                        let is_pc = pc & 0x1fff_ffff == addr & 0x1fff_ffff;
+                        h_flex()
+                            .w_full()
+                            .whitespace_nowrap()
+                            .overflow_hidden()
+                            .font_family(&theme.mono_font_family)
+                            .bg(theme.foreground.opacity(if idx.is_multiple_of(2) {
+                                0.0
+                            } else {
+                                0.08
+                            }))
+                            .child(
+                                sel_text_keyed(
+                                    ElementId::NamedInteger(
+                                        "mipds-dump-list-address-column".into(),
+                                        u64::from(addr),
+                                    ),
+                                    hex(addr).to_string(),
+                                )
+                                .opacity(0.5),
+                            )
+                            .child(
+                                div()
+                                    .text_center()
+                                    .min_w_4()
+                                    .w_4()
+                                    .when(is_pc, |this| this.child(">")),
+                            )
+                            .child(sel_text_keyed(
+                                ElementId::NamedInteger(address_label, idx),
+                                instr,
+                            ))
+                            .when(is_pc, |this| this.text_color(theme.colors.info))
+                            .h_4()
+                    },
+                )
+                .track_scroll(&self.scroll_handle),
+            );
+
+        window_wrapper(cx, "MIPS Dump", content)
+    }
 }
 
 enum ContentPath {
@@ -320,6 +536,53 @@ use pchan_emu::run::{Runner, RunnerMode};
 
 use crate::game_surface::{GameSurface, SurfaceState, create_target};
 
+impl EmuContext {
+    pub fn new(alloc: &'static Bump, cx: &App) -> miette::Result<Self> {
+        let mut emu = Emu::new_in(alloc);
+        emu.set_bios_path(std::env::var("PCHAN_BIOS").into_diagnostic()?);
+        emu.load_bios(alloc).into_diagnostic()?;
+        emu.cpu.jump_to_bios();
+        emu.tty.set_tracing();
+
+        let mut audio_task = AudioTask::new()?;
+        pchan_bind::bind_audio(&mut audio_task, &mut emu);
+        let audio_stream = audio_task.start()?;
+        mem::forget(audio_stream);
+
+        let gpu = pchan_gpu::Renderer::try_new();
+        let gpu = cx.foreground_executor().block_on(gpu).into_diagnostic()?;
+
+        let mut dp = gpu.display_uniforms.app.lock().unwrap();
+        dp.screen_rect.x = 320;
+        dp.screen_rect.y = 240;
+        drop(dp);
+
+        gpu.connect_emu(&mut emu);
+        let gpu = Arc::new(gpu);
+        gpu.clone().start();
+
+        Ok(EmuContext {
+            emu,
+            renderer: gpu.clone(),
+            running: false,
+            running_notify: event_listener::Event::new(),
+            runner: Runner::new_in(alloc).with_config(pchan_emu::run::RunnerConfig {
+                force_mode: Some(pchan_emu::run::RunnerMode::Dynarec),
+                speed:      pchan_emu::run::EmuSpeed::Percentage(NonZeroU16::new(100).unwrap()),
+            }),
+            frame_time: Duration::ZERO,
+            frame_time_limited: Duration::ZERO,
+            start: Instant::now(),
+            cycles_per_run: 0,
+            speed_limit: EmuSpeed::Percent(100),
+            real_time_running: Duration::ZERO,
+            run_for_one_frame: false,
+            alloc,
+            pc_history: StaticRb::default(),
+        })
+    }
+}
+
 impl Debugger {
     pub fn new(window: &mut Window, cx: &mut App, alloc: &'static Bump) -> miette::Result<Self> {
         let mut emu = Emu::new_in(alloc);
@@ -363,6 +626,7 @@ impl Debugger {
             running_notify: event_listener::Event::new(),
             runner: Runner::new_in(alloc).with_config(pchan_emu::run::RunnerConfig {
                 force_mode: Some(pchan_emu::run::RunnerMode::Dynarec),
+                speed:      pchan_emu::run::EmuSpeed::Percentage(NonZeroU16::new(100).unwrap()),
             }),
             frame_time: Duration::ZERO,
             frame_time_limited: Duration::ZERO,
@@ -477,20 +741,18 @@ impl Debugger {
             cpu_control_reg_tab: 0,
             exec_control_panel_open: true,
             content_path: ContentPath::None,
-            mips_dump_scroll_handle: VirtualListScrollHandle::new(),
-            pc: 0,
             emu_speed_select,
         })
     }
 
-    pub fn start_emu_loop(this: &Entity<Debugger>, cx: &mut App) {
+    pub fn start_emu_loop(this: &Entity<Debugger>, cx: &mut App, mips: Entity<MipsView>) {
         let surface_state = this.read(cx).game_surface.clone();
         let emucx = this.read(cx).emucx.clone();
         let dbg = this.clone();
         cx.spawn_with_priority(Priority::High, {
             async move |cx| {
                 loop {
-                    match Self::emu_loop(cx, &emucx, &surface_state, &dbg).await {
+                    match Self::emu_loop(cx, &emucx, &surface_state, &dbg, &mips).await {
                         Ok(_) => {}
                         Err(_) => {
                             emucx.update(cx, |emucx, _| {
@@ -510,6 +772,7 @@ impl Debugger {
         emucx: &Entity<EmuContext>,
         surface_state: &Entity<SurfaceState>,
         debugger: &Entity<Debugger>,
+        mips: &Entity<MipsView>,
     ) -> miette::Result<()> {
         let mut yield_time = Duration::ZERO;
         let mut first_frame_rendered = false;
@@ -521,6 +784,9 @@ impl Debugger {
             });
             if let Some(run_listener) = run_listener {
                 debugger.update(cx, |_, cx| {
+                    cx.notify();
+                });
+                mips.update(cx, |_, cx| {
                     cx.notify();
                 });
                 run_listener.await;
@@ -567,6 +833,9 @@ impl Debugger {
             let yield_max = cmp::max(frame_limit * 4, Duration::from_micros(16_667 * 4));
             if yield_time > yield_max {
                 debugger.update(cx, |_, cx| {
+                    cx.notify();
+                });
+                mips.update(cx, |_, cx| {
                     cx.notify();
                 });
                 yield_time = Duration::ZERO;
@@ -667,6 +936,36 @@ impl Render for Debugger {
                     .child(self.debugger_ui(window, cx).w_full().h_full()),
             )
     }
+}
+
+fn titlebar(cx: &impl Deref<Target = App>, title: &str) -> impl IntoElement {
+    let theme = cx.theme();
+
+    h_flex()
+        .text_sm()
+        .bg(theme.title_bar)
+        .px_4()
+        .pl(rems(4.5))
+        .py_1()
+        .gap_2()
+        .items_center()
+        .text_color(theme.table_head_foreground)
+        .child(format!("🐷🎗️ P-ちゃん | {title}"))
+}
+
+fn window_wrapper(
+    cx: &impl Deref<Target = App>,
+    title: &str,
+    view: impl IntoElement,
+) -> impl IntoElement {
+    v_flex().w_full().h_full().child(titlebar(cx, title)).child(
+        div()
+            .backdrop_blur(8.0)
+            .bg(cx.theme().background.opacity(0.8))
+            .w_full()
+            .h_full()
+            .child(view),
+    )
 }
 
 impl Debugger {
@@ -1358,79 +1657,6 @@ impl Debugger {
             )
     }
 
-    fn instructions_list(
-        &mut self,
-        cx: &mut Context<Debugger>,
-        theme: &Theme,
-    ) -> impl IntoElement + Styled {
-        let entity = cx.entity().clone();
-        let theme = theme.clone();
-        let pc = self.emucx.read(cx).emu.cpu.pc;
-
-        if pc != self.pc {
-            self.mips_dump_scroll_handle.scroll_to(
-                cx,
-                u64::from(pc) / 4,
-                ScrollStrategy::TopOffset(4),
-            );
-            self.pc = pc;
-        }
-
-        v_flex()
-            .child(sel_text(format!("$pc: {}", hex(pc))).font_family(&theme.mono_font_family))
-            .child(
-                VirtualList::new(
-                    "mips-dump-list",
-                    u64::from(u32::MAX) / 4,
-                    move |idx, _, cx| {
-                        let address_label: SharedString = "mips-dump-address".into();
-
-                        let view = entity.read(cx);
-                        let addr = idx as u32 * 4;
-                        let instr = view.emucx.read(cx).emu.fastmem_read::<OpCode>(addr);
-                        let instr = instr
-                            .map(DecodedOp::new)
-                            .map_or(Cow::Borrowed("N/A"), |instr| Cow::Owned(format!("{instr}")));
-                        let is_pc = pc & 0x1fff_ffff == addr & 0x1fff_ffff;
-                        h_flex()
-                            .w_full()
-                            .whitespace_nowrap()
-                            .overflow_hidden()
-                            .font_family(&theme.mono_font_family)
-                            .bg(theme.foreground.opacity(if idx.is_multiple_of(2) {
-                                0.0
-                            } else {
-                                0.08
-                            }))
-                            .child(
-                                sel_text_keyed(
-                                    ElementId::NamedInteger(
-                                        "mipds-dump-list-address-column".into(),
-                                        u64::from(addr),
-                                    ),
-                                    hex(addr).to_string(),
-                                )
-                                .opacity(0.5),
-                            )
-                            .child(
-                                div()
-                                    .text_center()
-                                    .min_w_4()
-                                    .w_4()
-                                    .when(is_pc, |this| this.child(">")),
-                            )
-                            .child(sel_text_keyed(
-                                ElementId::NamedInteger(address_label, idx),
-                                instr,
-                            ))
-                            .when(is_pc, |this| this.text_color(theme.colors.info))
-                            .h_4()
-                    },
-                )
-                .track_scroll(&self.mips_dump_scroll_handle),
-            )
-    }
-
     fn open_content_button(cx: &mut Context<Debugger>, _theme: &Theme) -> Button {
         Button::new("content-path-button")
             .secondary()
@@ -1605,7 +1831,6 @@ impl Debugger {
                     ),
             )
             .child(Separator::horizontal())
-            .child(self.instructions_list(cx, theme).flex_grow_1().min_h_0())
     }
 
     fn mem_inspector(
