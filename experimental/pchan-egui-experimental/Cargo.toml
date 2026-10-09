@@ -19,7 +19,7 @@ pchan-gpu.workspace = true
 pchan-utils = { workspace = true, features = ["tracing-subscriber"] }
 pchan-executor.workspace = true 
 rfd = "0.17.2"
-ringbuf = "0.5.2"
+ringbuf = "0.5.3"
 ttf-parser = "0.25.1"
 spin_sleep = "1.3.3"
 egui_extras = "0.36.2"

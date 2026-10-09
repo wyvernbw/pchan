@@ -10,5 +10,5 @@ workspace = true
 cpal = "0.18.2"
 miette = "7.6.0"
 pchan-bind.workspace = true
-ringbuf = "0.5.2"
+ringbuf = "0.5.3"
 tracing.workspace = true

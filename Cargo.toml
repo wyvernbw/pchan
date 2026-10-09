@@ -69,11 +69,7 @@ pchan-input = { path = "./pchan-input" }
 pchan-executor = { path = "./pchan-executor" }
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 kanal = "0.1.1"
-
-[workspace.dependencies.smol]
-git = "https://github.com/wyvernbw/smol.git"
-version = "2.0.2"
-branch = "wyvernbw-feature-gates" 
+smol = "2.0.2"
 
 [profile.dev.package."*"]
 opt-level = "s"

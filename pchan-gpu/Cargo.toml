@@ -13,7 +13,7 @@ pchan-emu = {workspace = true}
 pchan-macros = { workspace = true }
 pchan-utils = { workspace = true, features = ["tracy"] }
 tracing = { workspace = true }
-glam = "0.33.9"
+glam = "0.34.1"
 pchan-executor.workspace = true
 kanal.workspace = true
 heapless = "0.9.3"
