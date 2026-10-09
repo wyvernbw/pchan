@@ -14,14 +14,14 @@ use alloc::rc::Rc;
 use alloc::sync::Arc;
 use core::cell::RefCell;
 use core::num::{NonZeroU16, ParseIntError};
-use core::ops::{Deref, Range};
-use core::panic::AssertUnwindSafe;
+use core::ops::{DerefMut, Range};
 use core::time::Duration;
-use core::{cmp, fmt, mem};
+use core::{fmt, mem};
 use futures_lite::AsyncReadExt;
 use futures_lite::io::BufReader;
+use gpui_component::switch::Switch;
 use pchan_bind::ringbuf::StaticRb;
-use pchan_bind::ringbuf::traits::{Consumer, RingBuffer};
+use pchan_bind::ringbuf::traits::{Consumer, Observer, RingBuffer};
 use pchan_emu::debug::{Breakpoint, BreakpointKind};
 use std::path::PathBuf;
 use std::time::Instant;
@@ -29,32 +29,87 @@ use std::time::Instant;
 use bumpalo::Bump;
 use gpui::prelude::*;
 use gpui::{AppContext, Render, *};
-use gpui_base::{Disableable, IndexPath, TextSelectionLayer};
-use gpui_component::button::{Button, ButtonVariants, Toggle, ToggleVariants};
-use gpui_component::checkbox::Checkbox;
-use gpui_component::collapsible::Collapsible;
+use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::{Input, InputState};
-use gpui_component::menu::DropdownMenu;
 use gpui_component::scroll::ScrollableElement;
-use gpui_component::select::{
-    SearchableVec, Select as SelectView, SelectEvent, SelectItem, SelectState,
-};
 use gpui_component::separator::Separator;
-use gpui_component::spinner::Spinner;
 use gpui_component::tab::TabBar;
-use gpui_component::table::{Table, TableBody, TableCell, TableHead, TableHeader, TableRow};
-use gpui_component::{
-    ActiveTheme, Icon, IconName, Root, Sizable, StyledExt, Theme, h_flex, v_flex,
-};
+use gpui_component::{ActiveTheme, IconName, Root, Sizable, StyledExt, Theme, h_flex, v_flex};
 use gpui_kit_assets::Assets;
 use pchan_audio::AudioTask;
 use pchan_emu::Emu;
 use pchan_emu::cpu::REG_STR;
 use pchan_emu::cpu::ops::OpCode;
 use pchan_emu::dynarec_v2::emitters::DecodedOp;
+use pchan_macros::git_rev;
 use pchan_utils::{default, hex, hex_pref, init_tracing};
+use schemars::JsonSchema;
+use serde::Deserialize;
 
-actions!(app, [Quit, SoftReset, HardReset, Step, StepFrame, ViewMIPS]);
+actions!(
+    app,
+    [
+        Quit,
+        SoftReset,
+        HardReset,
+        Step,
+        StepFrame,
+        StepBlock,
+        StepInstruction,
+        ViewMIPS,
+        ViewMem,
+        ViewRegisters,
+        ViewBreakpoints,
+        LoadContent,
+        UnloadContent,
+        ToggleRun,
+        Run,
+        Pause,
+    ]
+);
+
+#[expect(clippy::unsafe_derive_deserialize)]
+#[derive(Clone, Action, Deserialize, JsonSchema, PartialEq, Eq)]
+struct CloseWindow {
+    #[serde(skip)]
+    id: WindowId,
+}
+
+#[expect(clippy::unsafe_derive_deserialize)]
+#[derive(Clone, Action, Deserialize, JsonSchema, PartialEq, Eq)]
+struct SetSpeed {
+    #[serde(skip)]
+    speed: EmuSpeed,
+}
+
+fn window_opts() -> WindowOptions {
+    gpui::WindowOptions {
+        window_background: WindowBackgroundAppearance::Blurred,
+        window_decorations: Some(WindowDecorations::Client),
+        titlebar: Some(TitlebarOptions {
+            title:                  None,
+            appears_transparent:    true,
+            traffic_light_position: Some(Point {
+                x: 12.0.into(),
+                y: 8.0.into(),
+            }),
+        }),
+        ..Default::default()
+    }
+}
+
+trait WindowOptsExt {
+    fn windowed_centered(self, size: Size<Pixels>, cx: &App) -> Self;
+}
+
+impl WindowOptsExt for WindowOptions {
+    fn windowed_centered(self, size: Size<Pixels>, cx: &App) -> Self {
+        WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size, cx))),
+            ..self
+        }
+    }
+}
 
 #[cfg(feature = "dhat-heap")]
 #[global_allocator]
@@ -81,18 +136,89 @@ fn main() {
             GlobalSelection::init(cx);
 
             cx.set_app_identity("p-chan-gpui", "Pーちゃん");
-            let app = cx.new(|_| PChanApp { mips_window: None });
-            app.update(cx, |app, cx| app.set_menus(cx));
-
             let emucx = EmuContext::new(arena, cx).unwrap();
+            let (target, target_buf) = create_target(
+                &emucx.renderer,
+                &emucx.renderer.display_uniforms.app.lock().unwrap(),
+            );
+            let surface_state = cx.new(|_| SurfaceState::new(target.clone(), target_buf.clone()));
             let emucx = cx.new(|_| emucx);
+
+            let app = cx.new(|_| PChanApp {
+                mips_window:        None,
+                registers_window:   None,
+                mem_view_window:    None,
+                breakpoints_window: None,
+                emucx:              emucx.clone(),
+            });
+            let appcx = AppCx {
+                emucx:        emucx.clone(),
+                game_surface: surface_state.clone(),
+                focus_handle: cx.focus_handle(),
+                app:          app.clone(),
+            };
+
             let mips_view = cx.new(|_| MipsView {
                 scroll_handle: VirtualListScrollHandle::new(),
-                emucx:         emucx.clone(),
+                appcx:         appcx.clone(),
                 pc:            0xbfc0_0000,
             });
+            let mem_view = cx.new(|_| MemviewTable {
+                scroll_handle: VirtualListScrollHandle::new(),
+                appcx:         appcx.clone(),
+                editing:       None,
+                selected:      None,
+            });
+            let cpu_reg_names: [_; 32] =
+                core::array::from_fn(|i| format!("${}", REG_STR[i]).into());
+            let reg_view = cx.new(|_| RegView {
+                appcx:                appcx.clone(),
+                cached_cpu_reg_names: cpu_reg_names,
+                cpu_control_reg_tab:  0,
+                cpu_control_subs:     [const { None }; 32],
+            });
+            let breakpoints_view = cx.new(|_| BreakpointsView {
+                appcx: appcx.clone(),
+            });
 
-            set_subwindow::<ViewMIPS, _>(&app, &mips_view, cx, |app| &mut app.mips_window);
+            let game_view = cx.new(|_| GameView {
+                appcx: appcx.clone(),
+            });
+
+            app.update(cx, |app, cx| {
+                app.set_menus(cx);
+            });
+
+            set_subwindow::<ViewMIPS, _>(
+                &app,
+                &mips_view,
+                cx,
+                |app| &mut app.mips_window,
+                |cx| window_opts().windowed_centered(size(px(400.), px(400.)), cx),
+            );
+            set_subwindow::<ViewMem, _>(
+                &app,
+                &mem_view,
+                cx,
+                |app| &mut app.mem_view_window,
+                |cx| window_opts().windowed_centered(size(px(640.), px(400.)), cx),
+            );
+            set_subwindow::<ViewRegisters, _>(
+                &app,
+                &reg_view,
+                cx,
+                |app| &mut app.registers_window,
+                |cx| window_opts().windowed_centered(size(px(450.), px(300.)), cx),
+            );
+            set_subwindow::<ViewBreakpoints, _>(
+                &app,
+                &breakpoints_view,
+                cx,
+                |app| &mut app.breakpoints_window,
+                |cx| window_opts().windowed_centered(size(px(350.), px(480.)), cx),
+            );
+
+            cx.on_action(listener(&app, PChanApp::load_content));
 
             // let theme_reg = ThemeRegistry::global_mut(cx);
             // let gruvbox = include_str!("./assets/themes/gruvbox.json");
@@ -106,10 +232,14 @@ fn main() {
                 mode: gpui_component::ThemeMode::Dark,
                 ..default()
             }));
+            theme.colors.info = rgb_to_hsla(rgba(0xb1e6b7ff));
+            theme.focus_ring = false;
             // theme.apply_config(&gruvbox);
             cx.set_window_appearance(Some(WindowAppearance::VibrantDark));
 
             cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
+            cx.bind_keys([KeyBinding::new("cmd-j", ToggleRun, None)]);
+            cx.bind_keys([KeyBinding::new("cmd-k", StepBlock, None)]);
 
             cx.on_action(move |_: &Quit, cx| {
                 #[cfg(feature = "dhat-heap")]
@@ -119,28 +249,29 @@ fn main() {
                 cx.quit();
             });
 
+            cx.spawn({
+                async move |cx| {
+                    emu_loop(appcx.clone(), cx).await;
+                }
+            })
+            .detach();
+
             _ = cx.open_window(
-                gpui::WindowOptions {
-                    window_background: WindowBackgroundAppearance::Blurred,
-                    window_decorations: Some(WindowDecorations::Client),
-                    titlebar: Some(TitlebarOptions {
-                        title:                  None,
-                        appears_transparent:    true,
-                        traffic_light_position: Some(Point {
-                            x: 8.0.into(),
-                            y: 8.0.into(),
-                        }),
-                    }),
-                    ..Default::default()
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                        None,
+                        size(px(640.), px(480.)),
+                        cx,
+                    ))),
+                    ..window_opts()
                 },
                 |win, cx| {
-                    let mut view = Debugger::new(win, cx, arena).unwrap();
-                    view.emucx = emucx.clone();
-                    let view = cx.new(|_| view);
-                    Debugger::start_emu_loop(&view, cx, mips_view.clone());
                     let theme = cx.theme().clone();
+                    game_view.update(cx, |game_view, cx| {
+                        win.focus(&game_view.appcx.focus_handle, cx);
+                    });
 
-                    cx.new(|cx| Root::new(view, win, cx).h_full().bg(theme.background))
+                    cx.new(|cx| Root::new(game_view, win, cx).h_full().bg(theme.background))
                 },
             );
 
@@ -149,31 +280,136 @@ fn main() {
 }
 
 struct PChanApp {
-    mips_window: Option<Subwindow<MipsView>>,
+    mips_window:        Option<Subwindow<MipsView>>,
+    mem_view_window:    Option<Subwindow<MemviewTable>>,
+    registers_window:   Option<Subwindow<RegView>>,
+    breakpoints_window: Option<Subwindow<BreakpointsView>>,
+    emucx:              Entity<EmuContext>,
 }
 
+#[derive(Clone)]
+struct AppCx {
+    emucx:        Entity<EmuContext>,
+    game_surface: Entity<SurfaceState>,
+    app:          Entity<PChanApp>,
+    focus_handle: FocusHandle,
+}
+
+struct GameView {
+    appcx: AppCx,
+}
+
+#[derive(Copy)]
 struct Subwindow<T> {
     handle: WindowHandle<T>,
     active: bool,
 }
 
-impl PChanApp {
-    pub fn set_menus(&self, cx: &mut App) {
-        let menus = self.menu();
-        cx.set_menus(menus);
+impl<T> fmt::Debug for Subwindow<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Subwindow")
+            .field("handle", &self.handle)
+            .field("active", &self.active)
+            .finish()
+    }
+}
+
+impl<T> Clone for Subwindow<T> {
+    fn clone(&self) -> Self {
+        Self {
+            handle: self.handle,
+            active: self.active,
+        }
+    }
+}
+
+impl EmuContext {
+    fn content_path(&self) -> Option<&PathBuf> {
+        match &self.content_path {
+            ContentPath::None => None,
+            ContentPath::Disc(path_buf) | ContentPath::Exe(path_buf) => Some(path_buf),
+        }
     }
 
-    pub fn menu(&self) -> impl IntoIterator<Item = Menu> + use<> {
+    fn content_title(&self) -> Option<String> {
+        match self.content_path() {
+            Some(path) => path.file_name().map(|f| f.to_string_lossy().into_owned()),
+            None => None,
+        }
+    }
+}
+
+impl PChanApp {
+    pub fn set_menus(&self, cx: &mut impl DerefMut<Target = App>) {
+        let menus = self.menu(cx);
+        cx.defer(move |cx| {
+            cx.set_menus(menus);
+        });
+    }
+
+    pub fn menu(&self, cx: &App) -> impl IntoIterator<Item = Menu> + use<> {
+        fn speed_menu_item(speed: EmuSpeed) -> MenuItem {
+            let name = match speed {
+                EmuSpeed::Unlimited => "Unlimited".to_string(),
+                EmuSpeed::Percentage(non_zero) => format!("{}%", non_zero.get()),
+            };
+            MenuItem::action(name, SetSpeed { speed })
+        }
         [
             Menu::new("P-chan").items([
+                MenuItem::action("💿 Load Content", LoadContent),
+                MenuItem::action("Unload content", UnloadContent)
+                    .disabled(self.emucx.read(cx).content_path().is_none()),
+                MenuItem::separator(),
+                MenuItem::action("Run", Run),
+                MenuItem::action("Pause", Pause),
+                MenuItem::submenu(Menu::new("Reset").items([
+                    MenuItem::action("Hard reset", HardReset),
+                    MenuItem::action("Soft reset", SoftReset),
+                ])),
                 MenuItem::separator(),
                 MenuItem::SystemMenu(OsMenu {
                     name:      "Services".into(),
                     menu_type: SystemMenuType::Services,
                 }),
             ]),
-            Menu::new("Debug").items([MenuItem::action("MIPS Dump", ViewMIPS)
-                .checked(Self::view_active(self.mips_window.as_ref()))]),
+            Menu::new("Settings").items([MenuItem::submenu(
+                Menu::new("Speed").items(
+                    [
+                        EmuSpeed::percentage(100),
+                        EmuSpeed::percentage(150),
+                        EmuSpeed::percentage(200),
+                        EmuSpeed::percentage(300),
+                        EmuSpeed::Unlimited,
+                    ]
+                    .map(|speed| {
+                        speed_menu_item(speed)
+                            .checked(speed == self.emucx.read(cx).runner.config.speed)
+                    }),
+                ),
+            )]),
+            Menu::new("Debug").items([
+                MenuItem::action("Run", Run),
+                MenuItem::action("Pause", Pause),
+                MenuItem::submenu(Menu::new("Reset").items([
+                    MenuItem::action("Hard reset", HardReset),
+                    MenuItem::action("Soft reset", SoftReset),
+                ])),
+                MenuItem::separator(),
+                MenuItem::action("Step Block", StepBlock),
+                MenuItem::action("Step Instruction", StepInstruction),
+                MenuItem::action("Step Frame", StepFrame),
+                MenuItem::separator(),
+                MenuItem::action("MIPS Dump", ViewMIPS)
+                    .checked(Self::view_active(self.mips_window.as_ref())),
+                MenuItem::action("CPU Registers", ViewRegisters)
+                    .checked(Self::view_active(self.registers_window.as_ref())),
+                MenuItem::separator(),
+                MenuItem::action("Memory", ViewMem)
+                    .checked(Self::view_active(self.mem_view_window.as_ref())),
+                MenuItem::action("Breakpoints", ViewBreakpoints)
+                    .checked(Self::view_active(self.registers_window.as_ref())),
+            ]),
         ]
     }
 
@@ -183,86 +419,446 @@ impl PChanApp {
         };
         win.active
     }
+
+    fn load_content(&mut self, _: &LoadContent, cx: &mut Context<Self>) {
+        let path_recv = cx.prompt_for_paths(PathPromptOptions {
+            files:       true,
+            directories: false,
+            multiple:    false,
+            prompt:      Some("Open disc file (.bin, .cue)".into()),
+        });
+        cx.spawn(async move |view, cx| -> miette::Result<()> {
+            let Some(view) = view.upgrade() else {
+                return Ok(());
+            };
+            let res = path_recv.await.into_diagnostic()?;
+            let res = res.map_err(|err| miette!("error: {err}"))?;
+            let mut res = res.ok_or_else(|| miette!("no file selected"))?;
+            let content_path = res
+                .pop()
+                .ok_or_else(|| miette!("expected at least one disc path"))?;
+
+            match content_path
+                .extension()
+                .map(|ext| ext.to_string_lossy())
+                .as_deref()
+            {
+                Some("bin" | "cue") => {
+                    view.update(cx, move |view, cx| -> miette::Result<()> {
+                        view.emucx.update(cx, |emucx, _| -> miette::Result<()> {
+                            let fsm = emucx.emu.open_disc(&content_path, true).into_diagnostic()?;
+                            emucx
+                                .emu
+                                .advance_open_disc(&content_path, fsm, true)
+                                .into_diagnostic()?;
+                            emucx.content_path = ContentPath::Disc(content_path);
+                            Ok(())
+                        })?;
+                        view.set_menus(cx);
+                        cx.notify();
+                        Ok(())
+                    })?;
+                }
+                _ => {
+                    let mut file = BufReader::new(
+                        async_fs::File::open(&content_path)
+                            .await
+                            .into_diagnostic()?,
+                    );
+                    let mut exe = Vec::new();
+                    file.read_to_end(&mut exe).await.into_diagnostic()?;
+
+                    view.update(cx, move |view, cx| -> miette::Result<()> {
+                        view.emucx.update(cx, |emucx, cx| -> miette::Result<()> {
+                            cx.dispatch_action(&HardReset);
+                            emucx.emu.sideload_exe(&exe).into_diagnostic()?;
+                            emucx.content_path = ContentPath::Disc(content_path);
+                            Ok(())
+                        })?;
+                        view.set_menus(cx);
+                        cx.notify();
+                        Ok(())
+                    })?;
+                }
+            }
+
+            Ok(())
+        })
+        .detach();
+    }
 }
 
-fn set_subwindow<T: Action, V: Render>(
+async fn emu_loop(appcx: AppCx, cx: &mut AsyncApp) {
+    let emucx = appcx.emucx;
+    let surface = appcx.game_surface;
+    let mut time_since_last_yield = Duration::ZERO;
+    loop {
+        let run_listener = emucx.update(cx, |emucx, _| match emucx.runner.running {
+            false => Some(emucx.running_notify.listen()),
+            true => None,
+        });
+        if let Some(run_listener) = run_listener {
+            run_listener.await;
+            emucx.update(cx, |emucx, _| {
+                emucx.start = Instant::now();
+                emucx.cycles_per_run = 0;
+                emucx.real_time_running = Duration::ZERO;
+            });
+        }
+
+        let deadline = emucx.update(cx, |emucx, cx| {
+            surface.as_mut(cx).start_display_draw(&emucx.renderer);
+
+            let elapsed = emucx.runner.run_until_vblank_with(&mut emucx.emu, |emu| {
+                emucx.pc_history.push_overwrite(emu.cpu.pc);
+                emucx.run_once
+            });
+
+            if emucx.run_for_one_frame {
+                emucx.runner.running = false;
+                emucx.run_for_one_frame = false;
+                cx.notify();
+            }
+            if emucx.run_once {
+                emucx.run_once = false;
+                emucx.runner.running = false;
+                cx.notify();
+            }
+
+            let deadline = if let Some(elapsed) = elapsed {
+                let sleep_time = emucx.runner.sleep_time(elapsed);
+                emucx.frame_time = elapsed;
+                emucx.frame_time_limited = elapsed.max(emucx.runner.frame_time_limit());
+                emucx.frame_times.push_overwrite(elapsed.as_millis() as u16);
+                time_since_last_yield += elapsed;
+                Instant::now() + sleep_time
+            } else {
+                Instant::now()
+            };
+
+            let surface = surface.as_mut(cx);
+            surface.wait_for_display_draw(&emucx.renderer);
+            surface.start_convert_render(&emucx.renderer);
+
+            deadline
+        });
+
+        if !spin_sleep2(cx, deadline).await
+            && time_since_last_yield > Duration::from_micros(16_667 * 2)
+        {
+            futures_lite::future::yield_now().await;
+            time_since_last_yield = Duration::ZERO;
+        }
+    }
+}
+
+impl PchanAppActions for GameView {
+    fn appcx(&self) -> &AppCx {
+        &self.appcx
+    }
+}
+
+impl Render for GameView {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let surface = GameSurface::new(
+            "game-surface",
+            cx.read_entity(&self.appcx.emucx, |emucx, _| emucx.renderer.clone()),
+            self.appcx.game_surface.clone(),
+        )
+        .w_full()
+        .h_full()
+        .min_h_4()
+        .min_w_4();
+
+        let content = self.appcx.emucx.read(cx).content_title();
+        let view = v_flex()
+            .h_full()
+            .w_full()
+            .justify_end()
+            .pchan_actions(self, cx)
+            .child(div().w_full().flex_grow_1().child(surface))
+            .child({
+                let theme = cx.theme();
+                let frame_time_limited = self.appcx.emucx.read(cx).frame_time_limited;
+                let frame_time_limited_secs = frame_time_limited.as_secs_f32();
+                let frame_time_limited_ms = frame_time_limited.as_millis();
+                let frame_time_ms = self
+                    .appcx
+                    .emucx
+                    .read(cx)
+                    .frame_times
+                    .iter()
+                    .copied()
+                    .fold(0u64, |acc, ms| acc + u64::from(ms))
+                    / self.appcx.emucx.read(cx).frame_times.occupied_len().max(1) as u64;
+
+                let _running = self.appcx.emucx.read(cx).runner.running;
+                let fps = 1.0 / frame_time_limited_secs;
+                let speed = 16 * 100 / (frame_time_limited_ms.max(1));
+                let cpu_mode = self.appcx.emucx.read(cx).runner.mode();
+                let resolution = self.appcx.emucx.read(cx).emu.gpu.gpustat.resolution();
+                let video_mode = self.appcx.emucx.read(cx).emu.gpu.gpustat.video_mode();
+
+                h_flex()
+                    .text_sm()
+                    .text_color(theme.foreground)
+                    .bg(theme.background)
+                    .border_t_1()
+                    .border_color(theme.border)
+                    .justify_end()
+                    .whitespace_nowrap()
+                    .flex_nowrap()
+                    .overflow_hidden()
+                    .px_4()
+                    .gap_4()
+                    .child(div().child(format!("{cpu_mode:?}")))
+                    .child(Separator::vertical().h_full())
+                    .child(div().child(format!("{}x{} {}", resolution.x, resolution.y, video_mode)))
+                    .when(frame_time_limited_secs != 0.0, |this| {
+                        this.child(Separator::vertical().h_full())
+                            .child(div().w(rems(7.)).child(format!("{fps:.0} FPS ({speed}%)")))
+                    })
+                    .when(frame_time_ms != 0, |this| {
+                        this.child(Separator::vertical().h_full())
+                            .child(div().w(rems(2.)).child(format!("{frame_time_ms}ms")))
+                    })
+            });
+
+        view.wrap_window(cx).title(None).content(content)
+    }
+}
+
+fn listener<T, A, R, U>(entity: &Entity<T>, func: U) -> impl Fn(&A, &mut App) -> R + use<T, A, R, U>
+where
+    T: 'static,
+    U: Fn(&mut T, &A, &mut Context<T>) -> R,
+{
+    let e = entity.clone();
+    move |action: &A, cx: &mut App| e.update(cx, |e, cx| func(e, action, cx))
+}
+
+trait PchanAppActions: Sized + 'static {
+    fn appcx(&self) -> &AppCx;
+
+    fn run(&mut self, _: &Run, _: &mut Window, cx: &mut Context<Self>) {
+        self.appcx().emucx.update(cx, |emucx, _| {
+            emucx.runner.running = true;
+            emucx.running_notify.notify(usize::MAX);
+        });
+        cx.notify();
+    }
+
+    fn pause<T: 'static>(&mut self, _: &Pause, _: &mut Window, cx: &mut Context<T>) {
+        self.appcx().emucx.update(cx, |emucx, _| {
+            emucx.runner.running = false;
+        });
+        cx.notify();
+    }
+
+    fn toggle_run(&mut self, _: &ToggleRun, _: &mut Window, cx: &mut Context<Self>) {
+        self.appcx().emucx.update(cx, |emucx, cx| {
+            if emucx.runner.running {
+                emucx.runner.running = false;
+            } else {
+                emucx.runner.running = true;
+                emucx.running_notify.notify(usize::MAX);
+            }
+            cx.notify();
+        });
+        cx.notify();
+    }
+
+    fn hard_reset(&mut self, _: &HardReset, _: &mut Window, cx: &mut Context<Self>) {
+        self.appcx().emucx.update(cx, |emucx, cx| {
+            emucx.runner.frame_idx = 0;
+
+            emucx.emu.gpu.wait_for_render_result();
+            let bios_path = emucx.emu.boot.bios_path.clone();
+            let alloc = emucx.emu.alloc;
+            emucx.emu.gpu.reset_renderer();
+            let mut new = Emu::new_in(alloc);
+            new.set_bios_path(bios_path);
+            new.load_bios(alloc).unwrap();
+            new.cpu.jump_to_bios();
+            new.tty.set_tracing();
+
+            mem::swap(&mut new.gpu.conn, &mut emucx.emu.gpu.conn);
+            new.spu.put_prod(emucx.emu.spu.take_prod());
+
+            emucx.emu = new;
+            self.appcx().game_surface.update(cx, |surface, _| {
+                surface.clear(&emucx.renderer);
+            });
+        });
+        cx.notify();
+    }
+
+    fn unload_content(&mut self, _: &UnloadContent, _: &mut Window, _: &mut Context<Self>) {}
+
+    fn set_speed(&mut self, speed: &SetSpeed, _: &mut Window, cx: &mut Context<Self>) {
+        self.appcx().emucx.update(cx, |emucx, _| {
+            emucx.runner.config.speed = speed.speed;
+        });
+        self.appcx().app.update(cx, |app, cx| {
+            app.set_menus(cx);
+        });
+        cx.notify();
+    }
+
+    fn set_run_once(&mut self, cx: &mut Context<Self>) {
+        self.appcx().emucx.update(cx, |emucx, _| {
+            emucx.runner.running = true;
+            emucx.run_once = true;
+            emucx.running_notify.notify(usize::MAX);
+        });
+    }
+
+    fn step_block(&mut self, _: &StepBlock, _: &mut Window, cx: &mut Context<Self>) {
+        self.set_run_once(cx);
+    }
+    fn step_instruction(&mut self, _: &StepInstruction, _: &mut Window, cx: &mut Context<Self>) {
+        self.set_run_once(cx);
+    }
+    fn step_frame(&mut self, _: &StepFrame, _: &mut Window, cx: &mut Context<Self>) {
+        self.appcx().emucx.update(cx, |emucx, _| {
+            emucx.runner.running = true;
+            emucx.run_for_one_frame = true;
+            emucx.running_notify.notify(usize::MAX);
+        });
+    }
+}
+
+trait RegisterPchanActions {
+    fn pchan_actions<T: PchanAppActions>(self, view: &T, cx: &mut Context<T>) -> Self;
+}
+
+impl<E> RegisterPchanActions for E
+where
+    E: IntoElement + gpui::InteractiveElement,
+{
+    fn pchan_actions<T: PchanAppActions>(self, view: &T, cx: &mut Context<T>) -> Self {
+        let running = view.appcx().emucx.read(cx).runner.running;
+
+        self.when(running, |this| this.on_action(cx.listener(T::pause)))
+            .when(!running, |this| this.on_action(cx.listener(T::run)))
+            .when(
+                view.appcx().emucx.read(cx).content_path().is_some(),
+                |this| this.on_action(cx.listener(T::unload_content)),
+            )
+            .map(|this| match view.appcx().emucx.read(cx).runner.mode() {
+                RunnerMode::Dynarec => this.on_action(cx.listener(T::step_block)),
+                RunnerMode::Interpreter => this.on_action(cx.listener(T::step_instruction)),
+            })
+            .on_action(cx.listener(T::step_frame))
+            .on_action(cx.listener(T::hard_reset))
+            .on_action(cx.listener(T::set_speed))
+            .on_action(cx.listener(T::toggle_run))
+            .track_focus(&view.appcx().focus_handle)
+    }
+}
+
+fn set_subwindow<T: Action, V: Render + PchanAppActions>(
     app: &Entity<PChanApp>,
     view: &Entity<V>,
     cx: &mut App,
     get_field: for<'a> fn(&'a mut PChanApp) -> &'a mut Option<Subwindow<V>>,
+    window_options: impl Fn(&App) -> WindowOptions + 'static,
 ) {
+    cx.on_action({
+        let app = app.clone();
+        move |close: &CloseWindow, cx| {
+            cx.propagate();
+            let app = app.clone();
+            let close = close.clone();
+            cx.defer(move |cx| {
+                let mut window = app.update(cx, |app, _| get_field(app).clone());
+                if let Some(sw) = &mut window {
+                    _ = sw
+                        .handle
+                        .update(cx, |_, win, _| {
+                            if win.window_handle().window_id() == close.id {
+                                win.minimize_window();
+                                sw.active = false;
+                            }
+                        })
+                        .inspect_err(|err| eprintln!("{err}"));
+                }
+                app.update(cx, |app, cx| {
+                    *get_field(app) = window;
+                    app.set_menus(cx);
+                });
+            });
+        }
+    });
+    let window_options = Arc::new(window_options);
     cx.on_action({
         let app = app.clone();
         let view = view.clone();
         move |_: &T, cx| {
             let app_view = app.clone();
-            let mips_view = view.clone();
+            let view = view.clone();
+            let focus_handle = view.read(cx).appcx().focus_handle.clone();
+            let window_options = window_options.clone();
             cx.defer(move |cx| {
-                let res: miette::Result<()> = app_view.update(cx, |app, cx| {
-                    let app_view = app_view.clone();
-                    match get_field(app) {
-                        Some(win) => {
-                            let active = win
-                                .handle
-                                .update(cx, |_, win, _| {
-                                    if win.is_window_active() {
-                                        win.minimize_window();
-                                        false
-                                    } else {
-                                        win.activate_window();
-                                        true
-                                    }
-                                })
-                                .map_err(|err| miette!("{err}"))?;
-                            win.active = active;
-                        }
-                        None => {
-                            let app_view = app_view.clone();
-                            let win = cx
-                                .open_window(
-                                    gpui::WindowOptions {
-                                        window_background: WindowBackgroundAppearance::Blurred,
-                                        window_decorations: Some(WindowDecorations::Client),
-                                        window_bounds: Some(WindowBounds::Windowed(bounds(
-                                            Point::new(32.0.into(), 32.0.into()),
-                                            size(320.0.into(), 600.0.into()),
-                                        ))),
-                                        titlebar: Some(TitlebarOptions {
-                                            title:                  None,
-                                            appears_transparent:    true,
-                                            traffic_light_position: Some(Point {
-                                                x: 8.0.into(),
-                                                y: 8.0.into(),
-                                            }),
-                                        }),
-                                        focus: true,
-                                        ..default()
-                                    },
-                                    move |win, cx| {
-                                        win.on_window_should_close(cx, move |_, cx| {
-                                            app_view.update(cx, |app, cx| {
-                                                *get_field(app) = None;
-                                                app.set_menus(cx);
-                                            });
-                                            true
+                let window = app_view.update(cx, |app, _| get_field(app).clone());
+                let active = match window {
+                    Some(win) => win
+                        .handle
+                        .update(cx, |_, win, cx| {
+                            if win.is_window_active() {
+                                win.minimize_window();
+                                false
+                            } else {
+                                win.activate_window();
+                                win.focus(&focus_handle, cx);
+                                true
+                            }
+                        })
+                        .map_err(|err| miette!("{err}"))
+                        .unwrap(),
+                    None => {
+                        let win = cx
+                            .open_window(window_options(cx), {
+                                let app_view = app_view.clone();
+                                move |win, cx| {
+                                    cx.bind_keys([KeyBinding::new(
+                                        "cmd-w",
+                                        CloseWindow {
+                                            id: win.window_handle().window_id(),
+                                        },
+                                        None,
+                                    )]);
+                                    win.on_window_should_close(cx, move |_, cx| {
+                                        app_view.update(cx, |app, cx| {
+                                            *get_field(app) = None;
+                                            app.set_menus(cx);
                                         });
-                                        mips_view
-                                    },
-                                )
-                                .map_err(|err| miette!("{err}"))?;
+                                        true
+                                    });
+                                    win.focus(&focus_handle, cx);
+                                    view
+                                }
+                            })
+                            .map_err(|err| miette!("{err}"))
+                            .unwrap();
 
+                        app_view.update(cx, |app, _| {
                             *get_field(app) = Some(Subwindow {
                                 handle: win,
                                 active: true,
                             });
-                        }
-                    };
+                        });
 
+                        true
+                    }
+                };
+
+                app_view.update(cx, |app, cx| {
+                    if let Some(sw) = get_field(app) {
+                        sw.active = active
+                    }
                     app.set_menus(cx);
-
-                    Ok(())
-                });
-                res.unwrap();
+                })
             });
         }
     });
@@ -300,34 +896,24 @@ impl AssetSource for PchanAssets {
     }
 }
 
-struct Debugger {
-    emucx:        Entity<EmuContext>,
-    game_surface: Entity<SurfaceState>,
-
-    surface_mode:     Entity<SelectState<Vec<SurfaceMode>>>,
-    emu_speed_select: Entity<SelectState<Vec<EmuSpeed>>>,
-
-    cached_reg_names:    [SharedString; 32],
-    cpu_control_reg_tab: usize,
-    cpu_control_subs:    [Option<Subscription>; 32],
-
-    exec_control_panel_open: bool,
-    content_path:            ContentPath,
-
-    memview: Entity<MemviewTable>,
-}
-
 struct MipsView {
     scroll_handle: VirtualListScrollHandle,
-    emucx:         Entity<EmuContext>,
+    appcx:         AppCx,
     pc:            u32,
 }
 
+impl PchanAppActions for MipsView {
+    fn appcx(&self) -> &AppCx {
+        &self.appcx
+    }
+}
+
 impl Render for MipsView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let view = cx.entity();
         let theme = cx.theme().clone();
-        let pc = self.emucx.read(cx).emu.cpu.pc;
+
+        let pc = self.appcx().emucx.read(cx).emu.cpu.pc;
 
         if pc != self.pc {
             self.scroll_handle
@@ -339,7 +925,12 @@ impl Render for MipsView {
             .w_full()
             .text_color(theme.foreground)
             .h_full()
-            .child(sel_text(format!("$pc: {}", hex(pc))).font_family(&theme.mono_font_family))
+            .bg(transparent_black())
+            .child(
+                sel_text(format!("$pc: {}", hex(pc)))
+                    .bg(theme.background.opacity(0.9))
+                    .font_family(&theme.mono_font_family),
+            )
             .child(
                 VirtualList::new(
                     "mips-dump-list",
@@ -349,21 +940,21 @@ impl Render for MipsView {
 
                         let view = view.read(cx);
                         let addr = idx as u32 * 4;
-                        let instr = view.emucx.read(cx).emu.fastmem_read::<OpCode>(addr);
+                        let instr = view.appcx.emucx.read(cx).emu.fastmem_read::<OpCode>(addr);
                         let instr = instr
                             .map(DecodedOp::new)
                             .map_or(Cow::Borrowed("N/A"), |instr| Cow::Owned(format!("{instr}")));
                         let is_pc = pc & 0x1fff_ffff == addr & 0x1fff_ffff;
+                        let mut color = cx.theme().background.opacity(0.9);
+                        if idx.is_multiple_of(2) {
+                            color.lightness += 0.05;
+                        }
                         h_flex()
                             .w_full()
                             .whitespace_nowrap()
                             .overflow_hidden()
                             .font_family(&theme.mono_font_family)
-                            .bg(theme.foreground.opacity(if idx.is_multiple_of(2) {
-                                0.0
-                            } else {
-                                0.08
-                            }))
+                            .bg(color)
                             .child(
                                 sel_text_keyed(
                                     ElementId::NamedInteger(
@@ -392,7 +983,13 @@ impl Render for MipsView {
                 .track_scroll(&self.scroll_handle),
             );
 
-        window_wrapper(cx, "MIPS Dump", content)
+        content
+            .pchan_actions(self, cx)
+            .wrap_window(cx)
+            .title(Some("MIPS Dump"))
+            .content(self.appcx.emucx.read(cx).content_title())
+            .into_element()
+            .bg(transparent_black())
     }
 }
 
@@ -405,17 +1002,18 @@ enum ContentPath {
 pub struct EmuContext {
     emu:                Emu<&'static Bump>,
     runner:             Runner<&'static Bump>,
-    running:            bool,
     run_for_one_frame:  bool,
+    run_once:           bool,
     running_notify:     event_listener::Event,
     renderer:           Arc<pchan_gpu::Renderer>,
     frame_time:         Duration,
     frame_time_limited: Duration,
+    frame_times:        StaticRb<u16, 10>,
     real_time_running:  Duration,
     cycles_per_run:     u64,
     start:              Instant,
-    speed_limit:        EmuSpeed,
     pc_history:         StaticRb<u32, 50>,
+    content_path:       ContentPath,
     alloc:              &'static Bump,
 }
 
@@ -426,113 +1024,13 @@ impl EventEmitter<RenderedFrameEvent> for EmuContext {}
 impl EventEmitter<ResetEvent> for EmuContext {}
 
 impl EmuContext {
-    pub fn hard_reset(&mut self) -> miette::Result<()> {
-        let bios_path = self.emu.boot.bios_path.clone();
-        self.renderer.reset();
-        self.emu = Emu::new_in(self.alloc);
-        self.emu.set_bios_path(bios_path);
-        self.emu.load_bios(self.alloc).into_diagnostic()?;
-        self.emu.gpu.vram = pchan_emu::gpu::create_vram();
-        self.emu.cpu.jump_to_bios();
-        self.renderer.connect_emu(&mut self.emu);
-        self.emu.tty.set_tracing();
-
-        let mut audio_task = AudioTask::new()?;
-        pchan_bind::bind_audio(&mut audio_task, &mut self.emu);
-        let audio_stream = audio_task.start()?;
-        mem::forget(audio_stream);
-
-        Ok(())
-    }
-
-    pub fn execute(&mut self) -> miette::Result<()> {
-        std::panic::catch_unwind(AssertUnwindSafe(|| {
-            self.runner.execute(&mut self.emu);
-        }))
-        .map_err(|_| miette!("emulator panicked"))?;
-        self.pc_history.push_overwrite(self.emu.cpu.pc);
-        if self
-            .emu
-            .dbg
-            .break_on(self.emu.cpu.pc, BreakpointKind::EXECUTE)
-        {
-            self.running = false;
-        }
-
-        Ok(())
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum EmuSpeed {
-    Unlimited,
-    Percent(u16),
-}
-
-impl SelectItem for EmuSpeed {
-    type Value = Self;
-
-    fn title(&self) -> SharedString {
-        match self {
-            EmuSpeed::Unlimited => "Unlimied".into(),
-            EmuSpeed::Percent(p) => format!("{p}%").into(),
-        }
-    }
-
-    fn value(&self) -> &Self::Value {
-        self
-    }
-}
-
-#[derive(Debug, Default, Clone, Copy, PartialEq)]
-enum SurfaceMode {
-    Background,
-    #[default]
-    Pane,
-}
-
-impl SelectItem for SurfaceMode {
-    type Value = Self;
-
-    fn title(&self) -> SharedString {
-        match self {
-            SurfaceMode::Background => "Background".into(),
-            SurfaceMode::Pane => "Pane".into(),
-        }
-    }
-
-    fn value(&self) -> &Self::Value {
-        self
-    }
-}
-
-impl EmuContext {
     pub fn runner_mode(&self) -> RunnerMode {
         self.runner.mode()
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-struct RunnerModeWrapper(Option<RunnerMode>);
-
-impl SelectItem for RunnerModeWrapper {
-    type Value = Option<RunnerMode>;
-
-    fn title(&self) -> SharedString {
-        match self.0 {
-            Some(RunnerMode::Dynarec) => "Dynarec".into(),
-            Some(RunnerMode::Interpreter) => "Interpreter".into(),
-            None => "Hybrid".into(),
-        }
-    }
-
-    fn value(&self) -> &Self::Value {
-        &self.0
-    }
-}
-
 use miette::{IntoDiagnostic, miette};
-use pchan_emu::run::{Runner, RunnerMode};
+use pchan_emu::run::{EmuSpeed, Runner, RunnerMode};
 
 use crate::game_surface::{GameSurface, SurfaceState, create_target};
 
@@ -561,331 +1059,41 @@ impl EmuContext {
         let gpu = Arc::new(gpu);
         gpu.clone().start();
 
+        let mut runner = Runner::new_in(alloc).with_config(pchan_emu::run::RunnerConfig {
+            force_mode: Some(pchan_emu::run::RunnerMode::Dynarec),
+            speed:      pchan_emu::run::EmuSpeed::Percentage(NonZeroU16::new(100).unwrap()),
+        });
+        runner.running = false;
+
         Ok(EmuContext {
             emu,
             renderer: gpu.clone(),
-            running: false,
             running_notify: event_listener::Event::new(),
-            runner: Runner::new_in(alloc).with_config(pchan_emu::run::RunnerConfig {
-                force_mode: Some(pchan_emu::run::RunnerMode::Dynarec),
-                speed:      pchan_emu::run::EmuSpeed::Percentage(NonZeroU16::new(100).unwrap()),
-            }),
+            run_once: false,
+            runner,
             frame_time: Duration::ZERO,
             frame_time_limited: Duration::ZERO,
+            frame_times: StaticRb::default(),
             start: Instant::now(),
             cycles_per_run: 0,
-            speed_limit: EmuSpeed::Percent(100),
             real_time_running: Duration::ZERO,
             run_for_one_frame: false,
             alloc,
             pc_history: StaticRb::default(),
-        })
-    }
-}
-
-impl Debugger {
-    pub fn new(window: &mut Window, cx: &mut App, alloc: &'static Bump) -> miette::Result<Self> {
-        let mut emu = Emu::new_in(alloc);
-        emu.set_bios_path(std::env::var("PCHAN_BIOS").into_diagnostic()?);
-        emu.load_bios(alloc).into_diagnostic()?;
-        emu.cpu.jump_to_bios();
-        emu.tty.set_tracing();
-
-        let mut audio_task = AudioTask::new()?;
-        pchan_bind::bind_audio(&mut audio_task, &mut emu);
-        let audio_stream = audio_task.start()?;
-        mem::forget(audio_stream);
-
-        let gpu = pchan_gpu::Renderer::try_new();
-        let gpu = cx.foreground_executor().block_on(gpu).into_diagnostic()?;
-
-        let mut dp = gpu.display_uniforms.app.lock().unwrap();
-        dp.screen_rect.x = 320;
-        dp.screen_rect.y = 240;
-        drop(dp);
-
-        gpu.connect_emu(&mut emu);
-        let gpu = Arc::new(gpu);
-        gpu.clone().start();
-
-        let (target, target_buf) = create_target(&gpu, &gpu.display_uniforms.app.lock().unwrap());
-
-        let cached_reg_names = core::array::from_fn(|reg| {
-            let reg = match reg as u8 {
-                0 => "0",
-                pchan_emu::cpu::FP => "fp",
-                other => REG_STR[other as usize],
-            };
-            format!("${reg}").into()
-        });
-
-        let emucx = cx.new(|_| EmuContext {
-            emu,
-            renderer: gpu.clone(),
-            running: false,
-            running_notify: event_listener::Event::new(),
-            runner: Runner::new_in(alloc).with_config(pchan_emu::run::RunnerConfig {
-                force_mode: Some(pchan_emu::run::RunnerMode::Dynarec),
-                speed:      pchan_emu::run::EmuSpeed::Percentage(NonZeroU16::new(100).unwrap()),
-            }),
-            frame_time: Duration::ZERO,
-            frame_time_limited: Duration::ZERO,
-            start: Instant::now(),
-            cycles_per_run: 0,
-            speed_limit: EmuSpeed::Percent(100),
-            real_time_running: Duration::ZERO,
-            run_for_one_frame: false,
-            alloc,
-            pc_history: StaticRb::default(),
-        });
-
-        let surface_state = cx.new(|_| SurfaceState::new(target.clone(), target_buf.clone()));
-
-        let memview = cx.new(|cx| {
-            let mut memview_scroll = VirtualListScrollHandle::new();
-            memview_scroll.scroll_to(cx, 0x0000_0000, ScrollStrategy::Top);
-            MemviewTable {
-                scroll:   memview_scroll,
-                emucx:    emucx.clone(),
-                editing:  None,
-                selected: None,
-            }
-        });
-
-        let emu_speed_select = cx.new(|cx| {
-            SelectState::new(
-                vec![
-                    EmuSpeed::Percent(100),
-                    EmuSpeed::Percent(150),
-                    EmuSpeed::Percent(200),
-                    EmuSpeed::Unlimited,
-                ],
-                Some(IndexPath::default()),
-                window,
-                cx,
-            )
-        });
-        let surface_mode = cx.new(|cx| {
-            SelectState::new(
-                vec![SurfaceMode::Pane, SurfaceMode::Background],
-                Some(IndexPath::default()),
-                window,
-                cx,
-            )
-        });
-
-        cx.subscribe(&emu_speed_select, {
-            let emucx = emucx.clone();
-            move |_, event: &SelectEvent<Vec<EmuSpeed>>, cx| match event {
-                SelectEvent::Confirm(value) => {
-                    let Some(selected_value) = value else {
-                        return;
-                    };
-                    emucx.update(cx, |emucx, _| emucx.speed_limit = *selected_value)
-                }
-            }
-        })
-        .detach();
-
-        cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
-
-        cx.on_action({
-            let emucx = emucx.clone();
-            move |_: &Quit, cx| {
-                emucx.read(cx).emu.dma.dump_cdrom_data();
-                cx.quit();
-            }
-        });
-
-        cx.on_action::<HardReset>({
-            let emucx = emucx.clone();
-            move |_, cx| {
-                emucx.update(cx, |emucx, _| emucx.hard_reset()).unwrap();
-            }
-        });
-
-        cx.on_action::<Step>({
-            let emucx = emucx.clone();
-            let surface_state = surface_state.clone();
-            move |_, cx| {
-                surface_state.update(cx, |surface, _| {
-                    surface.clear(&gpu);
-                });
-                emucx.update(cx, |emucx, _| {
-                    let _ = emucx.execute();
-                    emucx.running_notify.notify(usize::MAX);
-                });
-            }
-        });
-
-        cx.on_action::<StepFrame>({
-            let emucx = emucx.clone();
-            move |_, cx| {
-                emucx.update(cx, |emucx, _| {
-                    emucx.run_for_one_frame = true;
-                    emucx.running = true;
-                    emucx.running_notify.notify(usize::MAX);
-                });
-            }
-        });
-
-        Ok(Self {
-            emucx,
-            game_surface: surface_state,
-            surface_mode,
-
-            memview,
-
-            cached_reg_names,
-            cpu_control_subs: [const { None }; 32],
-            cpu_control_reg_tab: 0,
-            exec_control_panel_open: true,
             content_path: ContentPath::None,
-            emu_speed_select,
         })
-    }
-
-    pub fn start_emu_loop(this: &Entity<Debugger>, cx: &mut App, mips: Entity<MipsView>) {
-        let surface_state = this.read(cx).game_surface.clone();
-        let emucx = this.read(cx).emucx.clone();
-        let dbg = this.clone();
-        cx.spawn_with_priority(Priority::High, {
-            async move |cx| {
-                loop {
-                    match Self::emu_loop(cx, &emucx, &surface_state, &dbg, &mips).await {
-                        Ok(_) => {}
-                        Err(_) => {
-                            emucx.update(cx, |emucx, _| {
-                                emucx.running = false;
-                                _ = emucx.hard_reset();
-                            });
-                        }
-                    }
-                }
-            }
-        })
-        .detach();
-    }
-
-    async fn emu_loop(
-        cx: &mut AsyncApp,
-        emucx: &Entity<EmuContext>,
-        surface_state: &Entity<SurfaceState>,
-        debugger: &Entity<Debugger>,
-        mips: &Entity<MipsView>,
-    ) -> miette::Result<()> {
-        let mut yield_time = Duration::ZERO;
-        let mut first_frame_rendered = false;
-
-        loop {
-            let run_listener = cx.read_entity(emucx, |emucx, _| match emucx.running {
-                false => Some(emucx.running_notify.listen()),
-                true => None,
-            });
-            if let Some(run_listener) = run_listener {
-                debugger.update(cx, |_, cx| {
-                    cx.notify();
-                });
-                mips.update(cx, |_, cx| {
-                    cx.notify();
-                });
-                run_listener.await;
-                emucx.update(cx, |emucx, _| {
-                    emucx.start = Instant::now();
-                    emucx.cycles_per_run = 0;
-                    emucx.real_time_running = Duration::ZERO;
-                });
-            }
-            let start = Instant::now();
-            let old_cycles = cx.read_entity(emucx, |emucx, _| emucx.emu.cpu.cycles);
-            emucx.update(cx, |emucx, cx| -> miette::Result<()> {
-                if emucx.running {
-                    surface_state.as_mut(cx).start_display_draw(&emucx.renderer);
-
-                    while !emucx.emu.consume_vblank_signal() {
-                        emucx.execute()?;
-                        if !emucx.running {
-                            break;
-                        }
-                    }
-
-                    let surface_state = surface_state.as_mut(cx);
-                    surface_state.wait_for_display_draw(&emucx.renderer);
-                    surface_state.start_convert_render(&emucx.renderer);
-                    drop(surface_state);
-                    cx.emit(RenderedFrameEvent);
-
-                    if emucx.run_for_one_frame {
-                        emucx.run_for_one_frame = false;
-                        emucx.running = false;
-                    }
-                }
-                Ok(())
-            })?;
-            let emu_frame_time = start.elapsed();
-            yield_time += emu_frame_time;
-
-            let frame_limit = match cx.read_entity(emucx, |emucx, _| emucx.speed_limit) {
-                EmuSpeed::Unlimited => Duration::ZERO,
-                EmuSpeed::Percent(p) => Duration::from_micros(16_667 * 100 / u64::from(p)),
-            };
-
-            let yield_max = cmp::max(frame_limit * 4, Duration::from_micros(16_667 * 4));
-            if yield_time > yield_max {
-                debugger.update(cx, |_, cx| {
-                    cx.notify();
-                });
-                mips.update(cx, |_, cx| {
-                    cx.notify();
-                });
-                yield_time = Duration::ZERO;
-                futures_lite::future::yield_now().await;
-            }
-
-            let (frame_time, frame_limit) = emucx.update(cx, |emucx, _| {
-                let frame_time = start.elapsed();
-                emucx.frame_time = frame_time;
-                yield_time += frame_time;
-
-                // cycles get reset when doing a hard reset, so they are not
-                // strictly monotonic
-                let delta_cycles = emucx.emu.cpu.cycles.saturating_sub(old_cycles);
-                emucx.cycles_per_run += delta_cycles;
-
-                emucx.frame_time_limited = frame_time.max(frame_limit);
-                if first_frame_rendered {
-                    emucx.real_time_running += emu_frame_time.max(frame_limit);
-                } else {
-                    emucx.cycles_per_run = 0;
-                    emucx.real_time_running = Duration::ZERO;
-                    first_frame_rendered = true;
-                }
-
-                (frame_time, frame_limit)
-            });
-            println!(
-                "emu: {}ms, emu+gpui: {}ms",
-                emu_frame_time.as_millis(),
-                frame_time.as_millis()
-            );
-
-            let yielded = spin_sleep(cx, frame_limit.saturating_sub(frame_time)).await;
-            if yielded {
-                yield_time = Duration::ZERO;
-            }
-        }
     }
 }
 
-async fn spin_sleep(cx: &AsyncApp, duration: Duration) -> bool {
-    let sleep_for = duration.saturating_sub(Duration::from_millis(3));
-    let deadline = Instant::now() + duration;
-
+async fn spin_sleep2(cx: &AsyncApp, deadline: Instant) -> bool {
     let mut yielded = false;
+    let sleep_for = deadline
+        .saturating_duration_since(Instant::now())
+        .saturating_sub(Duration::from_millis(3));
     if sleep_for > Duration::ZERO {
         yielded = true;
         cx.background_executor()
-            .spawn_with_priority(Priority::Low, cx.background_executor().timer(sleep_for))
+            .spawn_with_priority(Priority::High, cx.background_executor().timer(sleep_for))
             .await;
     }
     loop {
@@ -896,484 +1104,129 @@ async fn spin_sleep(cx: &AsyncApp, duration: Duration) -> bool {
     }
 }
 
-impl Render for Debugger {
-    fn render(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> impl gpui::prelude::IntoElement {
-        let window_height = window.viewport_size().height;
+fn titlebar(title: Option<&str>, content: Option<String>, theme: &Theme) -> impl IntoElement {
+    use core::fmt::Write;
 
-        let _theme = cx.theme();
-
-        let surface = self.game_surface(cx);
-        let emucx = self.emucx.read(cx);
-        let surface_mode = self
-            .surface_mode
-            .read(cx)
-            .selected_value()
-            .copied()
-            .unwrap_or(SurfaceMode::Background);
-
-        v_flex()
-            .child(TextSelectionLayer)
-            .h(window_height)
-            .child(self.header(
-                window,
-                cx,
-                emucx.frame_time,
-                emucx.frame_time_limited,
-                emucx.cycles_per_run,
-                emucx.real_time_running,
-            ))
-            .child(
-                div()
-                    .h_full()
-                    .bg(transparent_white())
-                    .when(surface_mode == SurfaceMode::Background, |this| {
-                        this.child(div().absolute().w_full().h_full().child(surface))
-                    })
-                    .child(self.debugger_ui(window, cx).w_full().h_full()),
-            )
+    let mut title_text: String = "🐷🎗️ P-ちゃん".into();
+    _ = match title {
+        Some(title) => write!(title_text, " | {title}"),
+        None => write!(title_text, " ({})", git_rev!()),
+    };
+    if let Some(content) = content {
+        _ = write!(title_text, " | {content}");
     }
-}
-
-fn titlebar(cx: &impl Deref<Target = App>, title: &str) -> impl IntoElement {
-    let theme = cx.theme();
 
     h_flex()
         .text_sm()
         .bg(theme.title_bar)
-        .px_4()
-        .pl(rems(4.5))
         .py_1()
         .gap_2()
         .items_center()
-        .text_color(theme.table_head_foreground)
-        .child(format!("🐷🎗️ P-ちゃん | {title}"))
-}
-
-fn window_wrapper(
-    cx: &impl Deref<Target = App>,
-    title: &str,
-    view: impl IntoElement,
-) -> impl IntoElement {
-    v_flex().w_full().h_full().child(titlebar(cx, title)).child(
-        div()
-            .backdrop_blur(8.0)
-            .bg(cx.theme().background.opacity(0.8))
-            .w_full()
-            .h_full()
-            .child(view),
-    )
-}
-
-impl Debugger {
-    fn game_surface(&self, cx: &mut impl AppContext) -> GameSurface {
-        GameSurface::new(
-            "game-surface",
-            cx.read_entity(&self.emucx, |emucx, _| emucx.renderer.clone()),
-            self.game_surface.clone(),
-        )
+        .justify_center()
+        .font_bold()
         .w_full()
-        .h_full()
-        .min_h_4()
-        .min_w_4()
+        .text_color(theme.foreground)
+        .relative()
+        .child(title_text)
+        .child(
+            div()
+                .bg(theme.background)
+                .absolute()
+                .top_0()
+                .left_0()
+                .w(rems(5.))
+                .h_full(),
+        )
+}
+
+fn window_wrapper<U: IntoElement>(
+    title: Option<&str>,
+    content: Option<String>,
+    theme: &Theme,
+    view: U,
+) -> Div {
+    v_flex()
+        .size_full()
+        .child(titlebar(title, content, theme))
+        .backdrop_blur(8.0)
+        .bg(theme.background.opacity(0.9))
+        .text_color(theme.foreground)
+        .child(div().w_full().h_full().child(view))
+}
+
+struct WindowWrapper<'a, T> {
+    title:   Option<&'a str>,
+    content: Option<String>,
+    theme:   Theme,
+    view:    T,
+}
+
+impl<T: IntoElement> IntoElement for WindowWrapper<'_, T> {
+    type Element = <Div as IntoElement>::Element;
+
+    fn into_element(self) -> Self::Element {
+        window_wrapper(self.title, self.content, &self.theme, self.view).into_element()
+    }
+}
+
+trait WrapWindow: Sized {
+    fn wrap_window<'a>(self, cx: &App) -> WindowWrapper<'a, Self>;
+}
+
+impl<T> WrapWindow for T
+where
+    T: IntoElement,
+{
+    fn wrap_window<'a>(self, cx: &App) -> WindowWrapper<'a, Self> {
+        WindowWrapper {
+            title:   None,
+            content: None,
+            theme:   cx.theme().clone(),
+            view:    self,
+        }
+    }
+}
+
+impl<'a, T> WindowWrapper<'a, T> {
+    fn title(mut self, title: Option<&'a str>) -> Self {
+        self.title = title;
+        self
     }
 
-    fn header(
-        &self,
-        win: &mut Window,
-        cx: &mut Context<Debugger>,
-        frame_time: Duration,
-        frame_time_limited: Duration,
-        cycles: u64,
-        real_time: Duration,
-    ) -> impl IntoElement {
-        let sim_time_ms = cycles * 1000 / u64::from(pchan_emu::cpu::Cpu::CLOCK);
-        let sim_time_s = sim_time_ms as f64 / 1000.0;
-        let real_time_s = real_time.as_millis() as f64 / 1000.0;
-        let drift = ((sim_time_s - real_time_s) / sim_time_s) * 100.0;
-
-        let speed_percent = 16.667 / (frame_time_limited.as_micros() as f64 / 1000.0) * 100.0;
-
-        let runner_mode_select = win.use_state(cx, |win, cx| {
-            SelectState::new(
-                SearchableVec::new(vec![
-                    RunnerModeWrapper(Some(RunnerMode::Dynarec)),
-                    RunnerModeWrapper(Some(RunnerMode::Interpreter)),
-                    RunnerModeWrapper(None),
-                ]),
-                Some(IndexPath::default()),
-                win,
-                cx,
-            )
-            .searchable(true)
-        });
-        let view = cx.entity();
-        win.use_state(cx, |win, cx| {
-            cx.subscribe_in(
-                &runner_mode_select,
-                win,
-                move |_, _, ev: &SelectEvent<SearchableVec<RunnerModeWrapper>>, _, cx| {
-                    if let SelectEvent::Confirm(Some(mode)) = ev {
-                        view.read(cx).emucx.clone().update(cx, |emucx, _| {
-                            #[allow(clippy::needless_update)]
-                            emucx.runner.set_config(pchan_emu::run::RunnerConfig {
-                                force_mode: *mode,
-                                ..emucx.runner.config()
-                            })
-                        });
-                    }
-                },
-            )
-            .detach();
-        });
-
-        let theme = cx.theme();
-
-        h_flex()
-            .text_sm()
-            .bg(theme.title_bar)
-            .px_4()
-            .pl(rems(4.5))
-            .py_1()
-            .gap_2()
-            .items_center()
-            .border_color(theme.title_bar_border)
-            .border_b_1()
-            .text_color(theme.table_head_foreground)
-            .font_family(&theme.mono_font_family)
-            .child("🐷🎗️ P-ちゃん")
-            .child(
-                div().child(
-                    SelectView::new(&self.emu_speed_select)
-                        .title_prefix("Speed: ")
-                        .items_center()
-                        .small()
-                        .h_6()
-                        .min_h_0()
-                        .min_w_0()
-                        .flex_shrink_1()
-                        .flex_grow_0(),
-                ),
-            )
-            .child(
-                div().child(
-                    SelectView::new(&self.surface_mode)
-                        .title_prefix("Game: ")
-                        .items_center()
-                        .small()
-                        .h_6()
-                        .min_h_0()
-                        .min_w_0()
-                        .flex_shrink_1()
-                        .flex_grow_0(),
-                ),
-            )
-            .child(
-                div().child(
-                    SelectView::new(&runner_mode_select)
-                        .title_prefix("CPU: ")
-                        .items_center()
-                        .small()
-                        .h_6()
-                        .min_h_0()
-                        .min_w_0()
-                        .flex_shrink_1()
-                        .flex_grow_0(),
-                ),
-            )
-            .child(div().flex_grow_1())
-            .child(format!("frame: {:02}ms", frame_time.as_millis()))
-            .child(Separator::vertical())
-            .child(match cycles {
-                ..1_000 => format!("cycles: {cycles}"),
-                1_000..1_000_000 => format!("cycles: {}k", cycles / 1_000),
-                1_000_000..1_000_000_000 => format!("cycles: {}mil", cycles / 1_000),
-                1_000_000_000.. => format!("cycles: {}bil", cycles / 1_000),
-            })
-            .child(Separator::vertical())
-            .child(
-                h_flex()
-                    .child(div().text_color(theme.colors.yellow).child("sim"))
-                    .child("/")
-                    .child(div().text_color(theme.colors.blue).child("real"))
-                    .child(" time: ")
-                    .child(
-                        div()
-                            .text_color(theme.colors.yellow)
-                            .child(format!("{sim_time_s:01.2}s")),
-                    )
-                    .child("/")
-                    .child(
-                        div()
-                            .text_color(theme.colors.blue)
-                            .child(format!("{real_time_s:01.2}s")),
-                    )
-                    .child(" drift: ")
-                    .child(div().child(format!("{drift:.2}%")).text_color(match drift {
-                        ..0.0 => theme.colors.yellow,
-                        _ => theme.colors.blue,
-                    })),
-            )
-            .child(format!("{speed_percent:.2}%"))
+    fn content(mut self, content: Option<String>) -> Self {
+        self.content = content;
+        self
     }
+}
 
-    fn memview_jumpbar(&mut self, win: &mut Window, cx: &mut Context<Self>) -> Input {
-        let memview = self.memview.clone();
-        let input = win.use_state(cx, |win, cx| {
-            cx.subscribe_in(
-                &memview,
-                win,
-                move |input: &mut HexInputState, _, edit, win, cx| {
-                    input.input.update(cx, |input, cx| {
-                        input.set_value(hex(edit.address).as_str(), win, cx);
-                    });
-                    cx.notify();
-                },
-            )
-            .detach();
+struct BreakpointsView {
+    appcx: AppCx,
+}
 
-            HexInputState::new::<true, _>(None, win, cx, {
-                let memview = memview.clone();
-                move |value, cx| -> Option<()> {
-                    let value = value?;
-                    memview.update(cx, |memview, cx| {
-                        memview
-                            .scroll
-                            .scroll_to(cx, u64::from(value) / 16, ScrollStrategy::Top);
-                    });
-                    None
-                }
-            })
-        });
-        let theme = cx.theme();
-        Input::new(&input.read(cx).input)
-            .font_family(&theme.mono_font_family)
-            .prefix("Jump to: ")
+impl PchanAppActions for BreakpointsView {
+    fn appcx(&self) -> &AppCx {
+        &self.appcx
     }
+}
 
-    fn debugger_ui(
-        &mut self,
-        win: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement + Styled {
-        let theme = cx.theme().clone();
-        let surface_mode = self
-            .surface_mode
-            .read(cx)
-            .selected_value()
-            .copied()
-            .unwrap_or(SurfaceMode::Background);
-        let surface = self.game_surface(cx).clone();
-        let emucx = self.emucx.clone();
-        let show_vram = emucx
-            .read(cx)
-            .renderer
-            .display_uniforms
-            .app
-            .lock()
-            .unwrap()
-            .dp_debug;
-
-        v_flex()
-            .id("main")
-            .w_full()
-            .h_full()
-            .relative()
-            .text_color(theme.foreground)
-            .p_4()
-            .gap_2()
-            .bg(transparent_white())
-            .child(
-                div()
-                    .h_flex()
-                    .gap_2()
-                    .items_start()
-                    .flex_grow_1()
-                    .text_sm()
-                    .child(
-                        panel(&theme)
-                            .v_flex()
-                            .flex_grow_1()
-                            .min_w(rems(24.))
-                            .when(self.exec_control_panel_open, |this| this.min_h_full())
-                            .gap_2()
-                            .child(
-                                h_flex()
-                                    .justify_between()
-                                    .gap_2()
-                                    .child(
-                                        self.execution_header(cx, &theme).min_w_0().flex_grow_1(),
-                                    )
-                                    .child(
-                                        Button::new("toggle1")
-                                            .icon(IconName::ChevronDown)
-                                            .ghost()
-                                            .small()
-                                            .on_click({
-                                                cx.listener(move |this, _, _, cx| {
-                                                    this.exec_control_panel_open.toggle();
-                                                    cx.notify();
-                                                })
-                                            }),
-                                    ),
-                            )
-                            .when(self.exec_control_panel_open, |this| {
-                                this.child(
-                                    Collapsible::new()
-                                        .open(self.exec_control_panel_open)
-                                        .flex()
-                                        .flex_grow_1()
-                                        .h_full()
-                                        .w_full()
-                                        .content(
-                                            self.execution_control(cx, &theme)
-                                                .w_full()
-                                                .min_h_0()
-                                                .flex_grow_1(),
-                                        ),
-                                )
-                            }),
-                    )
-                    .when(surface_mode == SurfaceMode::Pane, |this| {
-                        this.child(
-                            panel(&theme)
-                                .v_flex()
-                                .flex_grow_1()
-                                .w_full()
-                                .h_full()
-                                .min_w_4()
-                                .min_h_4()
-                                .gap_2()
-                                .child(
-                                    Checkbox::new("display-vram-checkbox")
-                                        .checked(show_vram)
-                                        .label("VRAM")
-                                        .on_click({
-                                            let surface = surface.clone();
-                                            cx.listener(move |_, toggled, _, cx| {
-                                                surface.set_vram_view(*toggled);
-                                                cx.notify();
-                                            })
-                                        }),
-                                )
-                                .child(surface),
-                        )
-                    })
-                    .child(
-                        self.breakpoints(win, cx, &theme)
-                            .max_w(rems(20.))
-                            .min_w(rems(18.))
-                            .flex_grow_1()
-                            .h_full(),
-                    ),
-            )
-            // bottom panel
-            .child(
-                panel(&theme)
-                    .h_flex()
-                    .text_sm()
-                    .flex_grow_1()
-                    .max_h(rems(16.))
-                    .min_h_0()
-                    .w_full()
-                    .gap_2()
-                    .text_sm()
-                    .child(
-                        v_flex()
-                            .h_full()
-                            .min_h_0()
-                            .min_w_64()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .h_flex()
-                                    .items_center()
-                                    .flex_grow_0()
-                                    .gap_2()
-                                    .child(
-                                        div().child("Registers").text_color(theme.muted_foreground),
-                                    )
-                                    .child(self.cpu_control_tabbar(cx)),
-                            )
-                            .child(self.cpu_controls(win, cx).min_h_0().min_w_0().flex_grow_1()),
-                    )
-                    .child(
-                        v_flex()
-                            .flex_grow_1()
-                            .h_full()
-                            .min_h_0()
-                            .gap_2()
-                            .child(
-                                h_flex().h_8().child(
-                                    h_flex()
-                                        .gap_2()
-                                        .child("Memory")
-                                        .text_color(theme.muted_foreground)
-                                        .child(self.memview_jumpbar(win, cx).w_64())
-                                        .child(div().w(rems(6.)))
-                                        .child(div().child("Ascii")),
-                                ),
-                            )
-                            .child(
-                                panel(&theme)
-                                    .flex_grow_1()
-                                    .min_h_0()
-                                    .child(self.memview.clone()),
-                            ),
-                    )
-                    .child(
-                        v_flex()
-                            .h_full()
-                            .w(rems(11.5))
-                            .min_h_0()
-                            .gap_2()
-                            .child(
-                                h_flex().h_8().child(
-                                    h_flex()
-                                        .gap_2()
-                                        .child("Mem Inspector")
-                                        .text_color(theme.muted_foreground),
-                                ),
-                            )
-                            .child(
-                                panel(&theme)
-                                    .flex_grow_1()
-                                    .w_full()
-                                    .min_h_0()
-                                    .px_0()
-                                    .child(self.mem_inspector(cx, &theme)),
-                            ),
-                    ),
-            )
-    }
-
-    fn breakpoints(
-        &self,
-        win: &mut Window,
-        cx: &mut Context<Self>,
-        theme: &Theme,
-    ) -> impl IntoElement + Styled {
+impl Render for BreakpointsView {
+    fn render(&mut self, win: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         fn bp_toggle(
             id: impl Into<ElementId>,
             address: u32,
             kind: BreakpointKind,
             bp: Breakpoint,
             label: &'static str,
-            cx: &Context<Debugger>,
-        ) -> Toggle {
-            Toggle::new(id)
+            cx: &Context<BreakpointsView>,
+        ) -> Switch {
+            Switch::new(id)
+                .small()
                 .checked(bp.kind.contains(kind))
                 .label(label)
-                .aspect_square()
-                .min_w_0()
-                .w_8()
-                .outline()
                 .flex_grow_0()
+                .min_h_0()
                 .on_click(cx.listener(move |view, ev, _, cx| {
-                    view.emucx.update(cx, |emucx, _| {
+                    view.appcx.emucx.update(cx, |emucx, _| {
                         let Some(bp) = emucx.emu.dbg.breakpoints.get_mut(&address) else {
                             return;
                         };
@@ -1393,7 +1246,9 @@ impl Debugger {
             InputState::new(win, cx).placeholder("Add breakpoint...")
         });
 
-        let emucx = self.emucx.clone();
+        let emucx = self.appcx.emucx.clone();
+        let theme = cx.theme().clone();
+
         win.use_state(cx, {
             let add_bp_input = add_bp_input.clone();
             move |win, cx| {
@@ -1428,108 +1283,122 @@ impl Debugger {
                 .detach();
             }
         });
-        let breakpoints = self
-            .emucx
-            .read(cx)
-            .emu
-            .dbg
-            .breakpoints
-            .iter()
-            .map(|(address, bp)| {
-                let address = *address;
-                let idn = u64::from(address);
-                panel(theme)
-                    .h_flex()
-                    .gap_2()
-                    .child(
-                        div()
-                            .child(SharedString::from(hex(address).as_str()))
-                            .font_family(&theme.mono_font_family),
-                    )
-                    .child(bp_toggle(
-                        ElementId::NamedInteger("bp-read".into(), idn),
-                        address,
-                        BreakpointKind::READ,
-                        *bp,
-                        "R",
-                        cx,
-                    ))
-                    .child(bp_toggle(
-                        ElementId::NamedInteger("bp-write".into(), idn),
-                        address,
-                        BreakpointKind::WRITE,
-                        *bp,
-                        "W",
-                        cx,
-                    ))
-                    .child(bp_toggle(
-                        ElementId::NamedInteger("bp-execute".into(), idn),
-                        address,
-                        BreakpointKind::EXECUTE,
-                        *bp,
-                        "X",
-                        cx,
-                    ))
-                    .child(div().flex_grow_1())
-                    .child(
-                        Button::new(ElementId::NamedInteger("bp-delete".into(), idn))
-                            .outline()
-                            .icon(IconName::Close)
-                            .on_click(cx.listener(move |state, _, _, cx| {
-                                state.emucx.update(cx, |emucx, _| {
-                                    emucx.emu.dbg.remove_breakpoint(address);
-                                })
-                            })),
-                    )
-            });
-        panel(theme)
-            .v_flex()
+        let breakpoints =
+            self.appcx
+                .emucx
+                .read(cx)
+                .emu
+                .dbg
+                .breakpoints
+                .iter()
+                .map(|(address, bp)| {
+                    let address = *address;
+                    let idn = u64::from(address);
+
+                    h_flex()
+                        .gap_2()
+                        .text_sm()
+                        .min_h_0()
+                        .child(
+                            div()
+                                .child(SharedString::from(hex(address).as_str()))
+                                .font_family(&theme.mono_font_family),
+                        )
+                        .child(bp_toggle(
+                            ElementId::NamedInteger("bp-read".into(), idn),
+                            address,
+                            BreakpointKind::READ,
+                            *bp,
+                            "R",
+                            cx,
+                        ))
+                        .child(bp_toggle(
+                            ElementId::NamedInteger("bp-write".into(), idn),
+                            address,
+                            BreakpointKind::WRITE,
+                            *bp,
+                            "W",
+                            cx,
+                        ))
+                        .child(bp_toggle(
+                            ElementId::NamedInteger("bp-execute".into(), idn),
+                            address,
+                            BreakpointKind::EXECUTE,
+                            *bp,
+                            "X",
+                            cx,
+                        ))
+                        .child(div().flex_grow_1())
+                        .child(
+                            Button::new(ElementId::NamedInteger("bp-delete".into(), idn))
+                                .ghost()
+                                .small()
+                                .cursor_pointer()
+                                .icon(IconName::Close)
+                                .on_click(cx.listener(move |state, _, _, cx| {
+                                    state.appcx.emucx.update(cx, |emucx, _| {
+                                        emucx.emu.dbg.remove_breakpoint(address);
+                                    })
+                                })),
+                        )
+                });
+
+        v_flex()
+            .size_full()
             .gap_2()
             .child(
-                div()
-                    .child("Breakpoints")
-                    .text_color(theme.muted_foreground),
-            )
-            .child(Input::new(&add_bp_input))
-            .child(
-                div()
-                    .v_flex()
+                v_flex()
                     .gap_2()
+                    .p_2()
+                    .w_full()
+                    .h_1_2()
+                    .child(Input::new(&add_bp_input))
+                    .child(
+                        div()
+                            .v_flex()
+                            .size_full()
+                            .overflow_y_scrollbar()
+                            .min_h_0()
+                            .children(breakpoints),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(Separator::horizontal().flex_grow_1())
+                    .child(div().child("History").text_color(theme.muted_foreground))
+                    .child(Separator::horizontal().flex_grow_1()),
+            )
+            .child(
+                v_flex()
                     .w_full()
                     .h_1_2()
                     .overflow_y_scrollbar()
                     .min_h_0()
-                    .children(breakpoints),
+                    .p_2()
+                    .children(
+                        self.appcx
+                            .emucx
+                            .read(cx)
+                            .pc_history
+                            .iter()
+                            .rev()
+                            .copied()
+                            .enumerate()
+                            .map(|(i, pc)| {
+                                sel_text_keyed(
+                                    ElementId::NamedInteger("pc-history-addr".into(), i as u64),
+                                    hex(pc).as_str(),
+                                )
+                                .font_family(&theme.mono_font_family)
+                            }),
+                    ),
             )
-            .child(
-                v_flex().w_full().overflow_y_scrollbar().min_h_0().children(
-                    self.emucx
-                        .read(cx)
-                        .pc_history
-                        .iter()
-                        .rev()
-                        .copied()
-                        .enumerate()
-                        .map(|(i, pc)| {
-                            sel_text_keyed(
-                                ElementId::NamedInteger("pc-history-addr".into(), i as u64),
-                                hex(pc).as_str(),
-                            )
-                            .font_family(&theme.mono_font_family)
-                        }),
-                ),
-            )
+            .pchan_actions(self, cx)
+            .wrap_window(cx)
+            .title(Some("Breakpoints"))
+            .content(self.appcx.emucx.read(cx).content_title())
     }
-}
-
-fn panel(theme: &Theme) -> Div {
-    div()
-        .border_2()
-        .bg(theme.background)
-        .border_color(theme.border)
-        .corner_radii(Corners::all(8.0.into()))
-        .overflow_hidden()
-        .p_2()
 }
 
 fn parse_hex_word(str: &str) -> Result<u32, ParseIntError> {
@@ -1546,9 +1415,24 @@ fn parse_hex_word(str: &str) -> Result<u32, ParseIntError> {
     }
 }
 
-impl Debugger {
-    fn cpu_control_tabbar(&mut self, cx: &mut Context<Debugger>) -> impl IntoElement + Styled {
-        TabBar::new("segmented-tabs")
+struct RegView {
+    appcx:                AppCx,
+    cached_cpu_reg_names: [SharedString; 32],
+    cpu_control_reg_tab:  usize,
+    cpu_control_subs:     [Option<Subscription>; 32],
+}
+
+impl PchanAppActions for RegView {
+    fn appcx(&self) -> &AppCx {
+        &self.appcx
+    }
+}
+
+impl Render for RegView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme().clone();
+
+        let tabbar = TabBar::new("segmented-tabs")
             .min_h_0()
             .segmented()
             .selected_index(self.cpu_control_reg_tab)
@@ -1557,22 +1441,14 @@ impl Debugger {
                 view.cpu_control_reg_tab = *index;
                 cx.notify();
             }))
-            .children(vec!["CPU", "COP0", "GTE"])
-    }
+            .children(vec!["CPU", "COP0", "GTE"]);
 
-    fn cpu_controls(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Debugger>,
-    ) -> impl IntoElement + Styled {
-        let theme = cx.theme().clone();
-
-        let gpr = self.emucx.read(cx).emu.cpu.gpr.clone();
+        let gpr = self.appcx.emucx.read(cx).emu.cpu.gpr.clone();
         let gpr = gpr.iter().copied().enumerate().map({
             |(r, value)| {
                 use gpui_component::input::InputEvent;
 
-                let reg_id = &self.cached_reg_names[r];
+                let reg_id = &self.cached_cpu_reg_names[r];
                 let input_state = window.use_keyed_state(reg_id.clone(), cx, |win, cx| {
                     let reg_value: SharedString = hex(value).to_string().into();
                     InputState::new(win, cx)
@@ -1591,7 +1467,7 @@ impl Debugger {
                                     let reg_value =
                                         match parse_hex_word(&input_state.read(cx).value()) {
                                             Ok(reg_value) => {
-                                                view.emucx.update(cx, |emucx, _| {
+                                                view.appcx.emucx.update(cx, |emucx, _| {
                                                     emucx.emu.cpu.gpr[r] = reg_value
                                                 });
                                                 reg_value
@@ -1629,7 +1505,13 @@ impl Debugger {
                     .min_w_0()
                     .h(rems(1.))
                     .w(rems(9.0))
-                    .child(div().child(reg_id.clone()).text_ellipsis().w(rems(2.)))
+                    .child(
+                        div()
+                            .text_color(theme.colors.foreground)
+                            .child(reg_id.clone())
+                            .text_ellipsis()
+                            .w(rems(2.)),
+                    )
                     .child(
                         Input::new(&input_state)
                             .appearance(input_state.focus_handle(cx).is_focused(window))
@@ -1639,281 +1521,28 @@ impl Debugger {
                     )
             }
         });
-
-        panel(&theme)
-            .v_flex()
+        v_flex()
             .id("cpu-scroll-container")
             .gap_2()
             .min_w_0()
+            .min_h_0()
+            .size_full()
+            .p_2()
+            .child(tabbar)
             .child(
                 div()
                     .gap_1()
                     .v_flex()
                     .flex_wrap()
                     .min_w_0()
+                    .min_h_0()
                     .overflow_x_scrollbar()
-                    .flex_grow_1()
                     .children(gpr),
             )
-    }
-
-    fn open_content_button(cx: &mut Context<Debugger>, _theme: &Theme) -> Button {
-        Button::new("content-path-button")
-            .secondary()
-            .on_click(cx.listener(|_, _, _, cx| {
-                let path_recv = cx.prompt_for_paths(PathPromptOptions {
-                    files:       true,
-                    directories: false,
-                    multiple:    false,
-                    prompt:      Some("Open disc file (.bin, .cue)".into()),
-                });
-                cx.spawn(async move |view, cx| -> miette::Result<()> {
-                    let Some(view) = view.upgrade() else {
-                        return Ok(());
-                    };
-                    let res = path_recv.await.into_diagnostic()?;
-                    let res = res.map_err(|err| miette!("error: {err}"))?;
-                    let mut res = res.ok_or_else(|| miette!("no file selected"))?;
-                    let content_path = res
-                        .pop()
-                        .ok_or_else(|| miette!("expected at least one disc path"))?;
-
-                    match content_path
-                        .extension()
-                        .map(|ext| ext.to_string_lossy())
-                        .as_deref()
-                    {
-                        Some("bin" | "cue") => {
-                            view.update(cx, move |view, cx| -> miette::Result<()> {
-                                view.emucx.update(cx, |emucx, _| -> miette::Result<()> {
-                                    let fsm = emucx
-                                        .emu
-                                        .open_disc(&content_path, true)
-                                        .into_diagnostic()?;
-                                    emucx
-                                        .emu
-                                        .advance_open_disc(&content_path, fsm, true)
-                                        .into_diagnostic()?;
-                                    Ok(())
-                                })?;
-                                view.content_path = ContentPath::Disc(content_path);
-                                Ok(())
-                            })?;
-                        }
-                        _ => {
-                            let mut file = BufReader::new(
-                                async_fs::File::open(&content_path)
-                                    .await
-                                    .into_diagnostic()?,
-                            );
-                            let mut exe = Vec::new();
-                            file.read_to_end(&mut exe).await.into_diagnostic()?;
-
-                            view.update(cx, move |view, cx| -> miette::Result<()> {
-                                view.emucx.update(cx, |emucx, _| -> miette::Result<()> {
-                                    emucx.hard_reset()?;
-                                    emucx.emu.sideload_exe(&exe).into_diagnostic()?;
-                                    Ok(())
-                                })?;
-                                view.content_path = ContentPath::Exe(content_path);
-                                Ok(())
-                            })?;
-                        }
-                    }
-
-                    Ok(())
-                })
-                .detach();
-            }))
-    }
-
-    fn disc_buttons(
-        &mut self,
-        cx: &mut Context<Debugger>,
-        theme: &Theme,
-    ) -> impl IntoElement + Styled {
-        let open_content = Debugger::open_content_button(cx, theme);
-        match &self.content_path {
-            ContentPath::None => h_flex().flex_grow_1().child(
-                open_content
-                    .label("Load Content")
-                    .w_full()
-                    .icon(Icon::empty().path("disc-3.svg")),
-            ),
-            ContentPath::Disc(path) | ContentPath::Exe(path) => h_flex()
-                .min_w_0()
-                .gap_2()
-                .w_full()
-                .child(Button::new("eject-disc-button").icon(Icon::empty().path("eject.svg")))
-                .child(
-                    div().min_w_0().flex_grow_1().child(
-                        open_content.w_full().text_ellipsis().flex().label(
-                            path.file_name()
-                                .map_or(Cow::Borrowed("Unknown"), |f| f.to_string_lossy()),
-                        ),
-                    ),
-                ),
-        }
-    }
-
-    fn execution_header(
-        &mut self,
-        cx: &mut Context<Debugger>,
-        theme: &Theme,
-    ) -> impl IntoElement + Styled {
-        let emucx = self.emucx.read(cx);
-        h_flex()
-            .gap_2()
-            .items_center()
-            .child(
-                Button::new("reset-button")
-                    .icon(Icon::empty().path("rotate-ccw.svg"))
-                    .dropdown_menu(|menu, _, _| {
-                        menu.menu("Hard Reset", Box::new(HardReset))
-                            .menu("Soft Reset", Box::new(SoftReset))
-                    }),
-            )
-            .child(
-                Button::new("run-button")
-                    .w_24()
-                    .cursor_pointer()
-                    .label(match emucx.running {
-                        true => "Pause",
-                        false => "Run",
-                    })
-                    .children(
-                        emucx.running.then_some(
-                            Spinner::new()
-                                .icon(IconName::LoaderCircle)
-                                .color(theme.muted_foreground),
-                        ),
-                    )
-                    .on_click(cx.listener(|view, _, _, cx| {
-                        view.emucx.update(cx, |emucx, _| {
-                            emucx.running.toggle();
-                            emucx.running_notify.notify(usize::MAX);
-                        })
-                    })),
-            )
-            .child(self.disc_buttons(cx, theme))
-    }
-
-    fn execution_control(
-        &mut self,
-        cx: &mut Context<Debugger>,
-        theme: &Theme,
-    ) -> impl IntoElement + Styled {
-        let emucx = self.emucx.read(cx);
-        div()
-            .v_flex()
-            .gap_2()
-            .child(
-                h_flex()
-                    .gap_2()
-                    .child(
-                        Button::new("step-btn")
-                            .label(match emucx.runner_mode() {
-                                RunnerMode::Dynarec => "Step block",
-                                RunnerMode::Interpreter => "Step instr.",
-                            })
-                            .disabled(emucx.running)
-                            .on_click(|_, win, cx| {
-                                win.dispatch_action(Box::new(Step), cx);
-                            }),
-                    )
-                    .child(
-                        Button::new("step-frame-btn")
-                            .label("Step frame")
-                            .disabled(emucx.running)
-                            .on_click(|_, win, cx| {
-                                win.dispatch_action(Box::new(StepFrame), cx);
-                            }),
-                    ),
-            )
-            .child(Separator::horizontal())
-    }
-
-    fn mem_inspector(
-        &mut self,
-        cx: &mut Context<Debugger>,
-        _theme: &Theme,
-    ) -> impl IntoElement + Styled {
-        fn table_row<T: Copy + core::fmt::Debug>(
-            type_label: &'static str,
-            emucx: &Entity<EmuContext>,
-            cx: &mut Context<Debugger>,
-            address: Option<u32>,
-        ) -> TableRow {
-            TableRow::new()
-                .gap_2()
-                .child(TableCell::new().child(type_label).min_w_0().w(rems(4.)))
-                .child(TableCell::new().child(get_value::<T>(emucx, cx, address)))
-        }
-
-        fn get_value<T: Copy + core::fmt::Debug>(
-            emucx: &Entity<EmuContext>,
-            cx: &mut Context<Debugger>,
-            address: Option<u32>,
-        ) -> SharedString {
-            let Some(address) = address else {
-                return " ".into();
-            };
-            match emucx.read(cx).emu.try_read_pure::<T>(address) {
-                Ok(value) => format!("{value:?}").into(),
-                Err(_) => "N/A".into(),
-            }
-        }
-
-        #[derive(Clone, Copy)]
-        struct Ascii([u8; 4]);
-
-        impl core::fmt::Debug for Ascii {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                let mut word = self.0;
-                for byte in &mut word {
-                    match *byte {
-                        ..=0x1f | 0x7f.. => {
-                            *byte = b'.';
-                        }
-                        _ => {}
-                    }
-                }
-
-                let word = core::str::from_utf8(&word).expect("impossible");
-                write!(f, "{word:?}")
-            }
-        }
-
-        let selected = self.memview.read(cx).selected;
-
-        div()
-            .w_full()
-            .h_full()
-            .min_w_0()
-            .overflow_y_scrollbar()
-            .child(
-                div().overflow_x_scrollbar().w_full().h_full().child(
-                    Table::new()
-                        .child(
-                            TableHeader::new().child(
-                                TableRow::new()
-                                    .child(TableHead::new().child("Type").min_w_0().w(rems(4.)))
-                                    .child(TableHead::new().child("Value")),
-                            ),
-                        )
-                        .child(
-                            TableBody::new()
-                                .w_full()
-                                .child(table_row::<u32>("u32", &self.emucx, cx, selected))
-                                .child(table_row::<[u16; 2]>("u16", &self.emucx, cx, selected))
-                                .child(table_row::<[u8; 4]>("u8", &self.emucx, cx, selected))
-                                .child(table_row::<i32>("i32", &self.emucx, cx, selected))
-                                .child(table_row::<[i16; 2]>("i16", &self.emucx, cx, selected))
-                                .child(table_row::<[i8; 4]>("i8", &self.emucx, cx, selected))
-                                .child(table_row::<Ascii>("ascii", &self.emucx, cx, selected)),
-                        ),
-                ),
-            )
+            .pchan_actions(self, cx)
+            .wrap_window(cx)
+            .title(Some("CPU Reg."))
+            .content(self.appcx.emucx.read(cx).content_title())
     }
 }
 
@@ -1927,7 +1556,7 @@ impl HexInputState {
         default_value: Option<u32>,
         win: &mut Window,
         cx: &mut App,
-        on_submit: impl Fn(Option<u32>, &mut App) -> R + 'static,
+        on_submit: impl Fn(Option<u32>, &mut Window, &mut App) -> R + 'static,
     ) -> Self {
         let input = cx.new(|cx| {
             let state = InputState::new(win, cx);
@@ -1947,12 +1576,12 @@ impl HexInputState {
 
             let word = match parse_hex_word(&input.read(cx).value()) {
                 Ok(word) => {
-                    on_submit(Some(word), cx);
+                    on_submit(Some(word), win, cx);
                     word
                 }
                 // TODO: handle error
                 Err(_err) => {
-                    on_submit(None, cx);
+                    on_submit(None, win, cx);
                     return;
                 }
             };
@@ -1967,10 +1596,10 @@ impl HexInputState {
 }
 
 struct MemviewTable {
-    scroll:   VirtualListScrollHandle,
-    emucx:    Entity<EmuContext>,
-    editing:  Option<MemviewTableEdit>,
-    selected: Option<u32>,
+    scroll_handle: VirtualListScrollHandle,
+    appcx:         AppCx,
+    editing:       Option<MemviewTableEdit>,
+    selected:      Option<u32>,
 }
 
 struct MemviewTableEdit {
@@ -1986,16 +1615,19 @@ impl MemviewTable {
         win: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let emucx = self.emucx.clone();
+        let emucx = self.appcx().emucx.clone();
         let view = cx.entity();
+        let own_focus = self.appcx().focus_handle.clone();
         let input = cx.new(|cx| {
-            HexInputState::new::<false, _>(Some(default_value), win, cx, move |value, cx| {
+            HexInputState::new::<false, _>(Some(default_value), win, cx, move |value, win, cx| {
                 emucx.update(cx, |emucx, _| -> Option<()> {
                     let _ = emucx.emu.try_write::<u32>(address, value?);
                     None
                 });
-                view.update(cx, |view, _| {
+                view.update(cx, |view, cx| {
                     view.editing = None;
+                    win.focus(&own_focus, cx);
+                    cx.notify();
                 })
             })
         });
@@ -2005,7 +1637,6 @@ impl MemviewTable {
         self.editing = Some(MemviewTableEdit { address, input });
         self.selected = Some(address);
         cx.emit(MemviewTableEditEvent { address });
-        dbg!(self.selected);
     }
 }
 
@@ -2015,13 +1646,18 @@ struct MemviewTableEditEvent {
 
 impl EventEmitter<MemviewTableEditEvent> for MemviewTable {}
 
+impl PchanAppActions for MemviewTable {
+    fn appcx(&self) -> &AppCx {
+        &self.appcx
+    }
+}
 impl Render for MemviewTable {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let columns = 4u64;
         let items = u64::from(u32::MAX) / (columns * 4);
         let view = cx.entity();
         let theme = cx.theme().clone();
-        VirtualList::new("memview-table", items, move |row_idx, _, cx| {
+        let memviewer = VirtualList::new("memview-table", items, move |row_idx, _, cx| {
             let caddress = hex(row_idx as u32 * columns as u32 * 4);
 
             let mut result = h_flex()
@@ -2043,6 +1679,7 @@ impl Render for MemviewTable {
                 let address = address as u32;
                 let word = view
                     .read(cx)
+                    .appcx
                     .emucx
                     .read(cx)
                     .emu
@@ -2102,6 +1739,7 @@ impl Render for MemviewTable {
                 let address = address as u32;
                 let mut word = view
                     .read(cx)
+                    .appcx
                     .emucx
                     .read(cx)
                     .emu
@@ -2122,7 +1760,7 @@ impl Render for MemviewTable {
                 let word = core::str::from_utf8(&word).expect("impossible");
                 let id = ElementId::NamedInteger("mewmview-hex-ascii".into(), u64::from(address));
                 let color = match (view.read(cx).editing.as_ref(), no_ascii) {
-                    (Some(edit), _) if edit.address == address => &theme.colors.yellow,
+                    (Some(edit), _) if edit.address == address => &theme.colors.info,
                     (_, false) => &theme.foreground,
                     (_, true) => &theme.muted_foreground,
                 };
@@ -2139,7 +1777,52 @@ impl Render for MemviewTable {
         })
         // .w_full()
         .h_full()
-        .track_scroll(&self.scroll)
+        .track_scroll(&self.scroll_handle);
+
+        let view = cx.entity();
+        let input = window.use_state(cx, |win, cx| {
+            cx.subscribe_in(
+                &view,
+                win,
+                move |input: &mut HexInputState, _, edit, win, cx| {
+                    input.input.update(cx, |input, cx| {
+                        input.set_value(hex(edit.address).as_str(), win, cx);
+                    });
+                    cx.notify();
+                },
+            )
+            .detach();
+
+            HexInputState::new::<true, _>(None, win, cx, {
+                let memview = view.clone();
+                move |value, _, cx| -> Option<()> {
+                    let value = value?;
+                    memview.update(cx, |memview, cx| {
+                        memview.scroll_handle.scroll_to(
+                            cx,
+                            u64::from(value) / 16,
+                            ScrollStrategy::Top,
+                        );
+                    });
+                    None
+                }
+            })
+        });
+        let theme = cx.theme();
+        let jumpbar = Input::new(&input.read(cx).input)
+            .font_family(&theme.mono_font_family)
+            .prefix("Jump to: ");
+
+        v_flex()
+            .size_full()
+            .child(jumpbar)
+            .child(memviewer.flex_grow_1())
+            .pchan_actions(self, cx)
+            .wrap_window(cx)
+            .title(Some("Memory"))
+            .content(self.appcx.emucx.read(cx).content_title())
+            .into_element()
+            .text_color(cx.theme().foreground)
     }
 }
 
@@ -2584,7 +2267,7 @@ impl RenderOnce for SelectableText {
             (selection.focus.clone(), selection.range())
         };
         let highlight = HighlightStyle {
-            background_color: Some(cx.theme().colors.selection),
+            background_color: Some(cx.theme().colors.info.opacity(0.5)),
             ..Default::default()
         };
         let styled = StyledText::new(self.text.clone())

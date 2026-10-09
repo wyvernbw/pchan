@@ -34,3 +34,6 @@ futures-lite = "2.6.1"
 bumpalo = { version = "3.20.3", features = ["allocator_api"] }
 async-fs = "2.2.0"
 tracing.workspace = true
+schemars = "1.2.2"
+serde = "1.0.229"
+pchan-macros.workspace = true

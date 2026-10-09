@@ -31,6 +31,7 @@ fn main() -> miette::Result<()> {
         file:       true,
         panic_hook: false,
     });
+
     let app = App::default()
         .with_scheme(fltk::app::Scheme::Plastic)
         .load_system_fonts();
@@ -68,6 +69,7 @@ fn main() -> miette::Result<()> {
         force_mode: Some(RunnerMode::Dynarec),
         ..default()
     });
+    runner.running = false;
     let steel_ctx = SteelCtx::new();
     let steel_rx = steel_ctx.rx();
     let mut steel_exec = SteelExecutor::new();

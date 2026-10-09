@@ -76,6 +76,7 @@ impl SurfaceState {
             array_layer_count: None,
         };
         encoder.clear_texture(&self.target.wgpu, range);
+        encoder.clear_texture(&gpu.render_texture, range);
 
         #[cfg(target_os = "macos")]
         {
