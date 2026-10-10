@@ -348,7 +348,8 @@ pub fn create_target_texture_metal(
                 io_surface
                     .as_concrete_TypeRef()
                     .cast::<objc2_io_surface::IOSurfaceRef>()
-                    .as_ref_unchecked(),
+                    .as_ref()
+                    .unwrap(),
                 0,
             )
             .expect("failed to create MTLTexture");
@@ -361,7 +362,8 @@ pub fn create_target_texture_metal(
                 io_surface
                     .as_concrete_TypeRef()
                     .cast::<objc2_io_surface::IOSurfaceRef>()
-                    .as_ref_unchecked(),
+                    .as_ref()
+                    .unwrap(),
                 1,
             )
             .expect("failed to create MTLTexture");

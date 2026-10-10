@@ -526,6 +526,25 @@ impl Renderer {
                                 swap_idx: draw_calls.swap_idx,
                             })
                             .unwrap();
+                        let mut encoder = self
+                            .device
+                            .create_command_encoder(&CommandEncoderDescriptor::default());
+                        let range = &ImageSubresourceRange {
+                            aspect: TextureAspect::All,
+                            base_mip_level: 0,
+                            mip_level_count: None,
+                            base_array_layer: 0,
+                            array_layer_count: None,
+                        };
+                        encoder.clear_texture(&self.render_texture, range);
+                        let cmd_buf = encoder.finish();
+                        let sub = self.queue.submit([cmd_buf]);
+                        self.device
+                            .poll(wgt::PollType::Wait {
+                                submission_index: Some(sub),
+                                timeout: None,
+                            })
+                            .unwrap();
                     } else {
                         _ = self
                             .conn

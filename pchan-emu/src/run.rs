@@ -50,7 +50,7 @@ pub struct RunnerConfig {
     pub speed: EmuSpeed
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EmuSpeed {
     Unlimited,
     Percentage(NonZeroU16),
@@ -59,6 +59,13 @@ pub enum EmuSpeed {
 impl Default for EmuSpeed {
     fn default() -> Self {
         Self::Percentage(const { NonZeroU16::new(100).unwrap() })
+    }
+}
+
+impl EmuSpeed {
+    #[must_use]
+    pub const fn percentage(p: u16) -> Self {
+        EmuSpeed::Percentage(NonZeroU16::new(p).unwrap())
     }
 }
 
@@ -378,7 +385,11 @@ impl<A: Allocator + Copy + Clone> Runner<A> {
         }
     }
 
-    pub fn run_until_vblank(&mut self, emu: &mut Emu<A>) -> Option<Duration> {
+    pub fn run_until_vblank_with(
+        &mut self,
+        emu: &mut Emu<A>,
+        mut hook: impl FnMut(&Emu<A>) -> bool,
+    ) -> Option<Duration> {
         if !self.running {
             return None;
         }
@@ -386,6 +397,9 @@ impl<A: Allocator + Copy + Clone> Runner<A> {
         let start = Instant::now();
         while !emu.consume_vblank_signal() {
             self.execute(emu);
+            if hook(emu) {
+                break;
+            }
             #[cfg(feature = "debugger-ext")]
             {
                 use crate::debug::BreakpointKind;
@@ -400,14 +414,21 @@ impl<A: Allocator + Copy + Clone> Runner<A> {
         Some(start.elapsed())
     }
 
-    pub fn sleep_time(&self, elapsed: Duration) -> Duration {
-        let frame_time_max = match self.config.speed {
+    pub fn run_until_vblank(&mut self, emu: &mut Emu<A>) -> Option<Duration> {
+        self.run_until_vblank_with(emu, |_| false)
+    }
+
+    pub fn frame_time_limit(&self) -> Duration {
+        match self.config.speed {
             EmuSpeed::Unlimited => Duration::ZERO,
             EmuSpeed::Percentage(non_zero) => {
                 Duration::from_micros(16_667u64 / u64::from(non_zero.get()) * 100)
             }
-        };
-        frame_time_max.saturating_sub(elapsed)
+        }
+    }
+
+    pub fn sleep_time(&self, elapsed: Duration) -> Duration {
+        self.frame_time_limit().saturating_sub(elapsed)
     }
 }
 

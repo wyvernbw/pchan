@@ -3,8 +3,11 @@
 
 extern crate proc_macro;
 
+use std::process::Command;
+
 use darling::{FromDeriveInput, FromField, FromMeta, ast};
 use proc_macro::TokenStream;
+use proc_macro2::Span;
 use quote::quote;
 use syn::{DeriveInput, Expr, ExprLit, Ident, ItemFn, Lit, LitStr, Variant, parse_macro_input};
 
@@ -361,6 +364,20 @@ pub fn instrument(args: TokenStream, input: TokenStream) -> TokenStream {
     quote! {
         #[cfg_attr(feature = "trace", ::tracing::instrument(#args))]
         #input
+    }
+    .into()
+}
+
+#[proc_macro]
+pub fn git_rev(_args: TokenStream) -> TokenStream {
+    let mut cmd = Command::new("git");
+    cmd.args(["rev-parse", "HEAD"]);
+    let commit = cmd.output().unwrap().stdout;
+    let commit = String::from_utf8(commit).unwrap();
+    let commit = commit.chars().take(7).collect::<String>();
+    let commit = syn::LitStr::new(&commit, Span::call_site());
+    quote! {
+        #commit
     }
     .into()
 }

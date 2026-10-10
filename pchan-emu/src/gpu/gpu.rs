@@ -1197,10 +1197,12 @@ enum ReverseFlag {
     Distorted = 0x1,
 }
 
-#[derive(Debug)]
+#[derive(Debug, derive_more::Display)]
 #[bitenum(u1, exhaustive = true)]
-enum VideoMode {
+pub enum VideoMode {
+    #[display("NTSC")]
     Ntsc = 0x0,
+    #[display("PAL")]
     Pal  = 0x1,
 }
 

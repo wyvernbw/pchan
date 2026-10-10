@@ -3,6 +3,7 @@
 #![allow(clippy::redundant_closure_for_method_calls)]
 #![allow(clippy::type_complexity)]
 #![allow(recursion_depth_exceeding_limit)]
+#![feature(try_blocks)]
 
 extern crate alloc;
 
@@ -19,23 +20,23 @@ use core::time::Duration;
 use core::{fmt, mem};
 use futures_lite::AsyncReadExt;
 use futures_lite::io::BufReader;
+use gpui_component::button::{Button, ButtonVariants};
+use gpui_component::input::{Input, InputState};
+use gpui_component::scroll::ScrollableElement;
+use gpui_component::separator::Separator;
 use gpui_component::switch::Switch;
+use gpui_component::tab::TabBar;
+use gpui_component::{ActiveTheme, IconName, Sizable, StyledExt, Theme, h_flex, v_flex};
 use pchan_bind::ringbuf::StaticRb;
 use pchan_bind::ringbuf::traits::{Consumer, Observer, RingBuffer};
 use pchan_emu::debug::{Breakpoint, BreakpointKind};
+use pchan_steel::{ScriptConn, SteelCtx, SteelExecutor};
 use std::path::PathBuf;
 use std::time::Instant;
 
 use bumpalo::Bump;
 use gpui::prelude::*;
 use gpui::{AppContext, Render, *};
-use gpui_component::button::{Button, ButtonVariants};
-use gpui_component::input::{Input, InputState};
-use gpui_component::scroll::ScrollableElement;
-use gpui_component::separator::Separator;
-use gpui_component::tab::TabBar;
-use gpui_component::{ActiveTheme, IconName, Root, Sizable, StyledExt, Theme, h_flex, v_flex};
-use gpui_kit_assets::Assets;
 use pchan_audio::AudioTask;
 use pchan_emu::Emu;
 use pchan_emu::cpu::REG_STR;
@@ -84,8 +85,8 @@ struct SetSpeed {
 
 fn window_opts() -> WindowOptions {
     gpui::WindowOptions {
-        window_background: WindowBackgroundAppearance::Blurred,
         window_decorations: Some(WindowDecorations::Client),
+        window_background: WindowBackgroundAppearance::Blurred,
         titlebar: Some(TitlebarOptions {
             title:                  None,
             appears_transparent:    true,
@@ -135,6 +136,20 @@ fn main() {
             gpui_component::init(cx);
             GlobalSelection::init(cx);
 
+            let steel_ctx = SteelCtx::new();
+            let steel_rx = steel_ctx.rx();
+            let steel_exec = SteelExecutor::new(steel_rx.clone());
+
+            let steel = cx.new(|_| Steel {
+                rx:   steel_rx,
+                exec: steel_exec,
+            });
+
+            std::thread::spawn(move || {
+                steel_ctx.repl().unwrap();
+                std::process::exit(0)
+            });
+
             cx.set_app_identity("p-chan-gpui", "Pーちゃん");
             let emucx = EmuContext::new(arena, cx).unwrap();
             let (target, target_buf) = create_target(
@@ -152,10 +167,11 @@ fn main() {
                 emucx:              emucx.clone(),
             });
             let appcx = AppCx {
-                emucx:        emucx.clone(),
+                emucx: emucx.clone(),
                 game_surface: surface_state.clone(),
                 focus_handle: cx.focus_handle(),
-                app:          app.clone(),
+                app: app.clone(),
+                steel,
             };
 
             let mips_view = cx.new(|_| MipsView {
@@ -227,14 +243,12 @@ fn main() {
             //     .expect("failed to load theme from string");
             // let gruvbox = theme_reg.themes().get("Gruvbox Dark").unwrap().clone();
 
-            let theme = Theme::global_mut(cx);
+            let theme = cx.global_mut::<Theme>();
             theme.apply_config(&Rc::new(gpui_component::ThemeConfig {
                 mode: gpui_component::ThemeMode::Dark,
                 ..default()
             }));
-            theme.colors.info = rgb_to_hsla(rgba(0xb1e6b7ff));
-            theme.focus_ring = false;
-            // theme.apply_config(&gruvbox);
+            theme.primary = rgb_to_hsla(rgba(0xb1e6b7ff));
             cx.set_window_appearance(Some(WindowAppearance::VibrantDark));
 
             cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
@@ -266,12 +280,11 @@ fn main() {
                     ..window_opts()
                 },
                 |win, cx| {
-                    let theme = cx.theme().clone();
                     game_view.update(cx, |game_view, cx| {
                         win.focus(&game_view.appcx.focus_handle, cx);
                     });
 
-                    cx.new(|cx| Root::new(game_view, win, cx).h_full().bg(theme.background))
+                    game_view
                 },
             );
 
@@ -292,7 +305,13 @@ struct AppCx {
     emucx:        Entity<EmuContext>,
     game_surface: Entity<SurfaceState>,
     app:          Entity<PChanApp>,
+    steel:        Entity<Steel>,
     focus_handle: FocusHandle,
+}
+
+struct Steel {
+    rx:   ScriptConn,
+    exec: SteelExecutor,
 }
 
 struct GameView {
@@ -427,62 +446,63 @@ impl PChanApp {
             multiple:    false,
             prompt:      Some("Open disc file (.bin, .cue)".into()),
         });
-        cx.spawn(async move |view, cx| -> miette::Result<()> {
-            let Some(view) = view.upgrade() else {
-                return Ok(());
+        cx.spawn(async move |view, cx| {
+            let result: miette::Result<()> = try {
+                let Some(view) = view.upgrade() else {
+                    return;
+                };
+                let res = path_recv.await.into_diagnostic()?;
+                let res = res.map_err(|err| miette!("error: {err}"))?;
+                let mut res = res.ok_or_else(|| miette!("no file selected"))?;
+                let content_path = res
+                    .pop()
+                    .ok_or_else(|| miette!("expected at least one disc path"))?;
+
+                match content_path
+                    .extension()
+                    .map(|ext| ext.to_string_lossy())
+                    .as_deref()
+                {
+                    Some("bin" | "cue") => {
+                        view.update(cx, move |view, cx| -> miette::Result<()> {
+                            view.emucx.update(cx, |emucx, _| -> miette::Result<()> {
+                                let fsm =
+                                    emucx.emu.open_disc(&content_path, true).into_diagnostic()?;
+                                emucx
+                                    .emu
+                                    .advance_open_disc(&content_path, fsm, true)
+                                    .into_diagnostic()?;
+                                emucx.content_path = ContentPath::Disc(content_path);
+                                Ok(())
+                            })?;
+                            view.set_menus(cx);
+                            cx.notify();
+                            Ok(())
+                        })?;
+                    }
+                    _ => {
+                        let mut file = BufReader::new(
+                            async_fs::File::open(&content_path)
+                                .await
+                                .into_diagnostic()?,
+                        );
+                        let mut exe = Vec::new();
+                        file.read_to_end(&mut exe).await.into_diagnostic()?;
+
+                        view.update(cx, move |view, cx| -> miette::Result<()> {
+                            view.emucx.update(cx, |emucx, cx| -> miette::Result<()> {
+                                emucx.emu.sideload_exe(&exe).into_diagnostic()?;
+                                emucx.content_path = ContentPath::Disc(content_path);
+                                Ok(())
+                            })?;
+                            view.set_menus(cx);
+                            cx.notify();
+                            Ok(())
+                        })?;
+                    }
+                }
             };
-            let res = path_recv.await.into_diagnostic()?;
-            let res = res.map_err(|err| miette!("error: {err}"))?;
-            let mut res = res.ok_or_else(|| miette!("no file selected"))?;
-            let content_path = res
-                .pop()
-                .ok_or_else(|| miette!("expected at least one disc path"))?;
-
-            match content_path
-                .extension()
-                .map(|ext| ext.to_string_lossy())
-                .as_deref()
-            {
-                Some("bin" | "cue") => {
-                    view.update(cx, move |view, cx| -> miette::Result<()> {
-                        view.emucx.update(cx, |emucx, _| -> miette::Result<()> {
-                            let fsm = emucx.emu.open_disc(&content_path, true).into_diagnostic()?;
-                            emucx
-                                .emu
-                                .advance_open_disc(&content_path, fsm, true)
-                                .into_diagnostic()?;
-                            emucx.content_path = ContentPath::Disc(content_path);
-                            Ok(())
-                        })?;
-                        view.set_menus(cx);
-                        cx.notify();
-                        Ok(())
-                    })?;
-                }
-                _ => {
-                    let mut file = BufReader::new(
-                        async_fs::File::open(&content_path)
-                            .await
-                            .into_diagnostic()?,
-                    );
-                    let mut exe = Vec::new();
-                    file.read_to_end(&mut exe).await.into_diagnostic()?;
-
-                    view.update(cx, move |view, cx| -> miette::Result<()> {
-                        view.emucx.update(cx, |emucx, cx| -> miette::Result<()> {
-                            cx.dispatch_action(&HardReset);
-                            emucx.emu.sideload_exe(&exe).into_diagnostic()?;
-                            emucx.content_path = ContentPath::Disc(content_path);
-                            Ok(())
-                        })?;
-                        view.set_menus(cx);
-                        cx.notify();
-                        Ok(())
-                    })?;
-                }
-            }
-
-            Ok(())
+            result.unwrap();
         })
         .detach();
     }
@@ -491,23 +511,58 @@ impl PChanApp {
 async fn emu_loop(appcx: AppCx, cx: &mut AsyncApp) {
     let emucx = appcx.emucx;
     let surface = appcx.game_surface;
+    let steel_conn = cx.read_entity(&appcx.steel, |steel, _| steel.rx.clone());
     let mut time_since_last_yield = Duration::ZERO;
     loop {
         let run_listener = emucx.update(cx, |emucx, _| match emucx.runner.running {
             false => Some(emucx.running_notify.listen()),
             true => None,
         });
+
         if let Some(run_listener) = run_listener {
-            run_listener.await;
+            let signal = futures_lite::future::race(
+                async {
+                    run_listener.await;
+                    None
+                },
+                async {
+                    let msg = steel_conn.chan.1.recv().await.unwrap();
+                    Some(msg)
+                },
+            );
+            if let Some(msg) = signal.await {
+                appcx.steel.update(cx, |steel, cx| {
+                    emucx.update(cx, |emucx, _| {
+                        steel
+                            .exec
+                            .handle_call(&mut emucx.emu, &mut emucx.runner, msg);
+                    });
+                });
+            }
             emucx.update(cx, |emucx, _| {
                 emucx.start = Instant::now();
                 emucx.cycles_per_run = 0;
                 emucx.real_time_running = Duration::ZERO;
             });
+        } else {
+            appcx.steel.update(cx, |steel, cx| {
+                let Ok(Some(msg)) = steel.rx.chan.1.try_recv() else {
+                    return;
+                };
+                emucx.update(cx, |emucx, _| {
+                    steel
+                        .exec
+                        .handle_call(&mut emucx.emu, &mut emucx.runner, msg);
+                });
+            });
         }
 
         let deadline = emucx.update(cx, |emucx, cx| {
             surface.as_mut(cx).start_display_draw(&emucx.renderer);
+
+            appcx.steel.update(cx, |steel, _| {
+                steel.exec.handle_step(&mut emucx.emu, &mut emucx.runner);
+            });
 
             let elapsed = emucx.runner.run_until_vblank_with(&mut emucx.emu, |emu| {
                 emucx.pc_history.push_overwrite(emu.cpu.pc);
@@ -579,6 +634,7 @@ impl Render for GameView {
             .child(div().w_full().flex_grow_1().child(surface))
             .child({
                 let theme = cx.theme();
+                let frame_idx = self.appcx.emucx.read(cx).runner.frame_idx;
                 let frame_time_limited = self.appcx.emucx.read(cx).frame_time_limited;
                 let frame_time_limited_secs = frame_time_limited.as_secs_f32();
                 let frame_time_limited_ms = frame_time_limited.as_millis();
@@ -611,12 +667,18 @@ impl Render for GameView {
                     .overflow_hidden()
                     .px_4()
                     .gap_4()
+                    .child(
+                        h_flex()
+                            .flex_grow_1()
+                            .child(sel_text(format!("#{frame_idx}"))),
+                    )
+                    .child(Separator::vertical().h_full())
                     .child(div().child(format!("{cpu_mode:?}")))
                     .child(Separator::vertical().h_full())
                     .child(div().child(format!("{}x{} {}", resolution.x, resolution.y, video_mode)))
                     .when(frame_time_limited_secs != 0.0, |this| {
                         this.child(Separator::vertical().h_full())
-                            .child(div().w(rems(7.)).child(format!("{fps:.0} FPS ({speed}%)")))
+                            .child(div().w(rems(6.5)).child(format!("{fps:.0} FPS ({speed}%)")))
                     })
                     .when(frame_time_ms != 0, |this| {
                         this.child(Separator::vertical().h_full())
@@ -686,9 +748,6 @@ trait PchanAppActions: Sized + 'static {
             new.spu.put_prod(emucx.emu.spu.take_prod());
 
             emucx.emu = new;
-            self.appcx().game_surface.update(cx, |surface, _| {
-                surface.clear(&emucx.renderer);
-            });
         });
         cx.notify();
     }
@@ -887,12 +946,12 @@ impl AssetSource for PchanAssets {
             "eject.svg" => Ok(Some(Cow::Borrowed(self.eject_icon))),
             "disc-3.svg" => Ok(Some(Cow::Borrowed(self.disc_3_icon))),
             "rotate-ccw.svg" => Ok(Some(Cow::Borrowed(self.rotate_ccw_icon))),
-            _ => Assets.load(path),
+            _ => panic!("no asset named {path}"),
         }
     }
 
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
-        Assets.list(path)
+        Ok(vec![])
     }
 }
 
@@ -976,7 +1035,7 @@ impl Render for MipsView {
                                 ElementId::NamedInteger(address_label, idx),
                                 instr,
                             ))
-                            .when(is_pc, |this| this.text_color(theme.colors.info))
+                            .when(is_pc, |this| this.text_color(theme.primary))
                             .h_4()
                     },
                 )
@@ -1118,12 +1177,12 @@ fn titlebar(title: Option<&str>, content: Option<String>, theme: &Theme) -> impl
 
     h_flex()
         .text_sm()
-        .bg(theme.title_bar)
+        .bg(theme.background)
         .py_1()
         .gap_2()
         .items_center()
         .justify_center()
-        .font_bold()
+        .font_weight(FontWeight::BOLD)
         .w_full()
         .text_color(theme.foreground)
         .relative()
@@ -1492,8 +1551,8 @@ impl Render for RegView {
                 }
 
                 let color = match value {
-                    0 => theme.colors.muted_foreground,
-                    _ => theme.colors.foreground,
+                    0 => theme.muted_foreground,
+                    _ => theme.foreground,
                 };
 
                 div()
@@ -1507,7 +1566,7 @@ impl Render for RegView {
                     .w(rems(9.0))
                     .child(
                         div()
-                            .text_color(theme.colors.foreground)
+                            .text_color(theme.foreground)
                             .child(reg_id.clone())
                             .text_ellipsis()
                             .w(rems(2.)),
@@ -1710,7 +1769,7 @@ impl Render for MemviewTable {
                                     .text_center()
                                     .w(rems(5.)),
                             )
-                            .with_priority(1),
+                            .priority(1),
                         );
                     }
                     None | Some(_) => {
@@ -1760,7 +1819,7 @@ impl Render for MemviewTable {
                 let word = core::str::from_utf8(&word).expect("impossible");
                 let id = ElementId::NamedInteger("mewmview-hex-ascii".into(), u64::from(address));
                 let color = match (view.read(cx).editing.as_ref(), no_ascii) {
-                    (Some(edit), _) if edit.address == address => &theme.colors.info,
+                    (Some(edit), _) if edit.address == address => &theme.primary,
                     (_, false) => &theme.foreground,
                     (_, true) => &theme.muted_foreground,
                 };
@@ -2267,7 +2326,7 @@ impl RenderOnce for SelectableText {
             (selection.focus.clone(), selection.range())
         };
         let highlight = HighlightStyle {
-            background_color: Some(cx.theme().colors.info.opacity(0.5)),
+            background_color: Some(cx.theme().primary.opacity(0.5)),
             ..Default::default()
         };
         let styled = StyledText::new(self.text.clone())
