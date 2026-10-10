@@ -3,9 +3,6 @@ name = "pchan-utils"
 version = "0.1.0"
 edition = "2024"
 
-[lints]
-workspace = true
-
 [features]
 tracing-subscriber = ["dep:tracing-subscriber"]
 tracy-enable = ["tracy-client/enable"]
@@ -13,20 +10,22 @@ tracy = ["dep:tracy-client"]
 default = ["tracing-subscriber"]
 
 [dependencies]
-tracing-subscriber = { workspace = true, optional = true }
-derive_more = { version = "2.1.1", features = ["full"] }
-tracing = { workspace = true }
 const-hex.workspace = true
+derive_more = { version = "2.1.1", features = ["full"] }
 heapless = "0.9.3"
 kanal.workspace = true
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, optional = true }
 tracy-client = { version = "0.19.0", optional = true, default-features = false }
 
 [dev-dependencies]
-pretty_assertions = {version = "1.4.1", features = ["unstable"]}
-rstest = "*"
 color-eyre = "*" 
 criterion = { version = "0.8", features = ["html_reports"] }
+pretty_assertions = { version = "1.4.1", features = ["unstable"] }
+rstest = "*"
 
+[lints]
+workspace = true
 
 [[bench]]
 name = "hex"

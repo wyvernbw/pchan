@@ -3,12 +3,12 @@ name = "pchan-audio"
 version = "0.1.0"
 edition = "2024"
 
-[lints]
-workspace = true
-
 [dependencies]
 cpal = "0.18.2"
 miette = "7.6.0"
 pchan-bind.workspace = true
 ringbuf = "0.5.3"
 tracing.workspace = true
+
+[lints]
+workspace = true

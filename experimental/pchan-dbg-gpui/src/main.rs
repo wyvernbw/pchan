@@ -648,7 +648,6 @@ async fn emu_loop(appcx: AppCx, cx: &mut AsyncApp) {
 
             let surface = surface.as_mut(cx);
             surface.wait_for_display_draw(&emucx.renderer);
-            surface.start_convert_render(&emucx.renderer);
 
             deadline
         });

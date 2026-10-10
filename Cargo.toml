@@ -5,23 +5,20 @@ name = "pchan"
 version = "0.1.0"
 edition = "2024"
 
-[lints]
-workspace = true
-
 [workspace]
 resolver = "3"
 members = [
-    "pchan-emu",
-    "pchan-macros",
-    "pchan-utils",
-    "pchan-gpu",
-    "pchan-bind",
-    "pchan-audio",
-    "pchan-input",
-    "pchan-executor",
-    "pchan-steel",
     "experimental/pchan-dbg-gpui",
     "experimental/pchan-mini",
+    "pchan-audio",
+    "pchan-bind",
+    "pchan-emu",
+    "pchan-executor",
+    "pchan-gpu",
+    "pchan-input",
+    "pchan-macros",
+    "pchan-steel",
+    "pchan-utils",
 ]
 
 [workspace.lints.clippy]
@@ -56,25 +53,28 @@ cast_possible_wrap = "allow"
 [workspace.dependencies]
 arbitrary-int = "2.2.0"
 bitbybit = "2.0.1"
-tracing = "0.1.44"
 const-hex = { version = "1.19.3", features = ["nightly", "portable-simd"] }
+kanal = "0.1.1"
+pchan-audio = { path = "./pchan-audio" }
+pchan-bind = { path = "./pchan-bind" }
 pchan-emu = { path = "./pchan-emu" }
+pchan-executor = { path = "./pchan-executor" }
 pchan-gpu = { path = "./pchan-gpu" }
 pchan-macros = { path = "./pchan-macros" }
 pchan-utils = { path = "./pchan-utils", default-features = false }
-pchan-bind = { path = "./pchan-bind" }
-pchan-audio = { path = "./pchan-audio" }
-pchan-executor = { path = "./pchan-executor" }
-tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
-kanal = "0.1.1"
 smol = "2.0.2"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 
-[profile.dev.package."*"]
-opt-level = "s"
+[lints]
+workspace = true
 
 [profile.dev]
 opt-level = "s"
 panic = "unwind"
+
+[profile.dev.package."*"]
+opt-level = "s"
 
 [profile.release]
 lto = "thin"

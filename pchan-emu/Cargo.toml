@@ -3,9 +3,6 @@ name = "pchan-emu"
 version = "0.1.0"
 edition = "2024"
 
-[lints]
-workspace = true
-
 [features]
 fetch-channel = []
 amidog-tests = []
@@ -13,11 +10,6 @@ debugger-ext = []
 trace = []
 
 [dependencies]
-tracing = { workspace = true }
-pchan-macros = { workspace = true }
-pchan-utils = { workspace = true, features = ["tracy"] }
-pchan-bind.workspace = true
-kanal.workspace = true
 arbitrary-int.workspace = true
 bitbybit.workspace = true
 bitvec = "1.1.1"
@@ -26,23 +18,30 @@ derive_more = { version = "2.1.1", features = ["add", "debug", "deref", "display
 dynasm = "5.1.0"
 dynasmrt = "5.1.0"
 enum_dispatch = "0.3.13"
+glam = "0.34.1"
 heapless = "0.9.3"
+kanal.workspace = true
+pchan-bind.workspace = true
+pchan-macros = { workspace = true }
+pchan-utils = { workspace = true, features = ["tracy"] }
 rapidhash = { version = "4.5.1", features = ["nightly"] }
+slotmap = "1.1.1"
 smallbox = { version = "0.8.8", features = ["nightly"] }
 smallvec = { version = "1.16.2", features = ["const_new"] }
 strum = { version = "0.28.0", features = ["derive"] }
 thiserror = "2.0.21"
-glam = "0.34.1"
-slotmap = "1.1.1"
+tracing = { workspace = true }
 
 [dev-dependencies]
-pchan-utils = { workspace = true, features = ["tracing-subscriber"] }
-pretty_assertions = {version = "1.4.1", features = ["unstable"]}
-rstest = "*"
+assert_hex = "0.4.1"
 color-eyre = "*" 
 criterion = { version = "0.8", features = ["html_reports"] }
-assert_hex = "0.4.1"
+pchan-utils = { workspace = true, features = ["tracing-subscriber"] }
+pretty_assertions = { version = "1.4.1", features = ["unstable"] }
+rstest = "*"
 
+[lints]
+workspace = true
 
 [[bench]]
 name = "bench_dynarec_v2"

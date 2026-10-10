@@ -3,9 +3,6 @@ name = "pchan-macros"
 version = "0.1.0"
 edition = "2024"
 
-[lints]
-workspace = true
-
 [lib]
 proc-macro = true
 
@@ -14,3 +11,6 @@ darling = "0.24.1"
 proc-macro2 = "1.0.107"
 quote = "1.0.47"
 syn = "3.0.6"
+
+[lints]
+workspace = true
