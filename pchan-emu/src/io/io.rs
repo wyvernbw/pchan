@@ -1,7 +1,6 @@
 use core::alloc::Allocator;
 use core::{any, mem, ptr};
 
-use arbitrary_int::prelude::*;
 use pchan_utils::hex;
 
 use crate::Emu;
@@ -423,10 +422,6 @@ pub trait CastIOInto: Copy {
             );
         }
         u32::from_ne_bytes(buf)
-    }
-
-    fn io_as(&self) -> UInt<u32, { size_of::<Self>() }> {
-        self.io_into_u32().into()
     }
 }
 

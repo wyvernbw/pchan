@@ -21,7 +21,6 @@
 #![feature(fn_traits)]
 #![feature(const_trait_impl)]
 #![feature(iter_intersperse)]
-#![feature(generic_const_exprs)]
 #![feature(const_array)]
 #![feature(portable_simd)]
 #![feature(const_try)]
