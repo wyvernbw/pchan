@@ -71,7 +71,7 @@ impl DmaState {
 /// These ports control DMA at the CPU-side. In most cases, you'll additionally
 /// need to initialize an address (and transfer direction, transfer enabled, etc.)
 /// at the remote-side (eg. at the GPU-side for DMA2).
-impl<A: Allocator> Emu<A> {
+impl<A: Allocator + Copy> Emu<A> {
     #[pchan_instrument_read("dma:r")]
     pub fn dma_read<T: Copy>(&self, address: u32) -> IOResult<T> {
         let address = address & 0x1fffffff;
@@ -473,13 +473,15 @@ impl<A: Allocator> Emu<A> {
     }
 }
 
+impl<A: Allocator + Copy> Emu<A> {}
+
 trait Transfer {
     const TRANSPORT_KIND: DmaTransportKind;
 
     /// ram to device
-    fn write<A: Allocator>(&mut self, emu: &mut Emu<A>, address: u32);
+    fn write<A: Allocator + Copy>(&mut self, emu: &mut Emu<A>, address: u32);
     /// device to ram
-    fn read<A: Allocator>(&mut self, emu: &mut Emu<A>, address: u32);
+    fn read<A: Allocator + Copy>(&mut self, emu: &mut Emu<A>, address: u32);
     fn channel<A: Allocator>(emu: &mut Emu<A>) -> &mut DmaChannel;
 
     fn write_madr<T: Copy, A: Allocator>(emu: &mut Emu<A>, value: T) -> IOResult<()> {
@@ -492,7 +494,7 @@ trait Transfer {
         Ok(())
     }
 
-    fn write_chcr<T: Copy, A: Allocator>(emu: &mut Emu<A>, value: T) -> IOResult<()> {
+    fn write_chcr<T: Copy, A: Allocator + Copy>(emu: &mut Emu<A>, value: T) -> IOResult<()> {
         let dma = Self::channel(emu);
         let chcr = DmaChcr::new_with_raw_value(value.io_into_u32());
         dma.chcr = chcr;
@@ -512,14 +514,14 @@ struct Dma2Gpu;
 impl Transfer for Dma2Gpu {
     const TRANSPORT_KIND: DmaTransportKind = DmaTransportKind::Gpu;
 
-    fn write<A: Allocator>(&mut self, emu: &mut Emu<A>, address: u32) {
+    fn write<A: Allocator + Copy>(&mut self, emu: &mut Emu<A>, address: u32) {
         let cmd = emu
             .fastmem_read::<GpuCmd>(address)
             .expect("address outside of ram/bios");
         emu.gpu_gp0_cmd(cmd);
     }
 
-    fn read<A: Allocator>(&mut self, emu: &mut Emu<A>, address: u32) {
+    fn read<A: Allocator + Copy>(&mut self, emu: &mut Emu<A>, address: u32) {
         let value = emu.gpu_read::<u32>(0x1f801810).unwrap();
         _ = emu.fastmem_write(address, value);
     }

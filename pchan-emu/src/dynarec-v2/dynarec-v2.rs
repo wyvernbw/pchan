@@ -138,7 +138,7 @@ pub struct DynarecFunction<A: Allocator> {
     pub exec: Arc<ExecutableBuffer>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct DynarecBlock<A: Allocator> {
     pub(crate) function: DynarecFunction<A>,
     pub(crate) pc:       u32,
@@ -147,7 +147,7 @@ pub struct DynarecBlock<A: Allocator> {
 
 type DynarecBlockArgs<'a, A> = (&'a mut Emu<A>, bool);
 
-impl<A: Allocator> DynarecBlock<A> {
+impl<A: Allocator + Copy> DynarecBlock<A> {
     pub fn call_block(&self, (emu, instrument): DynarecBlockArgs<A>) {
         #[cfg(debug_assertions)]
         {

@@ -19,6 +19,7 @@ pub static AMIDOG_TESTS: &[u8] =
 
 #[derive(derive_more::Debug, Clone)]
 pub struct BootloaderState {
+    #[cfg(feature = "std")]
     pub bios_path: PathBuf,
     sideload:      Option<Exe<'static, Vec<u8>>>,
 }
@@ -46,6 +47,7 @@ pub enum BootError {
 }
 
 impl<A: Allocator + Copy> Emu<A> {
+    #[cfg(feature = "std")]
     pub fn load_bios(&mut self, alloc: A) -> Result<(), BootError> {
         let mut bios_file =
             fs::File::open(&self.boot.bios_path).map_err(BootError::BiosFileOpenError)?;
@@ -109,7 +111,7 @@ impl<A: Allocator> Emu<A> {
             .enumerate()
             .for_each(|(idx, byte)| {
                 let address = idx + exe.header.dest_addr as usize;
-                self.write::<u8>(address as u32, byte);
+                self.fastmem_write::<u8>(address as u32, byte).unwrap();
             });
 
         tracing::info!("set state");

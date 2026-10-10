@@ -1,3 +1,4 @@
+use core::alloc::Allocator;
 use core::mem::transmute;
 
 use crate::gpu::{
@@ -10,13 +11,13 @@ use glam::{I16Vec2, U8Vec2, U8Vec3, U16Vec2};
 use smallvec::SmallVec;
 
 #[derive(derive_more::Debug)]
-pub struct DrawCallCollection {
-    pub draw_calls: Vec<DrawCall>,
+pub struct DrawCallCollection<A: Allocator> {
+    pub draw_calls: Vec<DrawCall, A>,
     pub display:    crate::gpu::Display,
     /// gpustat at vblank
     pub gpustat:    GpuStatReg,
     pub swap_idx:   usize,
-    pub vram:       Option<VramMsg>,
+    pub vram:       Option<VramMsg<A>>,
 }
 
 #[derive(Debug, Clone)]

@@ -4,10 +4,12 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
+default = ["std"]
 fetch-channel = []
 amidog-tests = []
 debugger-ext = []
 trace = []
+std = []
 
 [dependencies]
 arbitrary-int.workspace = true
@@ -24,7 +26,6 @@ kanal.workspace = true
 pchan-bind.workspace = true
 pchan-macros = { workspace = true }
 pchan-utils = { workspace = true, features = ["tracy"] }
-rapidhash = { version = "4.5.1", features = ["nightly"] }
 slotmap = "1.1.1"
 smallbox = { version = "0.8.8", features = ["nightly"] }
 smallvec = { version = "1.16.2", features = ["const_new"] }

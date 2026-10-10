@@ -6042,7 +6042,6 @@ dependencies = [
  "pchan-macros",
  "pchan-utils",
  "pretty_assertions",
- "rapidhash",
  "rstest",
  "slotmap",
  "smallbox",
@@ -6833,15 +6832,6 @@ name = "rangemap"
 version = "1.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a611d15b50743feb4c76b7d03edcb0e64f399c26961e4efe6975bc398be6aa3d"
-
-[[package]]
-name = "rapidhash"
-version = "4.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5da7e78a036ce858e8d55b7e7dc8ba3a88b78350fd2155d3591bbd966b58589e"
-dependencies = [
- "rustversion",
-]
 
 [[package]]
 name = "rav1e"

@@ -29,7 +29,7 @@ macro_rules! trace_todo {
     }};
 }
 
-impl<A: Allocator> Emu<A> {
+impl<A: Allocator + Copy> Emu<A> {
     #[pchan_macros::instrument(level = "trace", "io", skip_all, fields(pc = %hex(self.cpu.pc)))]
     pub fn run_io(&mut self) {
         #[cfg(feature = "amidog-tests")]
@@ -118,7 +118,7 @@ impl<A: Allocator> Emu<A> {
     }
 }
 
-impl<A: Allocator> Emu<A> {
+impl<A: Allocator + Copy> Emu<A> {
     pub fn write_many<T: Copy>(&mut self, mut address: u32, values: &[T]) {
         for value in values.iter().copied() {
             self.write(address, value);
@@ -281,7 +281,7 @@ impl<A: Allocator> Emu<A> {
 #[error("unhandled io at address {}", hex(self.0))]
 pub struct UnhandledIO(#[debug("{}", hex(self.0))] pub u32);
 
-impl<A: Allocator> Emu<A> {
+impl<A: Allocator + Copy> Emu<A> {
     pub fn read<T: Copy>(&mut self, address: u32) -> T {
         match self.try_read(address) {
             Ok(value) => value,

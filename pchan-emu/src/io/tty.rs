@@ -1,4 +1,4 @@
-use alloc::sync::Arc;
+use core::alloc::Allocator;
 use core::str::Utf8Error;
 
 use thiserror::Error;
@@ -8,9 +8,9 @@ use crate::memory::kb;
 const TTY_CAP: usize = kb(16);
 
 #[derive(derive_more::Debug, Clone)]
-pub struct Tty {
+pub struct Tty<A: Allocator> {
     #[debug("buf: {}/{}", self.end, TTY_CAP)]
-    pub buf: Box<[u8]>,
+    pub buf: Box<[u8], A>,
     end:     usize,
     mode:    TtyMode,
 }
@@ -19,14 +19,13 @@ pub struct Tty {
 pub enum TtyMode {
     Stdout,
     Tracing,
-    Channeled(kanal::Sender<Arc<str>>),
     Silent,
 }
 
-impl Default for Tty {
-    fn default() -> Self {
+impl<A: Allocator + Copy> Tty<A> {
+    pub fn new(alloc: A) -> Self {
         Self {
-            buf:  vec![0u8; TTY_CAP].into_boxed_slice(),
+            buf:  unsafe { Box::new_zeroed_slice_in(TTY_CAP, alloc).assume_init() },
             end:  0,
             mode: TtyMode::Stdout,
         }
@@ -41,7 +40,7 @@ pub enum TtyFlushError {
     SendErr(#[from] kanal::SendError),
 }
 
-impl Tty {
+impl<A: Allocator> Tty<A> {
     pub fn putchar(&mut self, c: char) {
         if self.end == TTY_CAP {
             tracing::error!("tty buffer overflow");
@@ -63,23 +62,10 @@ impl Tty {
             TtyMode::Tracing => {
                 tracing::info!(name: "psx-tty", "{}", string.trim());
             }
-            TtyMode::Channeled(tx) => {
-                tx.send(string.to_owned().into())?;
-            }
             TtyMode::Silent => {}
         }
         self.end = 0;
         Ok(())
-    }
-
-    pub fn set_channeled(&mut self) -> (kanal::Sender<Arc<str>>, kanal::Receiver<Arc<str>>) {
-        let (tx, rx) = kanal::bounded(1024);
-        self.mode = TtyMode::Channeled(tx.clone());
-        (tx, rx)
-    }
-
-    pub fn set_channeled_with(&mut self, sender: kanal::Sender<Arc<str>>) {
-        self.mode = TtyMode::Channeled(sender);
     }
 
     pub fn set_tracing(&mut self) {

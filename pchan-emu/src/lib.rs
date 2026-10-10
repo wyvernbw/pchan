@@ -31,7 +31,6 @@
 #![feature(integer_widen_truncate)]
 #![feature(allocator_ext)]
 #![feature(default_field_values)]
-#![feature(iter_array_chunks)]
 // allow unused variables in tests to supress the setup tracing warnings
 #![cfg_attr(test, allow(unused_variables))]
 use core::alloc::Allocator;
@@ -80,8 +79,8 @@ pub struct Emu<A: Allocator = Global> {
     pub dynarec_cache: DynarecCache<A>,
     pub mem:           MemoryState<A>,
     pub boot:          BootloaderState,
-    pub tty:           Tty,
-    pub gpu:           GpuState,
+    pub tty:           Tty<A>,
+    pub gpu:           GpuState<A>,
     pub dma:           DmaState,
     pub timers:        TimerState,
     #[debug(skip)]
@@ -110,8 +109,8 @@ impl<A: Allocator + Copy> Emu<A> {
             dynarec_cache: DynarecCache::new(alloc),
             mem: MemoryState::new(alloc),
             boot: BootloaderState::default(),
-            tty: Tty::default(),
-            gpu: GpuState::default(),
+            tty: Tty::new(alloc),
+            gpu: GpuState::new(alloc),
             dma: DmaState::default(),
             timers: TimerState::default(),
             spu: SpuState::new(alloc),

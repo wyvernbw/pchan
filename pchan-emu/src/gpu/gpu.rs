@@ -27,29 +27,30 @@ use crate::memory::{kb, mb};
 pub static VBLANK_COUNT: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone)]
-pub struct Conn {
-    pub draw_call_chan: AsyncChan<DrawCallCollection>,
-    pub vram_out_chan:  AsyncChan<VramRes>,
+pub struct Conn<A: Allocator> {
+    pub draw_call_chan: AsyncChan<DrawCallCollection<A>>,
+    pub vram_out_chan:  AsyncChan<VramRes<A>>,
     pub reset_flag:     &'static AtomicBool,
+    alloc:              A,
 }
 
 #[derive(derive_more::Debug)]
-pub struct VramMsg {
+pub struct VramMsg<A: Allocator> {
     #[debug(skip)]
-    pub vram:  Box<[u16]>,
+    pub vram:  Box<[u16], A>,
     pub dirty: bool,
 }
 
-pub struct VramRes {
-    pub vram:          Box<[u16]>,
-    pub draw_call_buf: Vec<DrawCall>,
+pub struct VramRes<A: Allocator> {
+    pub vram:          Box<[u16], A>,
+    pub draw_call_buf: Vec<DrawCall, A>,
     pub swap_idx:      usize,
 }
 
 #[derive(derive_more::Debug, Clone)]
-pub struct GpuState {
+pub struct GpuState<A: Allocator> {
     #[debug(skip)]
-    pub vram:           Box<[u16]>,
+    pub vram:           Box<[u16], A>,
     #[debug(skip)]
     pub gpustat:        GpuStatReg,
     pub gp0:            Gp0,
@@ -60,21 +61,23 @@ pub struct GpuState {
     pub tex_window:     Gp0TexWindowCmd,
     pub draw_reg:       GpuInternalDrawReg,
     #[debug("{} draw calls", self.draw_call_swap.queue().len())]
-    pub draw_call_swap: DrawCallSwapchain<2>,
+    pub draw_call_swap: DrawCallSwapchain<A, 2>,
     pub model:          GpuModel,
 
     #[debug(skip)]
-    pub conn:              Conn,
+    pub conn:              Conn<A>,
     pub waiting_on_render: bool,
     pub last_vblank:       Instant,
     pub vblank_signal:     bool,
 
     pub vram_mutation_signal: bool,
+    #[debug(skip)]
+    alloc:                    A,
 }
 
 #[derive(Debug, Clone)]
-pub struct DrawCallSwapchain<const N: usize> {
-    queues: [Vec<DrawCall>; N],
+pub struct DrawCallSwapchain<A: Allocator, const N: usize> {
+    queues: [Vec<DrawCall, A>; N],
     idx:    usize,
 }
 
@@ -86,41 +89,41 @@ pub enum GpuModel {
     Gpu208Pin,
 }
 
-impl GpuState {}
-
-pub static RESET_FLAG: AtomicBool = AtomicBool::new(false);
-
-impl Default for GpuState {
-    fn default() -> Self {
+impl<A: Allocator + Copy> GpuState<A> {
+    pub fn new(alloc: A) -> Self {
         let mut gpustat = GpuStatReg::default();
         gpustat.mock_ready();
         Self {
             gpustat,
-            vram: create_vram(),
+            vram: create_vram(alloc),
             gp0: Gp0::WaitingForCmd,
             gp0read: Default::default(),
             gp0read_queue: Deque::new(),
             model: GpuModel::default(),
             tex_window: Gp0TexWindowCmd::default(),
             draw_reg: GpuInternalDrawReg::default(),
-            draw_call_swap: DrawCallSwapchain::default(),
+            draw_call_swap: DrawCallSwapchain::new(alloc),
             conn: Conn {
                 draw_call_chan: kanal::bounded_async(3),
-                vram_out_chan:  kanal::bounded_async(3),
-                reset_flag:     &RESET_FLAG,
+                vram_out_chan: kanal::bounded_async(3),
+                reset_flag: &RESET_FLAG,
+                alloc,
             },
             dp: Display::default(),
             waiting_on_render: false,
             last_vblank: Instant::now(),
             vblank_signal: false,
             vram_mutation_signal: false,
+            alloc,
         }
     }
 }
 
+pub static RESET_FLAG: AtomicBool = AtomicBool::new(false);
+
 #[must_use]
-pub fn create_vram() -> Box<[u16]> {
-    vec![0; mb(1) / 2].into_boxed_slice()
+pub fn create_vram<A: Allocator>(alloc: A) -> Box<[u16], A> {
+    unsafe { Box::new_zeroed_slice_in(mb(1) / 2, alloc).assume_init() }
 }
 
 fn mask_bit(value: u16) -> bool {
@@ -133,7 +136,7 @@ fn set_mask_bit(value: u16, set: bool) -> u16 {
     }
 }
 
-impl<A: Allocator> Emu<A> {
+impl<A: Allocator + Copy> Emu<A> {
     #[pchan_macros::instrument(level = "trace", skip(self), "gpu:r")]
     pub fn gpu_read<T: Copy>(&mut self, address: u32) -> IOResult<T> {
         let address = address & 0x1fffffff;
@@ -579,26 +582,28 @@ impl<A: Allocator> Emu<A> {
         let draw_call = self.gpu_create_draw_call(kind);
         self.gpu.draw_call_swap.queue_mut().push(draw_call);
     }
+}
 
-    pub fn gpu_reconnect(&mut self, other: &Emu) {
+impl<A: Allocator + Clone> Emu<A> {
+    pub fn gpu_reconnect(&mut self, other: &Emu<A>) {
         self.gpu.conn = other.gpu.conn.clone();
     }
 }
 
-impl<const N: usize> Default for DrawCallSwapchain<N> {
-    fn default() -> Self {
+impl<A: Allocator + Copy, const N: usize> DrawCallSwapchain<A, N> {
+    fn new(alloc: A) -> Self {
         Self {
-            queues: core::array::from_fn(|_| Vec::with_capacity(64)),
+            queues: core::array::from_fn(|_| Vec::with_capacity_in(64, alloc)),
             idx:    Default::default(),
         }
     }
 }
 
-impl<const N: usize> DrawCallSwapchain<N> {
+impl<A: Allocator, const N: usize> DrawCallSwapchain<A, N> {
     fn queue(&self) -> &[DrawCall] {
         &self.queues[self.idx]
     }
-    fn queue_mut(&mut self) -> &mut Vec<DrawCall> {
+    fn queue_mut(&mut self) -> &mut Vec<DrawCall, A> {
         &mut self.queues[self.idx]
     }
     fn submit(&mut self) -> usize {
@@ -607,7 +612,7 @@ impl<const N: usize> DrawCallSwapchain<N> {
         self.idx %= N;
         n
     }
-    fn recall(&mut self, swap_idx: usize, mut buf: Vec<DrawCall>) {
+    fn recall(&mut self, swap_idx: usize, mut buf: Vec<DrawCall, A>) {
         // assert_ne!(swap_idx, self.idx);
         buf.clear();
         self.queues[swap_idx] = buf;
@@ -618,26 +623,8 @@ pub struct Read;
 pub struct ReadWrite;
 
 pub trait VramAccessType {
-    type VramRef<'a>: BoxVram;
+    type VramRef<'a>;
     type SignalRef<'a>;
-}
-
-pub trait BoxVram {
-    fn box_vram(&self) -> Box<[u16]>;
-}
-
-impl BoxVram for &[u16] {
-    fn box_vram(&self) -> Box<[u16]> {
-        (*self).into()
-    }
-}
-
-impl BoxVram for &mut [u16] {
-    fn box_vram(&self) -> Box<[u16]> {
-        let mut vram = create_vram();
-        vram.copy_from_slice(self);
-        vram
-    }
 }
 
 impl VramAccessType for Read {
@@ -654,12 +641,6 @@ pub struct VramGuard<'a, T: VramAccessType> {
     #[deref]
     vram:   T::VramRef<'a>,
     signal: T::SignalRef<'a>,
-}
-
-impl<A: VramAccessType> VramGuard<'_, A> {
-    pub fn to_owned(&self) -> Box<[u16]> {
-        self.vram.box_vram()
-    }
 }
 
 impl VramGuard<'_, ReadWrite> {
@@ -706,7 +687,7 @@ impl VramGuard<'_, Read> {
     }
 }
 
-impl GpuState {
+impl<A: Allocator + Copy> GpuState<A> {
     fn get_gpu_info_cmd(&self, cmd: GpuCmd) -> Option<GpuInfoCmd> {
         let value = cmd.raw_value();
         let value = match self.model {
@@ -747,7 +728,7 @@ impl GpuState {
                 .0
                 .as_sync()
                 .send(DrawCallCollection {
-                    draw_calls: Vec::new(),
+                    draw_calls: Vec::new_in(self.alloc),
                     display:    self.dp.clone(),
                     gpustat:    self.gpustat,
                     swap_idx:   0,
@@ -761,10 +742,10 @@ impl GpuState {
         assert!(!self.vram.is_empty());
 
         tracing::debug!("flushing {} draw calls", self.draw_call_swap.queue().len());
-        let queue = mem::take(self.draw_call_swap.queue_mut());
+        let queue = mem::replace(self.draw_call_swap.queue_mut(), Vec::new_in(self.alloc));
         let swap_idx = self.draw_call_swap.submit();
         // transfer ownership of the vram to the render thread
-        let vram = mem::take(&mut self.vram);
+        let vram = mem::replace(&mut self.vram, Box::new_in([], self.alloc));
         let display = self.dp.clone();
         let draw_call_count = queue.len();
         self.conn
@@ -847,7 +828,9 @@ impl GpuState {
             }
         }
     }
+}
 
+impl<A: Allocator> GpuState<A> {
     pub fn flip_even_odd(&mut self, even_odd: Option<DrawEvenOdd>) {
         if self.gpustat.v_interlace() {
             let even_odd = even_odd.unwrap_or_else(|| self.gpustat.even_odd_in_vblank());
@@ -1484,7 +1467,7 @@ pub enum VideoEventKind {
     Vblank,
 }
 
-impl GpuState {
+impl<A: Allocator> GpuState<A> {
     #[must_use]
     pub fn video_cycles_per_scanline(&self) -> u64 {
         match self.gpustat.video_mode() {
@@ -1551,7 +1534,7 @@ pub struct Display {
 /// are not absolute dot positions, but relative timings tied to HSYNC.
 ///
 /// see <https://psx-spx.consoledev.net/graphicsprocessingunitgpu/#gp106h-horizontal-display-range-on-screen>
-impl<A: Allocator> Emu<A> {
+impl<A: Allocator + Copy> Emu<A> {
     fn cpu_cycles_to_video_cycles(&mut self, cycles: u64) -> u64 {
         // this might be based on the actual console hardware not on the
         // video mode you set in the gpu
