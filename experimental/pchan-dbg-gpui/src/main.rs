@@ -24,9 +24,12 @@ use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::{Input, InputState};
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::separator::Separator;
+use gpui_component::slider::{Slider, SliderEvent, SliderState};
 use gpui_component::switch::Switch;
 use gpui_component::tab::TabBar;
-use gpui_component::{ActiveTheme, IconName, Sizable, StyledExt, Theme, h_flex, v_flex};
+use gpui_component::{
+    ActiveTheme, IconName, Selectable, Sizable, StyledExt, Theme, h_flex, v_flex,
+};
 use pchan_bind::ringbuf::StaticRb;
 use pchan_bind::ringbuf::traits::{Consumer, Observer, RingBuffer};
 use pchan_emu::debug::{Breakpoint, BreakpointKind};
@@ -81,6 +84,24 @@ struct CloseWindow {
 struct SetSpeed {
     #[serde(skip)]
     speed: EmuSpeed,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, JsonSchema, PartialEq, Eq)]
+enum SettingsTab {
+    General,
+    Audio,
+}
+
+#[expect(clippy::unsafe_derive_deserialize)]
+#[derive(Clone, Action, Deserialize, JsonSchema, PartialEq, Eq)]
+struct ViewSettings {
+    tab: SettingsTab,
+}
+
+impl ViewSettings {
+    fn new(tab: SettingsTab) -> Self {
+        Self { tab }
+    }
 }
 
 fn window_opts() -> WindowOptions {
@@ -164,6 +185,7 @@ fn main() {
                 registers_window:   None,
                 mem_view_window:    None,
                 breakpoints_window: None,
+                settings_window:    None,
                 emucx:              emucx.clone(),
             });
             let appcx = AppCx {
@@ -201,6 +223,11 @@ fn main() {
                 appcx: appcx.clone(),
             });
 
+            let settings_view = cx.new(|_| SettingsView {
+                appcx: appcx.clone(),
+                tab:   SettingsTab::Audio,
+            });
+
             app.update(cx, |app, cx| {
                 app.set_menus(cx);
             });
@@ -233,6 +260,13 @@ fn main() {
                 |app| &mut app.breakpoints_window,
                 |cx| window_opts().windowed_centered(size(px(350.), px(480.)), cx),
             );
+            set_subwindow::<ViewSettings, _>(
+                &app,
+                &settings_view,
+                cx,
+                |app| &mut app.settings_window,
+                |cx| window_opts().windowed_centered(size(px(480.), px(480.)), cx),
+            );
 
             cx.on_action(listener(&app, PChanApp::load_content));
 
@@ -261,6 +295,13 @@ fn main() {
                     core::ptr::drop_in_place(_profiler_ptr);
                 }
                 cx.quit();
+            });
+            cx.on_action(move |action: &ViewSettings, cx| {
+                cx.propagate();
+                settings_view.update(cx, |settings, cx| {
+                    settings.tab = action.tab;
+                    cx.notify();
+                });
             });
 
             cx.spawn({
@@ -297,6 +338,7 @@ struct PChanApp {
     mem_view_window:    Option<Subwindow<MemviewTable>>,
     registers_window:   Option<Subwindow<RegView>>,
     breakpoints_window: Option<Subwindow<BreakpointsView>>,
+    settings_window:    Option<Subwindow<SettingsView>>,
     emucx:              Entity<EmuContext>,
 }
 
@@ -392,21 +434,25 @@ impl PChanApp {
                     menu_type: SystemMenuType::Services,
                 }),
             ]),
-            Menu::new("Settings").items([MenuItem::submenu(
-                Menu::new("Speed").items(
-                    [
-                        EmuSpeed::percentage(100),
-                        EmuSpeed::percentage(150),
-                        EmuSpeed::percentage(200),
-                        EmuSpeed::percentage(300),
-                        EmuSpeed::Unlimited,
-                    ]
-                    .map(|speed| {
-                        speed_menu_item(speed)
-                            .checked(speed == self.emucx.read(cx).runner.config.speed)
-                    }),
+            Menu::new("Settings").items([
+                MenuItem::submenu(
+                    Menu::new("Speed").items(
+                        [
+                            EmuSpeed::percentage(100),
+                            EmuSpeed::percentage(150),
+                            EmuSpeed::percentage(200),
+                            EmuSpeed::percentage(300),
+                            EmuSpeed::Unlimited,
+                        ]
+                        .map(|speed| {
+                            speed_menu_item(speed)
+                                .checked(speed == self.emucx.read(cx).runner.config.speed)
+                        }),
+                    ),
                 ),
-            )]),
+                MenuItem::separator(),
+                MenuItem::action("Audio Settings", ViewSettings::new(SettingsTab::Audio)),
+            ]),
             Menu::new("Debug").items([
                 MenuItem::action("Run", Run),
                 MenuItem::action("Pause", Pause),
@@ -502,7 +548,6 @@ impl PChanApp {
                     }
                 }
             };
-            result.unwrap();
         })
         .detach();
     }
@@ -858,6 +903,7 @@ fn set_subwindow<T: Action, V: Render + PchanAppActions>(
             let view = view.clone();
             let focus_handle = view.read(cx).appcx().focus_handle.clone();
             let window_options = window_options.clone();
+            cx.propagate();
             cx.defer(move |cx| {
                 let window = app_view.update(cx, |app, _| get_field(app).clone());
                 let active = match window {
@@ -1882,6 +1928,116 @@ impl Render for MemviewTable {
             .content(self.appcx.emucx.read(cx).content_title())
             .into_element()
             .text_color(cx.theme().foreground)
+    }
+}
+
+struct SettingsView {
+    appcx: AppCx,
+    tab:   SettingsTab,
+}
+
+impl PchanAppActions for SettingsView {
+    fn appcx(&self) -> &AppCx {
+        &self.appcx
+    }
+}
+
+impl SettingsView {
+    fn is_on_tab(&self, tab: SettingsTab) -> bool {
+        self.tab == tab
+    }
+
+    fn tab_button(&self, cx: &mut Context<Self>, tab: SettingsTab) -> Button {
+        Button::new(ElementId::Name(format!("settings-tab-{tab:?}").into()))
+            .ghost()
+            .selected(self.is_on_tab(tab))
+            .h_flex()
+            .justify_start()
+            .items_start()
+            .child(
+                div()
+                    .size_full()
+                    .h_flex()
+                    .items_center()
+                    .child(format!("{tab:?}")),
+            )
+            .when(self.is_on_tab(tab), |this| {
+                this.border_color(cx.theme().foreground).border_2()
+            })
+            .on_click(cx.listener(move |settings, _, _, cx| {
+                settings.tab = tab;
+                cx.notify();
+            }))
+    }
+
+    fn audio_tab(&self, win: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let slider = win.use_state(cx, |win, cx| {
+            SliderState::new().min(0.).max(100.).default_value(100.)
+        });
+        let emucx = self.appcx.emucx.clone();
+        win.use_state(cx, {
+            let slider = &slider;
+            move |_, cx| {
+                cx.subscribe(slider, move |_, slider, event, cx| {
+                    let SliderEvent::Change(value) = event else {
+                        return;
+                    };
+                    let value = value.end() / 100.0;
+                    emucx.update(cx, |emucx, _| {
+                        emucx.emu.spu.app_volume = value;
+                    });
+                })
+                .detach();
+            }
+        });
+        div()
+            .size_full()
+            .v_flex()
+            .gap_2()
+            .p_2()
+            .px_4()
+            .child(div().child("Audio Settings").text_xl().mb_2())
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child("Volume")
+                    .child(
+                        div()
+                            .w_12()
+                            .whitespace_nowrap()
+                            .overflow_hidden()
+                            .child(format!("{:.0}%", slider.read(cx).value())),
+                    )
+                    .child(Slider::new(&slider)),
+            )
+    }
+}
+
+impl Render for SettingsView {
+    fn render(&mut self, win: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        h_flex()
+            .border_t_1()
+            .border_color(cx.theme().border)
+            .size_full()
+            .child(
+                v_flex()
+                    .flex_grow_1()
+                    .p_2()
+                    .h_full()
+                    .max_w(rems(10.))
+                    .border_r_1()
+                    .border_color(cx.theme().border)
+                    .gap_2()
+                    .child(self.tab_button(cx, SettingsTab::General))
+                    .child(self.tab_button(cx, SettingsTab::Audio)),
+            )
+            .child(div().flex_grow_1().h_full().child(match self.tab {
+                SettingsTab::General => div().into_any_element(),
+                SettingsTab::Audio => self.audio_tab(win, cx).into_any_element(),
+            }))
+            .pchan_actions(self, cx)
+            .wrap_window(cx)
+            .title(Some("Settings"))
     }
 }
 

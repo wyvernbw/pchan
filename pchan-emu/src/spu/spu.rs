@@ -22,13 +22,14 @@ use crate::spu::reverb::Reverb;
 
 #[derive(derive_more::Debug)]
 pub struct SpuState<A: Allocator> {
-    voices:      Box<[Voice; 24], A>,
-    adsr:        ADSRState,
-    voice_flags: VoiceFlags,
-    ctrl:        SpuCtrl,
-    reverb:      Reverb<A>,
+    voices:         Box<[Voice; 24], A>,
+    adsr:           ADSRState,
+    voice_flags:    VoiceFlags,
+    ctrl:           SpuCtrl,
+    reverb:         Reverb<A>,
     #[debug(skip)]
-    mem:         Box<[u16], A>,
+    mem:            Box<[u16], A>,
+    pub app_volume: f32,
 
     ram_start:   u16,
     /// internal register
@@ -53,6 +54,7 @@ impl<A: Allocator + Copy> SpuState<A> {
             prod:        None,
             adsr:        ADSRState::default(),
             clock_idx:   0,
+            app_volume:  1.0,
         };
         for (i, voice) in spu.voices.iter_mut().enumerate() {
             voice.idx = i;
@@ -75,6 +77,7 @@ impl<A: Allocator + Clone> Clone for SpuState<A> {
             prod:        None,
             adsr:        self.adsr.clone(),
             clock_idx:   0,
+            app_volume:  self.app_volume,
         }
     }
 }
@@ -526,8 +529,10 @@ impl<A: Allocator> Emu<A> {
         let mixed_r = apply_volume(mixed_r, self.spu.adsr.main_r.internal[0]);
 
         if let Some(prod) = &mut self.spu.prod {
-            _ = prod.get_mut().unwrap().prod.try_push(mixed_l);
-            _ = prod.get_mut().unwrap().prod.try_push(mixed_r);
+            let mixed_l = f32::from(mixed_l) * self.spu.app_volume;
+            let mixed_r = f32::from(mixed_r) * self.spu.app_volume;
+            _ = prod.get_mut().unwrap().prod.try_push(mixed_l as i16);
+            _ = prod.get_mut().unwrap().prod.try_push(mixed_r as i16);
         }
     }
 }

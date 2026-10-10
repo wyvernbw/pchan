@@ -54,6 +54,7 @@ pub enum Call {
     AddBreakpoint(Breakpoint),
     DelBreakpoint(u32),
     SwitchBreakpoint(u32, bool, Sender<Result<(), PchanSteelErr>>),
+    SetVolume(f32),
 }
 
 #[derive(Debug, Clone)]
@@ -189,6 +190,11 @@ impl SteelCtx {
                 rx.recv().steel()?.steel()
             },
         );
+
+        let c = conn.clone();
+        module.register_fn("set-volume", move |value: f32| {
+            c.send_sync(Call::SetVolume(value)).steel()
+        });
 
         engine.register_module(module);
         engine.run(r#"(require-builtin "pchan/emu")"#).unwrap();
@@ -366,6 +372,9 @@ impl SteelExecutor {
                     .send(Err(PchanSteelErr::BreakpointNotFound(addr)))
                     .unwrap(),
             },
+            Call::SetVolume(value) => {
+                emu.spu.app_volume = value.clamp(0.0, 1.0);
+            }
         }
     }
 
