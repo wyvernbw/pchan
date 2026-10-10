@@ -4,8 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-default = ["repl"]
+default = ["repl", "ctrlc"]
 repl = ["dep:steel-repl"]
+ctrlc = ["dep:ctrlc"]
 
 [dependencies]
 kanal.workspace = true
@@ -13,11 +14,13 @@ pchan-bind.workspace = true
 pchan-emu = { workspace = true, features = ["debugger-ext"] }
 pchan-utils = { workspace = true, default-features = false }
 smol.workspace = true
-steel-core = { git = "https://github.com/wyvernbw/steel.git", branch="wyvernbw/opt-jit", version = "0.8.3" }
 steel-repl = { git = "https://github.com/wyvernbw/steel.git", branch="wyvernbw/opt-jit", version = "0.8.3", optional = true }
 steel-derive = { git = "https://github.com/wyvernbw/steel.git", branch="wyvernbw/opt-jit", version = "0.8.3" }
+steel-core = { git = "https://github.com/wyvernbw/steel.git", branch="wyvernbw/opt-jit", version = "0.8.3" }
 thiserror = "2.0.21"
 derive_more = { version = "2.1.1", features = ["debug"] }
+ctrlc = { version = "3.5.2", optional = true }
+miette = "7.6.0"
 
 [lints]
 workspace = true

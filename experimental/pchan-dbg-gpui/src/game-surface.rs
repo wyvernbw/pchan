@@ -143,6 +143,8 @@ impl Element for GameSurface {
         state.wait_for_display_draw(&self.renderer);
         #[cfg(target_os = "macos")]
         {
+            state.start_convert_render(&self.renderer);
+            state.wait_for_convert_render(&self.renderer);
             let compute = state
                 .metal_ypcbcr
                 .take()

@@ -86,10 +86,16 @@ impl<A: Allocator> DebuggerState<A> {
     }
 
     pub fn remove_breakpoint(&mut self, addr: u32) {
+        let addr = addr & 0x1fff_ffff;
         if self.stopped_on.as_ref() == self.breakpoints.get(&addr) {
             self.stopped_on = None;
         }
         self.breakpoints.remove(&addr);
+    }
+
+    pub fn add_breakpoint(&mut self, mut breakpoint: Breakpoint) {
+        breakpoint.address &= 0x1fff_ffff;
+        self.breakpoints.insert(breakpoint.address, breakpoint);
     }
 }
 

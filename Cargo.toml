@@ -64,7 +64,6 @@ pchan-macros = { path = "./pchan-macros" }
 pchan-utils = { path = "./pchan-utils", default-features = false }
 pchan-bind = { path = "./pchan-bind" }
 pchan-audio = { path = "./pchan-audio" }
-pchan-input = { path = "./pchan-input" }
 pchan-executor = { path = "./pchan-executor" }
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 kanal = "0.1.1"

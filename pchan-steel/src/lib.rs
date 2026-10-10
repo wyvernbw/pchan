@@ -1,18 +1,21 @@
+extern crate alloc;
+
 use core::alloc::Allocator;
 use core::mem;
 use core::num::ParseIntError;
 use std::collections::HashMap;
 
 use kanal::{ReceiveError, SendError, Sender};
+use miette::Report;
 use pchan_emu::Emu;
 use pchan_emu::cpu::{REG_STR, reg_str};
 use pchan_emu::debug::Breakpoint;
 use pchan_emu::io::UnhandledIO;
-use pchan_emu::run::Runner;
-use pchan_utils::{AsyncChan, hex};
+use pchan_emu::run::{EmuSpeed, Runner};
+use pchan_utils::{AsyncChan, default, hex};
 use steel::gc::Gc;
 use steel::rerrs::ErrorKind as SteelErrorKind;
-use steel::rvals::{FutureResult, IntoSteelVal, SteelString};
+use steel::rvals::{FutureResult, IntoSteelVal};
 use steel::steel_vm::builtin::BuiltInModule;
 use steel::steel_vm::engine::Engine;
 use steel::steel_vm::register_fn::RegisterFn;
@@ -24,7 +27,8 @@ mod primitives;
 
 #[derive(Clone)]
 pub struct ScriptConn {
-    pub chan: AsyncChan<Call>,
+    pub chan:   AsyncChan<Call>,
+    pub cancel: AsyncChan<()>,
 }
 
 impl ScriptConn {
@@ -52,9 +56,12 @@ pub enum Call {
     GprSingle(u8, Sender<u32>),
     MemReadU32(MemReadCall<u32>),
     AddBreakpoint(Breakpoint),
+    WaitBreakpoint(u32, Sender<()>),
     DelBreakpoint(u32),
     SwitchBreakpoint(u32, bool, Sender<Result<(), PchanSteelErr>>),
     SetVolume(f32),
+    SetSpeed(EmuSpeed),
+    OpenContent(Sender<Result<(), PchanSteelErr>>),
 }
 
 #[derive(Debug, Clone)]
@@ -66,14 +73,15 @@ impl SteelCtx {
         let mut engine = Engine::new();
         let mut module = BuiltInModule::new("pchan/emu");
         let conn = ScriptConn {
-            chan: kanal::bounded_async(16),
+            chan:   kanal::bounded_async(16),
+            cancel: kanal::bounded_async(0),
         };
 
         engine.register_type::<SteelGprMap>("pchan::SteelGprMap");
 
         SteelU32::register(&mut module);
 
-        module.register_fn("await", move |value: SteelVal| {
+        module.register_fn("block-on", move |value: SteelVal| {
             if let SteelVal::FutureV(f) = value {
                 let shared = f.unwrap().into_shared();
                 smol::block_on(shared)
@@ -155,7 +163,7 @@ impl SteelCtx {
                     enabled: true,
                 }))
                 .steel()?;
-                Ok(())
+                Ok(address)
             },
         );
 
@@ -192,8 +200,51 @@ impl SteelCtx {
         );
 
         let c = conn.clone();
+        module.register_fn("breakpoint", move |address: u32| -> SteelResult<_> {
+            let (tx, rx) = kanal::bounded(0);
+            c.send_sync(Call::WaitBreakpoint(address, tx)).steel()?;
+            Ok(future(&c, async move |_| {
+                rx.as_async().recv().await.steel()
+            }))
+        });
+
+        let c = conn.clone();
         module.register_fn("set-volume", move |value: f32| {
             c.send_sync(Call::SetVolume(value)).steel()
+        });
+
+        let c = conn.clone();
+        module.register_fn("set-speed", move |value: SteelVal| -> SteelResult<_> {
+            let value = match value {
+                SteelVal::NumV(num @ 0.0..) => Ok(EmuSpeed::percentage(num as u16)),
+                SteelVal::NumV(_) => Err(PchanSteelErr::NegativeSpeedErr.into()),
+                SteelVal::IntV(num) => Ok(EmuSpeed::percentage(num as u16)),
+                SteelVal::SymbolV(sym) => match sym.as_str() {
+                    "unlimited" => Ok(EmuSpeed::Unlimited),
+                    sym => Err(SteelErr::new(
+                        SteelErrorKind::Generic,
+                        format!("{sym} is not a valid speed, expected 'unlimited or number"),
+                    )),
+                },
+                _ => Err(SteelErr::new(
+                    SteelErrorKind::TypeMismatch,
+                    "expected number or 'unlimited".to_owned(),
+                )),
+            };
+            let value = value?;
+            c.send_sync(Call::SetSpeed(value)).steel()?;
+            Ok(())
+        });
+
+        let c = conn.clone();
+        module.register_fn("open-content", move || {
+            future(&c, async move |c| -> SteelResult<_> {
+                let (tx, rx) = kanal::bounded_async(0);
+                c.send_async(Call::OpenContent(tx.to_sync()))
+                    .await
+                    .steel()?;
+                rx.recv().await.steel()?.steel()
+            })
         });
 
         engine.register_module(module);
@@ -213,7 +264,7 @@ impl SteelCtx {
     }
 }
 
-fn parse_hex_word(str: &str) -> Result<u32, ParseIntError> {
+pub fn parse_hex_word(str: &str) -> Result<u32, ParseIntError> {
     if str == "0x" {
         return Ok(0);
     }
@@ -226,6 +277,7 @@ fn parse_hex_word(str: &str) -> Result<u32, ParseIntError> {
         u32::from_str_radix(str, 16)
     }
 }
+
 #[derive(Debug, thiserror::Error)]
 pub enum PchanSteelErr {
     #[error(transparent)]
@@ -240,6 +292,10 @@ pub enum PchanSteelErr {
     ParseHexError(#[from] ParseIntError),
     #[error("breakpoint not found: {}", hex(*.0))]
     BreakpointNotFound(u32),
+    #[error("emulator speed cannot be negative.")]
+    NegativeSpeedErr,
+    #[error("failed to open content: {0}")]
+    OpenContentError(Report),
 }
 
 impl From<PchanSteelErr> for SteelErr {
@@ -247,13 +303,14 @@ impl From<PchanSteelErr> for SteelErr {
         match value {
             PchanSteelErr::SendError(_)
             | PchanSteelErr::ReceiveError(_)
-            | PchanSteelErr::UnhandledEmuIO(_) => {
+            | PchanSteelErr::UnhandledEmuIO(_)
+            | PchanSteelErr::OpenContentError(_) => {
                 SteelErr::new(SteelErrorKind::Io, format!("{value}"))
             }
             PchanSteelErr::UnknownGpr(_) | PchanSteelErr::ParseHexError(_) => {
                 SteelErr::new(SteelErrorKind::Parse, format!("{value}"))
             }
-            PchanSteelErr::BreakpointNotFound(_) => {
+            PchanSteelErr::BreakpointNotFound(_) | PchanSteelErr::NegativeSpeedErr => {
                 SteelErr::new(SteelErrorKind::Generic, format!("{value}"))
             }
         }
@@ -299,16 +356,23 @@ impl Default for SteelCtx {
 }
 
 pub struct SteelExecutor {
-    wakers: Vec<(u64, Sender<()>)>,
-    conn:   ScriptConn,
+    frame_wakers:      Vec<(u64, Sender<()>)>,
+    breakpoint_wakers: Vec<(u32, Sender<()>)>,
+    conn:              ScriptConn,
+}
+
+#[derive(Default)]
+pub struct ExecSummary {
+    pub open_content: Option<Sender<Result<(), PchanSteelErr>>>,
 }
 
 impl SteelExecutor {
     #[must_use]
     pub fn new(conn: ScriptConn) -> Self {
         SteelExecutor {
-            wakers: vec![],
+            frame_wakers: vec![],
             conn,
+            breakpoint_wakers: vec![],
         }
     }
 
@@ -317,7 +381,7 @@ impl SteelExecutor {
         emu: &mut Emu<EA>,
         runner: &mut Runner<RA>,
         msg: Call,
-    ) {
+    ) -> ExecSummary {
         match msg {
             Call::Run => {
                 runner.running = true;
@@ -347,9 +411,10 @@ impl SteelExecutor {
                 runner.running = true;
                 if n == 0 {
                     waker.send(()).unwrap();
+                    return default();
                 }
                 let wakeup = runner.frame_idx + u64::from(n);
-                self.wakers.push((wakeup, waker));
+                self.frame_wakers.push((wakeup, waker));
             }
             Call::Gpr(tx) => {
                 tx.send(emu.cpu.gpr.to_vec()).unwrap();
@@ -358,7 +423,7 @@ impl SteelExecutor {
             Call::MemReadU32(MemReadCall(addr, tx)) => tx.send(emu.try_read(addr)).unwrap(),
             Call::Frame(tx) => tx.send(runner.frame_idx as isize).unwrap(),
             Call::AddBreakpoint(breakpoint) => {
-                emu.dbg.breakpoints.insert(breakpoint.address, breakpoint);
+                emu.dbg.add_breakpoint(breakpoint);
             }
             Call::DelBreakpoint(address) => {
                 emu.dbg.remove_breakpoint(address);
@@ -375,7 +440,26 @@ impl SteelExecutor {
             Call::SetVolume(value) => {
                 emu.spu.app_volume = value.clamp(0.0, 1.0);
             }
-        }
+            Call::SetSpeed(emu_speed) => {
+                runner.config.speed = emu_speed;
+            }
+            Call::WaitBreakpoint(address, tx) => {
+                let address = address & 0x1fff_ffff;
+                runner.running = true;
+                if emu.dbg.stopped_on.map(|s| s.address) == Some(address) {
+                    tx.send(()).unwrap();
+                    return default();
+                }
+                self.breakpoint_wakers.push((address, tx));
+            }
+            Call::OpenContent(tx) => {
+                return ExecSummary {
+                    open_content: Some(tx),
+                };
+            }
+        };
+
+        default()
     }
 
     pub fn handle_step<EA: Allocator + Copy, RA: Allocator + Copy>(
@@ -384,7 +468,7 @@ impl SteelExecutor {
         runner: &mut Runner<RA>,
     ) {
         let idx = runner.frame_idx;
-        self.wakers.retain(|(n, waker)| {
+        self.frame_wakers.retain(|(n, waker)| {
             if *n <= idx {
                 runner.running = false;
                 let _ = waker.send(());
@@ -393,5 +477,15 @@ impl SteelExecutor {
                 true
             }
         });
+        if let Some(brk) = emu.dbg.stopped_on {
+            self.breakpoint_wakers.retain(|(address, waker)| {
+                if *address == brk.address {
+                    waker.send(()).unwrap();
+                    false
+                } else {
+                    true
+                }
+            });
+        }
     }
 }

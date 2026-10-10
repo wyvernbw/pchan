@@ -6121,8 +6121,10 @@ dependencies = [
 name = "pchan-steel"
 version = "0.1.0"
 dependencies = [
+ "ctrlc",
  "derive_more",
  "kanal",
+ "miette",
  "pchan-bind",
  "pchan-emu",
  "pchan-utils",

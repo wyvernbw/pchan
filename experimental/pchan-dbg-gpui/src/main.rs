@@ -33,7 +33,7 @@ use gpui_component::{
 use pchan_bind::ringbuf::StaticRb;
 use pchan_bind::ringbuf::traits::{Consumer, Observer, RingBuffer};
 use pchan_emu::debug::{Breakpoint, BreakpointKind};
-use pchan_steel::{ScriptConn, SteelCtx, SteelExecutor};
+use pchan_steel::{PchanSteelErr, ScriptConn, SteelCtx, SteelExecutor};
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -268,7 +268,7 @@ fn main() {
                 |cx| window_opts().windowed_centered(size(px(480.), px(480.)), cx),
             );
 
-            cx.on_action(listener(&app, PChanApp::load_content));
+            cx.on_action(listener(&app, PChanApp::load_content_listener));
 
             // let theme_reg = ThemeRegistry::global_mut(cx);
             // let gruvbox = include_str!("./assets/themes/gruvbox.json");
@@ -485,71 +485,72 @@ impl PChanApp {
         win.active
     }
 
-    fn load_content(&mut self, _: &LoadContent, cx: &mut Context<Self>) {
+    fn load_content(&mut self, cx: &mut Context<Self>) -> Task<miette::Result<()>> {
         let path_recv = cx.prompt_for_paths(PathPromptOptions {
             files:       true,
             directories: false,
             multiple:    false,
             prompt:      Some("Open disc file (.bin, .cue)".into()),
         });
-        cx.spawn(async move |view, cx| {
-            let result: miette::Result<()> = try {
-                let Some(view) = view.upgrade() else {
-                    return;
-                };
-                let res = path_recv.await.into_diagnostic()?;
-                let res = res.map_err(|err| miette!("error: {err}"))?;
-                let mut res = res.ok_or_else(|| miette!("no file selected"))?;
-                let content_path = res
-                    .pop()
-                    .ok_or_else(|| miette!("expected at least one disc path"))?;
-
-                match content_path
-                    .extension()
-                    .map(|ext| ext.to_string_lossy())
-                    .as_deref()
-                {
-                    Some("bin" | "cue") => {
-                        view.update(cx, move |view, cx| -> miette::Result<()> {
-                            view.emucx.update(cx, |emucx, _| -> miette::Result<()> {
-                                let fsm =
-                                    emucx.emu.open_disc(&content_path, true).into_diagnostic()?;
-                                emucx
-                                    .emu
-                                    .advance_open_disc(&content_path, fsm, true)
-                                    .into_diagnostic()?;
-                                emucx.content_path = ContentPath::Disc(content_path);
-                                Ok(())
-                            })?;
-                            view.set_menus(cx);
-                            cx.notify();
-                            Ok(())
-                        })?;
-                    }
-                    _ => {
-                        let mut file = BufReader::new(
-                            async_fs::File::open(&content_path)
-                                .await
-                                .into_diagnostic()?,
-                        );
-                        let mut exe = Vec::new();
-                        file.read_to_end(&mut exe).await.into_diagnostic()?;
-
-                        view.update(cx, move |view, cx| -> miette::Result<()> {
-                            view.emucx.update(cx, |emucx, cx| -> miette::Result<()> {
-                                emucx.emu.sideload_exe(&exe).into_diagnostic()?;
-                                emucx.content_path = ContentPath::Disc(content_path);
-                                Ok(())
-                            })?;
-                            view.set_menus(cx);
-                            cx.notify();
-                            Ok(())
-                        })?;
-                    }
-                }
+        cx.spawn(async move |view, cx| -> miette::Result<()> {
+            let Some(view) = view.upgrade() else {
+                return Ok(());
             };
+            let res = path_recv.await.into_diagnostic()?;
+            let res = res.map_err(|err| miette!("error: {err}"))?;
+            let mut res = res.ok_or_else(|| miette!("no file selected"))?;
+            let content_path = res
+                .pop()
+                .ok_or_else(|| miette!("expected at least one disc path"))?;
+
+            match content_path
+                .extension()
+                .map(|ext| ext.to_string_lossy())
+                .as_deref()
+            {
+                Some("bin" | "cue") => {
+                    view.update(cx, move |view, cx| -> miette::Result<()> {
+                        view.emucx.update(cx, |emucx, _| -> miette::Result<()> {
+                            let fsm = emucx.emu.open_disc(&content_path, true).into_diagnostic()?;
+                            emucx
+                                .emu
+                                .advance_open_disc(&content_path, fsm, true)
+                                .into_diagnostic()?;
+                            emucx.content_path = ContentPath::Disc(content_path);
+                            Ok(())
+                        })?;
+                        view.set_menus(cx);
+                        cx.notify();
+                        Ok(())
+                    })?;
+                }
+                _ => {
+                    let mut file = BufReader::new(
+                        async_fs::File::open(&content_path)
+                            .await
+                            .into_diagnostic()?,
+                    );
+                    let mut exe = Vec::new();
+                    file.read_to_end(&mut exe).await.into_diagnostic()?;
+
+                    view.update(cx, move |view, cx| -> miette::Result<()> {
+                        view.emucx.update(cx, |emucx, cx| -> miette::Result<()> {
+                            emucx.emu.sideload_exe(&exe).into_diagnostic()?;
+                            emucx.content_path = ContentPath::Disc(content_path);
+                            Ok(())
+                        })?;
+                        view.set_menus(cx);
+                        cx.notify();
+                        Ok(())
+                    })?;
+                }
+            }
+            Ok(())
         })
-        .detach();
+    }
+
+    fn load_content_listener(&mut self, _: &LoadContent, cx: &mut Context<Self>) {
+        self.load_content(cx).detach();
     }
 }
 
@@ -576,13 +577,22 @@ async fn emu_loop(appcx: AppCx, cx: &mut AsyncApp) {
                 },
             );
             if let Some(msg) = signal.await {
-                appcx.steel.update(cx, |steel, cx| {
+                let summary = appcx.steel.update(cx, |steel, cx| {
                     emucx.update(cx, |emucx, _| {
                         steel
                             .exec
-                            .handle_call(&mut emucx.emu, &mut emucx.runner, msg);
-                    });
+                            .handle_call(&mut emucx.emu, &mut emucx.runner, msg)
+                    })
                 });
+
+                if let Some(tx) = summary.open_content {
+                    let task = appcx.app.update(cx, |app, cx| app.load_content(cx));
+                    cx.background_spawn(async move {
+                        let res = task.await.map_err(PchanSteelErr::OpenContentError);
+                        tx.as_async().send(res).await.unwrap();
+                    })
+                    .detach();
+                }
             }
             emucx.update(cx, |emucx, _| {
                 emucx.start = Instant::now();
@@ -605,13 +615,13 @@ async fn emu_loop(appcx: AppCx, cx: &mut AsyncApp) {
         let deadline = emucx.update(cx, |emucx, cx| {
             surface.as_mut(cx).start_display_draw(&emucx.renderer);
 
-            appcx.steel.update(cx, |steel, _| {
-                steel.exec.handle_step(&mut emucx.emu, &mut emucx.runner);
-            });
-
             let elapsed = emucx.runner.run_until_vblank_with(&mut emucx.emu, |emu| {
                 emucx.pc_history.push_overwrite(emu.cpu.pc);
                 emucx.run_once
+            });
+
+            appcx.steel.update(cx, |steel, _| {
+                steel.exec.handle_step(&mut emucx.emu, &mut emucx.runner);
             });
 
             if emucx.run_for_one_frame {
@@ -1438,8 +1448,9 @@ impl Render for BreakpointsView {
                             Button::new(ElementId::NamedInteger("bp-delete".into(), idn))
                                 .ghost()
                                 .small()
+                                .aspect_square()
                                 .cursor_pointer()
-                                .icon(IconName::Close)
+                                .label("X")
                                 .on_click(cx.listener(move |state, _, _, cx| {
                                     state.appcx.emucx.update(cx, |emucx, _| {
                                         emucx.emu.dbg.remove_breakpoint(address);
