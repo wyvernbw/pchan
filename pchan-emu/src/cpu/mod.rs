@@ -1,4 +1,3 @@
-use core::alloc::Allocator;
 use core::fmt;
 use core::fmt::Display;
 use core::mem::offset_of;
@@ -6,7 +5,7 @@ use core::ops::{Index, IndexMut};
 
 use bitbybit::{bitenum, bitfield};
 use derive_more as d;
-use pchan_encode::Endecode;
+use pchan_encode::derive::Endecode;
 use pchan_utils::{array, hex};
 
 use crate::cpu::exceptions::CauseRegister;
@@ -17,7 +16,7 @@ mod cpu_tests;
 pub mod interp;
 pub mod ops;
 
-#[derive(Default, derive_more::Debug, Clone, Hash)]
+#[derive(Default, derive_more::Debug, Clone, Hash, Endecode)]
 #[repr(C)]
 pub struct Cpu {
     pub gpr:          Regs<32, true>,
@@ -42,7 +41,7 @@ impl Cpu {
     }
 }
 
-#[derive(d::Deref, d::DerefMut, d::AsMut, d::AsRef, Hash, Clone)]
+#[derive(d::Deref, d::DerefMut, d::AsMut, d::AsRef, Hash, Clone, Endecode)]
 pub struct Regs<const N: usize, const NAMED: bool>([u32; N]);
 
 impl<const N: usize, const NAMED: bool> Default for Regs<N, NAMED> {
@@ -74,14 +73,14 @@ impl<const N: usize, const NAMED: bool> fmt::Debug for Regs<N, NAMED> {
 
 macro_rules! coprocessor_definition {
     ($n:ident, $cnt:expr) => {
-        #[derive(derive_more::Debug, Clone, Hash)]
+        #[derive(derive_more::Debug, Clone, Hash, Endecode)]
         #[repr(C)]
         pub struct $n {
             pub reg: Regs<$cnt, true>,
         }
     };
     ($n:ident, $cnt:expr, unnamed) => {
-        #[derive(derive_more::Debug, Clone, Hash)]
+        #[derive(derive_more::Debug, Clone, Hash, Endecode)]
         #[repr(C)]
         pub struct $n {
             pub reg: Regs<$cnt, false>,

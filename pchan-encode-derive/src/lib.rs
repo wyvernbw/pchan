@@ -274,6 +274,8 @@ impl ToTokens for NamedStructOpts {
             has_alloc: _,
         } = self.into();
 
+        let const_params = self.generics.const_params().collect::<Vec<_>>();
+
         let fields = &self.data.as_struct().unwrap().fields;
         let fields_set = FieldSetEncode { fields };
         let container_endecode_bound = self
@@ -311,7 +313,7 @@ impl ToTokens for NamedStructOpts {
         });
 
         let mut result = quote! {
-            impl<A: #allocator_bound + Clone, #(#type_params)*> ::pchan_encode::Endecode<A> for #type_w_generics #where_clause {
+            impl<#(#const_params,)* A: #allocator_bound + Clone, #(#type_params)*> ::pchan_encode::Endecode<A> for #type_w_generics #where_clause {
                 fn endecode(&mut self, sink: &mut impl ::pchan_encode::Stream, alloc: A) -> Result<(), ::pchan_encode::EndecodeError> {
                     #fields_set
                     Ok(())
@@ -333,7 +335,7 @@ impl ToTokens for NamedStructOpts {
             let allocator = allocator_param_inner(self.alloc.as_ref(), None);
             result = quote! {
                 #result
-                impl<A: #allocator_bound + Clone, #(#type_params)*> ::pchan_encode::Allocate<A> for #type_w_generics #where_clause {
+                impl<#(#const_params,)* A: #allocator_bound + Clone, #(#type_params)*> ::pchan_encode::Allocate<A> for #type_w_generics #where_clause {
                     fn new_in(alloc: A) -> #type_w_generics {
                         Self {
                             #(#fields_init),*

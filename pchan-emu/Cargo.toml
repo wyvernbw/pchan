@@ -24,7 +24,7 @@ glam = "0.34.1"
 heapless = "0.9.3"
 kanal.workspace = true
 pchan-bind.workspace = true
-pchan-encode = { workspace = true }
+pchan-encode.workspace = true
 pchan-macros = { workspace = true }
 pchan-utils = { workspace = true, features = ["tracy"] }
 slotmap = "1.1.1"

@@ -263,3 +263,8 @@ enum TestEnumAllocless {
     B,
     C,
 }
+
+#[derive(Endecode, Debug, PartialEq)]
+struct ConstParams<const N: usize, const B: usize> {
+    arr: [u32; N],
+}
