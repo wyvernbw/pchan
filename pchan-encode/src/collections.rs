@@ -1,10 +1,11 @@
 use core::alloc::Allocator;
 
+use alloc::alloc::Global;
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::{Allocate, EncoderSink, Endecode, EndecodeError, IntoEncoderSink, Stream};
+use crate::{Allocate, Encoder, EncoderSink, Endecode, EndecodeError, IntoEncoderSink, Stream};
 
 impl<T, A: Allocator> Allocate<A> for Vec<T, A> {
     fn new_in(alloc: A) -> Self {
@@ -76,7 +77,7 @@ impl<T: Endecode<A> + Allocate<A>, A: Allocator + Clone> Endecode<A> for Box<[T]
     }
 }
 
-impl<A: Allocator + Clone> Endecode<A> for String {
+impl<A: Allocator> Endecode<A> for String {
     fn endecode(&mut self, sink: &mut impl Stream, _: A) -> Result<(), EndecodeError> {
         struct StringFix<'a>(&'a mut Vec<u8>);
         impl Drop for StringFix<'_> {
@@ -110,6 +111,12 @@ impl<A: Allocator + Clone> Endecode<A> for String {
     }
 }
 
+impl Allocate<Global> for String {
+    fn new_in(_: Global) -> Self {
+        String::new()
+    }
+}
+
 pub struct GrowableSink<A: Allocator> {
     inner:  Vec<u8, A>,
     cursor: usize,
@@ -122,17 +129,32 @@ impl<A: Allocator> GrowableSink<A> {
             self.inner.resize(self.inner.capacity(), 0);
         }
     }
+
+    pub fn into_bytes(mut self) -> Vec<u8, A> {
+        self.inner.truncate(self.cursor);
+        self.inner
+    }
+
+    pub fn bytes(&self) -> &[u8] {
+        &self.inner[..self.cursor]
+    }
+
+    pub fn bytes_mut(&mut self) -> &mut [u8] {
+        &mut self.inner[..self.cursor]
+    }
+}
+
+impl<A: Allocator> Encoder<GrowableSink<A>> {
+    pub fn bytes(&self) -> &[u8] {
+        self.sink.bytes()
+    }
+
+    pub fn bytes_mut(&mut self) -> &mut [u8] {
+        self.sink.bytes_mut()
+    }
 }
 
 impl<A: Allocator> EncoderSink for GrowableSink<A> {
-    fn bytes(&self) -> &[u8] {
-        &self.inner
-    }
-
-    fn bytes_mut(&mut self) -> &mut [u8] {
-        &mut self.inner
-    }
-
     fn take<const N: usize, T>(&mut self) -> Result<&mut [u8; N], EndecodeError> {
         self.grow_if_needed(N);
 

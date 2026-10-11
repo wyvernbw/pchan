@@ -9,6 +9,7 @@ use pchan_encode::{EncoderSink, Endecode, decode_in_place, encode};
 extern crate alloc;
 
 #[derive(Endecode, Default, Debug, PartialEq, Eq)]
+#[endecode(alloc(default))]
 struct Basic {
     a: u32,
     b: u64,
@@ -153,10 +154,15 @@ fn test_newtype() {
 }
 
 #[derive(Endecode, Debug, d::PartialEq, Eq)]
+#[endecode(alloc(default))]
 enum TestEnum<A: Allocator> {
     Foo,
     Bar(u32),
     Baz(#[endecode(alloc(bounds = "copy"))] Foo<A>),
+    #[endecode(alloc(default))]
+    Fourth {
+        thing: Foo<A>,
+    },
 }
 
 #[test]
@@ -191,4 +197,69 @@ fn test_enum_endecode_different_variant() {
     let sink = encode(&mut a, Vec::new(), Global).unwrap();
     decode_in_place(&mut b, sink.bytes(), Global).unwrap();
     assert_eq!(a, b);
+}
+
+#[derive(Endecode, Debug, d::PartialEq, Eq)]
+#[endecode(alloc(default))]
+enum TestEnumGeneric<A: Allocator, T: Endecode<A> + Default> {
+    Foo,
+    Bar(u32),
+    Baz(#[endecode(alloc(bounds = "copy"))] Foo<A>),
+    #[endecode(alloc(default))]
+    Fourth {
+        #[endecode(alloc(default))]
+        thing: T,
+    },
+}
+
+#[derive(Endecode, Debug, d::PartialEq, Eq)]
+#[endecode(alloc(default))]
+struct TestString {
+    #[endecode(string)]
+    a: String,
+    #[endecode(string)]
+    b: String,
+    #[endecode(string)]
+    c: String,
+    #[endecode(string)]
+    d: String,
+    e: u64,
+}
+
+#[derive(Endecode, Debug, d::PartialEq, Eq)]
+#[endecode(alloc(default, global))]
+struct TestStringCollectionGlobal {
+    #[endecode(alloc(global))]
+    strings: Vec<TestString>,
+}
+
+#[derive(Endecode, Debug, PartialEq, Default)]
+struct Floats {
+    a: f32,
+    b: f64,
+}
+
+#[test]
+fn test_floats() {
+    let mut a = Floats { a: 0.8, b: 39.3 };
+    let mut b = Floats::default();
+    let sink = encode(&mut a, Vec::new(), Global).unwrap();
+    decode_in_place(&mut b, sink.bytes(), Global).unwrap();
+    assert_eq!(a.a, b.a);
+    assert_eq!(a.b, b.b);
+}
+
+#[derive(Endecode, Debug, PartialEq, Default)]
+struct ComplexTuple {
+    a: Option<(f32, f32)>,
+}
+
+#[derive(Endecode, Debug, PartialEq, Default)]
+#[endecode(alloc(default))]
+enum TestEnumAllocless {
+    #[default]
+    #[endecode(alloc(default))]
+    A,
+    B,
+    C,
 }

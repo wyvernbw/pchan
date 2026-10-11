@@ -57,29 +57,34 @@ macro_rules! num_allocate {
         }
     };
 }
+macro_rules! num_float_allocate {
+    ($ty:ty) => {
+        impl<A: Allocator> Allocate<A> for $ty {
+            fn new_in(_: A) -> Self {
+                0.0
+            }
+        }
+    };
+}
 
 num_allocate!(u8);
 num_allocate!(u16);
 num_allocate!(u32);
 num_allocate!(u64);
+num_allocate!(i8);
+num_allocate!(i16);
+num_allocate!(i32);
+num_allocate!(i64);
+num_float_allocate!(f32);
+num_float_allocate!(f64);
 
 pub trait EncoderSink {
-    fn bytes(&self) -> &[u8];
-    fn bytes_mut(&mut self) -> &mut [u8];
     fn take<const N: usize, T>(&mut self) -> Result<&mut [u8; N], EndecodeError>;
     fn take_dyn<T>(&mut self, len: usize) -> Result<&mut [u8], EndecodeError>;
     fn rem_len(&self) -> usize;
 }
 
 impl EncoderSink for &mut [u8] {
-    fn bytes(&self) -> &[u8] {
-        self
-    }
-
-    fn bytes_mut(&mut self) -> &mut [u8] {
-        self
-    }
-
     fn take<const N: usize, T>(&mut self) -> Result<&mut [u8; N], EndecodeError> {
         let buf = core::mem::take(self);
         let (head, rest) = buf
@@ -121,10 +126,29 @@ where
 
 pub struct Encoder<S> {
     sink: S,
+    len:  usize,
+}
+
+impl<S: EncoderSink> Encoder<S> {
+    fn take<const N: usize, T>(&mut self) -> Result<&mut [u8; N], EndecodeError> {
+        let head = self.sink.take::<N, T>()?;
+        self.len += head.len();
+        Ok(head)
+    }
+    fn take_dyn<T>(&mut self, len: usize) -> Result<&mut [u8], EndecodeError> {
+        let head = self.sink.take_dyn::<T>(len)?;
+        self.len += head.len();
+        Ok(head)
+    }
+
+    pub fn into_sink(self) -> (usize, S) {
+        (self.len, self.sink)
+    }
 }
 
 pub struct Decoder<'a> {
     src: &'a [u8],
+    len: usize,
 }
 
 impl<'a> Decoder<'a> {
@@ -133,6 +157,7 @@ impl<'a> Decoder<'a> {
             .src
             .split_first_chunk::<N>()
             .ok_or(EndecodeError::underflow::<T>())?;
+        self.len += head.len();
         self.src = rest;
         Ok(head)
     }
@@ -141,6 +166,7 @@ impl<'a> Decoder<'a> {
             .src
             .split_at_checked(len)
             .ok_or(EndecodeError::underflow::<T>())?;
+        self.len += head.len();
         self.src = rest;
         Ok(head)
     }
@@ -151,6 +177,10 @@ pub trait Stream {
     fn u16(&mut self, value: &mut u16) -> Result<(), EndecodeError>;
     fn u32(&mut self, value: &mut u32) -> Result<(), EndecodeError>;
     fn u64(&mut self, value: &mut u64) -> Result<(), EndecodeError>;
+    fn i8(&mut self, value: &mut i8) -> Result<(), EndecodeError>;
+    fn i16(&mut self, value: &mut i16) -> Result<(), EndecodeError>;
+    fn i32(&mut self, value: &mut i32) -> Result<(), EndecodeError>;
+    fn i64(&mut self, value: &mut i64) -> Result<(), EndecodeError>;
     fn bytes_no_order(&mut self, value: &mut [u8]) -> Result<(), EndecodeError>;
     fn padding(&mut self, len: usize) -> Result<(), EndecodeError>;
 
@@ -170,35 +200,47 @@ pub trait Stream {
 
 impl<S: EncoderSink> Stream for Encoder<S> {
     fn u8(&mut self, value: &mut u8) -> Result<(), EndecodeError> {
-        self.sink
-            .take::<1, u8>()?
-            .copy_from_slice(&value.to_le_bytes());
+        self.take::<1, u8>()?.copy_from_slice(&value.to_le_bytes());
         Ok(())
     }
 
     fn u16(&mut self, value: &mut u16) -> Result<(), EndecodeError> {
-        self.sink
-            .take::<2, u16>()?
-            .copy_from_slice(&value.to_le_bytes());
+        self.take::<2, u16>()?.copy_from_slice(&value.to_le_bytes());
         Ok(())
     }
 
     fn u32(&mut self, value: &mut u32) -> Result<(), EndecodeError> {
-        self.sink
-            .take::<4, u32>()?
-            .copy_from_slice(&value.to_le_bytes());
+        self.take::<4, u32>()?.copy_from_slice(&value.to_le_bytes());
         Ok(())
     }
 
     fn u64(&mut self, value: &mut u64) -> Result<(), EndecodeError> {
-        self.sink
-            .take::<8, u64>()?
-            .copy_from_slice(&value.to_le_bytes());
+        self.take::<8, u64>()?.copy_from_slice(&value.to_le_bytes());
+        Ok(())
+    }
+
+    fn i8(&mut self, value: &mut i8) -> Result<(), EndecodeError> {
+        self.take::<1, i8>()?.copy_from_slice(&value.to_le_bytes());
+        Ok(())
+    }
+
+    fn i16(&mut self, value: &mut i16) -> Result<(), EndecodeError> {
+        self.take::<2, i16>()?.copy_from_slice(&value.to_le_bytes());
+        Ok(())
+    }
+
+    fn i32(&mut self, value: &mut i32) -> Result<(), EndecodeError> {
+        self.take::<4, i32>()?.copy_from_slice(&value.to_le_bytes());
+        Ok(())
+    }
+
+    fn i64(&mut self, value: &mut i64) -> Result<(), EndecodeError> {
+        self.take::<8, i64>()?.copy_from_slice(&value.to_le_bytes());
         Ok(())
     }
 
     fn bytes_no_order(&mut self, value: &mut [u8]) -> Result<(), EndecodeError> {
-        let head = self.sink.take_dyn::<&[u8]>(value.len())?;
+        let head = self.take_dyn::<&[u8]>(value.len())?;
         head.copy_from_slice(value);
         Ok(())
     }
@@ -212,7 +254,7 @@ impl<S: EncoderSink> Stream for Encoder<S> {
     }
 
     fn padding(&mut self, len: usize) -> Result<(), EndecodeError> {
-        self.sink.take_dyn::<&[u8]>(len)?;
+        self.take_dyn::<&[u8]>(len)?;
         Ok(())
     }
 }
@@ -235,6 +277,26 @@ impl Stream for Decoder<'_> {
 
     fn u64(&mut self, value: &mut u64) -> Result<(), EndecodeError> {
         *value = u64::from_le_bytes(*self.take::<8, u64>()?);
+        Ok(())
+    }
+
+    fn i8(&mut self, value: &mut i8) -> Result<(), EndecodeError> {
+        *value = i8::from_le_bytes(*self.take::<1, i8>()?);
+        Ok(())
+    }
+
+    fn i16(&mut self, value: &mut i16) -> Result<(), EndecodeError> {
+        *value = i16::from_le_bytes(*self.take::<2, i16>()?);
+        Ok(())
+    }
+
+    fn i32(&mut self, value: &mut i32) -> Result<(), EndecodeError> {
+        *value = i32::from_le_bytes(*self.take::<4, i32>()?);
+        Ok(())
+    }
+
+    fn i64(&mut self, value: &mut i64) -> Result<(), EndecodeError> {
+        *value = i64::from_le_bytes(*self.take::<8, i64>()?);
         Ok(())
     }
 
@@ -298,10 +360,70 @@ impl<A: Allocator> Endecode<A> for u64 {
     }
 }
 
+impl<A: Allocator> Endecode<A> for i8 {
+    fn endecode(&mut self, sink: &mut impl Stream, _: A) -> Result<(), EndecodeError> {
+        sink.i8(self)
+    }
+    fn size() -> Result<Option<usize>, EndecodeError> {
+        Ok(Some(1))
+    }
+}
+
+impl<A: Allocator> Endecode<A> for i16 {
+    fn endecode(&mut self, sink: &mut impl Stream, _: A) -> Result<(), EndecodeError> {
+        sink.i16(self)
+    }
+    fn size() -> Result<Option<usize>, EndecodeError> {
+        Ok(Some(2))
+    }
+}
+
+impl<A: Allocator> Endecode<A> for i32 {
+    fn endecode(&mut self, sink: &mut impl Stream, _: A) -> Result<(), EndecodeError> {
+        sink.i32(self)
+    }
+    fn size() -> Result<Option<usize>, EndecodeError> {
+        Ok(Some(4))
+    }
+}
+
+impl<A: Allocator> Endecode<A> for i64 {
+    fn endecode(&mut self, sink: &mut impl Stream, _: A) -> Result<(), EndecodeError> {
+        sink.i64(self)
+    }
+    fn size() -> Result<Option<usize>, EndecodeError> {
+        Ok(Some(8))
+    }
+}
+
 impl<A: Allocator> Endecode<A> for usize {
     fn endecode(&mut self, sink: &mut impl Stream, alloc: A) -> Result<(), EndecodeError> {
         (*self as u64).endecode(sink, alloc)
     }
+    fn size() -> Result<Option<usize>, EndecodeError> {
+        Ok(Some(8))
+    }
+}
+
+impl<A: Allocator> Endecode<A> for f32 {
+    fn endecode(&mut self, sink: &mut impl Stream, _: A) -> Result<(), EndecodeError> {
+        let u32 = unsafe { core::ptr::from_mut(self).cast::<u32>().as_mut_unchecked() };
+        let _ = self;
+        sink.u32(u32)
+    }
+
+    fn size() -> Result<Option<usize>, EndecodeError> {
+        Ok(Some(4))
+    }
+}
+
+impl<A: Allocator> Endecode<A> for f64 {
+    fn endecode(&mut self, sink: &mut impl Stream, _: A) -> Result<(), EndecodeError> {
+        let u64 = unsafe { core::ptr::from_mut(self).cast::<u64>().as_mut_unchecked() };
+        let _ = self;
+        sink.u64(u64)
+    }
+
     fn size() -> Result<Option<usize>, EndecodeError> {
         Ok(Some(8))
     }
@@ -332,6 +454,22 @@ impl<A: Allocator + Clone, T: Endecode<A>, const N: usize> Endecode<A> for [T; N
 impl<T, A: Allocator> Allocate<A> for Option<T> {
     fn new_in(_: A) -> Self {
         Self::default()
+    }
+}
+
+impl<A: Allocator> Allocate<A> for bool {
+    fn new_in(_: A) -> Self {
+        false
+    }
+}
+
+impl<A: Allocator> Endecode<A> for bool {
+    fn endecode(&mut self, sink: &mut impl Stream, _: A) -> Result<(), EndecodeError> {
+        sink.bool(self)
+    }
+
+    fn size() -> Result<Option<usize>, EndecodeError> {
+        Ok(Some(1))
     }
 }
 
@@ -374,15 +512,52 @@ impl<A: Allocator, T> Endecode<A> for PhantomData<T> {
     }
 }
 
+macro_rules! impl_tuple {
+    ($(($idx:tt $t:ident)),+ $(,)?) => {
+        impl<A: Allocator + Clone, $($t: Endecode<A>),+> Endecode<A> for ($($t,)+) {
+            fn endecode(&mut self, sink: &mut impl Stream, alloc: A) -> Result<(), EndecodeError> {
+                $( self.$idx.endecode(sink, alloc.clone())?; )+
+                Ok(())
+            }
+
+            fn size() -> Result<Option<usize>, EndecodeError> {
+                let mut total = 0usize;
+                $(
+                    match <$t as Endecode<A>>::size()? {
+                        Some(n) => total += n,
+                        None => return Ok(None),
+                    }
+                )+
+                Ok(Some(total))
+            }
+        }
+        impl<A: Allocator + Clone, $($t: Allocate<A>),+> Allocate<A> for ($($t,)+) {
+            fn new_in(alloc: A) -> Self {
+                ( $($t::new_in(alloc.clone()),)* )
+            }
+        }
+    };
+}
+
+impl_tuple!((0 T1));
+impl_tuple!((0 T1), (1 T2));
+impl_tuple!((0 T1), (1 T2), (2 T3));
+impl_tuple!((0 T1), (1 T2), (2 T3), (3 T4));
+impl_tuple!((0 T1), (1 T2), (2 T3), (3 T4), (4 T5));
+impl_tuple!((0 T1), (1 T2), (2 T3), (3 T4), (4 T5), (5 T6));
+impl_tuple!((0 T1), (1 T2), (2 T3), (3 T4), (4 T5), (5 T6), (6 T7));
+impl_tuple!((0 T1), (1 T2), (2 T3), (3 T4), (4 T5), (5 T6), (6 T7), (7 T8));
+impl_tuple!((0 T1), (1 T2), (2 T3), (3 T4), (4 T5), (5 T6), (6 T7), (7 T8), (8 T9));
+
 pub fn encode<I: IntoEncoderSink, T: Endecode<A>, A: Allocator>(
     value: &mut T,
     sink: I,
     alloc: A,
-) -> Result<I::Sink, EndecodeError> {
+) -> Result<Encoder<I::Sink>, EndecodeError> {
     let sink = sink.into_encoder_sink();
-    let mut encoder = Encoder { sink };
+    let mut encoder = Encoder { sink, len: 0 };
     value.endecode(&mut encoder, alloc)?;
-    Ok(encoder.sink)
+    Ok(encoder)
 }
 
 pub fn decode_in_place<T: Endecode<A>, A: Allocator>(
@@ -393,6 +568,7 @@ pub fn decode_in_place<T: Endecode<A>, A: Allocator>(
     value.endecode(
         &mut Decoder {
             src: bytes.as_ref(),
+            len: 0,
         },
         alloc,
     )
