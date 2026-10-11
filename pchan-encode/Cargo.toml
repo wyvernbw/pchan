@@ -1,0 +1,18 @@
+[package]
+name = "pchan-encode"
+version = "0.1.0"
+edition = "2024"
+
+[lints]
+workspace = true
+
+[features]
+alloc = []
+
+[dependencies]
+thiserror = { version = "2.0.21", default-features = false }
+pchan-encode-derive.workspace = true
+
+[dev-dependencies]
+pchan-encode = { path = ".", features = ["alloc"] }
+derive_more = { version = "2.1.1", features = ["full"] }

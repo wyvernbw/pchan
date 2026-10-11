@@ -6039,6 +6039,7 @@ dependencies = [
  "heapless",
  "kanal",
  "pchan-bind",
+ "pchan-encode",
  "pchan-macros",
  "pchan-utils",
  "pretty_assertions",
@@ -6049,6 +6050,26 @@ dependencies = [
  "strum 0.28.0",
  "thiserror 2.0.21",
  "tracing",
+]
+
+[[package]]
+name = "pchan-encode"
+version = "0.1.0"
+dependencies = [
+ "derive_more",
+ "pchan-encode",
+ "pchan-encode-derive",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "pchan-encode-derive"
+version = "0.1.0"
+dependencies = [
+ "darling",
+ "proc-macro2",
+ "quote",
+ "syn 3.0.6",
 ]
 
 [[package]]

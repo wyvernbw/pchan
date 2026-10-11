@@ -1,3 +1,4 @@
+use core::alloc::Allocator;
 use core::fmt;
 use core::fmt::Display;
 use core::mem::offset_of;
@@ -5,6 +6,7 @@ use core::ops::{Index, IndexMut};
 
 use bitbybit::{bitenum, bitfield};
 use derive_more as d;
+use pchan_encode::Endecode;
 use pchan_utils::{array, hex};
 
 use crate::cpu::exceptions::CauseRegister;
