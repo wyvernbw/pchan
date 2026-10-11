@@ -7,6 +7,7 @@ use arbitrary_int::prelude::*;
 use bitbybit::{bitenum, bitfield};
 use derive_more as d;
 use heapless::Deque;
+use pchan_encode::derive::Endecode;
 use pchan_utils::hex;
 
 use crate::io::evque::{EvCtx, EventId, PchanEventFn};
@@ -19,7 +20,7 @@ use super::irq;
 
 const HI_Z: u32 = u32::MAX;
 
-#[derive(Default, derive_more::Debug, Clone)]
+#[derive(Default, derive_more::Debug, Clone, Endecode)]
 pub struct SioState {
     sio0stat: SioStatusReg,
     sio1stat: SioStatusReg,
@@ -72,12 +73,14 @@ impl Ord for ScheduledSioEvent {
     }
 }
 
-#[derive(derive_more::Debug, Clone, Copy)]
+#[derive(derive_more::Debug, Clone, Copy, Endecode)]
+#[endecode(alloc(default))]
 pub enum PeripheralKind {
+    #[endecode(alloc(default))]
     Joypad,
 }
 
-#[derive(derive_more::Debug, Clone, Default)]
+#[derive(derive_more::Debug, Clone, Default, Endecode)]
 pub struct Sio0Ports {
     selected: Option<PeripheralKind>,
     ports:    [PortState; 2],
@@ -92,7 +95,7 @@ impl Sio0Ports {
     }
 }
 
-#[derive(Default, derive_more::Debug, Clone)]
+#[derive(Default, derive_more::Debug, Clone, Endecode)]
 #[non_exhaustive]
 pub struct PortState {
     pub joypad: Joypad,
@@ -108,7 +111,7 @@ pub trait Peripheral {
     fn on_tx_write(&mut self, byte: u8, rx: &mut Sio0Rx) -> TxWriteResult;
 }
 
-#[derive(d::Deref, d::DerefMut, Debug, Default, Clone)]
+#[derive(d::Deref, d::DerefMut, Debug, Default, Clone, Endecode)]
 pub struct Sio0Rx(Deque<u8, 4>);
 
 impl<A: Allocator> Emu<A> {
@@ -422,6 +425,7 @@ const fn sio_idx(addr: u32, base: u32, stride: u32) -> Option<usize> {
 /// number of bits actually used by the baud rate timer is probably affected by
 /// the reload factor set in `SIO_MODE`.
 #[bitfield(u32, debug, default = 0b001)]
+#[derive(Endecode)]
 struct SioStatusReg {
     /// `SIO_STAT.0`
     #[bit(0, rw)]
@@ -486,6 +490,7 @@ struct SioStatusReg {
 /// all SIO0 interrupts, as the kernel's controller driver only ever uses the
 /// DSR (/ACK) interrupt.
 #[bitfield(u32, debug, default = 0x0)]
+#[derive(Endecode)]
 struct SioCtrlReg {
     #[bit(0, rw)]
     tx_on:       bool,
@@ -554,6 +559,7 @@ pub enum Sio0Port {
 /// and parity should be disabled, as all controllers and memory cards expect these
 /// settings.
 #[bitfield(u16, debug, default = 0x0)]
+#[derive(Endecode)]
 struct SioModeReg {
     #[bits(0..=1, rw)]
     bdrate_reload_factor: BdrateReloadFactor,
@@ -613,7 +619,7 @@ enum Sio0ClockPolarity {
     Low  = 0x1,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, Endecode)]
 enum Sio0Tx {
     #[default]
     Idle,

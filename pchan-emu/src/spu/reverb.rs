@@ -3,11 +3,12 @@ use core::alloc::Allocator;
 use alloc::collections::VecDeque;
 use arbitrary_int::prelude::*;
 use bitbybit::bitfield;
+use pchan_encode::derive::Endecode;
 use pchan_utils::MAX_SIMD_WIDTH;
 
 use crate::spu::adsr::apply_volume_i32;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Endecode)]
 pub struct Reverb<A: Allocator> {
     pub on_off: ReverbOnOff,
 
@@ -62,7 +63,7 @@ pub struct Reverb<A: Allocator> {
 ///  1F801D86h EVOLR    volume  Reverb Output Volume Right
 ///  1F801DA2h ESA      base    Reverb Work Area Start Address in Sound RAM
 /// ```
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Endecode)]
 pub struct ReverbIO {
     pub lr:      [BufLRConfig; 2],
     pub d_apf1:  u16,
@@ -77,7 +78,7 @@ pub struct ReverbIO {
     pub v_apf2:  i16,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Endecode)]
 pub struct BufLRConfig {
     pub m_same:  u16,
     pub m_comb1: u16,
@@ -94,7 +95,7 @@ pub struct BufLRConfig {
 }
 
 #[bitfield(u32, debug)]
-#[derive(Default)]
+#[derive(Default, Endecode)]
 #[must_use]
 pub struct ReverbOnOff {
     /// io `0x1f801d98`

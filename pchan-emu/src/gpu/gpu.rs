@@ -11,7 +11,8 @@ use bitbybit::{bitenum, bitfield};
 use derive_more as d;
 use glam::{U8Vec2, U8Vec3, U16Vec2, U64Vec2, u64vec2};
 use heapless::Deque;
-use pchan_utils::{AsyncChan, hex};
+use pchan_encode::derive::Endecode;
+use pchan_utils::{AsyncChan, default, hex};
 use tracing::Level;
 
 use crate::Emu;
@@ -25,6 +26,8 @@ use crate::io::{CastIOFrom, CastIOInto, IOResult, UnhandledIO};
 use crate::memory::{kb, mb};
 
 pub static VBLANK_COUNT: AtomicU64 = AtomicU64::new(0);
+
+extern crate alloc;
 
 #[derive(Debug, Clone)]
 pub struct Conn<A: Allocator> {
@@ -47,9 +50,10 @@ pub struct VramRes<A: Allocator> {
     pub swap_idx:      usize,
 }
 
-#[derive(derive_more::Debug, Clone)]
+#[derive(derive_more::Debug, Clone, Endecode)]
 pub struct GpuState<A: Allocator> {
     #[debug(skip)]
+    #[endecode(alloc(with = create_vram))]
     pub vram:           Box<[u16], A>,
     #[debug(skip)]
     pub gpustat:        GpuStatReg,
@@ -65,23 +69,26 @@ pub struct GpuState<A: Allocator> {
     pub model:          GpuModel,
 
     #[debug(skip)]
+    #[endecode(skip)]
     pub conn:              Conn<A>,
     pub waiting_on_render: bool,
+    #[endecode(skip)]
     pub last_vblank:       Instant,
     pub vblank_signal:     bool,
 
     pub vram_mutation_signal: bool,
     #[debug(skip)]
+    #[endecode(skip)]
     alloc:                    A,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Endecode)]
 pub struct DrawCallSwapchain<A: Allocator, const N: usize> {
     queues: [Vec<DrawCall, A>; N],
     idx:    usize,
 }
 
-#[derive(derive_more::Debug, Clone, Default)]
+#[derive(derive_more::Debug, Clone, Default, Endecode)]
 pub enum GpuModel {
     #[default]
     Gpu160Pin,
@@ -848,7 +855,7 @@ pub fn halfwords(word: u32) -> [u16; 2] {
     [word as u16, (word >> 16) as u16]
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Endecode)]
 pub enum Gp0 {
     WaitingForCmd,
 
@@ -863,10 +870,11 @@ pub enum Gp0 {
     DrawRectDecode(DrawRectDecoder),
 }
 
-#[derive(Debug, Copy, PartialEq, PartialOrd, Ord, Eq, d::Mul, d::MulAssign)]
+#[derive(Debug, Copy, PartialEq, PartialOrd, Ord, Eq, d::Mul, d::MulAssign, Endecode)]
 #[derive_const(Clone, d::Add, d::AddAssign, Default)]
 #[repr(C)]
 #[mul(forward)]
+#[endecode(alloc(default))]
 pub struct VramCoord {
     pub x: u16,
     pub y: u16,
@@ -942,7 +950,9 @@ const impl From<u32> for VramCoord {
     }
 }
 
-#[derive(Debug, Clone, Copy, d::Add, d::AddAssign, PartialEq, PartialOrd, Ord, Eq, Default)]
+#[derive(
+    Debug, Clone, Copy, d::Add, d::AddAssign, PartialEq, PartialOrd, Ord, Eq, Default, Endecode,
+)]
 #[repr(C)]
 pub struct IVramCoord {
     pub x: i16,
@@ -956,7 +966,9 @@ impl IVramCoord {
     }
 }
 
-#[derive(Debug, Clone, Copy, d::Add, d::AddAssign, PartialEq, PartialOrd, Ord, Eq)]
+#[derive(
+    Debug, Clone, Copy, d::Add, d::AddAssign, PartialEq, PartialOrd, Ord, Eq, Endecode, Default,
+)]
 pub struct VramCursor {
     start:  VramCoord,
     curr:   VramCoord,
@@ -1013,24 +1025,39 @@ fn test_vram_cursor() {
     // assert_eq!(cursor.next(), None);
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Endecode, Default)]
 pub enum Gp0CpRect {
+    #[default]
     RecvDest,
-    RecvSize { dest: VramCoord },
+    RecvSize {
+        dest: VramCoord,
+    },
     RecvData(VramCursor),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Endecode, Default)]
 pub enum Gp0VramCpRect {
+    #[default]
     RecvSrc,
-    RecvDest { src: VramCoord },
-    RecvSize { src: VramCoord, dest: VramCoord },
+    RecvDest {
+        src: VramCoord,
+    },
+    RecvSize {
+        src:  VramCoord,
+        dest: VramCoord,
+    },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Endecode)]
 pub enum Gp0VramRect {
     Color { color: U8Vec3 },
     Pos { color: U8Vec3, pos: VramCoord },
+}
+
+impl Default for Gp0VramRect {
+    fn default() -> Self {
+        Self::Color { color: default() }
+    }
 }
 
 #[bitfield(u32)]
@@ -1078,7 +1105,7 @@ pub struct GpuCmd {
 /// Credits to PSX-SPX by Martin Korth [Gpu Status Register](https://problemkaputt.de/psx-spx.htm#gpustatusregister)
 ///
 #[bitfield(u32, debug)]
-#[derive(Default, derive_more::Into)]
+#[derive(Default, derive_more::Into, Endecode)]
 #[must_use]
 pub struct GpuStatReg {
     #[bits(0..=3, rw)]
@@ -1238,7 +1265,7 @@ impl ops::Not for DrawEvenOdd {
 /// [Link to PSX-SPX](https://problemkaputt.de/psx-spx.htm#gpuioportsdmachannelscommandsvram:~:text=GP0%28E1h%29%20%2D%20Draw%20Mode%20setting%20%28aka%20%22Texpage%22%29)
 ///
 #[bitfield(u32)]
-#[derive(derive_more::Debug, Default, derive_more::Into)]
+#[derive(derive_more::Debug, Default, derive_more::Into, Endecode)]
 #[debug("{}", hex(self.raw_value))]
 #[must_use]
 pub struct TexpageCmd {
@@ -1363,7 +1390,7 @@ pub enum GpuInfoCmd {
 ///   20-23  Not used (zero)
 ///   24-31  Command  (E2h)
 #[bitfield(u32, debug)]
-#[derive(Default)]
+#[derive(Default, Endecode)]
 #[must_use]
 pub struct Gp0TexWindowCmd {
     #[bits(0..=4, r)]
@@ -1511,7 +1538,7 @@ impl<A: Allocator> GpuState<A> {
     }
 }
 
-#[derive(derive_more::Debug, Clone, Default)]
+#[derive(derive_more::Debug, Clone, Default, Endecode)]
 pub struct Display {
     /// video event queue
     pub video_cycle:             u64,

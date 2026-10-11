@@ -2,6 +2,7 @@ use core::alloc::Allocator;
 
 use alloc::alloc::Global;
 use alloc::boxed::Box;
+use alloc::collections::VecDeque;
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -194,5 +195,36 @@ impl<A: Allocator> IntoEncoderSink for Vec<u8, A> {
             inner:  self,
             cursor: 0,
         }
+    }
+}
+
+impl<A: Allocator + Clone, T: Endecode<A> + Allocate<A>> Endecode<A> for VecDeque<T, A> {
+    fn endecode(&mut self, sink: &mut impl Stream, alloc: A) -> Result<(), EndecodeError> {
+        let mut len = self.len() as u64;
+        sink.u64(&mut len)?;
+
+        while len < self.len() as u64 {
+            self.pop_back();
+        }
+
+        while len > self.len() as u64 {
+            self.push_back(T::new_in(alloc.clone()));
+        }
+
+        for el in self.iter_mut() {
+            el.endecode(sink, alloc.clone())?;
+        }
+
+        Ok(())
+    }
+
+    fn size() -> Result<Option<usize>, EndecodeError> {
+        Ok(None)
+    }
+}
+
+impl<T, A: Allocator> Allocate<A> for VecDeque<T, A> {
+    fn new_in(alloc: A) -> Self {
+        Self::new_in(alloc)
     }
 }

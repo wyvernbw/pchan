@@ -10,10 +10,11 @@ mod cdrom_ver;
 use core::alloc::Allocator;
 
 use alloc::collections::VecDeque;
+use pchan_encode::derive::Endecode;
 
 use crate::io::cdrom::cdrom_cmds::ResponseV2;
 use crate::io::cdrom::cdrom_drive::CdromDrive;
-use crate::io::cdrom::cdrom_ver::CDRomVerPtr;
+use crate::io::cdrom::cdrom_ver::CDRomVer;
 use crate::io::evque::{EvCtx, EventId};
 use crate::io::irq::{self};
 use crate::io::{CastIOFrom, CastIOInto, UnhandledIO};
@@ -22,8 +23,9 @@ use arbitrary_int::prelude::*;
 use bitbybit::{bitenum, bitfield};
 use pchan_utils::hex;
 
-#[derive(Default, derive_more::Debug, Clone)]
-pub struct CDRomState {
+#[derive(derive_more::Debug, Clone, Endecode)]
+#[endecode(alloc(default))]
+pub struct CDRomState<A: Allocator> {
     status:      CDRomStatusReg,
     hint_status: CDRomHIntSts,
     hint_mask:   CDRomHIntMask,
@@ -33,13 +35,14 @@ pub struct CDRomState {
     result_fifo: heapless::Deque<u8, 16>,
     data_last:   u8,
     #[debug(skip)]
-    data_fifo:   VecDeque<u8>,
-    ver:         CDRomVerPtr,
+    #[endecode(alloc(with = new_in))]
+    data_fifo:   VecDeque<u8, A>,
+    ver:         CDRomVer,
 
     drive: CdromDrive,
 }
 
-#[derive(Default, derive_more::Debug, Clone)]
+#[derive(Default, derive_more::Debug, Clone, Endecode)]
 enum DriveStatus {
     LidOpen,
     SpinUp,
@@ -207,6 +210,7 @@ impl<A: Allocator> Emu<A> {
 /// value. Likewise, the low 2 bits of this address can be read to get the current
 /// bank.
 #[bitfield(u8, debug)]
+#[derive(Endecode)]
 struct CDRomStatusReg {
     #[bits(0..=1, rw)]
     bank:          u2,
@@ -243,7 +247,7 @@ impl CDRomStatusReg {
     }
 }
 
-impl CDRomState {
+impl<A: Allocator> CDRomState<A> {
     #[must_use]
     pub fn bank(&self) -> u8 {
         self.status.bank().as_u8()
@@ -259,6 +263,7 @@ impl CDRomState {
 ///  5-7 -      Reserved                              (always 1)
 /// ```
 #[bitfield(u8, default = 0x0, debug)]
+#[derive(Endecode)]
 struct CDRomHIntSts {
     #[bits(0..=2, rw)]
     intsts:    HInt,
@@ -271,6 +276,7 @@ struct CDRomHIntSts {
 }
 
 #[bitfield(u8, default = 0xe0, debug)]
+#[derive(Endecode)]
 struct CDRomHIntMask {
     #[bits(0..=2, rw)]
     intsts:    HInt,
@@ -348,13 +354,13 @@ struct CDRomHClrCtl {
 ///   7   BFRD Request sector buffer read                  (1=prepare for reads from RDDATA)
 /// ```
 #[bitfield(u8, debug)]
-#[derive(Default)]
+#[derive(Default, Endecode)]
 struct CDRomReqRegister {
     #[bit(7, rw)]
     bfrd: bool,
 }
 
-impl CDRomState {
+impl<A: Allocator> CDRomState<A> {
     fn write_h_clr_ctl(&mut self, hclrctl: CDRomHClrCtl) {
         let hintsts = &mut self.hint_status;
 
@@ -384,7 +390,7 @@ impl CDRomState {
     }
 }
 
-impl CDRomState {
+impl<A: Allocator> CDRomState<A> {
     fn param_push(&mut self, param: u8) {
         match self.param_fifo.push_back(param) {
             Ok(()) => {

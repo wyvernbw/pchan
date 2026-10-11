@@ -1,5 +1,6 @@
 use core::alloc::Allocator;
 
+use pchan_encode::derive::Endecode;
 #[cfg(feature = "trace")]
 use pchan_utils::hex;
 
@@ -33,7 +34,7 @@ pub fn buffer<A: Allocator + Copy>(size: usize, alloc: A) -> Box<[u8], A> {
 
 pub type Buffer<A> = Box<[u8], A>;
 
-#[derive(derive_more::Debug, Clone)]
+#[derive(derive_more::Debug, Clone, Endecode)]
 #[debug("memory:{}kb", MEM_SIZE/1024)]
 pub struct MemoryState<A: Allocator> {
     pub buf: Buffer<A>,

@@ -1,5 +1,6 @@
 use alloc::collections::VecDeque;
 use core::alloc::Allocator;
+use pchan_encode::derive::Endecode;
 use std::fs;
 use std::io::{BufReader, Read, Seek};
 use std::path::{Path, PathBuf};
@@ -17,7 +18,7 @@ use crate::io::evque::EventId;
 
 use super::cdrom_cmds::SetModeSectSize;
 
-#[derive(Default, derive_more::Debug)]
+#[derive(Default, derive_more::Debug, Endecode)]
 pub struct CdromDrive {
     pub cursor:        CdromCursor,
     pub setloc_armed:  bool,
@@ -27,10 +28,12 @@ pub struct CdromDrive {
     pub drive_state:   DriveState,
     pub command_state: CommandState,
     pub cmd_state_v2:  CommandStateV2,
+    #[endecode(skip)]
     disc:              Option<Disc>,
+    #[endecode(skip)]
     host_disc_err:     Option<std::io::Error>,
-
-    open_disc_state: Option<OpenDiscFSM>,
+    #[endecode(skip)]
+    open_disc_state:   Option<OpenDiscFSM>,
 }
 
 impl Clone for CdromDrive {
@@ -51,7 +54,7 @@ impl Clone for CdromDrive {
     }
 }
 
-#[derive(Default, derive_more::Debug, Clone)]
+#[derive(Default, derive_more::Debug, Clone, Endecode)]
 pub enum DriveState {
     #[default]
     Idle,
@@ -59,7 +62,7 @@ pub enum DriveState {
     SeekL(EventId),
 }
 
-#[derive(Default, derive_more::Debug, Clone)]
+#[derive(Default, derive_more::Debug, Clone, Endecode)]
 pub(super) enum CommandState {
     #[default]
     Idle,
@@ -103,7 +106,11 @@ impl CdromDrive {
         self.status_code.reset_state();
     }
 
-    pub fn request_data(&mut self, status: &mut CDRomStatusReg, result_fifo: &mut VecDeque<u8>) {
+    pub fn request_data<A: Allocator>(
+        &mut self,
+        status: &mut CDRomStatusReg,
+        result_fifo: &mut VecDeque<u8, A>,
+    ) {
         status.set_data_req(true);
         if let Some(disc) = &mut self.disc {
             // TODO: better reporting

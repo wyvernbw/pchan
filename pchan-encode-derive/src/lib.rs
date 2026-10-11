@@ -172,9 +172,14 @@ impl EncodingUtilGeneric {
                     return None;
                 }
                 let bounds = &ty.bounds;
-                Some(quote! {
-                    #ident : #bounds
-                })
+                match bounds.len() {
+                    0 => Some(quote! {
+                        #ident :   ::pchan_encode::Endecode<A>
+                    }),
+                    _ => Some(quote! {
+                        #ident : #bounds + ::pchan_encode::Endecode<A>
+                    }),
+                }
             })
             .collect::<Vec<_>>();
         let type_w_generics = quote! {
@@ -270,7 +275,7 @@ impl ToTokens for NamedStructOpts {
             type_w_generics,
             type_params,
             allocator_bound,
-            endecode_bound,
+            endecode_bound: _,
             has_alloc: _,
         } = self.into();
 
@@ -278,7 +283,7 @@ impl ToTokens for NamedStructOpts {
 
         let fields = &self.data.as_struct().unwrap().fields;
         let fields_set = FieldSetEncode { fields };
-        let container_endecode_bound = self
+        let _container_endecode_bound = self
             .alloc
             .as_ref()
             .map_or_else(default_endecode_bound, |a| a.endecode_bound());
@@ -301,7 +306,7 @@ impl ToTokens for NamedStructOpts {
             let name = &field.ident;
             let ty = &field.ty;
             let alloc_call = field.alloc.as_ref().map_or(
-                field.string.map_or(AllocCall::Allocate, |_| {
+                field.string.map_or(AllocCall::Default, |_| {
                     AllocCall::NoAlloc(format_ident!("new"))
                 }),
                 |a| a.alloc_call(field.string),
@@ -332,7 +337,7 @@ impl ToTokens for NamedStructOpts {
         };
 
         if self.alloc.as_ref().is_some_and(|a| a.default.is_some()) {
-            let allocator = allocator_param_inner(self.alloc.as_ref(), None);
+            let _allocator = allocator_param_inner(self.alloc.as_ref(), None);
             result = quote! {
                 #result
                 impl<#(#const_params,)* A: #allocator_bound + Clone, #(#type_params)*> ::pchan_encode::Allocate<A> for #type_w_generics #where_clause {
@@ -399,6 +404,20 @@ impl EncodingVariant {
             ast::Style::Unit => quote! {},
         }
     }
+
+    fn destructure_ignore(&self, field_names: Option<&[syn::Ident]>) -> proc_macro2::TokenStream {
+        let field_names = match field_names {
+            Some(idents) => Cow::Borrowed(idents),
+            None => Cow::Owned(self.fields.field_names()),
+        };
+        let count = field_names.len();
+        let underscores = (0..count).map(|_| quote! { _ });
+        match self.fields.style {
+            ast::Style::Tuple => quote! { (#(#underscores),*) },
+            ast::Style::Struct => quote! { { .. } },
+            ast::Style::Unit => quote! {},
+        }
+    }
 }
 
 impl From<&EnumOpts> for EncodingUtilGeneric {
@@ -437,6 +456,11 @@ impl ToTokens for EnumOpts {
             .enumerate()
             .map(|(i, v)| v.destructure(Some(&variant_field_names[i])))
             .collect::<Vec<_>>();
+        let ignored_destructures = variants
+            .iter()
+            .enumerate()
+            .map(|(i, v)| v.destructure_ignore(Some(&variant_field_names[i])))
+            .collect::<Vec<_>>();
         let variants_encode = variants.iter().enumerate().filter_map(|(i, variant)| {
             let ident = &variant.ident;
             if variant.skip.is_some() {
@@ -473,7 +497,7 @@ impl ToTokens for EnumOpts {
                     field
                         .alloc
                         .as_ref()
-                        .map_or(AllocCall::Allocate, |a| a.alloc_call(field.string))
+                        .map_or(AllocCall::Default, |a| a.alloc_call(field.string))
                 })
             })
             .collect::<Vec<_>>();
@@ -538,7 +562,7 @@ impl ToTokens for EnumOpts {
                 #[allow(dead_code)]
                 fn _variant(&self) -> u8 {
                     match self {
-                        #(Self::#variant_idents #destructures => #variants_to_u8),*
+                        #(Self::#variant_idents #ignored_destructures => #variants_to_u8),*
                     }
                 }
                 fn _create(variant: u8, #create_fn_sig_allocator_param) -> ::core::result::Result<#type_w_generics, ::pchan_encode::EndecodeError> {
@@ -628,7 +652,7 @@ pub fn derive_endecode(item: TokenStream) -> TokenStream {
         Ok(args) => return args.into_token_stream().into(),
     }
     match EnumOpts::from_derive_input(&args) {
-        Err(err) => panic!("oopsies: {err}"),
+        Err(_) => {}
         Ok(args) => return args.to_token_stream().into(),
     }
     panic!("shape not supported");

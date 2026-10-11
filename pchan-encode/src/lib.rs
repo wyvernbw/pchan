@@ -1,9 +1,19 @@
+#![feature(allocator_ext)]
 #![no_std]
 
 #[cfg(feature = "alloc")]
 extern crate alloc;
 #[cfg(feature = "alloc")]
 mod collections;
+
+#[cfg(feature = "glam")]
+mod glam_impl;
+#[cfg(feature = "heapless")]
+mod heapless_impl;
+#[cfg(feature = "slotmap")]
+mod slotmap_impl;
+#[cfg(feature = "smallvec")]
+mod smallvec_impl;
 
 use core::alloc::Allocator;
 use core::any::type_name;

@@ -8,7 +8,7 @@ use pchan_encode::{EncoderSink, Endecode, decode_in_place, encode};
 
 extern crate alloc;
 
-#[derive(Endecode, Default, Debug, PartialEq, Eq)]
+#[derive(Endecode, Default, Debug, PartialEq, Eq, Clone)]
 #[endecode(alloc(default))]
 struct Basic {
     a: u32,
@@ -161,6 +161,7 @@ enum TestEnum<A: Allocator> {
     Baz(#[endecode(alloc(bounds = "copy"))] Foo<A>),
     #[endecode(alloc(default))]
     Fourth {
+        #[endecode(alloc(with = new_in))]
         thing: Foo<A>,
     },
 }
@@ -267,4 +268,15 @@ enum TestEnumAllocless {
 #[derive(Endecode, Debug, PartialEq)]
 struct ConstParams<const N: usize, const B: usize> {
     arr: [u32; N],
+}
+
+#[derive(Endecode, Debug, PartialEq)]
+struct HeaplessVecTest {
+    vec: heapless::Vec<Basic, 10>,
+}
+
+#[derive(Endecode, Debug, PartialEq)]
+struct Bounds<T: Clone> {
+    a: T,
+    b: T,
 }

@@ -3,18 +3,19 @@ use core::alloc::Allocator;
 use arbitrary_int::prelude::*;
 use bitbybit::{bitenum, bitfield};
 use derive_more as d;
+use pchan_encode::derive::Endecode;
 
 use crate::Emu;
 use crate::io::{CastIOFrom, CastIOInto, IOResult, UnhandledIO};
 
-#[derive(Debug, Clone, Copy, Hash, Default)]
+#[derive(Debug, Clone, Copy, Hash, Default, Endecode)]
 pub struct IrqState {
     pub i_stat: IrqField,
     pub i_mask: IrqField,
 }
 
 #[bitfield(u32, debug)]
-#[derive(d::Deref, Hash, Default)]
+#[derive(d::Deref, Hash, Default, Endecode)]
 #[must_use]
 pub struct IrqField {
     #[bit(0)]
@@ -41,7 +42,7 @@ pub struct IrqField {
 }
 
 #[bitenum(u8)]
-#[derive(Debug, PartialEq, Eq, Default, strum::EnumIter)]
+#[derive(Debug, PartialEq, Eq, Default, strum::EnumIter, Endecode)]
 pub enum Irq {
     #[default]
     Irq0Vblank           = 0x0,

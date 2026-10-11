@@ -7,12 +7,21 @@ edition = "2024"
 workspace = true
 
 [features]
+full = ["alloc", "glam", "heapless", "smallvec"]
 alloc = []
+glam = ["dep:glam"]
+heapless = ["dep:heapless"]
+smallvec = ["dep:smallvec"]
+slotmap = ["dep:slotmap"]
 
 [dependencies]
 thiserror = { version = "2.0.21", default-features = false }
 pchan-encode-derive.workspace = true
+glam = { version = "0.34.1", optional = true }
+heapless = { version = "0.9.3", optional = true }
+smallvec = { version = "1.16.3", optional = true }
+slotmap = { version = "1.1.1", optional = true }
 
 [dev-dependencies]
-pchan-encode = { path = ".", features = ["alloc"] }
+pchan-encode = { path = ".", features = ["full"] }
 derive_more = { version = "2.1.1", features = ["full"] }

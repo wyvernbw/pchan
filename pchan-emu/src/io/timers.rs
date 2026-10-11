@@ -3,13 +3,14 @@ use core::alloc::Allocator;
 use arbitrary_int::prelude::*;
 use bitbybit::bitenum;
 use derive_more as d;
+use pchan_encode::derive::Endecode;
 
 use crate::Emu;
 use crate::io::{CastIOFrom, CastIOInto, UnhandledIO};
 
 use super::irq::Irq;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Endecode)]
 pub struct TimerState {
     pub timer_0: Timer,
     pub timer_1: Timer,
@@ -18,7 +19,7 @@ pub struct TimerState {
     timer_2_fract: u16,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Endecode)]
 pub struct Timer {
     value:      TimerCounterValue,
     target:     TimerTarget,
@@ -29,14 +30,14 @@ pub struct Timer {
 }
 
 #[bitbybit::bitfield(u32, debug)]
-#[derive(Default)]
+#[derive(Default, Endecode)]
 #[must_use]
 pub struct TimerCounterValue {
     #[bits(0..=15, rw)]
     value: u16,
 }
 
-#[derive(Debug, Clone, Copy, d::Deref, d::DerefMut, Default)]
+#[derive(Debug, Clone, Copy, d::Deref, d::DerefMut, Default, Endecode)]
 pub struct TimerTarget(TimerCounterValue);
 
 ///```md
@@ -68,7 +69,7 @@ pub struct TimerTarget(TimerCounterValue);
 ///  16-31 Garbage (next opcode)
 /// ```
 #[bitbybit::bitfield(u32, debug)]
-#[derive(Default)]
+#[derive(Default, Endecode)]
 #[must_use]
 pub struct TimerCounterMode {
     #[bit(0, rw)]

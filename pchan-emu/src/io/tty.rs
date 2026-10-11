@@ -1,13 +1,14 @@
 use core::alloc::Allocator;
 use core::str::Utf8Error;
 
+use pchan_encode::derive::Endecode;
 use thiserror::Error;
 
 use crate::memory::kb;
 
 const TTY_CAP: usize = kb(16);
 
-#[derive(derive_more::Debug, Clone)]
+#[derive(derive_more::Debug, Clone, Endecode)]
 pub struct Tty<A: Allocator> {
     #[debug("buf: {}/{}", self.end, TTY_CAP)]
     pub buf: Box<[u8], A>,
@@ -15,7 +16,7 @@ pub struct Tty<A: Allocator> {
     mode:    TtyMode,
 }
 
-#[derive(derive_more::Debug, Clone)]
+#[derive(derive_more::Debug, Clone, Endecode)]
 pub enum TtyMode {
     Stdout,
     Tracing,

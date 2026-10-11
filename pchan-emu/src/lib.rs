@@ -71,14 +71,16 @@ pub mod run;
 #[path = "./spu/spu.rs"]
 pub mod spu;
 
-#[derive(derive_more::Debug, Clone)]
+#[derive(derive_more::Debug, Clone, Endecode)]
 #[repr(C)]
 pub struct Emu<A: Allocator = Global> {
     pub cpu:           Cpu,
     #[debug(skip)]
+    #[endecode(skip)]
     pub dynarec_cache: DynarecCache<A>,
     pub mem:           MemoryState<A>,
-    pub boot:          BootloaderState,
+    #[endecode(skip)]
+    pub boot:          BootloaderState<A>,
     pub tty:           Tty<A>,
     pub gpu:           GpuState<A>,
     pub dma:           DmaState,
@@ -86,14 +88,19 @@ pub struct Emu<A: Allocator = Global> {
     #[debug(skip)]
     pub spu:           SpuState<A>,
     #[cfg(feature = "debugger-ext")]
+    #[endecode(skip)]
     pub dbg:           DebuggerState<A>,
-    pub cdrom:         CDRomState,
+    pub cdrom:         CDRomState<A>,
     pub sio:           SioState,
     pub irq:           IrqState,
-    pub evque:         Evque<Self>,
+    #[endecode(skip)]
+    pub evque:         Evque<Self, A>,
+    #[endecode(skip)]
     pub tracy:         TracyClient,
+    #[endecode(skip)]
     pub stats:         Stats,
     #[debug(skip)]
+    #[endecode(skip)]
     pub alloc:         A,
 }
 
@@ -108,7 +115,7 @@ impl<A: Allocator + Copy> Emu<A> {
             cpu: Cpu::new(),
             dynarec_cache: DynarecCache::new(alloc),
             mem: MemoryState::new(alloc),
-            boot: BootloaderState::default(),
+            boot: BootloaderState::new_in(alloc),
             tty: Tty::new(alloc),
             gpu: GpuState::new(alloc),
             dma: DmaState::default(),
@@ -116,10 +123,10 @@ impl<A: Allocator + Copy> Emu<A> {
             spu: SpuState::new(alloc),
             #[cfg(feature = "debugger-ext")]
             dbg: DebuggerState::new(alloc),
-            cdrom: CDRomState::default(),
+            cdrom: CDRomState::new_in(alloc),
             sio: SioState::default(),
             irq: IrqState::default(),
-            evque: Evque::default(),
+            evque: Evque::new_in(alloc),
             tracy: TracyClient::default(),
             stats: Stats::default(),
             alloc,
@@ -175,6 +182,8 @@ impl Stats {
 }
 
 use alloc::alloc::Global;
+use pchan_encode::Allocate;
+use pchan_encode::derive::Endecode;
 use pchan_utils::hex;
 use pchan_utils::tracy::TracyClient;
 

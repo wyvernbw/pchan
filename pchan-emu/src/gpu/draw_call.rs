@@ -8,6 +8,8 @@ use crate::io::CastIOInto;
 use arbitrary_int::prelude::*;
 use bitbybit::{bitenum, bitfield};
 use glam::{I16Vec2, U8Vec2, U8Vec3, U16Vec2};
+use pchan_encode::derive::Endecode;
+use pchan_utils::default;
 use smallvec::SmallVec;
 
 #[derive(derive_more::Debug)]
@@ -20,7 +22,8 @@ pub struct DrawCallCollection<A: Allocator> {
     pub vram:       Option<VramMsg<A>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Endecode)]
+#[endecode(alloc(default))]
 pub struct DrawCall {
     pub gpustat:    GpuStatReg,
     pub tex_window: Gp0TexWindowCmd,
@@ -28,14 +31,20 @@ pub struct DrawCall {
     pub inner:      DrawCallKind,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Endecode)]
 pub enum DrawCallKind {
     Rect(DrawRect),
     Polygon(DrawPolygon),
     Line(DrawLine),
 }
 
-#[derive(Debug, Clone, Copy)]
+impl Default for DrawCallKind {
+    fn default() -> Self {
+        DrawCallKind::Rect(DrawRect::default())
+    }
+}
+
+#[derive(Debug, Clone, Copy, Endecode)]
 pub enum DrawRectDecoder {
     Color {
         color: DrawRectColor,
@@ -57,7 +66,13 @@ pub enum DrawRectDecoder {
     },
 }
 
-#[derive(Debug, Clone)]
+impl Default for DrawRectDecoder {
+    fn default() -> Self {
+        DrawRectDecoder::Color { color: default() }
+    }
+}
+
+#[derive(Debug, Clone, Endecode)]
 #[derive_const(Default)]
 pub struct DrawRect {
     pub color:    DrawRectColor,
@@ -66,8 +81,9 @@ pub struct DrawRect {
     pub var_size: Option<VramCoord>,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, Endecode)]
 #[repr(C)]
+#[endecode(alloc(default))]
 pub struct Uv {
     pub uv:    U8Vec2,
     pub extra: u16,
@@ -136,7 +152,7 @@ pub struct Gp0SetMaskBitCmd {
     draw_pixels: DrawPixels,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Endecode)]
 pub struct GpuInternalDrawReg {
     pub draw_area_top_left:     VramCoord,
     pub draw_area_bottom_right: VramCoord,
@@ -155,6 +171,7 @@ pub struct GpuInternalDrawReg {
 /// Credits to PSX-SPX by Martin Korth [Gpu Status Register](https://problemkaputt.de/psx-spx.htm#gpustatusregister)
 #[bitfield(u32, debug)]
 #[derive_const(Default)]
+#[derive(Endecode)]
 #[must_use]
 pub struct DrawRectColor {
     #[bits(0..=23, rw)]
@@ -247,7 +264,7 @@ impl DrawCallDecoder for DrawRectDecoder {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Endecode, Default)]
 pub struct DrawPolygon {
     pub header:  DrawPolygonHeader,
     pub attrs:   heapless::Vec<DrawPolygonAttribute, 4>,
@@ -276,7 +293,8 @@ impl DrawPolygon {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Endecode, Default)]
+#[endecode(alloc(default))]
 pub struct DrawPolygonAttribute {
     pub color:  Option<U8Vec3>,
     pub vertex: I16Vec2,
@@ -294,7 +312,7 @@ pub struct DrawPolygonAttribute {
 ///   23-0        rgb    first color value.
 /// ```
 #[bitfield(u32, debug)]
-#[derive(Default)]
+#[derive(Default, Endecode)]
 #[must_use]
 pub struct DrawPolygonHeader {
     #[bits(0..=23, rw)]
@@ -339,14 +357,14 @@ pub enum Shading {
     Gouraud = 0x1,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Endecode)]
 pub struct DrawPolygonDecoder {
     header:       DrawPolygonHeader,
     attrs:        heapless::Vec<DrawPolygonAttribute, 4>,
     current_attr: DrawPolygonAttributeDecoder,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Endecode)]
 enum DrawPolygonAttributeDecoder {
     #[default]
     IdleGoraudUntextured,
@@ -512,7 +530,7 @@ fn draw_polygon_decode_goraud_untextured_triangle() {
     println!("{poly:#?}");
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Endecode, Default)]
 pub struct DrawLine {
     header: DrawLineHeader,
     // most lines are 2 vertices, for poly-lines
@@ -529,7 +547,7 @@ pub struct DrawLine {
 ///   23-0        rgb    first color value.
 /// ```
 #[bitfield(u32, debug)]
-#[derive(Default)]
+#[derive(Default, Endecode)]
 #[must_use]
 pub struct DrawLineHeader {
     #[bits(0..=23, rw)]
@@ -542,13 +560,14 @@ pub struct DrawLineHeader {
     shading:          Shading,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Endecode, Default)]
+#[endecode(alloc(default))]
 pub struct DrawLineAttribute {
     color:  Option<u32>,
     vertex: I16Vec2,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Endecode)]
 pub enum DrawLineAttributeDecoder {
     #[default]
     Flat,
@@ -589,7 +608,7 @@ impl DrawLineAttributeDecoder {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Endecode)]
 pub struct DrawLineDecoder {
     header:       DrawLineHeader,
     attrs:        SmallVec<[DrawLineAttribute; 2]>,

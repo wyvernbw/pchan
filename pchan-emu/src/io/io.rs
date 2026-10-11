@@ -35,7 +35,7 @@ impl<A: Allocator + Copy> Emu<A> {
         #[cfg(feature = "amidog-tests")]
         {
             use crate::bootloader::AMIDOG_TESTS;
-            self.sideload_exe(AMIDOG_TESTS).unwrap();
+            self.sideload_exe(AMIDOG_TESTS, self.alloc).unwrap();
         }
 
         let d_clock = u64::from(self.cpu.d_clock);

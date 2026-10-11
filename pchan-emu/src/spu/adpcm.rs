@@ -5,17 +5,18 @@ use arbitrary_int::prelude::*;
 use bitbybit::bitfield;
 
 use derive_more as d;
+use pchan_encode::derive::Endecode;
 
 /// mapped to `1F801C06h+N*10h`
-#[derive(Default, derive_more::Debug, Clone, Copy, d::Deref, d::DerefMut)]
+#[derive(Default, derive_more::Debug, Clone, Copy, d::Deref, d::DerefMut, Endecode)]
 pub struct ADPCMStart(pub u16);
-#[derive(Default, derive_more::Debug, Clone, Copy, d::Deref, d::DerefMut)]
+#[derive(Default, derive_more::Debug, Clone, Copy, d::Deref, d::DerefMut, Endecode)]
 pub struct ADPCMCurrent(pub u16);
 /// mapped to `1F801C0Eh+N*10h`
-#[derive(Default, derive_more::Debug, Clone, Copy, d::Deref, d::DerefMut)]
+#[derive(Default, derive_more::Debug, Clone, Copy, d::Deref, d::DerefMut, Endecode)]
 pub struct ADPCMRepeat(pub u16);
 /// mapped to `1F801C04h+N*10h`
-#[derive(Default, derive_more::Debug, Clone, Copy, d::Deref, d::DerefMut)]
+#[derive(Default, derive_more::Debug, Clone, Copy, d::Deref, d::DerefMut, Endecode)]
 pub struct ADPCMSampleRate(pub u16);
 
 #[bitfield(u8)]

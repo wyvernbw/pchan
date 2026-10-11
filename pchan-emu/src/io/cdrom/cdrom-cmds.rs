@@ -7,6 +7,7 @@ use crate::io::cdrom::cdrom_format::{Bcd, CdromCursor, Mss};
 use crate::io::cdrom::{CDRomState, DriveStatus};
 use crate::io::evque::EventId;
 use bitbybit::{bitenum, bitfield};
+use pchan_encode::derive::Endecode;
 use pchan_utils::hex;
 
 use super::HInt;
@@ -48,7 +49,7 @@ impl<const N: usize> From<StatusCode> for heapless::Vec<u8, N> {
     }
 }
 
-#[derive(Default, derive_more::Debug)]
+#[derive(Default, derive_more::Debug, Endecode)]
 pub(crate) enum CommandStateV2 {
     #[default]
     Idle,
@@ -78,12 +79,10 @@ pub(crate) enum CommandStateV2 {
     InitInt2,
 }
 
-impl CDRomState {
-    const NOP_TIMING: u32 = 0x000c4e1;
-    const GETID_RES_2_TIMING: u32 = 0x0004a00;
-    const INIT_TIMING: u32 = 0x0013cce;
-    const PAUSE_2X_TIMING: u32 = 0x010bd93;
-}
+const NOP_TIMING: u32 = 0x000c4e1;
+const GETID_RES_2_TIMING: u32 = 0x0004a00;
+const INIT_TIMING: u32 = 0x0013cce;
+const PAUSE_2X_TIMING: u32 = 0x010bd93;
 
 impl<A: Allocator> Emu<A> {
     pub(super) fn cdrom_send_cmd_v2(&mut self, cmd: u8) {
@@ -92,7 +91,7 @@ impl<A: Allocator> Emu<A> {
             // nop
             0x01 => {
                 self.cdrom_continue_cmd(CommandStateV2::Nop);
-                self.cdrom_queue_response(CDRomState::NOP_TIMING);
+                self.cdrom_queue_response(NOP_TIMING);
             }
             // Setloc - Command 02h,amm,ass,asect --> INT3(stat)
             0x02 => {
@@ -100,33 +99,33 @@ impl<A: Allocator> Emu<A> {
                 let sec = self.cdrom.get_param::<Bcd>();
                 let sect = self.cdrom.get_param::<Bcd>();
                 self.cdrom_continue_cmd(CommandStateV2::SetlocInt3(Mss::new(min, sec, sect)));
-                self.cdrom_queue_response(CDRomState::NOP_TIMING);
+                self.cdrom_queue_response(NOP_TIMING);
             }
             // `ReadN` - Command 06h --> INT3(stat) --> INT1(stat) --> datablock
             0x06 => {
                 self.cdrom_continue_cmd(CommandStateV2::ReadNInt3);
-                self.cdrom_queue_response(CDRomState::NOP_TIMING);
+                self.cdrom_queue_response(NOP_TIMING);
             }
             // Setmode - Command 0Eh,mode --> INT3(stat)
             0x0e => {
                 let setmode = self.cdrom.get_param::<SetMode>();
                 self.cdrom_continue_cmd(CommandStateV2::SetModeInt3(setmode));
-                self.cdrom_queue_response(CDRomState::NOP_TIMING);
+                self.cdrom_queue_response(NOP_TIMING);
             }
             // Pause - Command 09h --> INT3(stat) --> INT2(stat)
             0x09 => {
                 self.cdrom_continue_cmd(CommandStateV2::PauseInt3);
-                self.cdrom_queue_response(CDRomState::NOP_TIMING);
+                self.cdrom_queue_response(NOP_TIMING);
             }
             // Init - Command 0Ah --> INT3(stat) --> INT2(stat)
             0x0a => {
                 self.cdrom_continue_cmd(CommandStateV2::InitInt3);
-                self.cdrom_queue_response(CDRomState::INIT_TIMING);
+                self.cdrom_queue_response(INIT_TIMING);
             }
             // `SeekL` - Command 15h --> INT3(stat) --> INT2(stat)
             0x15 => {
                 self.cdrom_continue_cmd(CommandStateV2::SeekLInt3);
-                self.cdrom_queue_response(CDRomState::NOP_TIMING);
+                self.cdrom_queue_response(NOP_TIMING);
             }
             // test
             0x19 => {
@@ -138,7 +137,7 @@ impl<A: Allocator> Emu<A> {
                     // 20h INT3(yy,mm,dd,ver) Get cdrom BIOS date/version (yy,mm,dd,ver)
                     0x20 => {
                         self.cdrom_continue_cmd(CommandStateV2::TestHC05BiosDateInt3);
-                        self.cdrom_queue_response(CDRomState::NOP_TIMING);
+                        self.cdrom_queue_response(NOP_TIMING);
                     }
                     _ => {
                         tracing::warn!(
@@ -153,14 +152,14 @@ impl<A: Allocator> Emu<A> {
             0x1a => {
                 tracing::info!("0x1a GetID");
                 self.cdrom_continue_cmd(CommandStateV2::GetIdInt3_5);
-                self.cdrom_queue_response(CDRomState::NOP_TIMING);
+                self.cdrom_queue_response(NOP_TIMING);
             }
 
             // ReadTOC - Command 1Eh --> INT3(stat) --> INT2(stat)
             0x1e => {
                 tracing::info!("ReadTOC");
                 self.cdrom_continue_cmd(CommandStateV2::ReadTOCInt3);
-                self.cdrom_queue_response(CDRomState::INIT_TIMING);
+                self.cdrom_queue_response(INIT_TIMING);
             }
 
             cmd => todo!("cdrom cmd not implemented: {}", hex(cmd)),
@@ -208,7 +207,7 @@ impl<A: Allocator> Emu<A> {
                 }
                 _ => {
                     self.cdrom_send_response_v2(int3(status));
-                    self.cdrom_queue_response(CDRomState::GETID_RES_2_TIMING);
+                    self.cdrom_queue_response(GETID_RES_2_TIMING);
                     self.cdrom_continue_cmd(CommandStateV2::GetIdInt2_5);
                 }
             },
@@ -231,14 +230,14 @@ impl<A: Allocator> Emu<A> {
             }
 
             CommandStateV2::TestHC05BiosDateInt3 => {
-                self.cdrom_send_response_v2(int3(self.cdrom.ver));
+                self.cdrom_send_response_v2(int3(*self.cdrom.ver));
                 self.cdrom_end_cmd();
             }
 
             CommandStateV2::ReadTOCInt3 => {
                 self.cdrom_send_response_v2(int3(status));
                 self.cdrom_continue_cmd(CommandStateV2::ReadTOCInt2);
-                self.cdrom_queue_response(CDRomState::INIT_TIMING);
+                self.cdrom_queue_response(INIT_TIMING);
             }
             CommandStateV2::ReadTOCInt2 => {
                 self.cdrom_send_response_v2(int2(status));
@@ -276,7 +275,7 @@ impl<A: Allocator> Emu<A> {
             CommandStateV2::PauseInt3 => {
                 self.cdrom_send_response_v2(int3(status));
                 self.cdrom_continue_cmd(CommandStateV2::PauseInt2);
-                self.cdrom_queue_response(CDRomState::PAUSE_2X_TIMING);
+                self.cdrom_queue_response(PAUSE_2X_TIMING);
             }
             CommandStateV2::PauseInt2 => {
                 self.cdrom.drive.pause();
@@ -306,7 +305,7 @@ impl<A: Allocator> Emu<A> {
             CommandStateV2::InitInt3 => {
                 self.cdrom_send_response_v2(int3(status));
                 self.cdrom_continue_cmd(CommandStateV2::InitInt2);
-                self.cdrom_queue_response(CDRomState::GETID_RES_2_TIMING);
+                self.cdrom_queue_response(GETID_RES_2_TIMING);
             }
             CommandStateV2::InitInt2 => {
                 self.cdrom.drive.mode = SetMode::new_with_raw_value(0x20);
@@ -331,6 +330,7 @@ impl<A: Allocator> Emu<A> {
 ///  0  Error         Invalid Command/parameters (followed by Error Byte)
 /// ```
 #[bitfield(u8, debug)]
+#[derive(Endecode)]
 pub struct StatusCode {
     #[bit(0, rw)]
     err:         bool,
@@ -364,7 +364,7 @@ impl Default for StatusCode {
     }
 }
 
-impl CDRomState {
+impl<A: Allocator> CDRomState<A> {
     fn drain_params(&mut self) -> impl Iterator<Item = u8> {
         iter::from_fn(|| self.param_fifo.pop_front())
     }
@@ -385,7 +385,7 @@ impl CDRomState {
 ///  0   CDDA        (0=Off, 1=Allow to Read CD-DA Sectors; ignore missing EDC)
 /// ```
 #[bitfield(u8, debug)]
-#[derive(Default)]
+#[derive(Default, Endecode)]
 pub struct SetMode {
     #[bit(0, rw)]
     cdda:       bool,

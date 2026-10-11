@@ -3,18 +3,42 @@ use core::cmp;
 
 use heapless::BinaryHeap;
 use heapless::binary_heap::Min;
-use slotmap::new_key_type;
+use pchan_encode::{Allocate, Endecode};
+use slotmap::{KeyData, new_key_type};
 
 use crate::Emu;
 
 /// `pchan` event queue
-#[derive(Debug, Clone)]
-pub struct Evque<T: ?Sized> {
+#[derive(derive_more::Debug, Clone)]
+pub struct Evque<T: ?Sized, A: Allocator> {
     clock: u64,
-    queue: Box<BinaryHeap<PchanEvent<T>, Min, 512>>,
+    #[debug(skip)]
+    queue: Box<BinaryHeap<PchanEvent<T>, Min, 512>, A>,
 }
 
-new_key_type! { pub struct EventId; }
+new_key_type! {
+    pub struct EventId;
+}
+
+impl<A: Allocator> Endecode<A> for EventId {
+    fn endecode(
+        &mut self,
+        sink: &mut impl pchan_encode::Stream,
+        alloc: A,
+    ) -> Result<(), pchan_encode::EndecodeError> {
+        self.0.endecode(sink, alloc)
+    }
+
+    fn size() -> Result<Option<usize>, pchan_encode::EndecodeError> {
+        <KeyData as Endecode<A>>::size()
+    }
+}
+
+impl<A: Allocator> Allocate<A> for EventId {
+    fn new_in(_: A) -> Self {
+        Self::default()
+    }
+}
 
 #[derive(Default)]
 pub struct EvCtx {
@@ -32,11 +56,11 @@ pub struct PchanEvent<T: ?Sized> {
     id:       EventId,
 }
 
-impl<T> Default for Evque<T> {
-    fn default() -> Self {
-        Self {
-            queue: Box::new(BinaryHeap::new()),
+impl<A: Allocator, T> Allocate<A> for Evque<T, A> {
+    fn new_in(alloc: A) -> Self {
+        Evque {
             clock: 0,
+            queue: Box::new_in(BinaryHeap::new(), alloc),
         }
     }
 }
@@ -78,7 +102,7 @@ impl<A: Allocator> Emu<A> {
     }
 }
 
-impl<T: ?Sized> Evque<T> {
+impl<T: ?Sized, A: Allocator> Evque<T, A> {
     fn pop_next(&mut self) -> Option<PchanEvent<T>> {
         match self.queue.peek() {
             Some(ev) if ev.at_cycle <= self.clock => self.queue.pop(),

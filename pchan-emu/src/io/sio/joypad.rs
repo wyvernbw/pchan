@@ -2,13 +2,14 @@ use core::alloc::Allocator;
 
 use bitbybit::{bitenum, bitfield};
 use pchan_bind::input::{InputEvent, PchanButton};
+use pchan_encode::derive::Endecode;
 
 use crate::Emu;
 use crate::io::sio::{Peripheral, Sio0Port, TxWriteResult};
 
 use super::Sio0Rx;
 
-#[derive(Default, derive_more::Debug, Clone)]
+#[derive(Default, derive_more::Debug, Clone, Endecode)]
 pub struct Joypad {
     pub connected: bool,
     state:         JoypadState,
@@ -16,7 +17,7 @@ pub struct Joypad {
     switches:      DigitalSwitches,
 }
 
-#[derive(Default, derive_more::Debug, Clone)]
+#[derive(Default, derive_more::Debug, Endecode, Clone)]
 enum JoypadState {
     #[default]
     Idle,
@@ -26,7 +27,7 @@ enum JoypadState {
 }
 
 /// 0x5a hi bits is implied
-#[derive(PartialEq, Eq, Clone, Copy, Debug, Default)]
+#[derive(PartialEq, Eq, Clone, Copy, Debug, Default, Endecode)]
 #[repr(u8)]
 enum ControllerId {
     #[default]
@@ -100,6 +101,7 @@ pub enum ButtonState {
 /// ```
 #[bitfield(u16, debug, default = 0xffff)]
 #[must_use]
+#[derive(Endecode)]
 pub struct DigitalSwitches {
     #[bits(0..=7, r)]
     lower: u8,

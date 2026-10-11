@@ -4,8 +4,10 @@ use std::marker::Destruct;
 
 use arbitrary_int::prelude::*;
 use bitbybit::bitfield;
+use pchan_encode::derive::Endecode;
 
 #[bitfield(u8, debug)]
+#[derive(Endecode, Default)]
 pub struct Bcd {
     /// the least significant digit
     #[bits(0..=3, rw)]
@@ -39,14 +41,14 @@ const impl From<u8> for Bcd {
     }
 }
 
-#[derive(Default, derive_more::Debug, Clone, Copy)]
+#[derive(Default, derive_more::Debug, Clone, Copy, Endecode)]
 pub struct CdromCursor {
     pub lba:  u32,
     pub byte: u32,
 }
 
 /// (minute, second, sector) tuple
-#[derive(Debug, Clone, Copy, derive_more::Display)]
+#[derive(Debug, Clone, Copy, derive_more::Display, Default, Endecode)]
 #[display("{min:02}:{sec:02}:{sect:02}")]
 pub struct Mss<T> {
     pub min:  T,

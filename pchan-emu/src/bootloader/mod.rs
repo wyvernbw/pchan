@@ -3,6 +3,7 @@ use alloc::string::FromUtf8Error;
 use byteorder::{LE, ReadBytesExt};
 use core::alloc::Allocator;
 use core::marker::PhantomData;
+use pchan_encode::Allocate;
 use pchan_macros::instrument;
 use pchan_utils::hex;
 use std::fs;
@@ -18,18 +19,21 @@ pub static AMIDOG_TESTS: &[u8] =
     include_bytes!("../../tests/assets/amidog_psxtest_cpu/psxtest_cpu.exe");
 
 #[derive(derive_more::Debug, Clone)]
-pub struct BootloaderState {
+pub struct BootloaderState<A: Allocator> {
     #[cfg(feature = "std")]
     pub bios_path: PathBuf,
-    sideload:      Option<Exe<'static, Vec<u8>>>,
+    sideload:      Option<Exe<'static, Vec<u8, A>>>,
+    #[debug(skip)]
+    alloc:         A,
 }
 
-impl Default for BootloaderState {
-    fn default() -> Self {
+impl<A: Allocator> Allocate<A> for BootloaderState<A> {
+    fn new_in(alloc: A) -> Self {
         let bios_path = std::env::var("PCHAN_BIOS").unwrap_or("./SCPH1001.BIN".to_owned());
         BootloaderState {
             bios_path: bios_path.into(),
-            sideload:  None,
+            sideload: None,
+            alloc,
         }
     }
 }
@@ -82,8 +86,14 @@ impl<A: Allocator> Emu<A> {
         }
     }
 
-    pub fn sideload_exe(&mut self, exe: &[u8]) -> Result<(), BootError> {
-        let exe = Exe::parse(exe)?.to_owned_code();
+    pub fn sideload_exe(&mut self, exe: &[u8], alloc: A) -> Result<(), BootError> {
+        let exe = Exe::parse(exe)?;
+        if let Some(sideload) = &self.boot.sideload {
+            if exe.header == sideload.header {
+                return Ok(());
+            }
+        }
+        let exe = exe.to_owned_code(alloc);
         tracing::info!("parsed executable");
         self.boot.sideload = Some(exe);
         Ok(())
@@ -141,7 +151,7 @@ impl<A: Allocator> Emu<A> {
 ///  xxxh-7FFh Zerofilled
 ///  800h...   Code/Data                  (loaded to entry[018h] and up)
 /// ```
-#[derive(derive_more::Debug, Clone)]
+#[derive(derive_more::Debug, Clone, PartialEq, Eq)]
 #[repr(C)]
 pub struct ExeHeader {
     #[debug("{}", ascii_str(&self.ascii_id))]
@@ -253,10 +263,13 @@ impl<'a> Exe<'a, Cow<'a, [u8]>> {
         })
     }
 
-    fn to_owned_code(&self) -> Exe<'static, Vec<u8>> {
+    fn to_owned_code<A: Allocator>(&self, alloc: A) -> Exe<'static, Vec<u8, A>> {
+        let mut vec = Vec::new_in(alloc);
+        vec.reserve(self.code.len());
+        vec.copy_from_slice(&self.code);
         Exe {
             header: self.header.clone(),
-            code:   self.code.to_vec(),
+            code:   vec,
             _life:  PhantomData,
         }
     }
