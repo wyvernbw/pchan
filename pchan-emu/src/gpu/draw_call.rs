@@ -1,7 +1,7 @@
 use core::alloc::Allocator;
 use core::mem::transmute;
 
-use crate::gpu::vram::{IVramCoord, VramCoord};
+use crate::gpu::vram::{IVramCoord, VramCoord, VramCursor};
 use crate::gpu::{DrawPixels, Gp0TexWindowCmd, GpuStatReg, TexpageCmd, VramMsg};
 use crate::io::CastIOInto;
 use alloc::alloc::Global;
@@ -37,6 +37,9 @@ pub enum DrawCallKind {
     Rect(DrawRect),
     Polygon(DrawPolygon),
     Line(DrawLine),
+    BlitVram2Vram(Gp0VramBlit),
+    BlitCpu2Vram(Gp0HostBlit, #[endecode(alloc(global))] Vec<u8, Global>),
+    BlitVram2Cpu(Gp0HostBlit),
 }
 
 impl Default for DrawCallKind {
@@ -663,6 +666,94 @@ impl DrawLineDecoder {
             header,
             attrs: SmallVec::new_const(),
             current_attr: DrawLineAttributeDecoder::from_header(header),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Endecode, Default)]
+pub enum Gp0HostBlitDecoder {
+    #[default]
+    #[endecode(alloc(default))]
+    RecvDest,
+    RecvSize {
+        dest: VramCoord,
+    },
+}
+
+#[derive(Debug, Clone, Endecode, Default, Copy)]
+#[endecode(alloc(default))]
+pub struct Gp0HostBlit {
+    pub dest: VramCoord,
+    pub size: VramCoord,
+}
+
+impl Gp0HostBlit {
+    pub fn cursor(&self) -> VramCursor {
+        VramCursor::new(self.dest, self.dest + self.size)
+    }
+}
+
+impl DrawCallDecoder for Gp0HostBlitDecoder {
+    type Output = Gp0HostBlit;
+
+    fn advance<T: Copy>(self, value: T) -> Result<Self, Self::Output> {
+        let value = value.io_into_u32();
+        match self {
+            Gp0HostBlitDecoder::RecvDest => {
+                let dest: VramCoord = unsafe { transmute(value) };
+                let dest = dest.copy_cmd_pos_mask();
+                Ok(Self::RecvSize { dest })
+            }
+            Gp0HostBlitDecoder::RecvSize { dest, .. } => {
+                let size: VramCoord = unsafe { transmute(value) };
+                let size = size.copy_cmd_size_mask();
+                Err(Gp0HostBlit { dest, size })
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Endecode, Default)]
+pub enum Gp0VramBlitDecoder {
+    #[default]
+    RecvSrc,
+    RecvDest {
+        src: VramCoord,
+    },
+    RecvSize {
+        src:  VramCoord,
+        dest: VramCoord,
+    },
+}
+
+#[derive(Debug, Clone, Endecode, Default)]
+pub struct Gp0VramBlit {
+    pub src:  VramCoord,
+    pub dest: VramCoord,
+    pub size: VramCoord,
+}
+
+impl DrawCallDecoder for Gp0VramBlitDecoder {
+    type Output = Gp0VramBlit;
+
+    fn advance<T: Copy>(self, value: T) -> Result<Self, Self::Output> {
+        let value = value.io_into_u32();
+        match self {
+            Gp0VramBlitDecoder::RecvSrc => {
+                let src: VramCoord = unsafe { transmute(value) };
+                let src = src.copy_cmd_pos_mask();
+                Ok(Gp0VramBlitDecoder::RecvDest { src })
+            }
+            Gp0VramBlitDecoder::RecvDest { src } => {
+                let dest: VramCoord = unsafe { transmute(value) };
+                let dest = dest.copy_cmd_pos_mask();
+                Ok(Gp0VramBlitDecoder::RecvSize { src, dest })
+            }
+            Gp0VramBlitDecoder::RecvSize { src, dest } => {
+                let size: VramCoord = unsafe { transmute(value) };
+                let size = size.copy_cmd_size_mask();
+                Err(Gp0VramBlit { src, dest, size })
+            }
         }
     }
 }

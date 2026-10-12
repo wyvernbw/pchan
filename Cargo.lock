@@ -6109,6 +6109,7 @@ dependencies = [
  "blink-alloc",
  "color-eyre",
  "criterion",
+ "derive_more",
  "glam",
  "heapless",
  "kanal",

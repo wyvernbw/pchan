@@ -302,3 +302,10 @@ fn test_vram() {
 
     assert_eq!(a.buf, b.buf)
 }
+
+#[derive(Endecode, Debug, d::PartialEq, Eq, Default)]
+enum TestEnumGeneric2<T> {
+    #[default]
+    Foo,
+    Bar(T),
+}

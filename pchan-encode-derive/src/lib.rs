@@ -32,7 +32,7 @@ struct EncodingField {
 
 #[derive(Debug, FromMeta, Clone)]
 struct Alloc {
-    with:  Option<syn::Ident>,
+    with:  Option<syn::Path>,
     #[darling(flatten)]
     inner: AllocInner,
 }
@@ -60,7 +60,7 @@ enum AllocBound {
 enum AllocCall {
     Default,
     Allocate,
-    Custom(syn::Ident),
+    Custom(syn::Path),
     NoAlloc(syn::Ident),
 }
 
@@ -537,16 +537,27 @@ impl ToTokens for EnumOpts {
                 }
                 Some(fields.iter().filter_map(|field| {
                     let ty = field.ty.clone();
+
+                    let type_param = if field
+                        .alloc
+                        .as_ref()
+                        .is_some_and(|a| a.inner.global.is_some())
+                    {
+                        quote! { Global  }
+                    } else {
+                        quote! { A }
+                    };
+
                     if field.skip.is_some() {
                         return None;
                     }
                     Some(quote! {
-                        <#ty as ::pchan_encode::Endecode<A>>::size()?
+                        <#ty as ::pchan_encode::Endecode<#type_param>>::size()?
                     })
                 }))
             })
             .flatten();
-        let allocator_type_param = if has_alloc {
+        let allocator_type_param = if has_alloc || !self.generics.params.is_empty() {
             Some(quote! {A:#allocator_bound,})
         } else {
             None

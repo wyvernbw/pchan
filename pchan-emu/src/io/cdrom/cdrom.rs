@@ -35,7 +35,7 @@ pub struct CDRomState<A: Allocator> {
     result_fifo: heapless::Deque<u8, 16>,
     data_last:   u8,
     #[debug(skip)]
-    #[endecode(alloc(with = new_in))]
+    #[endecode(alloc(with = VecDeque::new_in))]
     data_fifo:   VecDeque<u8, A>,
     ver:         CDRomVer,
 

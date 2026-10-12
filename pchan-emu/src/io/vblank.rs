@@ -33,6 +33,16 @@ impl<A: Allocator + Copy> Emu<A> {
         self.gpu
             .gpustat
             .set_even_odd_in_vblank(DrawEvenOdd::EvenOrVBlank);
+        match self.gpu.vram {
+            crate::gpu::Vram::Mapped(_) => {}
+            crate::gpu::Vram::Lent => {
+                if let Some(crate::gpu::VramRes::Result { vram }) =
+                    self.gpu.conn.vram_out_chan.1.as_sync().try_recv().unwrap()
+                {
+                    self.gpu.vram = crate::gpu::Vram::Mapped(vram);
+                }
+            }
+        }
         self.gpu.flush_draw_calls();
         self.irq_trigger(Irq::Irq0Vblank);
         self.gpu.vblank_signal = true;

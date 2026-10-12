@@ -9,17 +9,17 @@ extern crate alloc;
 use alloc::alloc::Global;
 use alloc::slice;
 use arbitrary_int::prelude::Integer;
-use blink_alloc::{Blink, BlinkAlloc};
+use blink_alloc::BlinkAlloc;
 pub use glam;
 use pchan_emu::gpu::vram::{IVramCoord, VramCoord};
-use pchan_emu::memory::{kb, mb};
+use pchan_emu::memory::mb;
 use pchan_utils::tracy::TracyClient;
 pub(crate) mod render_pass;
 
 use alloc::sync::Arc;
 use core::alloc::Allocator;
-use core::mem;
 use core::sync::atomic::{self};
+use core::{mem, ptr};
 use std::mem::offset_of;
 use std::sync::Mutex;
 use std::time::Instant;
@@ -28,7 +28,7 @@ use wgpu::util::StagingBelt;
 use glam::prelude::*;
 use pchan_emu::Emu;
 use pchan_emu::gpu::draw_call::{
-    DrawCall, DrawCallCollection, DrawCallKind, DrawPolygon, DrawRect, GpuInternalDrawReg,
+    DrawCall, DrawCallKind, DrawPolygon, DrawRect, Gp0HostBlit, Gp0VramBlit, GpuInternalDrawReg,
     RectSize, Shading,
 };
 use pchan_emu::gpu::{
@@ -36,7 +36,6 @@ use pchan_emu::gpu::{
     GpuStatReg, TextureColorMode,
 };
 use thiserror::Error;
-use tracing::Level;
 pub use wgpu;
 use wgpu::*;
 
@@ -58,10 +57,12 @@ pub struct Renderer {
     render_bind_group: BindGroup,
     vram_texture: Texture,
     vram_out_buf: Buffer,
+    vram_blit_buffer: Buffer,
     pub display_bind_group: BindGroup,
     pub display_uniform_buffer: Buffer,
     pub display_uniforms: DisplayUniforms,
     belt: Mutex<StagingBelt>,
+    blit: BlitV2VResources,
 
     conn: Conn,
 }
@@ -153,7 +154,8 @@ impl Renderer {
             usage: TextureUsages::RENDER_ATTACHMENT
                 | TextureUsages::COPY_SRC
                 | TextureUsages::COPY_DST
-                | TextureUsages::TEXTURE_BINDING,
+                | TextureUsages::TEXTURE_BINDING
+                | TextureUsages::STORAGE_BINDING,
             view_formats: &[TextureFormat::R16Uint],
         });
         let render_view = render_texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -198,6 +200,12 @@ impl Renderer {
             label: Some("psx.vram.out"),
             size: 1024 * 512 * size_of::<u16>() as u64,
             usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let vram_blit_buffer = device.create_buffer(&BufferDescriptor {
+            label: Some("psx.vram.blit"),
+            size: 1024 * 512 * size_of::<u16>() as u64,
+            usage: BufferUsages::COPY_DST | BufferUsages::COPY_SRC | BufferUsages::STORAGE,
             mapped_at_creation: false,
         });
 
@@ -377,6 +385,7 @@ impl Renderer {
         });
 
         let belt = StagingBelt::new(device.clone(), mb(4) as u64);
+        let blit_v2v = create_blit_compute_resources(&device, &vram_blit_buffer, &render_view);
 
         Ok(Self {
             instance,
@@ -403,6 +412,8 @@ impl Renderer {
             vram_out_buf,
             vertex_buf,
             belt: belt.into(),
+            vram_blit_buffer,
+            blit: blit_v2v,
         })
     }
 
@@ -498,8 +509,14 @@ impl Renderer {
             match msg {
                 DrawCallMsg::DrawCall(draw_call) => {
                     let mut pass = Pass::new_in(draw_call, &alloc);
-                    let Some(mut flush) = self.draw_submission_loop(&mut pass).await else {
-                        continue;
+                    let mut flush = match self.draw_submission_loop(&mut pass).await {
+                        SubmissionResult::Reset => {
+                            continue;
+                        }
+                        SubmissionResult::RequestedVram => {
+                            continue;
+                        }
+                        SubmissionResult::Flush(flush) => flush,
                     };
 
                     self.update_hw_display_uniforms(&flush.display, flush.gpustat);
@@ -513,7 +530,7 @@ impl Renderer {
                     self.conn
                         .vram_out_chan
                         .0
-                        .send(pchan_emu::gpu::VramRes {
+                        .send(pchan_emu::gpu::VramRes::Result {
                             vram: flush.vram.vram,
                         })
                         .await
@@ -521,13 +538,21 @@ impl Renderer {
                 }
                 DrawCallMsg::Flush(flush) => {
                     self.update_hw_display_uniforms(&flush.display, flush.gpustat);
+                    self.conn
+                        .vram_out_chan
+                        .0
+                        .send(pchan_emu::gpu::VramRes::Result {
+                            vram: flush.vram.vram,
+                        })
+                        .await
+                        .unwrap();
                     tracing::warn!("nothing to flush")
                 }
                 DrawCallMsg::UpdateDisplay(display, gpustat) => {
                     self.update_hw_display_uniforms(&display, gpustat);
                 }
                 DrawCallMsg::Reset => {}
-                DrawCallMsg::RequestVram => todo!(),
+                DrawCallMsg::RequestVram => {}
             }
         }
     }
@@ -540,7 +565,7 @@ impl Renderer {
     async fn draw_submission_loop<A: Allocator + Copy>(
         &self,
         pass: &mut Pass<A>,
-    ) -> Option<FlushMsg<Global>> {
+    ) -> SubmissionResult<Global> {
         loop {
             let msg = self
                 .conn
@@ -549,35 +574,44 @@ impl Renderer {
                 .recv()
                 .await
                 .expect("render channel closed");
+            tracing::info!(?msg);
             match msg {
                 DrawCallMsg::DrawCall(draw_call) => {
                     pass.add_draw_call(draw_call);
                 }
                 DrawCallMsg::Flush(flush_msg) => {
                     pass.flush_scene();
-                    return Some(flush_msg);
+                    return SubmissionResult::Flush(flush_msg);
                 }
                 DrawCallMsg::UpdateDisplay(display, gpustat) => {
                     self.update_hw_display_uniforms(&display, gpustat);
                 }
-                DrawCallMsg::Reset => return None,
+                DrawCallMsg::Reset => return SubmissionResult::Reset,
+                DrawCallMsg::RequestVram => return SubmissionResult::RequestedVram,
             }
         }
     }
 }
 
-#[derive(Debug)]
-enum Command<A: Allocator> {
-    DrawScene(Scene<A>),
-    VramToVramBlit,
-    CpuToVramBlit,
+enum SubmissionResult<A: Allocator> {
+    Reset,
+    RequestedVram,
+    Flush(FlushMsg<A>),
 }
 
-#[derive(Debug)]
+#[derive(derive_more::Debug)]
+enum Command<A: Allocator> {
+    DrawScene(Scene<A>),
+    VramToVramBlit(Gp0VramBlit),
+    CpuToVramBlit(Gp0HostBlit, Vec<u8>),
+}
+
+#[derive(derive_more::Debug)]
 pub(crate) struct Pass<A: Allocator> {
     cmds: Vec<Command<A>, A>,
     scene_builder: Option<Scene<A>>,
     vertex_buf_cursor: u64,
+    #[debug(skip)]
     alloc: A,
 }
 
@@ -642,7 +676,7 @@ impl<A: Allocator + Copy> Pass<A> {
 
     #[must_use]
     pub fn take(&mut self) -> Pass<A> {
-        core::mem::replace(self, Pass::empty(self.alloc))
+        mem::replace(self, Pass::empty(self.alloc))
     }
 
     pub fn add_draw_call(&mut self, draw_call: DrawCall) {
@@ -669,6 +703,15 @@ impl<A: Allocator + Copy> Pass<A> {
                 DrawCallKind::Line(_) => {
                     tracing::warn!("todo: DrawCallKind::Line");
                 }
+                DrawCallKind::BlitVram2Vram(gp0_vram_blit) => {
+                    self.flush_scene();
+                    self.cmds.push(Command::VramToVramBlit(gp0_vram_blit));
+                }
+                DrawCallKind::BlitCpu2Vram(gp0_host_blit, data) => {
+                    self.flush_scene();
+                    self.cmds.push(Command::CpuToVramBlit(gp0_host_blit, data));
+                }
+                DrawCallKind::BlitVram2Cpu(gp0_host_blit) => todo!(),
             },
             None => {
                 self.scene_builder =
@@ -834,7 +877,7 @@ impl Flags {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(derive_more::Debug, Clone)]
 pub struct Scene<A: Allocator> {
     vertex_buf: Vec<Vertex, A>,
     vertex_buf_start: u64,
@@ -1090,7 +1133,7 @@ fn ensure_vertex_order(vertex_buf: &mut [Vertex], indices: [usize; 3]) {
     let cross_product_z = (v1_pos.x - v0_pos.x) * (v2_pos.y - v0_pos.y)
         - (v1_pos.y - v0_pos.y) * (v2_pos.x - v0_pos.x);
     if cross_product_z < 0 {
-        core::mem::swap(v0, v1);
+        mem::swap(v0, v1);
     }
 }
 
@@ -1129,5 +1172,149 @@ impl DisplayUniforms {
             dp_color_depth: dp_color_depth.raw_value().as_u32(),
             _pad: 0u32,
         }
+    }
+}
+
+#[derive(Debug)]
+struct BlitV2VResources {
+    uniforms_buf: Buffer,
+    bind_group: BindGroup,
+    pipe: ComputePipeline,
+}
+
+fn create_blit_compute_resources(
+    device: &Device,
+    blit_buffer: &Buffer,
+    target_view: &TextureView,
+) -> BlitV2VResources {
+    let shader = device.create_shader_module(include_wgsl!("../shaders/blit-v2v.wgsl"));
+
+    let uniforms_buffer = device.create_buffer(&BufferDescriptor {
+        label: Some("pchan-gpu.blit.uniform_buffer"),
+        size: 512,
+        usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+
+    let bind_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+        label: None,
+        entries: &[
+            // uniforms
+            BindGroupLayoutEntry {
+                binding: 0,
+                visibility: ShaderStages::COMPUTE,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            // src buffer
+            BindGroupLayoutEntry {
+                binding: 1,
+                visibility: ShaderStages::COMPUTE,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            // dest storage texture
+            BindGroupLayoutEntry {
+                binding: 2,
+                visibility: ShaderStages::COMPUTE,
+                ty: BindingType::StorageTexture {
+                    access: StorageTextureAccess::ReadWrite,
+                    format: TextureFormat::R16Uint,
+                    view_dimension: TextureViewDimension::D2,
+                },
+                count: None,
+            },
+        ],
+    });
+
+    let bind_group = device.create_bind_group(&BindGroupDescriptor {
+        label: None,
+        layout: &bind_layout,
+        entries: &[
+            BindGroupEntry {
+                binding: 0,
+                resource: uniforms_buffer.as_entire_binding(),
+            },
+            BindGroupEntry {
+                binding: 1,
+                resource: blit_buffer.as_entire_binding(),
+            },
+            BindGroupEntry {
+                binding: 2,
+                resource: BindingResource::TextureView(target_view),
+            },
+        ],
+    });
+
+    let pipe_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
+        label: None,
+        bind_group_layouts: &[],
+        immediate_size: 0,
+    });
+    let cpipe = device.create_compute_pipeline(&ComputePipelineDescriptor {
+        label: None,
+        layout: Some(&pipe_layout),
+        module: &shader,
+        entry_point: None,
+        compilation_options: PipelineCompilationOptions::default(),
+        cache: None,
+    });
+
+    BlitV2VResources {
+        uniforms_buf: uniforms_buffer,
+        bind_group,
+        pipe: cpipe,
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone)]
+pub(crate) struct BlitUniforms {
+    kind: BlitKind,
+    src: UVec2,
+    dest: UVec2,
+    size: UVec2,
+}
+
+#[repr(u32)]
+#[derive(Debug, Clone)]
+enum BlitKind {
+    CpuToVram = 0,
+    VramToVram = 1,
+}
+
+impl From<&Gp0VramBlit> for BlitUniforms {
+    fn from(value: &Gp0VramBlit) -> Self {
+        Self {
+            kind: BlitKind::VramToVram,
+            src: uvec2(u32::from(value.src.x), u32::from(value.src.y)),
+            dest: uvec2(u32::from(value.dest.x), u32::from(value.src.y)),
+            size: uvec2(u32::from(value.size.x), u32::from(value.size.y)),
+        }
+    }
+}
+
+impl From<Gp0HostBlit> for BlitUniforms {
+    fn from(value: Gp0HostBlit) -> Self {
+        Self {
+            kind: BlitKind::CpuToVram,
+            src: UVec2::ZERO,
+            dest: uvec2(u32::from(value.dest.x), u32::from(value.dest.y)),
+            size: uvec2(u32::from(value.size.x), u32::from(value.size.y)),
+        }
+    }
+}
+
+impl BlitUniforms {
+    fn as_bytes(&self) -> &[u8] {
+        unsafe { slice::from_raw_parts(ptr::from_ref(self).cast::<u8>(), mem::size_of_val(self)) }
     }
 }

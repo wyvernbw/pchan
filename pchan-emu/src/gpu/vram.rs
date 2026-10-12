@@ -8,7 +8,7 @@ use pchan_encode::derive::Endecode;
 use pchan_utils::hex;
 
 use crate::gpu::{
-    DrawPixels, GpuCmd, GpuInfoCmd, GpuModel, GpuStatReg, GpuState, mask_bit, set_mask_bit,
+    DrawPixels, GpuCmd, GpuInfoCmd, GpuModel, GpuStatReg, GpuState, Vram, mask_bit, set_mask_bit,
 };
 use crate::memory::kb;
 
@@ -83,6 +83,10 @@ impl VramCoord {
         self.x = ((self.x & 0x3ff) + 0x0f) & (!0x0f);
         self.y &= 0x1ff;
         self
+    }
+
+    pub fn area(&self) -> usize {
+        self.x as usize * self.y as usize
     }
 }
 
@@ -237,9 +241,11 @@ impl<A: Allocator + Copy> GpuState<A> {
     pub fn lock_vram(&mut self) -> VramGuard<'_, Read> {
         self.flush_draw_calls();
         self.wait_for_render_result();
-        assert!(!self.vram.is_empty());
+        let Vram::Mapped(vram) = &self.vram else {
+            panic!("unmapped");
+        };
         VramGuard {
-            vram:   &self.vram,
+            vram,
             signal: &self.vram_mutation_signal,
         }
     }
@@ -247,9 +253,11 @@ impl<A: Allocator + Copy> GpuState<A> {
     pub fn lock_vram_mut(&mut self) -> VramGuard<'_, ReadWrite> {
         self.flush_draw_calls();
         self.wait_for_render_result();
-        assert!(!self.vram.is_empty());
+        let Vram::Mapped(vram) = &mut self.vram else {
+            panic!("unmapped");
+        };
         VramGuard {
-            vram:   &mut self.vram,
+            vram,
             signal: &mut self.vram_mutation_signal,
         }
     }

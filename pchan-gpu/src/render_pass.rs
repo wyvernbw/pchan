@@ -3,10 +3,13 @@ use core::num::NonZeroU64;
 use core::{mem, ptr, slice};
 use std::sync::MutexGuard;
 
-use crate::{Pass, Renderer, Scene};
+use crate::{BlitUniforms, Command, Pass, Renderer, Scene};
+use pchan_emu::gpu::draw_call::{Gp0HostBlit, Gp0VramBlit};
 use pchan_utils::tracy;
 use wgpu::util::{BufferInitDescriptor, DeviceExt, StagingBelt};
 use wgpu::*;
+
+const WORKGROUP_SIZE: u32 = 16;
 
 impl Renderer {
     pub(crate) fn create_render_pass<A: Allocator>(&self, pass: Pass<A>) -> RenderPass<'_, A> {
@@ -59,16 +62,22 @@ pub struct RenderPass<'a, A: Allocator> {
 impl<A: Allocator + Copy> RenderPass<'_, A> {
     pub(crate) fn draw(&mut self, vram: &[u16], dirty: bool) {
         let _draw = tracy::span!("rd-gpu-draw");
+        tracing::info!("drawing...");
         self.init_vram(vram, dirty);
 
         let pass = self.pass.take();
         for cmd in &pass.cmds {
             match cmd {
-                crate::Command::DrawScene(scene) => {
+                Command::DrawScene(scene) => {
+                    tracing::info!("- scene");
                     self.draw_scene(scene);
                 }
-                crate::Command::VramToVramBlit => todo!(),
-                crate::Command::CpuToVramBlit => todo!(),
+                Command::VramToVramBlit(blit) => {
+                    self.vram_blit(blit);
+                }
+                Command::CpuToVramBlit(blit, data) => {
+                    self.cpu_to_vram_blit(*blit, data);
+                }
             }
         }
     }
@@ -122,6 +131,21 @@ impl<A: Allocator + Copy> RenderPass<'_, A> {
     }
 
     fn draw_scene(&mut self, scene: &Scene<A>) {
+        let vertex_count = scene.vertex_buf.len();
+        let vertex_start = scene.vertex_buf_start;
+        let vertex_end = scene.vertex_bytes().len() as u64;
+        let vertex_buf = scene.vertex_bytes();
+
+        if let Some(size) = NonZeroU64::new(vertex_buf.len() as u64) {
+            let mut view = self.belt.write_buffer(
+                &mut self.encoder,
+                &self.renderer.vertex_buf,
+                vertex_start,
+                size,
+            );
+            view.copy_from_slice(vertex_buf);
+        }
+
         let mut render_pass = self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: None,
             color_attachments: &[Some(RenderPassColorAttachment {
@@ -138,14 +162,109 @@ impl<A: Allocator + Copy> RenderPass<'_, A> {
             occlusion_query_set: None,
             multiview_mask: None,
         });
-
-        let vertex_count = scene.vertex_buf.len();
-        let vertex_start = scene.vertex_buf_start;
-        let vertex_end = scene.vertex_bytes().len() as u64;
+        tracing::info!(
+            "\tvertex range: {}..{} ({})",
+            vertex_start,
+            vertex_end,
+            vertex_count
+        );
         render_pass.set_pipeline(&self.renderer.render_pipeline);
         render_pass.set_bind_group(0, &self.renderer.render_bind_group, &[]);
         render_pass.set_vertex_buffer(0, self.renderer.vertex_buf.slice(vertex_start..vertex_end));
         render_pass.draw(0..vertex_count as u32, 0..1);
+    }
+
+    fn vram_blit(&mut self, blit: &Gp0VramBlit) {
+        // copy render target to buffer because we can't have
+        // concurrent reads and writes to the same texture storage
+        self.encoder.copy_texture_to_buffer(
+            self.renderer.render_texture.as_image_copy(),
+            TexelCopyBufferInfo {
+                buffer: &self.renderer.vram_blit_buffer,
+                layout: TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(1024 * 2),
+                    rows_per_image: Some(512),
+                },
+            },
+            Extent3d {
+                width: 1024,
+                height: 512,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        let uniforms = BlitUniforms::from(blit);
+        let uniforms_staging = self
+            .belt
+            .allocate(NonZeroU64::new(512).unwrap(), NonZeroU64::new(256).unwrap());
+        let mut staging = uniforms_staging.get_mapped_range_mut().unwrap();
+        staging.copy_from_slice(uniforms.as_bytes());
+        drop(staging);
+
+        self.encoder.copy_buffer_to_buffer(
+            uniforms_staging.buffer(),
+            0,
+            &self.renderer.blit.uniforms_buf,
+            0,
+            uniforms_staging.buffer().size(),
+        );
+
+        let mut cpass = self.encoder.begin_compute_pass(&ComputePassDescriptor {
+            label: Some("psx.gpu.blit<vram->vram>"),
+            timestamp_writes: None,
+        });
+        let dims = (uniforms.size + WORKGROUP_SIZE) / WORKGROUP_SIZE;
+        cpass.set_pipeline(&self.renderer.blit.pipe);
+        cpass.set_bind_group(0, &self.renderer.blit.bind_group, &[]);
+        cpass.dispatch_workgroups(dims.x, dims.y, 1);
+        drop(cpass)
+    }
+
+    fn cpu_to_vram_blit(&mut self, blit: Gp0HostBlit, data: &[u8]) {
+        let staging = self.belt.allocate(
+            NonZeroU64::new(1024 * 512 * 2).unwrap(),
+            NonZeroU64::new(256).unwrap(),
+        );
+        staging
+            .get_mapped_range_mut()
+            .unwrap()
+            .slice(0..data.len())
+            .copy_from_slice(data);
+        self.encoder.copy_buffer_to_buffer(
+            staging.buffer(),
+            0,
+            &self.renderer.vram_blit_buffer,
+            0,
+            data.len() as u64,
+        );
+
+        let uniforms = BlitUniforms::from(blit);
+        let uniforms_staging = self
+            .belt
+            .allocate(NonZeroU64::new(512).unwrap(), NonZeroU64::new(256).unwrap());
+        uniforms_staging
+            .get_mapped_range_mut()
+            .unwrap()
+            .slice(0..uniforms.as_bytes().len())
+            .copy_from_slice(uniforms.as_bytes());
+        self.encoder.copy_buffer_to_buffer(
+            uniforms_staging.buffer(),
+            0,
+            &self.renderer.blit.uniforms_buf,
+            0,
+            uniforms.as_bytes().len() as u64,
+        );
+
+        let mut cpass = self.encoder.begin_compute_pass(&ComputePassDescriptor {
+            label: Some("psx.gpu.blit<vram->vram>"),
+            timestamp_writes: None,
+        });
+        let dims = (uniforms.size + WORKGROUP_SIZE) / WORKGROUP_SIZE;
+        cpass.set_pipeline(&self.renderer.blit.pipe);
+        cpass.set_bind_group(0, &self.renderer.blit.bind_group, &[]);
+        cpass.dispatch_workgroups(dims.x, dims.y, 1);
+        drop(cpass)
     }
 
     pub async fn finish(mut self, vram: &mut [u16]) -> Result<(), MapRangeError> {
