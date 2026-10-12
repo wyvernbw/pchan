@@ -1,36 +1,23 @@
+use core::alloc::Allocator;
 use core::num::NonZeroU64;
 use core::{mem, ptr, slice};
 use std::sync::MutexGuard;
 
-use crate::{Renderer, Scene};
-use pchan_emu::memory::mb;
+use crate::{Pass, Renderer, Scene};
 use pchan_utils::tracy;
 use wgpu::util::{BufferInitDescriptor, DeviceExt, StagingBelt};
 use wgpu::*;
 
 impl Renderer {
-    pub fn create_render_pass(&self, scene: Scene) -> RenderPass<'_> {
-        let vertex_buf = unsafe {
-            slice::from_raw_parts(
-                scene.vertex_buf.as_ptr().cast::<u8>(),
-                mem::size_of_val(scene.vertex_buf.as_slice()),
-            )
-        };
-
-        let mut encoder = self
+    pub(crate) fn create_render_pass<A: Allocator>(&self, pass: Pass<A>) -> RenderPass<'_, A> {
+        let encoder = self
             .device
             .create_command_encoder(&CommandEncoderDescriptor::default());
-        let mut belt = self.belt.try_lock().unwrap();
-        if let Some(size) = NonZeroU64::new(vertex_buf.len() as u64) {
-            let mut view = belt.write_buffer(&mut encoder, &self.vertex_buf, 0, size);
-            view.copy_from_slice(vertex_buf);
-        }
-
+        let belt = self.belt.try_lock().unwrap();
         RenderPass {
-            scene,
             encoder,
             renderer: self,
-            vertex_buf_len: vertex_buf.len() as u64,
+            pass,
             belt,
         }
     }
@@ -60,24 +47,35 @@ impl Renderer {
         render_pass.draw(0..6, 0..1);
     }
 }
+
 #[derive(Debug)]
-pub struct RenderPass<'a> {
+pub struct RenderPass<'a, A: Allocator> {
     encoder: CommandEncoder,
     belt: MutexGuard<'a, StagingBelt>,
     renderer: &'a Renderer,
-    scene: Scene,
-    vertex_buf_len: u64,
+    pass: Pass<A>,
 }
 
-impl RenderPass<'_> {
-    pub fn draw(&mut self, vram: &[u16], dirty: bool) {
+impl<A: Allocator + Copy> RenderPass<'_, A> {
+    pub(crate) fn draw(&mut self, vram: &[u16], dirty: bool) {
         let _draw = tracy::span!("rd-gpu-draw");
-        if self.scene.vertex_buf.is_empty() {
-            return;
+        self.init_vram(vram, dirty);
+
+        let pass = self.pass.take();
+        for cmd in &pass.cmds {
+            match cmd {
+                crate::Command::DrawScene(scene) => {
+                    self.draw_scene(scene);
+                }
+                crate::Command::VramToVramBlit => todo!(),
+                crate::Command::CpuToVramBlit => todo!(),
+            }
         }
+    }
+
+    fn init_vram(&mut self, vram: &[u16], dirty: bool) {
         let vram_buf =
             unsafe { slice::from_raw_parts(vram.as_ptr().cast::<u8>(), mem::size_of_val(vram)) };
-
         if dirty {
             const STAGING_SIZE: NonZeroU64 = NonZeroU64::new(1024 * 2 * 512).unwrap();
             const STAGING_ALIGNMENT: NonZeroU64 = NonZeroU64::new(256).unwrap();
@@ -121,7 +119,9 @@ impl RenderPass<'_> {
                 },
             );
         }
+    }
 
+    fn draw_scene(&mut self, scene: &Scene<A>) {
         let mut render_pass = self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: None,
             color_attachments: &[Some(RenderPassColorAttachment {
@@ -139,10 +139,13 @@ impl RenderPass<'_> {
             multiview_mask: None,
         });
 
+        let vertex_count = scene.vertex_buf.len();
+        let vertex_start = scene.vertex_buf_start;
+        let vertex_end = scene.vertex_bytes().len() as u64;
         render_pass.set_pipeline(&self.renderer.render_pipeline);
         render_pass.set_bind_group(0, &self.renderer.render_bind_group, &[]);
-        render_pass.set_vertex_buffer(0, self.renderer.vertex_buf.slice(..self.vertex_buf_len));
-        render_pass.draw(0..self.scene.vertex_buf.len() as u32, 0..1);
+        render_pass.set_vertex_buffer(0, self.renderer.vertex_buf.slice(vertex_start..vertex_end));
+        render_pass.draw(0..vertex_count as u32, 0..1);
     }
 
     pub async fn finish(mut self, vram: &mut [u16]) -> Result<(), MapRangeError> {

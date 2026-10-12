@@ -128,7 +128,7 @@ impl AllocCall {
                 }
             }
             AllocCall::Custom(ident) => quote! {
-                <#ty>::#ident(#allocator)
+                #ident(#allocator)
             },
             AllocCall::NoAlloc(ident) => quote! {
                 <#ty>::#ident()

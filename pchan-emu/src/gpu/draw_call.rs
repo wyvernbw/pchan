@@ -28,6 +28,7 @@ pub struct DrawCall {
     pub gpustat:    GpuStatReg,
     pub tex_window: Gp0TexWindowCmd,
     pub draw_reg:   GpuInternalDrawReg,
+    pub display:    crate::gpu::Display,
     pub inner:      DrawCallKind,
 }
 
