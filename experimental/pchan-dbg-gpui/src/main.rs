@@ -34,6 +34,8 @@ use pchan_bind::ringbuf::StaticRb;
 use pchan_bind::ringbuf::traits::{Consumer, Observer, RingBuffer};
 use pchan_emu::debug::{Breakpoint, BreakpointKind};
 use pchan_steel::{PchanSteelErr, ScriptConn, SteelCtx, SteelExecutor};
+use std::fs;
+use std::io::prelude::{Read, Write};
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -64,11 +66,15 @@ actions!(
         ViewMem,
         ViewRegisters,
         ViewBreakpoints,
+        ToggleVramView,
+        ToggleVramPreciseView,
         LoadContent,
         UnloadContent,
         ToggleRun,
         Run,
         Pause,
+        SaveState,
+        LoadState,
     ]
 );
 
@@ -288,6 +294,8 @@ fn main() {
             cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
             cx.bind_keys([KeyBinding::new("cmd-j", ToggleRun, None)]);
             cx.bind_keys([KeyBinding::new("cmd-k", StepBlock, None)]);
+            cx.bind_keys([KeyBinding::new("cmd-1", SaveState, None)]);
+            cx.bind_keys([KeyBinding::new("cmd-2", LoadState, None)]);
 
             cx.on_action(move |_: &Quit, cx| {
                 #[cfg(feature = "dhat-heap")]
@@ -302,6 +310,22 @@ fn main() {
                     settings.tab = action.tab;
                     cx.notify();
                 });
+            });
+            cx.on_action({
+                let emucx = emucx.clone();
+                move |_: &SaveState, cx| {
+                    emucx.update(cx, |emucx, _| {
+                        emucx.save = true;
+                    });
+                }
+            });
+            cx.on_action({
+                let emucx = emucx.clone();
+                move |_: &LoadState, cx| {
+                    emucx.update(cx, |emucx, _| {
+                        emucx.load = true;
+                    });
+                }
             });
 
             cx.spawn({
@@ -398,6 +422,46 @@ impl EmuContext {
             None => None,
         }
     }
+
+    fn save_state(&mut self) -> miette::Result<()> {
+        self.emu.gpu.flush_draw_calls();
+        self.emu.gpu.wait_for_render_result();
+        let sink = Vec::new_in(self.alloc);
+        let ser = pchan_encode::encode(&mut self.emu, sink, self.alloc).into_diagnostic()?;
+        let mut f = fs::File::create("/tmp/pchan-save.bin").into_diagnostic()?;
+        f.write_all(ser.bytes()).into_diagnostic()?;
+        Ok(())
+    }
+
+    fn load_state(&mut self) -> miette::Result<()> {
+        self.emu.gpu.flush_draw_calls();
+        self.emu.gpu.wait_for_render_result();
+        // self.emu.gpu.reset_renderer();
+        let mut f = fs::File::open("/tmp/pchan-save.bin").into_diagnostic()?;
+        let mut sink = Vec::new();
+        f.read_to_end(&mut sink).into_diagnostic()?;
+        pchan_encode::decode_in_place(&mut self.emu, sink, self.alloc).into_diagnostic()?;
+        assert!(!self.emu.gpu.vram.is_empty());
+        self.emu.dynarec_cache.alloc_flush(self.alloc);
+        println!("LOADED");
+
+        {
+            const W: usize = 1024;
+            const H: usize = 512;
+            let expand = |c: u16| -> u8 {
+                let c = (c & 0x1f) as u8;
+                (c << 3) | (c >> 2)
+            };
+
+            let mut ppm = format!("P6\n{W} {H}\n255\n").into_bytes();
+            for px in self.emu.gpu.vram.iter().take(W * H) {
+                ppm.extend_from_slice(&[expand(*px), expand(*px >> 5), expand(*px >> 10)]);
+            }
+            fs::write("/tmp/vram.ppm", &ppm).into_diagnostic()?;
+        }
+
+        Ok(())
+    }
 }
 
 impl PChanApp {
@@ -416,6 +480,17 @@ impl PChanApp {
             };
             MenuItem::action(name, SetSpeed { speed })
         }
+
+        let vram_toggled = self
+            .emucx
+            .read(cx)
+            .renderer
+            .display_uniforms
+            .app
+            .lock()
+            .unwrap()
+            .dp_debug;
+
         [
             Menu::new("P-chan").items([
                 MenuItem::action("💿 Load Content", LoadContent),
@@ -474,6 +549,9 @@ impl PChanApp {
                     .checked(Self::view_active(self.mem_view_window.as_ref())),
                 MenuItem::action("Breakpoints", ViewBreakpoints)
                     .checked(Self::view_active(self.registers_window.as_ref())),
+                MenuItem::separator(),
+                MenuItem::action("View VRAM", ToggleVramView).checked(vram_toggled),
+                MenuItem::action("View VRAM Precise", ToggleVramPreciseView).checked(vram_toggled),
             ]),
         ]
     }
@@ -535,7 +613,10 @@ impl PChanApp {
 
                     view.update(cx, move |view, cx| -> miette::Result<()> {
                         view.emucx.update(cx, |emucx, cx| -> miette::Result<()> {
-                            emucx.emu.sideload_exe(&exe).into_diagnostic()?;
+                            emucx
+                                .emu
+                                .sideload_exe(&exe, emucx.alloc)
+                                .into_diagnostic()?;
                             emucx.content_path = ContentPath::Disc(content_path);
                             Ok(())
                         })?;
@@ -620,6 +701,17 @@ async fn emu_loop(appcx: AppCx, cx: &mut AsyncApp) {
                 emucx.run_once
             });
 
+            if emucx.save {
+                emucx.save = false;
+                emucx.save_state().unwrap();
+                cx.notify();
+            }
+            if emucx.load {
+                emucx.load = false;
+                emucx.load_state().unwrap();
+                cx.notify();
+            }
+
             appcx.steel.update(cx, |steel, _| {
                 steel.exec.handle_step(&mut emucx.emu, &mut emucx.runner);
             });
@@ -673,6 +765,7 @@ impl Render for GameView {
             "game-surface",
             cx.read_entity(&self.appcx.emucx, |emucx, _| emucx.renderer.clone()),
             self.appcx.game_surface.clone(),
+            self.appcx.emucx.clone(),
         )
         .w_full()
         .h_full()
@@ -839,6 +932,28 @@ trait PchanAppActions: Sized + 'static {
             emucx.running_notify.notify(usize::MAX);
         });
     }
+    fn toggle_vram_view(&mut self, _: &ToggleVramView, _: &mut Window, cx: &mut Context<Self>) {
+        self.appcx()
+            .emucx
+            .read(cx)
+            .renderer
+            .display_uniforms
+            .app
+            .lock()
+            .unwrap()
+            .dp_debug
+            .toggle();
+    }
+    fn toggle_vram_precise_view(
+        &mut self,
+        _: &ToggleVramPreciseView,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.appcx().game_surface.update(cx, |surface, _| {
+            surface.cpu_vram_dump.toggle();
+        })
+    }
 }
 
 trait RegisterPchanActions {
@@ -866,6 +981,8 @@ where
             .on_action(cx.listener(T::hard_reset))
             .on_action(cx.listener(T::set_speed))
             .on_action(cx.listener(T::toggle_run))
+            .on_action(cx.listener(T::toggle_vram_view))
+            .on_action(cx.listener(T::toggle_vram_precise_view))
             .track_focus(&view.appcx().focus_handle)
     }
 }
@@ -1119,6 +1236,8 @@ pub struct EmuContext {
     run_for_one_frame:  bool,
     run_once:           bool,
     running_notify:     event_listener::Event,
+    save:               bool,
+    load:               bool,
     renderer:           Arc<pchan_gpu::Renderer>,
     frame_time:         Duration,
     frame_time_limited: Duration,
@@ -1195,6 +1314,8 @@ impl EmuContext {
             alloc,
             pc_history: StaticRb::default(),
             content_path: ContentPath::None,
+            save: false,
+            load: false,
         })
     }
 }

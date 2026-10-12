@@ -6,6 +6,7 @@ use core::sync::atomic::{self, AtomicBool, AtomicU64};
 use core::{iter, ops};
 use std::time::Instant;
 
+use alloc::alloc::Global;
 use arbitrary_int::prelude::*;
 use bitbybit::{bitenum, bitfield};
 use derive_more as d;
@@ -30,21 +31,20 @@ pub static VBLANK_COUNT: AtomicU64 = AtomicU64::new(0);
 extern crate alloc;
 
 #[derive(Debug, Clone)]
-pub struct Conn<A: Allocator> {
-    pub draw_call_chan: AsyncChan<DrawCallCollection<A>>,
-    pub vram_out_chan:  AsyncChan<VramRes<A>>,
+pub struct Conn {
+    pub draw_call_chan: AsyncChan<DrawCallCollection>,
+    pub vram_out_chan:  AsyncChan<VramRes>,
     pub reset_flag:     &'static AtomicBool,
-    alloc:              A,
 }
 
 #[derive(derive_more::Debug)]
-pub struct VramMsg<A: Allocator> {
+pub struct VramMsg<A: Allocator = Global> {
     #[debug(skip)]
     pub vram:  Box<[u16], A>,
     pub dirty: bool,
 }
 
-pub struct VramRes<A: Allocator> {
+pub struct VramRes<A: Allocator = Global> {
     pub vram:          Box<[u16], A>,
     pub draw_call_buf: Vec<DrawCall, A>,
     pub swap_idx:      usize,
@@ -53,8 +53,8 @@ pub struct VramRes<A: Allocator> {
 #[derive(derive_more::Debug, Clone, Endecode)]
 pub struct GpuState<A: Allocator> {
     #[debug(skip)]
-    #[endecode(alloc(with = create_vram))]
-    pub vram:           Box<[u16], A>,
+    #[endecode(alloc(with = create_vram, global))]
+    pub vram:           Box<[u16]>,
     #[debug(skip)]
     pub gpustat:        GpuStatReg,
     pub gp0:            Gp0,
@@ -65,17 +65,20 @@ pub struct GpuState<A: Allocator> {
     pub tex_window:     Gp0TexWindowCmd,
     pub draw_reg:       GpuInternalDrawReg,
     #[debug("{} draw calls", self.draw_call_swap.queue().len())]
-    pub draw_call_swap: DrawCallSwapchain<A, 2>,
+    #[endecode(skip)]
+    pub draw_call_swap: DrawCallSwapchain<Global, 2>,
     pub model:          GpuModel,
 
     #[debug(skip)]
     #[endecode(skip)]
-    pub conn:              Conn<A>,
+    pub conn:              Conn,
+    #[endecode(skip)]
     pub waiting_on_render: bool,
     #[endecode(skip)]
     pub last_vblank:       Instant,
     pub vblank_signal:     bool,
 
+    #[endecode(skip)]
     pub vram_mutation_signal: bool,
     #[debug(skip)]
     #[endecode(skip)]
@@ -102,19 +105,18 @@ impl<A: Allocator + Copy> GpuState<A> {
         gpustat.mock_ready();
         Self {
             gpustat,
-            vram: create_vram(alloc),
+            vram: create_vram(Global),
             gp0: Gp0::WaitingForCmd,
             gp0read: Default::default(),
             gp0read_queue: Deque::new(),
             model: GpuModel::default(),
             tex_window: Gp0TexWindowCmd::default(),
             draw_reg: GpuInternalDrawReg::default(),
-            draw_call_swap: DrawCallSwapchain::new(alloc),
+            draw_call_swap: DrawCallSwapchain::new(Global),
             conn: Conn {
                 draw_call_chan: kanal::bounded_async(3),
-                vram_out_chan: kanal::bounded_async(3),
-                reset_flag: &RESET_FLAG,
-                alloc,
+                vram_out_chan:  kanal::bounded_async(3),
+                reset_flag:     &RESET_FLAG,
             },
             dp: Display::default(),
             waiting_on_render: false,
@@ -735,7 +737,7 @@ impl<A: Allocator + Copy> GpuState<A> {
                 .0
                 .as_sync()
                 .send(DrawCallCollection {
-                    draw_calls: Vec::new_in(self.alloc),
+                    draw_calls: Vec::new(),
                     display:    self.dp.clone(),
                     gpustat:    self.gpustat,
                     swap_idx:   0,
@@ -749,10 +751,10 @@ impl<A: Allocator + Copy> GpuState<A> {
         assert!(!self.vram.is_empty());
 
         tracing::debug!("flushing {} draw calls", self.draw_call_swap.queue().len());
-        let queue = mem::replace(self.draw_call_swap.queue_mut(), Vec::new_in(self.alloc));
+        let queue = mem::take(self.draw_call_swap.queue_mut());
         let swap_idx = self.draw_call_swap.submit();
         // transfer ownership of the vram to the render thread
-        let vram = mem::replace(&mut self.vram, Box::new_in([], self.alloc));
+        let vram = mem::replace(&mut self.vram, Box::new([]));
         let display = self.dp.clone();
         let draw_call_count = queue.len();
         self.conn

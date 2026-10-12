@@ -5,6 +5,7 @@ use crate::gpu::{
     DrawPixels, Gp0TexWindowCmd, GpuStatReg, IVramCoord, TexpageCmd, VramCoord, VramMsg,
 };
 use crate::io::CastIOInto;
+use alloc::alloc::Global;
 use arbitrary_int::prelude::*;
 use bitbybit::{bitenum, bitfield};
 use glam::{I16Vec2, U8Vec2, U8Vec3, U16Vec2};
@@ -13,7 +14,7 @@ use pchan_utils::default;
 use smallvec::SmallVec;
 
 #[derive(derive_more::Debug)]
-pub struct DrawCallCollection<A: Allocator> {
+pub struct DrawCallCollection<A: Allocator = Global> {
     pub draw_calls: Vec<DrawCall, A>,
     pub display:    crate::gpu::Display,
     /// gpustat at vblank

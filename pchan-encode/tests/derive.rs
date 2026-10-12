@@ -280,3 +280,25 @@ struct Bounds<T: Clone> {
     a: T,
     b: T,
 }
+
+#[derive(Endecode, Debug, PartialEq)]
+struct VramTest {
+    #[endecode(alloc(global))]
+    buf: Box<[u16]>,
+}
+
+#[test]
+fn test_vram() {
+    let mut data = vec![0u16; 1024];
+    data.iter_mut().enumerate().for_each(|(i, x)| *x = i as u16);
+    let mut a = VramTest {
+        buf: data.into_boxed_slice(),
+    };
+    let mut b = VramTest { buf: Box::new([]) };
+
+    let sink = vec![0u8; 2048];
+    let sink = encode(&mut a, sink, Global).unwrap();
+    decode_in_place(&mut b, sink.bytes(), Global).unwrap();
+
+    assert_eq!(a.buf, b.buf)
+}

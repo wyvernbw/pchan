@@ -6,6 +6,7 @@
 
 extern crate alloc;
 
+use alloc::alloc::Global;
 use arbitrary_int::prelude::Integer;
 pub use glam;
 use pchan_emu::memory::{kb, mb};
@@ -521,7 +522,7 @@ impl Renderer {
                             .vram_out_chan
                             .0
                             .try_send(VramRes {
-                                vram: create_vram(),
+                                vram: create_vram(Global),
                                 draw_call_buf: vec![],
                                 swap_idx: draw_calls.swap_idx,
                             })

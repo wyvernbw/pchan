@@ -60,8 +60,7 @@ impl<T: Endecode<A> + Allocate<A>, A: Allocator + Clone> Endecode<A> for Box<[T]
         sink.u64(&mut len)?;
 
         if len != self.len() as u64 {
-            let alloc = Box::allocator(self);
-            let mut temp = Vec::new_in(alloc.clone());
+            let mut temp = Vec::with_capacity_in(self.len(), alloc.clone());
             temp.resize_with(len as usize, || T::new_in(alloc.clone()));
             *self = temp.into_boxed_slice();
         }

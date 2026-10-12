@@ -1045,6 +1045,10 @@ impl<A: Allocator> DynarecCache<A> {
             blocks:   buf.unwrap(),
         }
     }
+
+    pub fn alloc_flush(&mut self, alloc: A) {
+        *self = Self::new(alloc);
+    }
 }
 
 impl<A: Allocator> DynarecCache<A> {
