@@ -103,20 +103,6 @@ impl RenderPass<'_> {
                     depth_or_array_layers: 1,
                 },
             );
-            // self.renderer.queue.write_texture(
-            //     self.renderer.vram_texture.as_image_copy(),
-            //     vram_buf,
-            //     TexelCopyBufferLayout {
-            //         offset: 0,
-            //         bytes_per_row: Some(1024 * 2),
-            //         rows_per_image: Some(512),
-            //     },
-            //     Extent3d {
-            //         width: 512,
-            //         height: 512,
-            //         depth_or_array_layers: 1,
-            //     },
-            // );
 
             self.encoder.copy_buffer_to_texture(
                 TexelCopyBufferInfo {
@@ -134,21 +120,6 @@ impl RenderPass<'_> {
                     depth_or_array_layers: 1,
                 },
             );
-
-            // self.renderer.queue.write_texture(
-            //     self.renderer.render_texture.as_image_copy(),
-            //     vram_buf,
-            //     TexelCopyBufferLayout {
-            //         offset: 0,
-            //         bytes_per_row: Some(1024 * 2),
-            //         rows_per_image: Some(512),
-            //     },
-            //     Extent3d {
-            //         width: 1024,
-            //         height: 512,
-            //         depth_or_array_layers: 1,
-            //     },
-            // );
         }
 
         let mut render_pass = self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {

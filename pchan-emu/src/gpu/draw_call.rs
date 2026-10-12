@@ -1,9 +1,8 @@
 use core::alloc::Allocator;
 use core::mem::transmute;
 
-use crate::gpu::{
-    DrawPixels, Gp0TexWindowCmd, GpuStatReg, IVramCoord, TexpageCmd, VramCoord, VramMsg,
-};
+use crate::gpu::vram::{IVramCoord, VramCoord};
+use crate::gpu::{DrawPixels, Gp0TexWindowCmd, GpuStatReg, TexpageCmd, VramMsg};
 use crate::io::CastIOInto;
 use alloc::alloc::Global;
 use arbitrary_int::prelude::*;

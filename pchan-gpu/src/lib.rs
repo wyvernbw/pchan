@@ -573,6 +573,12 @@ impl Renderer {
     }
 }
 
+enum Command<'a> {
+    DrawScene(&'a Scene),
+    VramToVramBlit,
+    CpuToVramBlit,
+}
+
 // FIXME: pack this better
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]

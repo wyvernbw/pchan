@@ -1,15 +1,15 @@
 pub mod draw_call;
+pub mod vram;
 
 use core::alloc::Allocator;
 use core::mem::{self, transmute};
+use core::ops;
 use core::sync::atomic::{self, AtomicBool, AtomicU64};
-use core::{iter, ops};
 use std::time::Instant;
 
 use alloc::alloc::Global;
 use arbitrary_int::prelude::*;
 use bitbybit::{bitenum, bitfield};
-use derive_more as d;
 use glam::{U8Vec2, U8Vec3, U16Vec2, U64Vec2, u64vec2};
 use heapless::Deque;
 use pchan_encode::derive::Endecode;
@@ -22,6 +22,7 @@ use crate::gpu::draw_call::{
     DrawPolygonDecoder, DrawRectDecoder, Gp0SetDrawAreaCmd, Gp0SetDrawOffsetCmd, Gp0SetMaskBitCmd,
     GpuInternalDrawReg,
 };
+use crate::gpu::vram::{Rgb5, VramCoord, VramCursor};
 use crate::io::irq::Irq;
 use crate::io::{CastIOFrom, CastIOInto, IOResult, UnhandledIO};
 use crate::memory::{kb, mb};
@@ -141,7 +142,7 @@ fn mask_bit(value: u16) -> bool {
 fn set_mask_bit(value: u16, set: bool) -> u16 {
     match set {
         true => value | (1 << 15),
-        false => value & (1 << 15),
+        false => value & !(1 << 15),
     }
 }
 
@@ -160,7 +161,7 @@ impl<A: Allocator + Copy> Emu<A> {
                         }
                         let gp0 = match cursor.done() {
                             true => {
-                                self.gpu.gpustat.set_ready_send_vram(false);
+                                self.gpu.gpustat.set_gp0_rffl(false);
                                 self.gpu.gpustat.set_ready_recv_cmd(true);
                                 Gp0::WaitingForCmd
                             }
@@ -366,7 +367,7 @@ impl<A: Allocator + Copy> Emu<A> {
                 let size: VramCoord = unsafe { transmute(value) };
                 let size = size.copy_cmd_size_mask();
 
-                self.gpu.gpustat.set_ready_send_vram(true);
+                self.gpu.gpustat.set_gp0_rffl(true);
                 Gp0::CpRectVramToCpu(Gp0CpRect::RecvData(VramCursor::new(dest, dest + size)))
             }
             // cancel vram to cpu?
@@ -628,108 +629,7 @@ impl<A: Allocator, const N: usize> DrawCallSwapchain<A, N> {
     }
 }
 
-pub struct Read;
-pub struct ReadWrite;
-
-pub trait VramAccessType {
-    type VramRef<'a>;
-    type SignalRef<'a>;
-}
-
-impl VramAccessType for Read {
-    type VramRef<'a> = &'a [u16];
-    type SignalRef<'a> = &'a bool;
-}
-impl VramAccessType for ReadWrite {
-    type VramRef<'a> = &'a mut [u16];
-    type SignalRef<'a> = &'a mut bool;
-}
-
-#[derive(derive_more::Deref)]
-pub struct VramGuard<'a, T: VramAccessType> {
-    #[deref]
-    vram:   T::VramRef<'a>,
-    signal: T::SignalRef<'a>,
-}
-
-impl VramGuard<'_, ReadWrite> {
-    fn as_readonly(&self) -> VramGuard<'_, Read> {
-        VramGuard {
-            vram:   self.vram,
-            signal: self.signal,
-        }
-    }
-    fn vram_write(&mut self, coord: VramCoord, value: u16) {
-        let coord = coord.wrap();
-        let addr = coord.x as usize + coord.y as usize * kb(1);
-        *self.signal = true;
-        self.vram[addr] = value;
-    }
-
-    /// like `vram_write`, but takes mask bit into account
-    fn vram_draw(&mut self, coord: VramCoord, mut value: u16, gpustat: GpuStatReg) {
-        match gpustat.draw_pixels() {
-            DrawPixels::Always => {}
-            DrawPixels::NotToMaskedAreas => {
-                let current = self.vram_read(coord);
-
-                if mask_bit(current) {
-                    return;
-                }
-                if gpustat.set_mask() {
-                    value = set_mask_bit(value, true);
-                }
-            }
-        }
-        self.vram_write(coord, value);
-    }
-
-    fn vram_read(&mut self, coord: VramCoord) -> u16 {
-        self.as_readonly().vram_read(coord)
-    }
-}
-impl VramGuard<'_, Read> {
-    fn vram_read(&mut self, coord: VramCoord) -> u16 {
-        let coord = coord.wrap();
-        let addr = coord.x as usize + coord.y as usize * kb(1);
-        self.vram[addr]
-    }
-}
-
 impl<A: Allocator + Copy> GpuState<A> {
-    fn get_gpu_info_cmd(&self, cmd: GpuCmd) -> Option<GpuInfoCmd> {
-        let value = cmd.raw_value();
-        let value = match self.model {
-            GpuModel::Gpu160Pin => return None,
-            GpuModel::Gpu180Pin => value & 0x7,
-            GpuModel::Gpu208Pin => value & 0xf,
-        };
-        Some(
-            GpuInfoCmd::from_repr(value as _)
-                .unwrap_or_else(|| todo!("gpu get info {}", hex(value))),
-        )
-    }
-
-    pub fn lock_vram(&mut self) -> VramGuard<'_, Read> {
-        self.flush_draw_calls();
-        self.wait_for_render_result();
-        assert!(!self.vram.is_empty());
-        VramGuard {
-            vram:   &self.vram,
-            signal: &self.vram_mutation_signal,
-        }
-    }
-
-    fn lock_vram_mut(&mut self) -> VramGuard<'_, ReadWrite> {
-        self.flush_draw_calls();
-        self.wait_for_render_result();
-        assert!(!self.vram.is_empty());
-        VramGuard {
-            vram:   &mut self.vram,
-            signal: &mut self.vram_mutation_signal,
-        }
-    }
-
     pub fn flush_draw_calls(&mut self) {
         if self.draw_call_swap.queue().is_empty() {
             self.conn
@@ -833,7 +733,7 @@ impl<A: Allocator + Copy> GpuState<A> {
                 self.gpustat.set_dma_request(false);
             }
             DmaDirection::CpuReadToCpu => {
-                self.gpustat.set_dma_request(self.gpustat.ready_send_vram());
+                self.gpustat.set_dma_request(self.gpustat.gp0_rffl());
             }
         }
     }
@@ -870,161 +770,6 @@ pub enum Gp0 {
     DrawPolygonDecode(DrawPolygonDecoder),
     DrawLineDecode(DrawLineDecoder),
     DrawRectDecode(DrawRectDecoder),
-}
-
-#[derive(Debug, Copy, PartialEq, PartialOrd, Ord, Eq, d::Mul, d::MulAssign, Endecode)]
-#[derive_const(Clone, d::Add, d::AddAssign, Default)]
-#[repr(C)]
-#[mul(forward)]
-#[endecode(alloc(default))]
-pub struct VramCoord {
-    pub x: u16,
-    pub y: u16,
-}
-
-#[bitfield(u16)]
-#[must_use]
-pub struct Rgb5 {
-    #[bits(0..=4, rw)]
-    r:    u5,
-    #[bits(5..=9, rw)]
-    g:    u5,
-    #[bits(10..=14, rw)]
-    b:    u5,
-    #[bit(15, rw)]
-    mask: bool,
-}
-
-impl VramCoord {
-    #[must_use]
-    pub fn new(xpos: u16, ypos: u16) -> Self {
-        Self { x: xpos, y: ypos }
-    }
-    #[must_use]
-    pub fn wrap(mut self) -> Self {
-        if self.x >= 1024 {
-            self.x = 0;
-        }
-        if self.y >= 512 {
-            self.y = 0;
-        }
-        self
-    }
-
-    #[must_use]
-    pub fn copy_cmd_pos_mask(mut self) -> Self {
-        self.x &= 0x3ff;
-        self.y &= 0x1ff;
-        self
-    }
-
-    #[must_use]
-    pub fn fill_cmd_pos_mask(mut self) -> Self {
-        self.x &= 0x3f0;
-        self.y &= 0x1ff;
-        self
-    }
-
-    #[must_use]
-    pub fn copy_cmd_size_mask(mut self) -> Self {
-        if self.x == 0 {
-            self.x = 0x400;
-        }
-        if self.y == 0 {
-            self.y = 0x200;
-        }
-        self.x = ((self.x - 1) & 0x3ff) + 1;
-        self.y = ((self.y - 1) & 0x1ff) + 1;
-        self
-    }
-
-    #[must_use]
-    pub fn fill_cmd_size_mask(mut self) -> Self {
-        self.x = ((self.x & 0x3ff) + 0x0f) & (!0x0f);
-        self.y &= 0x1ff;
-        self
-    }
-}
-
-const impl From<u32> for VramCoord {
-    fn from(value: u32) -> Self {
-        unsafe { transmute(value) }
-    }
-}
-
-#[derive(
-    Debug, Clone, Copy, d::Add, d::AddAssign, PartialEq, PartialOrd, Ord, Eq, Default, Endecode,
-)]
-#[repr(C)]
-pub struct IVramCoord {
-    pub x: i16,
-    pub y: i16,
-}
-
-impl IVramCoord {
-    #[must_use]
-    pub fn new(xpos: i16, ypos: i16) -> Self {
-        Self { x: xpos, y: ypos }
-    }
-}
-
-#[derive(
-    Debug, Clone, Copy, d::Add, d::AddAssign, PartialEq, PartialOrd, Ord, Eq, Endecode, Default,
-)]
-pub struct VramCursor {
-    start:  VramCoord,
-    curr:   VramCoord,
-    border: VramCoord,
-}
-
-impl VramCursor {
-    fn new(start: VramCoord, border: VramCoord) -> Self {
-        Self {
-            border,
-            curr: start,
-            start,
-        }
-    }
-    fn next(&mut self) -> Option<VramCoord> {
-        if self.done() {
-            return None;
-        }
-        self.curr = self.curr.wrap();
-        let curr = self.curr;
-
-        self.curr.x += 1;
-        if self.curr.x >= self.border.x {
-            self.curr.x = self.start.x;
-            self.curr.y += 1;
-        }
-
-        Some(curr)
-    }
-
-    fn done(&self) -> bool {
-        self.curr.y >= self.border.y
-    }
-
-    fn iter(&mut self) -> impl Iterator<Item = VramCoord> {
-        iter::from_fn(|| self.next())
-    }
-}
-
-#[cfg(test)]
-#[test]
-fn test_vram_cursor() {
-    let mut cursor = VramCursor::new(VramCoord::new(0, 0), VramCoord::new(2, 2));
-    assert_eq!(cursor.next(), Some(VramCoord::new(0, 0)));
-    assert_eq!(cursor.next(), Some(VramCoord::new(1, 0)));
-    assert_eq!(cursor.next(), Some(VramCoord::new(0, 1)));
-    assert_eq!(cursor.next(), Some(VramCoord::new(1, 1)));
-    assert_eq!(cursor.next(), None);
-
-    let mut cursor = VramCursor::new(VramCoord::new(0, 511), VramCoord::new(2, 512));
-    assert_eq!(cursor.next(), Some(VramCoord::new(0, 511)));
-    assert_eq!(cursor.next(), Some(VramCoord::new(1, 511)));
-    assert_eq!(cursor.next(), None);
-    // assert_eq!(cursor.next(), None);
 }
 
 #[derive(Debug, Clone, Endecode, Default)]
@@ -1098,9 +843,9 @@ pub struct GpuCmd {
 ///         When GP1(04h)=1 ---> FIFO State  (0=Full, 1=Not Full)
 ///         When GP1(04h)=2 ---> Same as GPUSTAT.28
 ///         When GP1(04h)=3 ---> Same as GPUSTAT.27
-/// 26    Ready to receive Cmd Word   (0=No, 1=Ready)  ;GP0(...) ;via GP0
-/// 27    Ready to send VRAM to CPU   (0=No, 1=Ready)  ;GP0(C0h) ;via GPUREAD
-/// 28    Ready to receive DMA Block  (0=No, 1=Ready)  ;GP0(...) ;via GP0
+/// 26    IDLE  Ready to receive Cmd Word   (0=No, 1=Ready)  ;GP0(...) ;via GP0 write
+/// 27    RFFL  GP0 read FIFO full          (0=No, 1=Full)   ;GP0(C0h) ;via GP0 read
+/// 28    WFEP  GP0 write FIFO empty        (0=No, 1=Empty)  ;GP0(...) ;via GP0 write
 /// 29-30 DMA Direction (0=Off, 1=?, 2=CPUtoGP0, 3=GPUREADtoCPU)    ;GP1(04h).0-1
 /// 31    Drawing even/odd lines in interlace mode (0=Even or Vblank, 1=Odd)
 ///
@@ -1111,64 +856,64 @@ pub struct GpuCmd {
 #[must_use]
 pub struct GpuStatReg {
     #[bits(0..=3, rw)]
-    texpage_x_base:       u4,
+    texpage_x_base:      u4,
     #[bit(4, rw)]
-    texpage_y_base:       u1,
+    texpage_y_base:      u1,
     #[bits(5..=6, rw)]
-    semi_transparency:    u2,
+    semi_transparency:   u2,
     #[bits(7..=8, rw)]
-    texpage_colors:       TextureColorMode,
+    texpage_colors:      TextureColorMode,
     #[bit(9, rw)]
-    dither:               bool,
+    dither:              bool,
     #[bit(10, rw)]
-    draw_to_display:      bool,
+    draw_to_display:     bool,
     /// `GPU_STAT.11`
     #[bit(11, rw)]
-    set_mask:             bool,
+    set_mask:            bool,
     /// `GPU_STAT.12`
     #[bit(12, rw)]
-    draw_pixels:          DrawPixels,
+    draw_pixels:         DrawPixels,
     #[bit(13, rw)]
-    interlace_field:      bool,
+    interlace_field:     bool,
     #[bit(14, rw)]
-    reverse_flag:         ReverseFlag,
+    reverse_flag:        ReverseFlag,
     #[bit(15, rw)]
-    texture_disable:      bool,
+    texture_disable:     bool,
     #[bit(16, rw)]
-    h_resolution_2:       HRes2,
+    h_resolution_2:      HRes2,
     #[bits(17..=18, rw)]
-    h_resolution_1:       HRes1,
+    h_resolution_1:      HRes1,
     #[bit(19, rw)]
-    v_resolution:         VRes,
+    v_resolution:        VRes,
     #[bit(20, rw)]
-    video_mode:           VideoMode,
+    video_mode:          VideoMode,
     #[bit(21, rw)]
-    display_color_depth:  DisplayColorDepth,
+    display_color_depth: DisplayColorDepth,
     #[bit(22, rw)]
-    v_interlace:          bool,
+    v_interlace:         bool,
     #[bit(23, rw)]
-    display_enable:       bool,
+    display_enable:      bool,
     #[bit(24, rw)]
-    irq:                  bool,
+    irq:                 bool,
     #[bit(25, rw)]
-    dma_request:          bool,
+    dma_request:         bool,
     #[bit(26, rw)]
-    ready_recv_cmd:       bool,
+    ready_recv_cmd:      bool,
     #[bit(27, rw)]
-    ready_send_vram:      bool,
+    gp0_rffl:            bool,
     #[bit(28, rw)]
-    ready_recv_dma_block: bool,
+    gp0_wfep:            bool,
     #[bits(29..=30, rw)]
-    dma_direction:        DmaDirection,
+    dma_direction:       DmaDirection,
     #[bit(31, rw)]
-    even_odd_in_vblank:   DrawEvenOdd,
+    even_odd_in_vblank:  DrawEvenOdd,
 }
 
 impl GpuStatReg {
     pub fn mock_ready(&mut self) {
         self.set_ready_recv_cmd(true);
-        self.set_ready_recv_dma_block(true);
-        self.set_ready_send_vram(false);
+        self.set_gp0_wfep(true);
+        self.set_gp0_rffl(false);
     }
 
     #[must_use]
@@ -1620,8 +1365,7 @@ impl<A: Allocator + Copy> Emu<A> {
             return;
         }
         let scanlines_to_run = self.gpu.dp.video_cycle_in_scanline / cycles_per_scanline;
-        self.gpu.dp.video_cycle_in_scanline =
-            self.gpu.dp.video_cycle_in_scanline % cycles_per_scanline;
+        self.gpu.dp.video_cycle_in_scanline %= cycles_per_scanline;
 
         for _ in 0..scanlines_to_run {
             let dp = &self.gpu.dp;
