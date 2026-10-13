@@ -607,8 +607,15 @@ enum SubmissionResult<A: Allocator> {
 #[derive(derive_more::Debug)]
 enum Command<A: Allocator> {
     DrawScene(Scene<A>),
-    VramToVramBlit(Gp0VramBlit),
-    CpuToVramBlit(Gp0HostBlit, Vec<u8>),
+    VramToVramBlit {
+        blit: Gp0VramBlit,
+        gpustat: GpuStatReg,
+    },
+    CpuToVramBlit {
+        blit: Gp0HostBlit,
+        data: Vec<u8>,
+        gpustat: GpuStatReg,
+    },
 }
 
 #[derive(derive_more::Debug)]
@@ -709,11 +716,18 @@ impl<A: Allocator + Copy> Pass<A> {
                 }
                 DrawCallKind::BlitVram2Vram(gp0_vram_blit) => {
                     self.flush_scene();
-                    self.cmds.push(Command::VramToVramBlit(gp0_vram_blit));
+                    self.cmds.push(Command::VramToVramBlit {
+                        blit: gp0_vram_blit,
+                        gpustat: draw_call.gpustat,
+                    });
                 }
                 DrawCallKind::BlitCpu2Vram(gp0_host_blit, data) => {
                     self.flush_scene();
-                    self.cmds.push(Command::CpuToVramBlit(gp0_host_blit, data));
+                    self.cmds.push(Command::CpuToVramBlit {
+                        blit: gp0_host_blit,
+                        gpustat: draw_call.gpustat,
+                        data,
+                    });
                 }
                 DrawCallKind::BlitVram2Cpu(_blit) => todo!(),
             },
@@ -723,10 +737,17 @@ impl<A: Allocator + Copy> Pass<A> {
                         Scene::from_draw_call(self.vertex_buf_cursor, draw_call, self.alloc);
                 }
                 DrawCallKind::BlitVram2Vram(blit) => {
-                    self.cmds.push(Command::VramToVramBlit(blit));
+                    self.cmds.push(Command::VramToVramBlit {
+                        blit,
+                        gpustat: draw_call.gpustat,
+                    });
                 }
                 DrawCallKind::BlitCpu2Vram(blit, data) => {
-                    self.cmds.push(Command::CpuToVramBlit(blit, data));
+                    self.cmds.push(Command::CpuToVramBlit {
+                        blit,
+                        data,
+                        gpustat: draw_call.gpustat,
+                    });
                 }
                 DrawCallKind::BlitVram2Cpu(_blit) => todo!(),
             },
@@ -926,7 +947,7 @@ impl Vertex {
         self
     }
     pub fn repeat_tex_window(size: U16Vec2) -> U8Vec2 {
-        (size % u16vec2(255, 255)).as_u8vec2()
+        size.as_u8vec2()
     }
     pub fn with_color_mode(mut self, mode: TextureColorMode) -> Self {
         self.color_mode = mode;
@@ -1308,7 +1329,7 @@ fn create_blit_compute_resources(
 #[derive(Debug, Clone)]
 pub(crate) struct BlitUniforms {
     kind: BlitKind,
-    _pad: u32,
+    gpustat: GpuStatReg,
     src: UVec2,
     dest: UVec2,
     size: UVec2,
@@ -1325,8 +1346,8 @@ enum BlitKind {
     VramToVram = 1,
 }
 
-impl From<&Gp0VramBlit> for BlitUniforms {
-    fn from(value: &Gp0VramBlit) -> Self {
+impl BlitUniforms {
+    fn from_vram_blit(value: &Gp0VramBlit, gpustat: GpuStatReg) -> Self {
         let mut size = value.size;
         if size.x == 0 {
             size.x = 1024;
@@ -1336,19 +1357,17 @@ impl From<&Gp0VramBlit> for BlitUniforms {
         }
         Self {
             kind: BlitKind::VramToVram,
-            _pad: 0,
+            gpustat,
             src: uvec2(u32::from(value.src.x), u32::from(value.src.y)),
-            dest: uvec2(u32::from(value.dest.x), u32::from(value.src.y)),
+            dest: uvec2(u32::from(value.dest.x), u32::from(value.dest.y)),
             size: uvec2(u32::from(size.x), u32::from(size.y)),
         }
     }
-}
 
-impl From<Gp0HostBlit> for BlitUniforms {
-    fn from(value: Gp0HostBlit) -> Self {
+    fn from_host_blit(value: Gp0HostBlit, gpustat: GpuStatReg) -> Self {
         Self {
             kind: BlitKind::CpuToVram,
-            _pad: 0,
+            gpustat,
             src: UVec2::ZERO,
             dest: uvec2(u32::from(value.dest.x), u32::from(value.dest.y)),
             size: uvec2(u32::from(value.size.x), u32::from(value.size.y)),

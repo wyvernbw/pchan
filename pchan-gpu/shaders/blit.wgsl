@@ -1,5 +1,6 @@
 struct Uniforms {
     kind: u32,
+    gpustat: u32,
     src: vec2<u32>,
     dest: vec2<u32>,
     size: vec2<u32>
@@ -20,17 +21,32 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     if (any(gid.xy >= size)) { return; }
 
+    var pbw = get_flag(uniforms.gpustat, 11);
+    var pbc = get_flag(uniforms.gpustat, 12);
+    let current = get_vram(dest);
+    if pbc && get_mask_bit(current) {
+        return;
+    }
+
     switch uniforms.kind {
         case CPU_TO_VRAM {
             let i0 = gid.y * size.x + gid.x;
-            let value = get_src(i0);
+            var value = get_src(i0);
+
+            if pbw {
+                value = rgb5_set_stp(value);
+            }
 
             textureStore(dest_tex, dest, vec4(value, 0, 0, 0));
             textureStore(vram_tex, dest, vec4(value, 0, 0, 0));
         }
         case VRAM_TO_VRAM, default: {
             let sp = vec2(gid.x, gid.y) + uniforms.src;
-            let value = get_vram(sp);
+            var value = get_vram(sp);
+
+            if pbw {
+                value = rgb5_set_stp(value);
+            }
 
             textureStore(dest_tex, dest, vec4(value, 0, 0, 0));
             textureStore(vram_tex, dest, vec4(value, 0, 0, 0));
@@ -73,4 +89,17 @@ fn copy_clip_size(x: vec2<u32>) -> vec2<u32> {
 
 fn pos_to_idx(pos: vec2<u32>, size: vec2<u32>) -> u32 {
     return pos.x + pos.y * size.x;
+}
+
+fn get_flag(flags: u32, idx: u32) -> bool {
+    return (flags & (u32(1) << idx)) != 0;
+}
+
+fn get_mask_bit(color: u32) -> bool {
+    return get_flag(color, 15);
+}
+
+fn rgb5_set_stp(value: u32) -> u32 {
+    let c = value | (1 << 15u);
+    return c;
 }

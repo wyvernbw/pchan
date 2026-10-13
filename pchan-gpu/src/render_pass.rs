@@ -4,6 +4,7 @@ use core::{mem, ptr, slice};
 use std::sync::MutexGuard;
 
 use crate::{BlitUniforms, Command, Pass, Renderer, Scene};
+use pchan_emu::gpu::GpuStatReg;
 use pchan_emu::gpu::draw_call::{Gp0HostBlit, Gp0VramBlit};
 use pchan_utils::tracy;
 use wgpu::util::{BufferInitDescriptor, DeviceExt, StagingBelt};
@@ -72,11 +73,15 @@ impl<A: Allocator + Copy> RenderPass<'_, A> {
                     tracing::info!("- scene");
                     self.draw_scene(scene);
                 }
-                Command::VramToVramBlit(blit) => {
-                    self.vram_blit(blit);
+                Command::VramToVramBlit { blit, gpustat } => {
+                    self.vram_blit(blit, *gpustat);
                 }
-                Command::CpuToVramBlit(blit, data) => {
-                    self.cpu_to_vram_blit(*blit, data);
+                Command::CpuToVramBlit {
+                    blit,
+                    data,
+                    gpustat,
+                } => {
+                    self.cpu_to_vram_blit(*blit, *gpustat, data);
                 }
             }
         }
@@ -189,7 +194,7 @@ impl<A: Allocator + Copy> RenderPass<'_, A> {
         );
     }
 
-    fn vram_blit(&mut self, blit: &Gp0VramBlit) {
+    fn vram_blit(&mut self, blit: &Gp0VramBlit, gpustat: GpuStatReg) {
         // copy render target to buffer because we can't have
         // concurrent reads and writes to the same texture storage
         self.encoder.copy_texture_to_buffer(
@@ -209,7 +214,7 @@ impl<A: Allocator + Copy> RenderPass<'_, A> {
             },
         );
 
-        let uniforms = BlitUniforms::from(blit);
+        let uniforms = BlitUniforms::from_vram_blit(blit, gpustat);
         let uniforms_staging = self
             .belt
             .allocate(NonZeroU64::new(512).unwrap(), NonZeroU64::new(256).unwrap());
@@ -243,7 +248,7 @@ impl<A: Allocator + Copy> RenderPass<'_, A> {
         drop(cpass)
     }
 
-    fn cpu_to_vram_blit(&mut self, blit: Gp0HostBlit, data: &[u8]) {
+    fn cpu_to_vram_blit(&mut self, blit: Gp0HostBlit, gpustat: GpuStatReg, data: &[u8]) {
         let staging = self.belt.allocate(
             NonZeroU64::new(data.len().next_multiple_of(256) as u64).unwrap(),
             NonZeroU64::new(256).unwrap(),
@@ -261,7 +266,7 @@ impl<A: Allocator + Copy> RenderPass<'_, A> {
             data.len() as u64,
         );
 
-        let uniforms = BlitUniforms::from(blit);
+        let uniforms = BlitUniforms::from_host_blit(blit, gpustat);
         let uniforms_staging = self
             .belt
             .allocate(NonZeroU64::new(512).unwrap(), NonZeroU64::new(256).unwrap());
