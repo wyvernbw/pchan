@@ -31,7 +31,7 @@ pchan-encode.workspace = true
 pchan-gpu.workspace = true
 pchan-macros.workspace = true
 pchan-steel = { version = "0.1.0", path = "../../pchan-steel" }
-pchan-utils = { workspace = true, features = ["tracing-subscriber"] }
+pchan-utils = { workspace = true, features = ["tracing-subscriber", "tracy", "tracy-enable"] }
 schemars = "1.2.2"
 serde = "1.0.229"
 tracing.workspace = true

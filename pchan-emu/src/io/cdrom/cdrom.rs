@@ -26,18 +26,18 @@ use pchan_utils::hex;
 #[derive(derive_more::Debug, Clone, Endecode)]
 #[endecode(alloc(default))]
 pub struct CDRomState<A: Allocator> {
-    status:      CDRomStatusReg,
-    hint_status: CDRomHIntSts,
-    hint_mask:   CDRomHIntMask,
-    request:     CDRomReqRegister,
-    param_fifo:  heapless::Deque<u8, 16>,
+    pub status:    CDRomStatusReg,
+    hint_status:   CDRomHIntSts,
+    hint_mask:     CDRomHIntMask,
+    request:       CDRomReqRegister,
+    param_fifo:    heapless::Deque<u8, 16>,
     #[debug(skip)]
-    result_fifo: heapless::Deque<u8, 16>,
-    data_last:   u8,
+    result_fifo:   heapless::Deque<u8, 16>,
+    pub data_last: u8,
     #[debug(skip)]
-    #[endecode(alloc(with = new_in))]
-    data_fifo:   VecDeque<u8, A>,
-    ver:         CDRomVer,
+    #[endecode(alloc(with = VecDeque::new_in))]
+    pub data_fifo: VecDeque<u8, A>,
+    ver:           CDRomVer,
 
     drive: CdromDrive,
 }
@@ -211,7 +211,8 @@ impl<A: Allocator> Emu<A> {
 /// bank.
 #[bitfield(u8, debug)]
 #[derive(Endecode)]
-struct CDRomStatusReg {
+#[must_use]
+pub struct CDRomStatusReg {
     #[bits(0..=1, rw)]
     bank:          u2,
     #[bit(2, rw)]

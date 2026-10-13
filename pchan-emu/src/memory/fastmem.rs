@@ -1,5 +1,6 @@
 use core::alloc::Allocator;
-use core::ptr;
+use core::ops::Range;
+use core::{ptr, slice};
 
 use crate::Emu;
 use crate::io::UnhandledIO;
@@ -91,7 +92,7 @@ pub fn util_fast_map_address(address: u32) -> Option<u32> {
 pub type FastmemResult<T> = Result<T, UnhandledIO>;
 
 impl<A: Allocator> Emu<A> {
-    pub fn fastmem_read<T: Copy>(&self, address: u32) -> FastmemResult<T> {
+    fn fastmem_ptr<T: Copy>(&self, address: u32) -> FastmemResult<*const T> {
         let page = address >> 16;
         let offset = address & 0x0000_FFFF;
 
@@ -102,33 +103,74 @@ impl<A: Allocator> Emu<A> {
             // fastmem
             Some(region_ptr) => unsafe {
                 let ptr = mem.add(region_ptr as usize).add(offset as usize);
-                Ok(ptr::read(ptr.cast::<T>()))
+                Ok(ptr.cast::<T>())
             },
             // memcheck
             None => Err(UnhandledIO(address)),
         }
     }
-
-    pub fn fastmem_write<T: Copy>(&mut self, address: u32, value: T) -> FastmemResult<()> {
-        if self.cpu.isc() {
-            return Ok(());
-        }
-
+    fn fastmem_mut_ptr<T: Copy>(&mut self, address: u32) -> FastmemResult<*mut T> {
         let page = address >> 16;
         let offset = address & 0x0000_FFFF;
 
         let lut_ptr = LUT.write[page as usize];
         let mem = self.mem.buf.as_mut_ptr();
 
-        if let Some(region_ptr) = lut_ptr {
-            self.dynarec_cache.invalidate(address);
-            unsafe {
+        match lut_ptr {
+            // fastmem
+            Some(region_ptr) => unsafe {
                 let ptr = mem.add(region_ptr as usize).add(offset as usize);
-                ptr::write(ptr.cast(), value);
-            }
-            Ok(())
-        } else {
-            Err(UnhandledIO(address))
+                Ok(ptr.cast::<T>())
+            },
+            // memcheck
+            None => Err(UnhandledIO(address)),
         }
+    }
+
+    pub fn fastmem_read<T: Copy>(&self, address: u32) -> FastmemResult<T> {
+        let ptr = self.fastmem_ptr::<T>(address)?;
+        unsafe { Ok(ptr::read(ptr)) }
+    }
+
+    pub fn fastmem_write<T: Copy>(&mut self, address: u32, value: T) -> FastmemResult<()> {
+        if self.cpu.isc() {
+            return Ok(());
+        }
+        let ptr = self.fastmem_mut_ptr(address)?;
+        self.dynarec_cache.invalidate(address);
+        unsafe {
+            ptr::write(ptr, value);
+        }
+        Ok(())
+    }
+
+    pub fn fastmem_slice<T: Copy>(&self, range: impl Into<Range<u32>>) -> FastmemResult<&[T]> {
+        let range = range.into();
+        let start = self.fastmem_ptr::<T>(range.start)?;
+        let _ = self.fastmem_ptr::<T>(range.end - 1)?;
+        let bytes = range.len();
+        let len = bytes / size_of::<T>();
+        debug_assert!(start.is_aligned());
+        let slice = unsafe { slice::from_raw_parts(start, len) };
+        Ok(slice)
+    }
+
+    pub fn fastmem_slice_mut<T: Copy>(
+        &mut self,
+        range: impl Into<Range<u32>>,
+    ) -> FastmemResult<&mut [T]> {
+        let range = range.into();
+        let start = self.fastmem_mut_ptr::<T>(range.start)?;
+        let _ = self.fastmem_mut_ptr::<T>(range.end - 1)?;
+        let bytes = range.len();
+        let len = bytes / size_of::<T>();
+        debug_assert!(start.is_aligned());
+
+        for addr in range.clone().step_by(4) {
+            self.dynarec_cache.invalidate(addr);
+        }
+
+        let slice = unsafe { slice::from_raw_parts_mut(start, len) };
+        Ok(slice)
     }
 }

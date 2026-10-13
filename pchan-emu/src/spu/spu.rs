@@ -29,13 +29,13 @@ pub struct SpuState<A: Allocator> {
     ctrl:           SpuCtrl,
     reverb:         Reverb<A>,
     #[debug(skip)]
-    mem:            Box<[u16], A>,
+    pub mem:        Box<[u16], A>,
     pub app_volume: f32,
 
-    ram_start:   u16,
+    ram_start:       u16,
     /// internal register
-    ram_current: usize,
-    clock:       u64,
+    pub ram_current: usize,
+    clock:           u64,
 
     #[endecode(skip)]
     prod:      Option<Mutex<AudioProducer>>,
@@ -564,6 +564,13 @@ impl<A: Allocator> SpuState<A> {
         let value = self.mem[self.ram_current];
         self.ram_current += 1;
         value
+    }
+
+    pub fn extend(&mut self, values: &[u16]) {
+        let current = self.ram_current;
+        let len = values.len();
+        self.mem[current..current + len].copy_from_slice(values);
+        self.ram_current = current + len;
     }
 }
 

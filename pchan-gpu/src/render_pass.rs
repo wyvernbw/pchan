@@ -1,36 +1,28 @@
+use core::alloc::Allocator;
 use core::num::NonZeroU64;
 use core::{mem, ptr, slice};
 use std::sync::MutexGuard;
 
-use crate::{Renderer, Scene};
-use pchan_emu::memory::mb;
+use crate::{BlitUniforms, Command, Pass, Renderer, Scene};
+use pchan_emu::gpu::GpuStatReg;
+use pchan_emu::gpu::draw_call::{Gp0HostBlit, Gp0VramBlit};
 use pchan_utils::tracy;
+use tracing::Level;
 use wgpu::util::{BufferInitDescriptor, DeviceExt, StagingBelt};
 use wgpu::*;
 
-impl Renderer {
-    pub fn create_render_pass(&self, scene: Scene) -> RenderPass<'_> {
-        let vertex_buf = unsafe {
-            slice::from_raw_parts(
-                scene.vertex_buf.as_ptr().cast::<u8>(),
-                mem::size_of_val(scene.vertex_buf.as_slice()),
-            )
-        };
+const WORKGROUP_SIZE: u32 = 16;
 
-        let mut encoder = self
+impl Renderer {
+    pub(crate) fn create_render_pass<A: Allocator>(&self, pass: Pass<A>) -> RenderPass<'_, A> {
+        let encoder = self
             .device
             .create_command_encoder(&CommandEncoderDescriptor::default());
-        let mut belt = self.belt.try_lock().unwrap();
-        if let Some(size) = NonZeroU64::new(vertex_buf.len() as u64) {
-            let mut view = belt.write_buffer(&mut encoder, &self.vertex_buf, 0, size);
-            view.copy_from_slice(vertex_buf);
-        }
-
+        let belt = self.belt.try_lock().unwrap();
         RenderPass {
-            scene,
             encoder,
             renderer: self,
-            vertex_buf_len: vertex_buf.len() as u64,
+            pass,
             belt,
         }
     }
@@ -60,24 +52,45 @@ impl Renderer {
         render_pass.draw(0..6, 0..1);
     }
 }
+
 #[derive(Debug)]
-pub struct RenderPass<'a> {
+pub struct RenderPass<'a, A: Allocator> {
     encoder: CommandEncoder,
     belt: MutexGuard<'a, StagingBelt>,
     renderer: &'a Renderer,
-    scene: Scene,
-    vertex_buf_len: u64,
+    pass: Pass<A>,
 }
 
-impl RenderPass<'_> {
-    pub fn draw(&mut self, vram: &[u16], dirty: bool) {
+impl<A: Allocator + Copy> RenderPass<'_, A> {
+    pub(crate) fn draw(&mut self, vram: &[u16], dirty: bool) {
         let _draw = tracy::span!("rd-gpu-draw");
-        if self.scene.vertex_buf.is_empty() {
-            return;
+        tracing::info!("drawing...");
+        self.init_vram(vram, dirty);
+
+        let pass = self.pass.take();
+        for cmd in &pass.cmds {
+            match cmd {
+                Command::DrawScene(scene) => {
+                    tracing::info!("- scene");
+                    self.draw_scene(scene);
+                }
+                Command::VramToVramBlit { blit, gpustat } => {
+                    self.vram_blit(blit, *gpustat);
+                }
+                Command::CpuToVramBlit {
+                    blit,
+                    data,
+                    gpustat,
+                } => {
+                    self.cpu_to_vram_blit(*blit, *gpustat, data);
+                }
+            }
         }
+    }
+
+    fn init_vram(&mut self, vram: &[u16], dirty: bool) {
         let vram_buf =
             unsafe { slice::from_raw_parts(vram.as_ptr().cast::<u8>(), mem::size_of_val(vram)) };
-
         if dirty {
             const STAGING_SIZE: NonZeroU64 = NonZeroU64::new(1024 * 2 * 512).unwrap();
             const STAGING_ALIGNMENT: NonZeroU64 = NonZeroU64::new(256).unwrap();
@@ -98,25 +111,11 @@ impl RenderPass<'_> {
                 },
                 self.renderer.vram_texture.as_image_copy(),
                 Extent3d {
-                    width: 512,
+                    width: 1024,
                     height: 512,
                     depth_or_array_layers: 1,
                 },
             );
-            // self.renderer.queue.write_texture(
-            //     self.renderer.vram_texture.as_image_copy(),
-            //     vram_buf,
-            //     TexelCopyBufferLayout {
-            //         offset: 0,
-            //         bytes_per_row: Some(1024 * 2),
-            //         rows_per_image: Some(512),
-            //     },
-            //     Extent3d {
-            //         width: 512,
-            //         height: 512,
-            //         depth_or_array_layers: 1,
-            //     },
-            // );
 
             self.encoder.copy_buffer_to_texture(
                 TexelCopyBufferInfo {
@@ -134,22 +133,27 @@ impl RenderPass<'_> {
                     depth_or_array_layers: 1,
                 },
             );
-
-            // self.renderer.queue.write_texture(
-            //     self.renderer.render_texture.as_image_copy(),
-            //     vram_buf,
-            //     TexelCopyBufferLayout {
-            //         offset: 0,
-            //         bytes_per_row: Some(1024 * 2),
-            //         rows_per_image: Some(512),
-            //     },
-            //     Extent3d {
-            //         width: 1024,
-            //         height: 512,
-            //         depth_or_array_layers: 1,
-            //     },
-            // );
         }
+    }
+
+    fn draw_scene(&mut self, scene: &Scene<A>) {
+        let vertex_count = scene.vertex_buf.len();
+        let vertex_start = scene.vertex_buf_start;
+        let vertex_buf = scene.vertex_bytes();
+        let vertex_end = vertex_start + vertex_buf.len() as u64;
+
+        if let Some(size) = NonZeroU64::new(vertex_buf.len() as u64) {
+            let mut view = self.belt.write_buffer(
+                &mut self.encoder,
+                &self.renderer.vertex_buf,
+                vertex_start,
+                size,
+            );
+            view.copy_from_slice(vertex_buf);
+        } else {
+            return;
+        }
+        debug_assert!(vertex_start < vertex_end);
 
         let mut render_pass = self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: None,
@@ -167,11 +171,136 @@ impl RenderPass<'_> {
             occlusion_query_set: None,
             multiview_mask: None,
         });
-
+        tracing::info!(
+            "\tvertex range: {}..{} ({})",
+            vertex_start,
+            vertex_end,
+            vertex_count
+        );
         render_pass.set_pipeline(&self.renderer.render_pipeline);
         render_pass.set_bind_group(0, &self.renderer.render_bind_group, &[]);
-        render_pass.set_vertex_buffer(0, self.renderer.vertex_buf.slice(..self.vertex_buf_len));
-        render_pass.draw(0..self.scene.vertex_buf.len() as u32, 0..1);
+        render_pass.set_vertex_buffer(0, self.renderer.vertex_buf.slice(vertex_start..vertex_end));
+        render_pass.draw(0..vertex_count as u32, 0..1);
+
+        drop(render_pass);
+
+        self.encoder.copy_texture_to_texture(
+            self.renderer.render_texture.as_image_copy(),
+            self.renderer.vram_texture.as_image_copy(),
+            Extent3d {
+                width: 1024,
+                height: 512,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
+
+    fn vram_blit(&mut self, blit: &Gp0VramBlit, gpustat: GpuStatReg) {
+        // copy render target to buffer because we can't have
+        // concurrent reads and writes to the same texture storage
+        self.encoder.copy_texture_to_buffer(
+            self.renderer.render_texture.as_image_copy(),
+            TexelCopyBufferInfo {
+                buffer: &self.renderer.vram_blit_buffer,
+                layout: TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(1024 * 2),
+                    rows_per_image: Some(512),
+                },
+            },
+            Extent3d {
+                width: 1024,
+                height: 512,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        let uniforms = BlitUniforms::from_vram_blit(blit, gpustat);
+        let uniforms_staging = self
+            .belt
+            .allocate(NonZeroU64::new(512).unwrap(), NonZeroU64::new(256).unwrap());
+        uniforms_staging
+            .get_mapped_range_mut()
+            .unwrap()
+            .slice(0..uniforms.as_bytes().len())
+            .copy_from_slice(uniforms.as_bytes());
+
+        self.encoder.copy_buffer_to_buffer(
+            uniforms_staging.buffer(),
+            uniforms_staging.offset(),
+            &self.renderer.blit.uniforms_buf,
+            0,
+            uniforms.as_bytes().len().next_multiple_of(4) as u64,
+        );
+
+        let mut cpass = self.encoder.begin_compute_pass(&ComputePassDescriptor {
+            label: Some("psx.gpu.blit<vram->vram>"),
+            timestamp_writes: None,
+        });
+
+        if tracing::enabled!(Level::TRACE) {
+            tracing::trace!(?uniforms);
+        }
+
+        let dispatch_x = uniforms.size.x.div_ceil(WORKGROUP_SIZE);
+        let dispatch_y = uniforms.size.y.div_ceil(WORKGROUP_SIZE);
+
+        cpass.set_pipeline(&self.renderer.blit.pipe);
+        cpass.set_bind_group(0, &self.renderer.blit.bind_group, &[]);
+        cpass.dispatch_workgroups(dispatch_x, dispatch_y, 1);
+        drop(cpass)
+    }
+
+    fn cpu_to_vram_blit(&mut self, blit: Gp0HostBlit, gpustat: GpuStatReg, data: &[u8]) {
+        let staging = self.belt.allocate(
+            NonZeroU64::new(data.len().next_multiple_of(256) as u64).unwrap(),
+            NonZeroU64::new(256).unwrap(),
+        );
+        staging
+            .get_mapped_range_mut()
+            .unwrap()
+            .slice(0..data.len())
+            .copy_from_slice(data);
+        self.encoder.copy_buffer_to_buffer(
+            staging.buffer(),
+            staging.offset(),
+            &self.renderer.vram_blit_buffer,
+            0,
+            data.len() as u64,
+        );
+
+        let uniforms = BlitUniforms::from_host_blit(blit, gpustat);
+        let uniforms_staging = self
+            .belt
+            .allocate(NonZeroU64::new(512).unwrap(), NonZeroU64::new(256).unwrap());
+        uniforms_staging
+            .get_mapped_range_mut()
+            .unwrap()
+            .slice(0..uniforms.as_bytes().len())
+            .copy_from_slice(uniforms.as_bytes());
+        self.encoder.copy_buffer_to_buffer(
+            uniforms_staging.buffer(),
+            uniforms_staging.offset(),
+            &self.renderer.blit.uniforms_buf,
+            0,
+            uniforms.as_bytes().len() as u64,
+        );
+
+        let mut cpass = self.encoder.begin_compute_pass(&ComputePassDescriptor {
+            label: Some("psx.gpu.blit<cpu->vram>"),
+            timestamp_writes: None,
+        });
+
+        let dispatch_x = uniforms.size.x.div_ceil(WORKGROUP_SIZE);
+        let dispatch_y = uniforms.size.y.div_ceil(WORKGROUP_SIZE);
+
+        if tracing::enabled!(Level::TRACE) {
+            tracing::trace!(?uniforms);
+        }
+        cpass.set_pipeline(&self.renderer.blit.pipe);
+        cpass.set_bind_group(0, &self.renderer.blit.bind_group, &[]);
+        cpass.dispatch_workgroups(dispatch_x, dispatch_y, 1);
+        drop(cpass);
     }
 
     pub async fn finish(mut self, vram: &mut [u16]) -> Result<(), MapRangeError> {
@@ -204,14 +333,16 @@ impl RenderPass<'_> {
         self.renderer
             .vram_out_buf
             .map_async(MapMode::Read, .., move |res| {
-                res.unwrap();
+                if let Err(err) = res {
+                    tracing::warn!("{err}");
+                }
             });
         let device = self.renderer.device.clone();
         smol::unblock(move || {
             _ = device.poll(PollType::wait_indefinitely());
         })
         .await;
-        let buf_mapped = self.renderer.vram_out_buf.get_mapped_range(..)?;
+        let buf_mapped = self.renderer.vram_out_buf.get_mapped_range(..).unwrap();
         let buf =
             unsafe { core::slice::from_raw_parts(buf_mapped.as_ptr().cast::<u16>(), 1024 * 512) };
         vram.copy_from_slice(buf);

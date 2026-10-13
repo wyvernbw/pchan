@@ -394,6 +394,7 @@ impl<A: Allocator + Copy + Clone> Runner<A> {
             return None;
         }
 
+        let _span = tracing::info_span!("", frame = self.frame_idx).entered();
         let start = Instant::now();
         while !emu.consume_vblank_signal() {
             self.execute(emu);

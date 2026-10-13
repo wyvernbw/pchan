@@ -441,7 +441,6 @@ impl EmuContext {
         let mut sink = Vec::new();
         f.read_to_end(&mut sink).into_diagnostic()?;
         pchan_encode::decode_in_place(&mut self.emu, sink, self.alloc).into_diagnostic()?;
-        assert!(!self.emu.gpu.vram.is_empty());
         self.emu.dynarec_cache.alloc_flush(self.alloc);
         println!("LOADED");
 
@@ -454,7 +453,8 @@ impl EmuContext {
             };
 
             let mut ppm = format!("P6\n{W} {H}\n255\n").into_bytes();
-            for px in self.emu.gpu.vram.iter().take(W * H) {
+            let vram = self.emu.gpu.lock_vram();
+            for px in vram.iter().take(W * H) {
                 ppm.extend_from_slice(&[expand(*px), expand(*px >> 5), expand(*px >> 10)]);
             }
             fs::write("/tmp/vram.ppm", &ppm).into_diagnostic()?;

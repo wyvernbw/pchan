@@ -29,7 +29,7 @@ struct VertexOutput {
 };
 
 @group(0) @binding(0)
-var vram_t : texture_storage_2d<r32uint,read>;
+var vram_t : texture_storage_2d<r16uint,read>;
 
 // struct RenderUniforms {
 // }
@@ -131,14 +131,14 @@ fn rgb5_set_stp(value: u32) -> u32 {
 }
 
 fn vramcoord_to_texcoord(coord: vec2<f32>) -> vec2<u32> {
-    return vec2<u32>(vec2(coord.x / 2, coord.y));
+    return vec2<u32>(vec2(coord.x, coord.y));
 }
 
 fn read_16bit(coord: vec2<f32>) -> u32 {
     let texcoord = vramcoord_to_texcoord(coord);
     // wgpu tex coords are +Y = down
     var packed = textureLoad(vram_t, texcoord).r;
-    return (packed >> ((u32(coord.x) % 2) * 16)) & 0xFFFF;
+    return packed;
 }
 
 fn read_4bit(coord: vec2<f32>) -> u32 {
