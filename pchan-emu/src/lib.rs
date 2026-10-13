@@ -83,7 +83,7 @@ pub struct Emu<A: Allocator = Global> {
     pub boot:          BootloaderState<A>,
     pub tty:           Tty<A>,
     pub gpu:           GpuState<A>,
-    pub dma:           DmaState,
+    pub dma:           DmaState<A>,
     pub timers:        TimerState,
     #[debug(skip)]
     pub spu:           SpuState<A>,
@@ -118,7 +118,7 @@ impl<A: Allocator + Copy> Emu<A> {
             boot: BootloaderState::new_in(alloc),
             tty: Tty::new(alloc),
             gpu: GpuState::new(alloc),
-            dma: DmaState::default(),
+            dma: DmaState::new(alloc),
             timers: TimerState::default(),
             spu: SpuState::new(alloc),
             #[cfg(feature = "debugger-ext")]

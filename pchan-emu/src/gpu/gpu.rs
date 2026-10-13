@@ -80,19 +80,19 @@ pub enum Vram<A: Allocator> {
 pub struct GpuState<A: Allocator> {
     #[debug(skip)]
     #[endecode(alloc(with = create_vram, global))]
-    pub vram:       Vram<Global>,
+    pub vram:         Vram<Global>,
     #[debug(skip)]
-    pub gpustat:    GpuStatReg,
-    pub gp0:        Gp0,
-    pub gp0read:    [u16; 2],
-    gp0read_fifo:   VecDeque<u16, A>,
+    pub gpustat:      GpuStatReg,
+    pub gp0:          Gp0,
+    pub gp0read:      [u16; 2],
+    pub gp0read_fifo: VecDeque<u16, A>,
     #[endecode(alloc(global))]
-    pub gp0write:   Vec<u8>,
-    pub dp:         Display,
+    pub gp0write:     Vec<u8>,
+    pub dp:           Display,
     /// GP0(0xe2) - Texture Window setting
-    pub tex_window: Gp0TexWindowCmd,
-    pub draw_reg:   GpuInternalDrawReg,
-    pub model:      GpuModel,
+    pub tex_window:   Gp0TexWindowCmd,
+    pub draw_reg:     GpuInternalDrawReg,
+    pub model:        GpuModel,
 
     ongoing_read:         Option<Gp0HostBlit>,
     draw_calls_in_flight: bool,

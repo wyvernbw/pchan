@@ -554,7 +554,7 @@ impl Renderer {
                         })
                         .await
                         .unwrap();
-                    tracing::warn!("nothing to flush")
+                    // tracing::warn!("nothing to flush")
                 }
                 DrawCallMsg::UpdateDisplay(display, gpustat) => {
                     self.update_hw_display_uniforms(&display, gpustat);
