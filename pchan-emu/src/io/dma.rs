@@ -600,8 +600,13 @@ impl Transfer for Dma3Cdrom {
         dest[..h].copy_from_slice(&head[..h]);
         dest[h..n].copy_from_slice(&tail[..n - h]);
 
+        let last = dest[n - 1];
+        dest[n..].fill(last);
         fifo.drain(..n);
 
+        if n > 0 {
+            emu.cdrom.data_last = last;
+        }
         if fifo.is_empty() {
             emu.cdrom.status.set_data_req(false);
         }
