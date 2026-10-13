@@ -50,12 +50,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let dest_left  = vec2(dest.x,   dest.y);
             let dest_right = vec2(dest.x+1, dest.y);
 
-            // textureStore(dest_tex, dest_left, vec4(left, 0, 0, 0));
-            // textureStore(dest_tex, dest_right, vec4(right, 0, 0, 0));
-            // textureStore(vram_tex, vramcoord_to_texcoord(dest), vec4(packed, 0, 0, 0));
-            textureStore(dest_tex, dest_left, vec4(0xFFFF, 0, 0, 0));
-            textureStore(dest_tex, dest_right, vec4(0xFFFF, 0, 0, 0));
-            textureStore(vram_tex, vramcoord_to_texcoord(dest), vec4(0xFFFFFFFF, 0, 0, 0));
+            textureStore(dest_tex, dest_left, vec4(left, 0, 0, 0));
+            textureStore(dest_tex, dest_right, vec4(right, 0, 0, 0));
+            textureStore(vram_tex, vramcoord_to_texcoord(dest), vec4(packed, 0, 0, 0));
+            // textureStore(dest_tex, dest_left, vec4(0xFFFF, 0, 0, 0));
+            // textureStore(dest_tex, dest_right, vec4(0xFFFF, 0, 0, 0));
+            // textureStore(vram_tex, vramcoord_to_texcoord(dest), vec4(0xFFFFFFFF, 0, 0, 0));
         }
     }
 }

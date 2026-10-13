@@ -172,19 +172,20 @@ impl<A: Allocator + Copy> Emu<A> {
                 #[allow(clippy::single_match)]
                 match &self.gpu.gp0 {
                     Gp0::CpuReadingVram => {
-                        let gp0 = match self.gpu.gp0read_fifo.pop_front() {
-                            None => {
-                                self.gpu.gpustat.set_gp0_rffl(false);
-                                self.gpu.gpustat.set_ready_recv_cmd(true);
-                                Gp0::WaitingForCmd
-                            }
-                            Some(value) => {
-                                let idx = self.gpu.gp0read_fifo.len() % 2;
-                                self.gpu.gp0read[idx] = value;
-                                Gp0::CpuReadingVram
-                            }
-                        };
-                        self.gpu.gp0 = gp0;
+                        for nibble in 0..2 {
+                            let gp0 = match self.gpu.gp0read_fifo.pop_front() {
+                                None => {
+                                    self.gpu.gpustat.set_gp0_rffl(false);
+                                    self.gpu.gpustat.set_ready_recv_cmd(true);
+                                    Gp0::WaitingForCmd
+                                }
+                                Some(value) => {
+                                    self.gpu.gp0read[nibble] = value;
+                                    Gp0::CpuReadingVram
+                                }
+                            };
+                            self.gpu.gp0 = gp0;
+                        }
                     }
                     _ => {}
                 }
@@ -328,9 +329,8 @@ impl<A: Allocator + Copy> Emu<A> {
                 Gp0::DrawRectDecode(DrawRectDecoder::new(cmd.raw_value()))
             }
             0x80..=0x9f => {
-                todo!()
                 self.gpu.gpustat.set_ready_recv_cmd(false);
-                Gp0::BlitVramToVram(Gp0VramBlitDecoder::RecvSrc)
+                Gp0::BlitVramToVramDecoding(Gp0VramBlitDecoder::RecvSrc)
             }
             value => todo!("gp0 command: {}", hex(value)),
         }
@@ -388,20 +388,18 @@ impl<A: Allocator + Copy> Emu<A> {
                         }
                     }
                     self.gpu.ongoing_read = Some(blit);
-                    self.gpu.gpustat.set_ready_recv_cmd(true);
                     self.gpu.gp0 = Gp0::WaitingForCmd
                 }
             },
 
             // vram to vram copy
-            Gp0::BlitVramToVram(decoder) => match decoder.advance(value) {
+            Gp0::BlitVramToVramDecoding(decoder) => match decoder.advance(value) {
                 Ok(decoder) => {
-                    self.gpu.gp0 = Gp0::BlitVramToVram(decoder);
+                    self.gpu.gp0 = Gp0::BlitVramToVramDecoding(decoder);
                 }
                 Err(vram_blit) => {
                     tracing::trace!(?vram_blit, "decoded");
                     tracing::info!("blit:vram-to-vram:{:?}", vram_blit);
-                    panic!("got here");
                     self.gpu.gpustat.set_ready_recv_cmd(true);
                     self.gpu_issue_draw_call(DrawCallKind::BlitVram2Vram(vram_blit));
                     self.gpu.gp0 = Gp0::WaitingForCmd;
@@ -618,12 +616,13 @@ impl<A: Allocator> Emu<A> {
         if let Some(blit) = &self.gpu.ongoing_read {
             match &self.gpu.vram {
                 Vram::Mapped(vram) => {
+                    self.gpu.gpustat.set_gp0_rffl(true);
+
                     let mut cursor = VramCursor::new(blit.dest, blit.dest + blit.size);
                     for at in cursor.iter() {
                         let value = vram_get(vram, at);
                         self.gpu.gp0read_fifo.push_back(value);
                     }
-                    self.gpu.gpustat.set_gp0_rffl(true);
                     self.gpu.ongoing_read = None;
                     self.gpu.gpustat.set_ready_recv_cmd(true);
                 }
@@ -819,7 +818,7 @@ pub enum Gp0 {
         cursor: VramCursor,
     },
     BlitVramToCpuDecoding(Gp0HostBlitDecoder),
-    BlitVramToVram(Gp0VramBlitDecoder),
+    BlitVramToVramDecoding(Gp0VramBlitDecoder),
     CpuReadingVram,
 }
 

@@ -133,8 +133,8 @@ impl<A: Allocator + Copy> RenderPass<'_, A> {
     fn draw_scene(&mut self, scene: &Scene<A>) {
         let vertex_count = scene.vertex_buf.len();
         let vertex_start = scene.vertex_buf_start;
-        let vertex_end = scene.vertex_bytes().len() as u64;
         let vertex_buf = scene.vertex_bytes();
+        let vertex_end = vertex_start + vertex_buf.len() as u64;
 
         if let Some(size) = NonZeroU64::new(vertex_buf.len() as u64) {
             let mut view = self.belt.write_buffer(
@@ -144,7 +144,10 @@ impl<A: Allocator + Copy> RenderPass<'_, A> {
                 size,
             );
             view.copy_from_slice(vertex_buf);
+        } else {
+            return;
         }
+        debug_assert!(vertex_start < vertex_end);
 
         let mut render_pass = self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: None,
@@ -198,9 +201,11 @@ impl<A: Allocator + Copy> RenderPass<'_, A> {
         let uniforms_staging = self
             .belt
             .allocate(NonZeroU64::new(512).unwrap(), NonZeroU64::new(256).unwrap());
-        let mut staging = uniforms_staging.get_mapped_range_mut().unwrap();
-        staging.copy_from_slice(uniforms.as_bytes());
-        drop(staging);
+        uniforms_staging
+            .get_mapped_range_mut()
+            .unwrap()
+            .slice(0..uniforms.as_bytes().len())
+            .copy_from_slice(uniforms.as_bytes());
 
         self.encoder.copy_buffer_to_buffer(
             uniforms_staging.buffer(),
