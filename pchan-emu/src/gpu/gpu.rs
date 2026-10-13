@@ -172,19 +172,19 @@ impl<A: Allocator + Copy> Emu<A> {
                 #[allow(clippy::single_match)]
                 match &self.gpu.gp0 {
                     Gp0::CpuReadingVram => {
+                        assert!(self.gpu.gpustat.gp0_rffl());
                         for nibble in 0..2 {
-                            let gp0 = match self.gpu.gp0read_fifo.pop_front() {
+                            match self.gpu.gp0read_fifo.pop_front() {
                                 None => {
                                     self.gpu.gpustat.set_gp0_rffl(false);
                                     self.gpu.gpustat.set_ready_recv_cmd(true);
-                                    Gp0::WaitingForCmd
+                                    self.gpu.gp0 = Gp0::WaitingForCmd;
+                                    break;
                                 }
                                 Some(value) => {
                                     self.gpu.gp0read[nibble] = value;
-                                    Gp0::CpuReadingVram
                                 }
                             };
-                            self.gpu.gp0 = gp0;
                         }
                     }
                     _ => {}
@@ -387,8 +387,9 @@ impl<A: Allocator + Copy> Emu<A> {
                             self.gpu.flush_draw_calls();
                         }
                     }
+                    self.gpu.gp0read_fifo.clear();
                     self.gpu.ongoing_read = Some(blit);
-                    self.gpu.gp0 = Gp0::WaitingForCmd
+                    self.gpu.gp0 = Gp0::CpuReadingVram;
                 }
             },
 

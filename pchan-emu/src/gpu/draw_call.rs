@@ -701,6 +701,7 @@ impl DrawCallDecoder for Gp0HostBlitDecoder {
         match self {
             Gp0HostBlitDecoder::RecvDest => {
                 let dest: VramCoord = unsafe { transmute(value) };
+                let dest = dest.copy_cmd_pos_mask();
                 Ok(Self::RecvSize { dest })
             }
             Gp0HostBlitDecoder::RecvSize { dest, .. } => {
