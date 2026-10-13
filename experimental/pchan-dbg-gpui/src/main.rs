@@ -700,7 +700,6 @@ async fn emu_loop(appcx: AppCx, cx: &mut AsyncApp) {
                 emucx.pc_history.push_overwrite(emu.cpu.pc);
                 emucx.run_once
             });
-            tracing::info!("#{}", emucx.runner.frame_idx);
 
             if emucx.save {
                 emucx.save = false;

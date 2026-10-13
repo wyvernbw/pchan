@@ -12,11 +12,12 @@ use crate::gpu::{
 };
 use crate::memory::kb;
 
-#[derive(Debug, Copy, PartialEq, PartialOrd, Ord, Eq, d::Mul, d::MulAssign, Endecode)]
-#[derive_const(Clone, d::Add, d::AddAssign, Default)]
+#[derive(Copy, PartialEq, PartialOrd, Ord, Eq, d::Mul, d::MulAssign, Endecode)]
+#[derive_const(Clone, d::Add, d::AddAssign, Default, d::Debug)]
 #[repr(C)]
 #[mul(forward)]
 #[endecode(alloc(default))]
+#[debug("({x},{y})")]
 pub struct VramCoord {
     pub x: u16,
     pub y: u16,

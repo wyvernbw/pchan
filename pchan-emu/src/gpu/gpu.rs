@@ -328,6 +328,7 @@ impl<A: Allocator + Copy> Emu<A> {
                 Gp0::DrawRectDecode(DrawRectDecoder::new(cmd.raw_value()))
             }
             0x80..=0x9f => {
+                todo!()
                 self.gpu.gpustat.set_ready_recv_cmd(false);
                 Gp0::BlitVramToVram(Gp0VramBlitDecoder::RecvSrc)
             }
@@ -347,7 +348,7 @@ impl<A: Allocator + Copy> Emu<A> {
                 Ok(decoder) => self.gpu.gp0 = Gp0::BlitCpuToVramDecoding(decoder),
                 Err(draw_call) => {
                     tracing::trace!(?draw_call, "decoded");
-                    self.gpu.gpustat.set_ready_recv_cmd(true);
+                    tracing::info!("blit:cpu-to-vram:{:?}", draw_call);
                     self.gpu.gp0 = Gp0::BlitCpuToVram {
                         cmd:    draw_call,
                         data:   Vec::with_capacity(draw_call.size.area()),
@@ -365,6 +366,7 @@ impl<A: Allocator + Copy> Emu<A> {
                 for _ in cursor.iter().take(2) {}
                 match cursor.done() {
                     true => {
+                        self.gpu.gpustat.set_ready_recv_cmd(true);
                         self.gpu_issue_draw_call(DrawCallKind::BlitCpu2Vram(cmd, data));
                         self.gpu.gp0 = Gp0::WaitingForCmd;
                     }
@@ -379,7 +381,6 @@ impl<A: Allocator + Copy> Emu<A> {
                     self.gpu.gp0 = Gp0::BlitVramToCpuDecoding(decoder);
                 }
                 Err(blit) => {
-                    self.gpu.gpustat.set_ready_recv_cmd(true);
                     match &self.gpu.vram {
                         Vram::Mapped(_) => {}
                         Vram::Lent => {
@@ -387,6 +388,7 @@ impl<A: Allocator + Copy> Emu<A> {
                         }
                     }
                     self.gpu.ongoing_read = Some(blit);
+                    self.gpu.gpustat.set_ready_recv_cmd(true);
                     self.gpu.gp0 = Gp0::WaitingForCmd
                 }
             },
@@ -398,6 +400,8 @@ impl<A: Allocator + Copy> Emu<A> {
                 }
                 Err(vram_blit) => {
                     tracing::trace!(?vram_blit, "decoded");
+                    tracing::info!("blit:vram-to-vram:{:?}", vram_blit);
+                    panic!("got here");
                     self.gpu.gpustat.set_ready_recv_cmd(true);
                     self.gpu_issue_draw_call(DrawCallKind::BlitVram2Vram(vram_blit));
                     self.gpu.gp0 = Gp0::WaitingForCmd;
@@ -429,6 +433,7 @@ impl<A: Allocator + Copy> Emu<A> {
                         }
                     }
 
+                    self.gpu.gpustat.set_ready_recv_cmd(true);
                     self.gpu.gp0 = Gp0::WaitingForCmd;
                 }
             },
@@ -489,6 +494,7 @@ impl<A: Allocator + Copy> Emu<A> {
                 }
             }
             Gp0::CpuReadingVram => {
+                self.gpu.gpustat.set_ready_recv_cmd(true);
                 tracing::warn!("vram->cpu blit interrupted by command")
             }
         };
@@ -619,6 +625,7 @@ impl<A: Allocator> Emu<A> {
                     }
                     self.gpu.gpustat.set_gp0_rffl(true);
                     self.gpu.ongoing_read = None;
+                    self.gpu.gpustat.set_ready_recv_cmd(true);
                 }
                 Vram::Lent => {
                     if self.gpu_poll_vram_res() {
@@ -771,8 +778,8 @@ impl<A: Allocator + Copy> GpuState<A> {
 fn vram_get(vram: &[u16], coord: VramCoord) -> u16 {
     let coord = coord.wrap();
     let addr = coord.x as usize + coord.y as usize * kb(1);
-    let value = vram[addr];
-    value
+
+    vram[addr]
 }
 
 impl<A: Allocator> GpuState<A> {
