@@ -8,54 +8,35 @@ struct Uniforms {
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
 @group(0) @binding(1) var<storage, read> src_buf: array<u32>;
 @group(0) @binding(2) var dest_tex: texture_storage_2d<r16uint,write>;
-@group(0) @binding(3) var vram_tex: texture_storage_2d<r32uint,read_write>;
+@group(0) @binding(3) var vram_tex: texture_storage_2d<r16uint,read_write>;
 
 const CPU_TO_VRAM: u32 = 0;
 const VRAM_TO_VRAM: u32 = 1;
 
-// FIXME: this shader assumes size is even and it WILL break under certain conditions.
 @compute @workgroup_size(16, 16, 1)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    var size = uniforms.size;
-    var dest = clip_pos(vec2(gid.x*2, gid.y)+uniforms.dest);
+    var size = copy_clip_size(uniforms.size);
+    var dest = clip_pos(gid.xy+uniforms.dest);
 
-    if (gid.x >= uniforms.size.x/2 || gid.y >= uniforms.size.y) { return; }
+    if (any(gid.xy >= size)) { return; }
 
     switch uniforms.kind {
         case CPU_TO_VRAM {
-            let px = gid.x * 2u;
-            let has_second = px + 1u < size.x;
+            let i0 = gid.y * size.x + gid.x;
+            let value = get_src(i0);
 
-            let i0 = gid.y * size.x + px;
-            let left = get_src(i0);
-            var right = 0u;
-            if has_second { right = get_src(i0 + 1u); }
-            let packed = left | (right << 16u);
-
-            let dest_left = dest;
-            let dest_right = vec2(dest.x+1, dest.y);
-            textureStore(dest_tex, dest_left, vec4(left, 0, 0, 0));
-            if has_second {
-                textureStore(dest_tex, dest_right, vec4(right, 0, 0, 0));
-            }
-
-            textureStore(vram_tex, vramcoord_to_texcoord(dest), vec4(packed, 0, 0, 0));
+            textureStore(dest_tex, dest, vec4(value, 0, 0, 0));
+            textureStore(vram_tex, dest, vec4(value, 0, 0, 0));
         }
         case VRAM_TO_VRAM, default: {
-            let sp = vec2(gid.x * 2u, gid.y) + uniforms.src;
-            let left  = get_vram(sp);
-            let right = get_vram(sp + vec2(1u, 0u));
-            let packed = left | (right << 16u);
+            let sp = vec2(gid.x, gid.y) + uniforms.src;
+            let value = get_vram(sp);
 
-            let dest_left  = vec2(dest.x,   dest.y);
-            let dest_right = vec2(dest.x+1, dest.y);
-
-            textureStore(dest_tex, dest_left, vec4(left, 0, 0, 0));
-            textureStore(dest_tex, dest_right, vec4(right, 0, 0, 0));
-            textureStore(vram_tex, vramcoord_to_texcoord(dest), vec4(packed, 0, 0, 0));
-            // textureStore(dest_tex, dest_left, vec4(0xFFFF, 0, 0, 0));
-            // textureStore(dest_tex, dest_right, vec4(0xFFFF, 0, 0, 0));
-            // textureStore(vram_tex, vramcoord_to_texcoord(dest), vec4(0xFFFFFFFF, 0, 0, 0));
+            textureStore(dest_tex, dest, vec4(value, 0, 0, 0));
+            textureStore(vram_tex, dest, vec4(value, 0, 0, 0));
+            // textureStore(dest_tex, dest_left, vec4(0x0000, 0, 0, 0));
+            // textureStore(dest_tex, dest_right, vec4(0x0000, 0, 0, 0));
+            // textureStore(vram_tex, vramcoord_to_texcoord(dest), vec4(0x00000000, 0, 0, 0));
         }
     }
 }

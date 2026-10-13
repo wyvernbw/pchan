@@ -185,16 +185,16 @@ impl Renderer {
         let vram_texture = device.create_texture(&TextureDescriptor {
             label: Some("pchan_gpu::vram_tex"),
             size: Extent3d {
-                width: 512,
+                width: 1024,
                 height: 512,
                 ..Default::default()
             },
             mip_level_count: 1,
             sample_count: 1,
             dimension: TextureDimension::D2,
-            format: TextureFormat::R32Uint,
+            format: TextureFormat::R16Uint,
             usage: TextureUsages::STORAGE_BINDING | TextureUsages::COPY_DST,
-            view_formats: &[TextureFormat::R32Uint],
+            view_formats: &[TextureFormat::R16Uint],
         });
         let vram_view = vram_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let vram_out_buf = device.create_buffer(&BufferDescriptor {
@@ -220,7 +220,7 @@ impl Renderer {
                     visibility: ShaderStages::all(),
                     ty: BindingType::StorageTexture {
                         access: StorageTextureAccess::ReadOnly,
-                        format: TextureFormat::R32Uint,
+                        format: TextureFormat::R16Uint,
                         view_dimension: TextureViewDimension::D2,
                     },
                     count: None,
@@ -1252,7 +1252,7 @@ fn create_blit_compute_resources(
                 visibility: ShaderStages::COMPUTE,
                 ty: BindingType::StorageTexture {
                     access: StorageTextureAccess::ReadWrite,
-                    format: TextureFormat::R32Uint,
+                    format: TextureFormat::R16Uint,
                     view_dimension: TextureViewDimension::D2,
                 },
                 count: None,

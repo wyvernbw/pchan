@@ -741,10 +741,12 @@ impl DrawCallDecoder for Gp0VramBlitDecoder {
         match self {
             Gp0VramBlitDecoder::RecvSrc => {
                 let src: VramCoord = unsafe { transmute(value) };
+                let src = src.copy_cmd_pos_mask();
                 Ok(Gp0VramBlitDecoder::RecvDest { src })
             }
             Gp0VramBlitDecoder::RecvDest { src } => {
                 let dest: VramCoord = unsafe { transmute(value) };
+                let dest = dest.copy_cmd_pos_mask();
                 Ok(Gp0VramBlitDecoder::RecvSize { src, dest })
             }
             Gp0VramBlitDecoder::RecvSize { src, dest } => {

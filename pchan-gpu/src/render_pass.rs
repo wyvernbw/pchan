@@ -105,7 +105,7 @@ impl<A: Allocator + Copy> RenderPass<'_, A> {
                 },
                 self.renderer.vram_texture.as_image_copy(),
                 Extent3d {
-                    width: 512,
+                    width: 1024,
                     height: 512,
                     depth_or_array_layers: 1,
                 },
@@ -175,6 +175,18 @@ impl<A: Allocator + Copy> RenderPass<'_, A> {
         render_pass.set_bind_group(0, &self.renderer.render_bind_group, &[]);
         render_pass.set_vertex_buffer(0, self.renderer.vertex_buf.slice(vertex_start..vertex_end));
         render_pass.draw(0..vertex_count as u32, 0..1);
+
+        drop(render_pass);
+
+        self.encoder.copy_texture_to_texture(
+            self.renderer.render_texture.as_image_copy(),
+            self.renderer.vram_texture.as_image_copy(),
+            Extent3d {
+                width: 1024,
+                height: 512,
+                depth_or_array_layers: 1,
+            },
+        );
     }
 
     fn vram_blit(&mut self, blit: &Gp0VramBlit) {
@@ -212,7 +224,7 @@ impl<A: Allocator + Copy> RenderPass<'_, A> {
             uniforms_staging.offset(),
             &self.renderer.blit.uniforms_buf,
             0,
-            uniforms.as_bytes().len() as u64,
+            uniforms.as_bytes().len().next_multiple_of(4) as u64,
         );
 
         let mut cpass = self.encoder.begin_compute_pass(&ComputePassDescriptor {
@@ -222,7 +234,7 @@ impl<A: Allocator + Copy> RenderPass<'_, A> {
 
         tracing::info!(?uniforms);
 
-        let dispatch_x = uniforms.size.x.div_ceil(WORKGROUP_SIZE * 2);
+        let dispatch_x = uniforms.size.x.div_ceil(WORKGROUP_SIZE);
         let dispatch_y = uniforms.size.y.div_ceil(WORKGROUP_SIZE);
 
         cpass.set_pipeline(&self.renderer.blit.pipe);
@@ -271,7 +283,7 @@ impl<A: Allocator + Copy> RenderPass<'_, A> {
             timestamp_writes: None,
         });
 
-        let dispatch_x = uniforms.size.x.div_ceil(WORKGROUP_SIZE * 2);
+        let dispatch_x = uniforms.size.x.div_ceil(WORKGROUP_SIZE);
         let dispatch_y = uniforms.size.y.div_ceil(WORKGROUP_SIZE);
 
         tracing::info!(?uniforms);
