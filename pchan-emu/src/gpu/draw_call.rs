@@ -757,3 +757,19 @@ impl DrawCallDecoder for Gp0VramBlitDecoder {
         }
     }
 }
+
+pub trait BlitCmd {
+    fn is_small(&self) -> bool;
+}
+
+impl BlitCmd for Gp0HostBlit {
+    fn is_small(&self) -> bool {
+        self.size.area() < 512
+    }
+}
+
+impl BlitCmd for Gp0VramBlit {
+    fn is_small(&self) -> bool {
+        self.size.area() < 512
+    }
+}

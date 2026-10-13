@@ -12,7 +12,7 @@ use arbitrary_int::prelude::Integer;
 use blink_alloc::BlinkAlloc;
 pub use glam;
 use pchan_emu::gpu::vram::{IVramCoord, VramCoord};
-use pchan_emu::memory::mb;
+use pchan_emu::memory::{kb, mb};
 use pchan_utils::default;
 use pchan_utils::tracy::TracyClient;
 pub(crate) mod render_pass;
@@ -401,8 +401,8 @@ impl Renderer {
             vram_texture,
             render_bind_group,
             conn: Conn {
-                draw_call_chan: kanal::bounded_async(2),
-                vram_out_chan: kanal::bounded_async(2),
+                draw_call_chan: kanal::bounded_async(128),
+                vram_out_chan: kanal::bounded_async(128),
                 reset_flag: &pchan_emu::gpu::RESET_FLAG,
             },
             display_pipeline,
@@ -510,6 +510,7 @@ impl Renderer {
                 .expect("render channel closed");
             match msg {
                 DrawCallMsg::DrawCall(draw_call) => {
+                    alloc.reset();
                     let mut pass = Pass::new_in(&alloc);
                     pass.add_draw_call(draw_call);
                     let mut flush = match self.draw_submission_loop(&mut pass).await {
@@ -530,8 +531,6 @@ impl Renderer {
                     render_pass.finish(&mut flush.vram.vram).await.unwrap();
                     let elapsed = start.elapsed();
                     tracing::info!("finished render in {:.2}ms", elapsed.as_millis_f32());
-
-                    alloc.reset();
 
                     self.conn
                         .vram_out_chan

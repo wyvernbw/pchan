@@ -19,9 +19,9 @@ use tracing::Level;
 
 use crate::Emu;
 use crate::gpu::draw_call::{
-    DrawCall, DrawCallDecoder, DrawCallKind, DrawLineDecoder, DrawPolygonDecoder, DrawRectDecoder,
-    Gp0HostBlit, Gp0HostBlitDecoder, Gp0SetDrawAreaCmd, Gp0SetDrawOffsetCmd, Gp0SetMaskBitCmd,
-    Gp0VramBlitDecoder, GpuInternalDrawReg,
+    BlitCmd, DrawCall, DrawCallDecoder, DrawCallKind, DrawLineDecoder, DrawPolygonDecoder,
+    DrawRectDecoder, Gp0HostBlit, Gp0HostBlitDecoder, Gp0SetDrawAreaCmd, Gp0SetDrawOffsetCmd,
+    Gp0SetMaskBitCmd, Gp0VramBlitDecoder, GpuInternalDrawReg,
 };
 use crate::gpu::vram::{Rgb5, VramCoord, VramCursor};
 use crate::io::irq::Irq;
@@ -93,7 +93,9 @@ pub struct GpuState<A: Allocator> {
     pub tex_window: Gp0TexWindowCmd,
     pub draw_reg:   GpuInternalDrawReg,
     pub model:      GpuModel,
-    ongoing_read:   Option<Gp0HostBlit>,
+
+    ongoing_read:         Option<Gp0HostBlit>,
+    draw_calls_in_flight: bool,
 
     #[debug(skip)]
     #[endecode(skip)]
@@ -130,10 +132,11 @@ impl<A: Allocator + Copy> GpuState<A> {
             tex_window: Gp0TexWindowCmd::default(),
             draw_reg: GpuInternalDrawReg::default(),
             conn: Conn {
-                draw_call_chan: kanal::bounded_async(3),
-                vram_out_chan:  kanal::bounded_async(3),
+                draw_call_chan: kanal::bounded_async(128),
+                vram_out_chan:  kanal::bounded_async(128),
                 reset_flag:     &RESET_FLAG,
             },
+            draw_calls_in_flight: false,
             dp: Display::default(),
             last_vblank: Instant::now(),
             vblank_signal: false,
@@ -347,15 +350,23 @@ impl<A: Allocator + Copy> Emu<A> {
             Gp0::BlitCpuToVramDecoding(decoder) => match decoder.advance(value) {
                 Ok(decoder) => self.gpu.gp0 = Gp0::BlitCpuToVramDecoding(decoder),
                 Err(draw_call) => {
-                    tracing::trace!(?draw_call, "decoded");
-                    tracing::info!("blit:cpu-to-vram:{:?}", draw_call);
-                    self.gpu.gp0 = Gp0::BlitCpuToVram {
-                        cmd:  draw_call,
-                        data: Vec::with_capacity(draw_call.size.area()),
+                    if tracing::enabled!(Level::TRACE) {
+                        tracing::trace!(?draw_call, "decoded");
+                        tracing::info!("blit:cpu-to-vram:{:?}", draw_call);
+                    }
+
+                    if !self.gpu.draw_calls_in_flight || draw_call.is_small() {
+                        tracing::info!("running blit on cpu");
+                        self.gpu.gp0 = Gp0::RunBlitCpuToVram(draw_call, draw_call.cursor());
+                    } else {
+                        self.gpu.gp0 = Gp0::OffloadBlitCpuToVram {
+                            cmd:  draw_call,
+                            data: Vec::with_capacity(draw_call.size.area()),
+                        }
                     }
                 }
             },
-            Gp0::BlitCpuToVram { cmd, mut data } => {
+            Gp0::OffloadBlitCpuToVram { cmd, mut data } => {
                 let bytes = value.to_le_bytes();
                 let buf_size = cmd.size.area() * size_of::<u16>();
                 data.extend(bytes);
@@ -364,7 +375,24 @@ impl<A: Allocator + Copy> Emu<A> {
                     self.gpu_issue_draw_call(DrawCallKind::BlitCpu2Vram(cmd, data));
                     self.gpu.gp0 = Gp0::WaitingForCmd;
                 } else {
-                    self.gpu.gp0 = Gp0::BlitCpuToVram { cmd, data };
+                    self.gpu.gp0 = Gp0::OffloadBlitCpuToVram { cmd, data };
+                }
+            }
+            // in case we already have the vram, or the blit is small, run on the cpu
+            Gp0::RunBlitCpuToVram(blit, mut cursor) => {
+                let gpustat = self.gpu.gpustat;
+                let mut vram = self.gpu.lock_vram_mut();
+                for (at, value) in cursor.iter().zip(halfwords(value)).take(2) {
+                    vram.vram_draw(at, value, gpustat);
+                }
+                match cursor.done() {
+                    true => {
+                        self.gpu.gpustat.set_ready_recv_cmd(true);
+                        self.gpu.gp0 = Gp0::WaitingForCmd;
+                    }
+                    false => {
+                        self.gpu.gp0 = Gp0::RunBlitCpuToVram(blit, cursor);
+                    }
                 }
             }
 
@@ -387,8 +415,10 @@ impl<A: Allocator + Copy> Emu<A> {
                     self.gpu.gp0 = Gp0::BlitVramToVramDecoding(decoder);
                 }
                 Err(vram_blit) => {
-                    tracing::trace!(?vram_blit, "decoded");
-                    tracing::info!("blit:vram-to-vram:{:?}", vram_blit);
+                    if tracing::enabled!(Level::TRACE) {
+                        tracing::trace!(?vram_blit, "decoded");
+                        tracing::info!("blit:cpu-to-vram:{:?}", vram_blit);
+                    }
                     self.gpu.gpustat.set_ready_recv_cmd(true);
                     self.gpu_issue_draw_call(DrawCallKind::BlitVram2Vram(vram_blit));
                     self.gpu.gp0 = Gp0::WaitingForCmd;
@@ -432,7 +462,9 @@ impl<A: Allocator + Copy> Emu<A> {
                         self.gpu.gp0 = Gp0::DrawRectDecode(decoder);
                     }
                     Err(draw_call) => {
-                        tracing::trace!(?draw_call, "decoded");
+                        if tracing::enabled!(Level::TRACE) {
+                            tracing::trace!(?draw_call, "decoded");
+                        }
                         self.gpu.gpustat.set_ready_recv_cmd(true);
                         self.gpu_issue_draw_call(DrawCallKind::Rect(draw_call));
                         self.gpu.gp0 = Gp0::WaitingForCmd;
@@ -446,7 +478,9 @@ impl<A: Allocator + Copy> Emu<A> {
                         self.gpu.gp0 = Gp0::DrawPolygonDecode(decoder);
                     }
                     Err(draw_call) => {
-                        tracing::trace!(?draw_call, "decoded");
+                        if tracing::enabled!(Level::TRACE) {
+                            tracing::trace!(?draw_call, "decoded");
+                        }
 
                         if draw_call.header.textured() {
                             self.gpu
@@ -473,7 +507,9 @@ impl<A: Allocator + Copy> Emu<A> {
                         self.gpu.gp0 = Gp0::DrawLineDecode(decoder);
                     }
                     Err(draw_call) => {
-                        tracing::trace!(?draw_call, "decoded");
+                        if tracing::enabled!(Level::TRACE) {
+                            tracing::trace!(?draw_call, "decoded");
+                        }
                         self.gpu.gpustat.set_ready_recv_cmd(true);
                         self.gpu_issue_draw_call(DrawCallKind::Line(draw_call));
                         self.gpu.gp0 = Gp0::WaitingForCmd;
@@ -589,6 +625,7 @@ impl<A: Allocator + Copy> Emu<A> {
     }
 
     pub fn gpu_issue_draw_call(&mut self, kind: DrawCallKind) {
+        self.gpu.draw_calls_in_flight = true;
         let draw_call = self.gpu_create_draw_call(kind);
         self.gpu
             .conn
@@ -659,6 +696,10 @@ impl<A: Allocator> GpuState<A> {
     pub fn take_vram(&mut self) -> Vram<Global> {
         core::mem::replace(&mut self.vram, Vram::Lent)
     }
+
+    pub fn is_vram_lent(&self) -> bool {
+        matches!(self.vram, Vram::Lent)
+    }
 }
 
 impl<A: Allocator + Copy> GpuState<A> {
@@ -707,6 +748,7 @@ impl<A: Allocator + Copy> GpuState<A> {
                     }
                 }
                 self.vram_mutation_signal = false;
+                self.draw_calls_in_flight = false;
             }
         }
     }
@@ -800,11 +842,12 @@ pub enum Gp0 {
     DrawRectDecode(DrawRectDecoder),
     // copy commands
     BlitCpuToVramDecoding(Gp0HostBlitDecoder),
-    BlitCpuToVram {
+    OffloadBlitCpuToVram {
         cmd:  Gp0HostBlit,
         #[endecode(alloc(global))]
         data: Vec<u8>,
     },
+    RunBlitCpuToVram(Gp0HostBlit, VramCursor),
     BlitVramToCpuDecoding(Gp0HostBlitDecoder),
     BlitVramToVramDecoding(Gp0VramBlitDecoder),
     CpuReadingVram,

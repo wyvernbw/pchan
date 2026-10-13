@@ -7,6 +7,7 @@ use crate::{BlitUniforms, Command, Pass, Renderer, Scene};
 use pchan_emu::gpu::GpuStatReg;
 use pchan_emu::gpu::draw_call::{Gp0HostBlit, Gp0VramBlit};
 use pchan_utils::tracy;
+use tracing::Level;
 use wgpu::util::{BufferInitDescriptor, DeviceExt, StagingBelt};
 use wgpu::*;
 
@@ -237,7 +238,9 @@ impl<A: Allocator + Copy> RenderPass<'_, A> {
             timestamp_writes: None,
         });
 
-        tracing::info!(?uniforms);
+        if tracing::enabled!(Level::TRACE) {
+            tracing::trace!(?uniforms);
+        }
 
         let dispatch_x = uniforms.size.x.div_ceil(WORKGROUP_SIZE);
         let dispatch_y = uniforms.size.y.div_ceil(WORKGROUP_SIZE);
@@ -291,7 +294,9 @@ impl<A: Allocator + Copy> RenderPass<'_, A> {
         let dispatch_x = uniforms.size.x.div_ceil(WORKGROUP_SIZE);
         let dispatch_y = uniforms.size.y.div_ceil(WORKGROUP_SIZE);
 
-        tracing::info!(?uniforms);
+        if tracing::enabled!(Level::TRACE) {
+            tracing::trace!(?uniforms);
+        }
         cpass.set_pipeline(&self.renderer.blit.pipe);
         cpass.set_bind_group(0, &self.renderer.blit.bind_group, &[]);
         cpass.dispatch_workgroups(dispatch_x, dispatch_y, 1);
@@ -328,14 +333,16 @@ impl<A: Allocator + Copy> RenderPass<'_, A> {
         self.renderer
             .vram_out_buf
             .map_async(MapMode::Read, .., move |res| {
-                res.unwrap();
+                if let Err(err) = res {
+                    tracing::warn!("{err}");
+                }
             });
         let device = self.renderer.device.clone();
         smol::unblock(move || {
             _ = device.poll(PollType::wait_indefinitely());
         })
         .await;
-        let buf_mapped = self.renderer.vram_out_buf.get_mapped_range(..)?;
+        let buf_mapped = self.renderer.vram_out_buf.get_mapped_range(..).unwrap();
         let buf =
             unsafe { core::slice::from_raw_parts(buf_mapped.as_ptr().cast::<u16>(), 1024 * 512) };
         vram.copy_from_slice(buf);
