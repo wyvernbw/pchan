@@ -729,7 +729,6 @@ impl<A: Allocator + Copy> GpuState<A> {
         match self.vram {
             Vram::Mapped(_) => {}
             Vram::Lent => {
-                tracing::info!("waiting for draw result");
                 let vram = self
                     .conn
                     .vram_out_chan
@@ -737,7 +736,6 @@ impl<A: Allocator + Copy> GpuState<A> {
                     .as_sync()
                     .recv()
                     .expect("channel dropped: failed to receive queued render");
-                tracing::info!("got draw result");
                 match vram {
                     VramRes::Result { vram } => {
                         self.vram = Vram::Mapped(vram);

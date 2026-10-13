@@ -24,6 +24,7 @@ use core::{mem, ptr};
 use std::mem::offset_of;
 use std::sync::Mutex;
 use std::time::Instant;
+use tracing::Level;
 use wgpu::util::StagingBelt;
 
 use glam::prelude::*;
@@ -500,7 +501,6 @@ impl Renderer {
         tracing::info!("started gpu renderer task");
         let mut alloc = BlinkAlloc::new();
         loop {
-            tracing::trace!("waiting for draw calls...");
             let msg = self
                 .conn
                 .draw_call_chan
@@ -530,7 +530,10 @@ impl Renderer {
                     render_pass.draw(&flush.vram.vram, flush.vram.dirty);
                     render_pass.finish(&mut flush.vram.vram).await.unwrap();
                     let elapsed = start.elapsed();
-                    tracing::info!("finished render in {:.2}ms", elapsed.as_millis_f32());
+
+                    if tracing::enabled!(Level::DEBUG) {
+                        tracing::info!("finished render in {:.2}ms", elapsed.as_millis_f32());
+                    }
 
                     self.conn
                         .vram_out_chan
@@ -1024,13 +1027,12 @@ enum DrawRectError {
 
 impl<A: Allocator> Scene<A> {
     fn vertex_bytes(&self) -> &[u8] {
-        let vertex_buf = unsafe {
+        unsafe {
             slice::from_raw_parts(
                 self.vertex_buf.as_ptr().cast::<u8>(),
                 mem::size_of_val(self.vertex_buf.as_slice()),
             )
-        };
-        vertex_buf
+        }
     }
 
     fn add_draw_rect_draw_call(
