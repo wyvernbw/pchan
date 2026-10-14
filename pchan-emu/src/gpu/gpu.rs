@@ -361,7 +361,7 @@ impl<A: Allocator + Copy> Emu<A> {
                         tracing::info!("blit:cpu-to-vram:{:?}", draw_call);
                     }
 
-                    if !self.gpu.draw_calls_in_flight || draw_call.is_small() {
+                    if !self.gpu.draw_calls_in_flight && draw_call.is_small() {
                         tracing::info!("running blit on cpu");
                         self.gpu.flush_draw_calls();
                         self.gpu.wait_for_render_result();

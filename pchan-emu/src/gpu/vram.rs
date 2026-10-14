@@ -4,6 +4,7 @@ use core::alloc::Allocator;
 use core::iter;
 use core::mem::transmute;
 use derive_more as d;
+use glam::prelude::U16Vec2;
 use pchan_encode::derive::Endecode;
 use pchan_utils::hex;
 
@@ -89,6 +90,10 @@ impl VramCoord {
     pub fn area(&self) -> usize {
         self.x as usize * self.y as usize
     }
+
+    pub fn as_u16vec2(&self) -> U16Vec2 {
+        U16Vec2::new(self.x, self.y)
+    }
 }
 
 const impl From<u32> for VramCoord {
@@ -154,6 +159,15 @@ impl VramCursor {
 
     pub fn iter(&mut self) -> impl Iterator<Item = VramCoord> {
         iter::from_fn(|| self.next())
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        let rect = self
+            .border
+            .as_u16vec2()
+            .saturating_sub(self.start.as_u16vec2());
+        usize::from(rect.x * rect.y)
     }
 }
 

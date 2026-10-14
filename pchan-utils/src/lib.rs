@@ -170,6 +170,10 @@ pub mod tracy {
             self.0
                 .plot(tracy_client::plot_name!("cache-hitrate"), value);
         }
+        pub fn dma_transfers(&self, value: u64) {
+            self.0
+                .plot(tracy_client::plot_name!("dma-transfers"), value as f64);
+        }
     }
 
     pub use tracy_client::*;

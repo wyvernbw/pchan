@@ -410,7 +410,18 @@ impl<A: Allocator + Copy + Clone> Runner<A> {
             }
         }
         self.frame_idx = self.frame_idx.wrapping_add(1);
-        emu.tracy.cache_hitrate(f64::from(cache_hitrate()));
+        {
+            emu.tracy.cache_hitrate(f64::from(cache_hitrate()));
+            emu.tracy.dma_transfers(emu.stats.dma_transfers_per_frame);
+
+            let bc = emu.stats.pop_frame_blocks_compiled();
+            let bx = emu.stats.pop_frame_blocks_ran();
+            emu.tracy
+                .plot(tracy_client::plot_name!("blocks-compiled"), bc as f64);
+            emu.tracy
+                .plot(tracy_client::plot_name!("blocks-executed"), bx as f64);
+            emu.stats.dma_transfers_per_frame = 0;
+        }
         Some(start.elapsed())
     }
 

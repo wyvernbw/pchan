@@ -315,6 +315,8 @@ impl<A: Allocator + Copy> Emu<A> {
     }
 
     fn dma_write_data<T: Transfer>(&mut self, event: DmaEvent, transfer: &mut T) {
+        self.stats.dma_transfers_per_frame += 1;
+
         let init_chan = event.init_chan;
         let direction = init_chan.chcr.direction();
         let sync_mode = init_chan.chcr.sync_mode();
@@ -539,10 +541,47 @@ impl Transfer for Dma2Gpu {
         let slice = emu
             .fastmem_slice::<u32>(range.clone())
             .expect("dma2 fastmem fail");
+        staging_buf.clear();
         staging_buf.extend_from_slice(slice);
+        let mut cursor = 0;
 
-        for word in staging_buf.iter().copied() {
-            emu.gpu_gp0_cmd(GpuCmd::new_with_raw_value(word));
+        while cursor < staging_buf.len() {
+            match &mut emu.gpu.gp0 {
+                Gp0::OffloadBlitCpuToVram { cmd, data } => {
+                    let staging_buf = &staging_buf[cursor..];
+
+                    let size_halfwords = cmd.size.area();
+                    let size_words = size_halfwords.div_ceil(2);
+                    let need_words = size_words - data.len() / 4;
+                    let staging_len_words = staging_buf.len();
+
+                    let take = cmp::min(need_words, staging_len_words);
+                    let take_bytes = take * 4;
+                    let bytes = unsafe {
+                        slice::from_raw_parts(
+                            staging_buf.as_ptr().cast::<u8>(),
+                            mem::size_of_val(staging_buf),
+                        )
+                    };
+                    data.extend_from_slice(&bytes[..take_bytes]);
+                    cursor += take;
+
+                    if take < need_words {
+                        break;
+                    }
+
+                    let cmd = *cmd;
+                    let data = mem::take(data);
+                    emu.gpu.gpustat.set_ready_recv_cmd(true);
+                    emu.gpu_issue_draw_call(DrawCallKind::BlitCpu2Vram(cmd, data));
+                    emu.gpu.gp0 = Gp0::WaitingForCmd;
+                }
+                _ => {
+                    let word = staging_buf[cursor];
+                    cursor += 1;
+                    emu.gpu_gp0_cmd(GpuCmd::new_with_raw_value(word));
+                }
+            }
         }
 
         staging_buf.clear();

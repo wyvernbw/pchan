@@ -178,6 +178,7 @@ pub fn run_block<A: Allocator + Copy>(block: fn(*mut Emu<A>), emu: &mut Emu<A>, 
     #[cfg(debug_assertions)]
     {
         BLOCKS_EXECUTED.fetch_add(1, Ordering::Relaxed);
+        emu.stats.blocks_ran += 1;
     }
 
     // reset delta clock before running

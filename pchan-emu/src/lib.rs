@@ -108,6 +108,8 @@ pub struct Emu<A: Allocator = Global> {
 pub struct Stats {
     pub blocks_compiled: u64,
     pub blocks_ran:      u64,
+
+    pub dma_transfers_per_frame: u64,
 }
 impl<A: Allocator + Copy> Emu<A> {
     pub fn new_in(alloc: A) -> Self {
