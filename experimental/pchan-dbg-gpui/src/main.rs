@@ -654,10 +654,13 @@ impl PChanApp {
                 Some("bin" | "cue") => {
                     view.update(cx, move |view, cx| -> miette::Result<()> {
                         view.emucx.update(cx, |emucx, _| -> miette::Result<()> {
-                            let fsm = emucx.emu.open_disc(&content_path, true).into_diagnostic()?;
+                            let fsm = emucx
+                                .emu
+                                .open_disc(&content_path, false)
+                                .into_diagnostic()?;
                             emucx
                                 .emu
-                                .advance_open_disc(&content_path, fsm, true)
+                                .advance_open_disc(&content_path, fsm, false)
                                 .into_diagnostic()?;
                             emucx.content_path = ContentPath::Disc(content_path);
                             Ok(())

@@ -1,5 +1,6 @@
 use alloc::collections::VecDeque;
 use core::alloc::Allocator;
+use core::cmp;
 use pchan_encode::derive::Endecode;
 use std::fs;
 use std::io::{BufReader, Read, Seek};
@@ -176,14 +177,6 @@ pub struct InMemoryDiskReader {
     cursor: u64,
 }
 
-impl InMemoryDiskReader {
-    #[expect(clippy::unnecessary_wraps)]
-    fn seek(&mut self, to: u64) -> Result<(), std::io::Error> {
-        self.cursor = to;
-        Ok(())
-    }
-}
-
 trait DiscFile: Read + Seek + Send + Sync {}
 impl<T> DiscFile for T where T: Read + Seek + Send + Sync {}
 
@@ -207,7 +200,7 @@ impl DiscReader {
     ) -> std::io::Result<[u8; BYTES]> {
         match self {
             DiscReader::Streamed(streamed_disk_reader) => streamed_disk_reader.readn(cursor),
-            DiscReader::InMemory(_in_memory_disk_reader) => todo!(),
+            DiscReader::InMemory(in_memory_disk_reader) => in_memory_disk_reader.readn(cursor),
         }
     }
 }
@@ -225,6 +218,39 @@ impl StreamedDiskReader {
         let mut buf = [0u8; BYTES];
         tracing::info!(readn_stream_pos = self.reader.stream_position().unwrap());
         self.reader.read_exact(&mut buf)?;
+        let old_cursor = *cursor;
+
+        cursor.lba += (BYTES / SECTOR_USER_SIZE) as u32;
+        cursor.byte += (BYTES % SECTOR_USER_SIZE) as u32;
+
+        tracing::info!("lba={}->{}", old_cursor.lba, cursor.lba);
+
+        Ok(buf)
+    }
+}
+
+impl InMemoryDiskReader {
+    #[expect(clippy::unnecessary_wraps)]
+    fn seek(&mut self, to: u64) -> std::io::Result<()> {
+        self.cursor = to;
+        Ok(())
+    }
+
+    #[expect(clippy::unnecessary_wraps)]
+    fn readn<const BYTES: usize>(
+        &mut self,
+        cursor: &mut CdromCursor,
+    ) -> std::io::Result<[u8; BYTES]> {
+        let mut buf = [0u8; BYTES];
+        tracing::info!(readn_stream_pos = self.cursor);
+
+        let buf_cursor = usize::try_from(self.cursor).unwrap();
+        let src_end = cmp::min(buf_cursor + BYTES, self.buf.len());
+        let slice = &self.buf[buf_cursor..src_end];
+        let dest_end = cmp::min(slice.len(), buf.len());
+
+        buf[..dest_end].copy_from_slice(slice);
+
         let old_cursor = *cursor;
 
         cursor.lba += (BYTES / SECTOR_USER_SIZE) as u32;
