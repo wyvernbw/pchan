@@ -328,7 +328,7 @@ impl RegAlloc {
         Evicted(guest)
     }
 
-    fn alloc(&mut self, guest_reg: u8, host_reg: Reg) -> Allocated {
+    pub(crate) fn alloc(&mut self, guest_reg: u8, host_reg: Reg) -> Allocated {
         let host_reg = host_reg.to_idx();
         self.allocated.set(host_reg as usize, true);
         self.update_history(guest_reg);
@@ -380,11 +380,6 @@ impl Reg {
     pub fn consecutive(self: Reg, b: Reg) -> bool {
         let Reg::W(w) = self;
         b == Reg::W(w + 1)
-    }
-
-    #[must_use]
-    pub fn caller_saved(&self) -> bool {
-        matches!(self, Reg::W(19..=31))
     }
 }
 

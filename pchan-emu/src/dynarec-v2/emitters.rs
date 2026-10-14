@@ -2972,7 +2972,7 @@ impl DynarecOp for Div {
     fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
         match (self.rs, self.rt) {
             (_, 0) => {
-                let rt = ctx.dynarec.emit_load_reg(self.rt);
+                let rt = ctx.dynarec.emit_load_reg_stackless(self.rt);
                 #[cfg(target_arch = "aarch64")]
                 dynasm!(
                     ctx.dynarec.asm
@@ -2987,8 +2987,9 @@ impl DynarecOp for Div {
                 );
             }
             (_, _) => {
-                let rs = ctx.dynarec.emit_load_reg(self.rs);
-                let rt = ctx.dynarec.emit_load_reg(self.rt);
+                let rs = ctx.dynarec.emit_load_reg_stackless(self.rs);
+                ctx.dynarec.lock_register(&rs);
+                let rt = ctx.dynarec.emit_load_reg_stackless(self.rt);
 
                 #[cfg(target_arch = "aarch64")]
                 dynasm!(
@@ -3087,8 +3088,9 @@ impl DynarecOp for Multu {
                 );
             }
             (_, _) => {
-                let rs = ctx.dynarec.emit_load_reg(self.rs);
-                let rt = ctx.dynarec.emit_load_reg(self.rt);
+                let rs = ctx.dynarec.emit_load_reg_stackless(self.rs);
+                ctx.dynarec.lock_register(&rs);
+                let rt = ctx.dynarec.emit_load_reg_stackless(self.rt);
 
                 #[cfg(target_arch = "aarch64")]
                 dynasm!(
@@ -3120,8 +3122,9 @@ impl DynarecOp for Mult {
                 );
             }
             (_, _) => {
-                let rs = ctx.dynarec.emit_load_reg(self.rs);
-                let rt = ctx.dynarec.emit_load_reg(self.rt);
+                let rs = ctx.dynarec.emit_load_reg_stackless(self.rs);
+                ctx.dynarec.lock_register(&rs);
+                let rt = ctx.dynarec.emit_load_reg_stackless(self.rt);
 
                 #[cfg(target_arch = "aarch64")]
                 dynasm!(
@@ -3129,6 +3132,8 @@ impl DynarecOp for Mult {
                     ; smull x1, W(*rs), W(*rt)
                     ; str x1, [x0, Emu::<A>::HILO_OFFSET as _]
                 );
+
+                ctx.dynarec.unlock_register(&rs);
             }
         };
         EmitSummary::default()
@@ -3179,12 +3184,12 @@ pub fn test_mul_div(
 
 impl DynarecOp for Mflo {
     #[allow(clippy::useless_conversion)]
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit<A: Allocator + Copy>(&self, mut ctx: EmitCtx<A>) -> EmitSummary {
         if self.rd == 0 {
             return EmitSummary::default();
         }
 
-        let rd = ctx.dynarec.alloc_reg(self.rd);
+        let rd = ctx.dynarec.alloc_reg_stackless(self.rd);
 
         #[cfg(target_arch = "aarch64")]
         dynasm!(
@@ -3192,9 +3197,16 @@ impl DynarecOp for Mflo {
             ; .arch aarch64
             ; ldr W(*rd), [x0, Emu::<A>::HILO_OFFSET as _]
         );
+        emit_call(&mut ctx, |dynarec| {
+            dynasm!(
+                dynarec.asm
+                ; mov w2, W(*rd)
+                ; ldr x3, <log_mflo
+                ; blr x3
+            )
+        });
 
         ctx.dynarec.mark_dirty(self.rd);
-        rd.restore(ctx.dynarec);
 
         EmitSummary::default()
     }
@@ -3202,12 +3214,12 @@ impl DynarecOp for Mflo {
 
 impl DynarecOp for Mfhi {
     #[allow(clippy::useless_conversion)]
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit<A: Allocator + Copy>(&self, mut ctx: EmitCtx<A>) -> EmitSummary {
         if self.rd == 0 {
             return EmitSummary::default();
         }
 
-        let rd = ctx.dynarec.alloc_reg(self.rd);
+        let rd = ctx.dynarec.alloc_reg_stackless(self.rd);
 
         #[cfg(target_arch = "aarch64")]
         dynasm!(
@@ -3215,9 +3227,16 @@ impl DynarecOp for Mfhi {
             ; .arch aarch64
             ; ldr W(*rd), [x0, (Emu::<A>::HILO_OFFSET + size_of::<u32>()) as _]
         );
+        emit_call(&mut ctx, |dynarec| {
+            dynasm!(
+                dynarec.asm
+                ; mov w2, W(*rd)
+                ; ldr x3, <log_mfhi
+                ; blr x3
+            )
+        });
 
         ctx.dynarec.mark_dirty(self.rd);
-        rd.restore(ctx.dynarec);
 
         EmitSummary::default()
     }

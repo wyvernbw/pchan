@@ -1,6 +1,8 @@
 use core::alloc::Allocator;
 use core::ptr::NonNull;
 
+use pchan_utils::hex;
+
 use crate::Emu;
 
 #[repr(transparent)]
@@ -95,5 +97,20 @@ impl<A: Allocator + Copy> Emu<A> {
         unsafe {
             self.as_mut_unchecked().run_io();
         }
+    }
+
+    pub unsafe extern "C" fn log_mflo(self: *const Self, arg: u32) {
+        println!(
+            "mflo {} (pc={})",
+            arg,
+            hex(unsafe { self.as_ref_unchecked().cpu.pc })
+        )
+    }
+    pub unsafe extern "C" fn log_mfhi(self: *const Self, arg: u32) {
+        println!(
+            "mfhi {} (pc={})",
+            arg,
+            hex(unsafe { self.as_ref_unchecked().cpu.pc })
+        )
     }
 }

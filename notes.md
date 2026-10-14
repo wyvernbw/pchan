@@ -111,9 +111,9 @@ comparision with duckstation dynarec, fails:
   - [ ] div r
   - [ ] divu q
   - [ ] divu r
-  - [ ] mult l
-  - [ ] mult h
-  - [ ] multu l
-  - [ ] multu hi
+  - [x] mult l
+  - [x] mult h
+  - [x] multu l
+  - [x] multu hi
 - disastrous
   - [x] sltiu

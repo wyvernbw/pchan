@@ -23,8 +23,8 @@ pub struct Cpu {
     #[debug("{}", hex(self.pc))]
     pub pc:           u32, // store pc and d_clock together so one write can target both
     pub d_clock:      u32,
-    pub hilo:         u64,
     pub scratch_buf:  [u32; Self::SCRATCH_SIZE],
+    pub hilo:         u64,
     pub cop0:         Cop0,
     pub cop2:         Cop2,
     pub cop1:         Cop1,
