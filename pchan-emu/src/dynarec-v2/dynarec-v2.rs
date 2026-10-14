@@ -183,33 +183,36 @@ pub fn run_block<A: Allocator + Copy>(block: fn(*mut Emu<A>), emu: &mut Emu<A>, 
     // reset delta clock before running
     emu.cpu.d_clock = 0;
 
-    if instrument {
-        block
-            .instrument(tracing::info_span!("fn", addr = ?block))
-            .inner()(emu)
-    } else {
-        block(emu)
-    }
+    let initial_pc = emu.cpu.pc;
+    while emu.cpu.pc == initial_pc {
+        if instrument {
+            block
+                .instrument(tracing::info_span!("fn", addr = ?block))
+                .inner()(emu)
+        } else {
+            block(emu)
+        }
 
-    #[cfg(feature = "debugger-ext")]
-    {
-        use crate::debug::BreakpointKind;
+        #[cfg(feature = "debugger-ext")]
+        {
+            use crate::debug::BreakpointKind;
 
-        emu.dbg.break_on(emu.cpu.pc, BreakpointKind::EXECUTE);
-    }
+            emu.dbg.break_on(emu.cpu.pc, BreakpointKind::EXECUTE);
+        }
 
-    emu.cpu.drain_jump_queue();
-    if !emu.cpu.pc.is_multiple_of(0x4) {
-        emu.raise_exception(Exception::AdEl);
-    }
-    emu.run_io();
-    emu.cpu.drain_jump_queue();
-    if !emu.cpu.pc.is_multiple_of(0x4) {
-        emu.raise_exception(Exception::AdEl);
-    }
-    emu.cpu.cop0.set_bd(false);
+        emu.cpu.drain_jump_queue();
+        if !emu.cpu.pc.is_multiple_of(0x4) {
+            emu.raise_exception(Exception::AdEl);
+        }
+        emu.run_io();
+        emu.cpu.drain_jump_queue();
+        if !emu.cpu.pc.is_multiple_of(0x4) {
+            emu.raise_exception(Exception::AdEl);
+        }
+        emu.cpu.cop0.set_bd(false);
 
-    debug_assert_eq!(emu.cpu.gpr[0], 0);
+        debug_assert_eq!(emu.cpu.gpr[0], 0);
+    }
 }
 
 #[derive(Error, Debug)]

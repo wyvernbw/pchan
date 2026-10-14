@@ -17,7 +17,9 @@ use pchan_utils::{Chan, hex};
 use crate::Emu;
 use crate::cpu::interp::{Interpreter, InterpreterResult};
 use crate::dynarec_v2::emitters::{DecodedOp, DynarecOp, EmitCtx};
-use crate::dynarec_v2::{CreateDynarecParams, Dynarec, PipelineCompileError, run_block, run_step};
+use crate::dynarec_v2::{
+    CreateDynarecParams, Dynarec, PipelineCompileError, cache_hitrate, run_block, run_step,
+};
 use crate::memory::mb;
 
 #[derive(derive_more::Debug)]
@@ -408,6 +410,7 @@ impl<A: Allocator + Copy + Clone> Runner<A> {
             }
         }
         self.frame_idx = self.frame_idx.wrapping_add(1);
+        emu.tracy.cache_hitrate(f64::from(cache_hitrate()));
         Some(start.elapsed())
     }
 

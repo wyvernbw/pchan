@@ -165,6 +165,13 @@ pub mod tracy {
         }
     }
 
+    impl TracyClient {
+        pub fn cache_hitrate(&self, value: f64) {
+            self.0
+                .plot(tracy_client::plot_name!("cache-hitrate"), value);
+        }
+    }
+
     pub use tracy_client::*;
 }
 
