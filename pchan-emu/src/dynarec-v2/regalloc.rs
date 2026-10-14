@@ -187,9 +187,9 @@ impl RegAlloc {
         self.mapping[guest_reg as usize]
     }
 
-    // # Returns
-    // guest index of first allocated low priority.
-    // use [`allocated_guest_to_host`] to map to host register.
+    /// # Returns
+    /// guest index of first allocated low priority.
+    /// use [`allocated_guest_to_host`] to map to host register.
     #[must_use]
     pub fn first_allocated_low_priority(&self) -> Option<u8> {
         self.mapping
