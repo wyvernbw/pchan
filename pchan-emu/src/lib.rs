@@ -43,7 +43,7 @@ use crate::debug::DebuggerState;
 
 use crate::bootloader::BootloaderState;
 use crate::cpu::Cpu;
-use crate::dynarec_v2::DynarecCache;
+use crate::dynarec_v2::DynCache;
 use crate::gpu::GpuState;
 use crate::io::cdrom::CDRomState;
 use crate::io::dma::DmaState;
@@ -77,7 +77,7 @@ pub struct Emu<A: Allocator = Global> {
     pub cpu:           Cpu,
     #[debug(skip)]
     #[endecode(skip)]
-    pub dynarec_cache: DynarecCache<A>,
+    pub dynarec_cache: DynCache<A>,
     pub mem:           MemoryState<A>,
     #[endecode(skip)]
     pub boot:          BootloaderState<A>,
@@ -113,7 +113,7 @@ impl<A: Allocator + Copy> Emu<A> {
     pub fn new_in(alloc: A) -> Self {
         let mut emu = Self {
             cpu: Cpu::new(),
-            dynarec_cache: DynarecCache::new(alloc),
+            dynarec_cache: DynCache::new(alloc),
             mem: MemoryState::new(alloc),
             boot: BootloaderState::new_in(alloc),
             tty: Tty::new(alloc),

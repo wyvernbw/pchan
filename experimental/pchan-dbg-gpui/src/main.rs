@@ -486,7 +486,7 @@ impl EmuContext {
         let mut sink = Vec::new();
         f.read_to_end(&mut sink).into_diagnostic()?;
         pchan_encode::decode_in_place(&mut self.emu, sink, self.alloc).into_diagnostic()?;
-        self.emu.dynarec_cache.alloc_flush(self.alloc);
+        self.emu.dynarec_cache.flush();
         self.emu.gpu.drain_messages();
         println!("LOADED");
         tracing::info!("LOADED");

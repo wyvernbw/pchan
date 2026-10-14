@@ -15,7 +15,6 @@ use heapless::binary_heap::Min;
 use pchan_utils::{default, hex, max_simd_elements};
 use smallbox::SmallBox;
 use smallvec::SmallVec;
-use std::collections::HashSet;
 use std::simd::Simd;
 use std::sync::RwLockReadGuard;
 use thiserror::Error;
@@ -127,7 +126,7 @@ impl<A: Allocator + Copy> Dynarec<A> {
     ) -> Self {
         let reg_alloc = reg_alloc.unwrap_or_default();
         let scheduler = scheduler.unwrap_or_else(|| Box::new_in(Scheduler::<A>::default(), alloc));
-        let mut asm = asm.unwrap_or_else(|| {
+        let asm = asm.unwrap_or_else(|| {
             Assembler::new_with_capacity(ASM_CAPACITY).expect("fatal: failed to allocate assembler")
         });
         // Self::emit_globals(&mut asm);
@@ -175,46 +174,42 @@ struct DynFnPtr<'a, A: Allocator> {
     ptr:    fn(*mut Emu<A>),
 }
 
-impl<A: Allocator + Copy> DynarecBlock<A> {
-    pub fn run(&self, emu: &mut Emu<A>, dynarec: &mut Dynarec<A>, instrument: bool) {
-        #[cfg(debug_assertions)]
-        {
-            BLOCKS_EXECUTED.fetch_add(1, Ordering::Relaxed);
-            INSTR_EXECUTED.fetch_add(u64::from(self.op_count), Ordering::Relaxed);
-        }
-
-        // reset delta clock before running
-        emu.cpu.d_clock = 0;
-
-        let fn_ptr = self.fn_ptr;
-        if instrument {
-            (fn_ptr)
-                .instrument(tracing::info_span!("fn", addr = ?fn_ptr))
-                .inner()(emu)
-        } else {
-            (fn_ptr)(emu)
-        }
-
-        #[cfg(feature = "debugger-ext")]
-        {
-            use crate::debug::BreakpointKind;
-
-            emu.dbg.break_on(emu.cpu.pc, BreakpointKind::EXECUTE);
-        }
-
-        emu.cpu.drain_jump_queue();
-        if emu.cpu.pc % 0x4 != 0 {
-            emu.raise_exception(Exception::AdEl);
-        }
-        emu.run_io();
-        emu.cpu.drain_jump_queue();
-        if emu.cpu.pc % 0x4 != 0 {
-            emu.raise_exception(Exception::AdEl);
-        }
-        emu.cpu.cop0.set_bd(false);
-
-        debug_assert_eq!(emu.cpu.gpr[0], 0);
+pub fn run_block<A: Allocator + Copy>(block: fn(*mut Emu<A>), emu: &mut Emu<A>, instrument: bool) {
+    #[cfg(debug_assertions)]
+    {
+        BLOCKS_EXECUTED.fetch_add(1, Ordering::Relaxed);
     }
+
+    // reset delta clock before running
+    emu.cpu.d_clock = 0;
+
+    if instrument {
+        block
+            .instrument(tracing::info_span!("fn", addr = ?block))
+            .inner()(emu)
+    } else {
+        block(emu)
+    }
+
+    #[cfg(feature = "debugger-ext")]
+    {
+        use crate::debug::BreakpointKind;
+
+        emu.dbg.break_on(emu.cpu.pc, BreakpointKind::EXECUTE);
+    }
+
+    emu.cpu.drain_jump_queue();
+    if emu.cpu.pc % 0x4 != 0 {
+        emu.raise_exception(Exception::AdEl);
+    }
+    emu.run_io();
+    emu.cpu.drain_jump_queue();
+    if emu.cpu.pc % 0x4 != 0 {
+        emu.raise_exception(Exception::AdEl);
+    }
+    emu.cpu.cop0.set_bd(false);
+
+    debug_assert_eq!(emu.cpu.gpr[0], 0);
 }
 
 #[derive(Error, Debug)]
@@ -831,13 +826,13 @@ impl<A: Allocator + Copy> Emu<A> {
 
 pub fn run_step<A: Allocator + Copy + Clone>(emu: &mut Emu<A>, dynarec: &mut Dynarec<A>) {
     let pc = emu.cpu.pc;
-    let block = match emu.dynarec_cache.remove(pc) {
+    let block = match emu.dynarec_cache.get(pc) {
         None => {
-            let block = fetch_and_compile_single_threaded(emu, dynarec).unwrap();
+            let (op_count, block) = fetch_and_compile_single_threaded(emu, dynarec).unwrap();
             emu.stats.blocks_compiled += 1;
             #[cfg(debug_assertions)]
             {
-                INSTR_COMPILED.fetch_add(u64::from(block.op_count), Ordering::Relaxed);
+                INSTR_COMPILED.fetch_add(op_count as _, Ordering::Relaxed);
                 BLOCKS_COMPILED.fetch_add(1, Ordering::Relaxed);
                 CACHE_MISSES.fetch_add(1, Ordering::Relaxed);
             }
@@ -850,7 +845,7 @@ pub fn run_step<A: Allocator + Copy + Clone>(emu: &mut Emu<A>, dynarec: &mut Dyn
             block
         }
     };
-    block.run(emu, dynarec, false);
+    run_block(block, emu, false);
     emu.stats.blocks_ran += 1;
 
     emu.dynarec_cache.insert(pc, block);
@@ -897,11 +892,11 @@ pub struct PipelineCompileError;
 pub(crate) fn fetch_and_compile_single_threaded<A: Allocator + Copy>(
     emu: &mut Emu<A>,
     dynarec: &mut Dynarec<A>,
-) -> Result<DynarecBlock<A>, DynasmError> {
+) -> Result<(usize, fn(*mut Emu<A>)), DynasmError> {
     let mut start = dynarec.asm.offset();
 
     if start.0 > ASM_CAPACITY * 3 / 4 {
-        emu.dynarec_cache.alloc_flush(emu.alloc);
+        emu.dynarec_cache.flush();
         *dynarec = Dynarec::new(CreateDynarecParams {
             reg_alloc: None,
             scheduler: None,
@@ -933,7 +928,7 @@ pub(crate) fn fetch_and_compile_single_threaded<A: Allocator + Copy>(
                 _ => unreachable!(),
             };
             let cache_boundary_check = address >> 2;
-            if cache_boundary_check != 0 && cache_boundary_check.is_multiple_of(PAGE_LEN as u32) {
+            if cache_boundary_check != 0 && cache_boundary_check.is_multiple_of(PAGE_SIZE2 as u32) {
                 lifetime = 1
             }
             if op.is_boundary() {
@@ -1002,115 +997,119 @@ pub(crate) fn fetch_and_compile_single_threaded<A: Allocator + Copy>(
     dynarec.emit_block_epilogue(cycles, new_pc, true);
     let fn_ptr = dynarec.commit(start)?;
 
-    Ok(DynarecBlock {
-        fn_ptr,
-        op_count,
-        pc: initial_pc,
-    })
+    Ok((op_count, fn_ptr))
 }
 
-const CACHE_LEN: usize = (kb(2048) + kb(512)) >> 2;
-const PAGE_COUNT: usize = CACHE_LEN / PAGE_LEN;
-const PAGE_LEN: usize = kb(16);
+const PAGE_COUNT2: usize = 0x10000;
+const PAGE_SIZE2: usize = kb(64 << 2);
+const RAM_PAGE_COUNT: usize = kb(2048 << 2) / PAGE_SIZE2;
+const BIOS_PAGE_COUNT: usize = kb(512 << 2) / PAGE_SIZE2;
+const TOTAL_PAGE_COUNT: usize = RAM_PAGE_COUNT + BIOS_PAGE_COUNT;
 
-/// # [`DynarecCache`]
-///
-/// maps the entire psx ram and bios losslessly into a a flat, paged, ~320kb buffer
 #[derive(derive_more::Debug, Clone)]
-pub struct DynarecCache<A: Allocator> {
-    blocks:   Box<[Option<DynarecBlock<A>>; PAGE_LEN * PAGE_COUNT], A>,
-    metadata: [CachePage; PAGE_COUNT],
+#[debug("DynCache")]
+pub struct DynCache<A: Allocator> {
+    pages: Box<[CachePage2<A>; TOTAL_PAGE_COUNT], A>,
 }
 
 #[derive(derive_more::Debug, Clone)]
-struct CachePage {
-    inserted: HashSet<usize>,
-    cleared:  bool,
+#[debug("CachePage")]
+struct CachePage2<A: Allocator> {
+    blocks: [Option<fn(*mut Emu<A>)>; PAGE_SIZE2],
+    dirty:  bool,
 }
 
-impl Default for CachePage {
-    fn default() -> Self {
-        Self {
-            cleared:  true,
-            inserted: HashSet::new(),
-        }
+type PageTable = [Option<u8>; PAGE_COUNT2];
+
+static CACHE_LUT: PageTable = generate_cache_lut();
+
+const fn generate_cache_lut() -> PageTable {
+    #[allow(clippy::large_stack_arrays)]
+    let mut table: PageTable = [None; PAGE_COUNT2];
+
+    let mut i = 0usize;
+    while i < RAM_PAGE_COUNT {
+        let page = i as u8;
+
+        #[allow(clippy::identity_op)]
+        table[i + 0x0000] = Some(page);
+        table[i + 0x8000] = Some(page);
+        table[i + 0xA000] = Some(page);
+
+        i += 1;
     }
+
+    i = 0;
+    while i < BIOS_PAGE_COUNT {
+        let page = i as u8 + RAM_PAGE_COUNT as u8;
+
+        table[i + 0x1FC0] = Some(page);
+        table[i + 0x9FC0] = Some(page);
+        table[i + 0xBFC0] = Some(page);
+
+        i += 1;
+    }
+
+    table
 }
 
-impl<A: Allocator> DynarecCache<A> {
+impl<A: Allocator> DynCache<A> {
     pub fn new(alloc: A) -> Self {
-        let mut buf = Box::new_uninit_slice_in(PAGE_LEN * PAGE_COUNT, alloc);
-        for el in &mut buf {
-            *el = MaybeUninit::new(None);
-        }
-        let buf = unsafe { buf.assume_init() }.into_array().ok();
-        Self {
-            metadata: core::array::from_fn(|_| CachePage::default()),
-            blocks:   buf.unwrap(),
-        }
+        let buf: Box<[MaybeUninit<CachePage2<A>>], A> =
+            Box::new_zeroed_slice_in(TOTAL_PAGE_COUNT, alloc);
+        let buf = unsafe { buf.assume_init() };
+        let buf: Box<[CachePage2<A>; TOTAL_PAGE_COUNT], A> = match buf.try_into() {
+            Ok(buf) => buf,
+            Err(_) => unreachable!(),
+        };
+        Self { pages: buf }
     }
 
-    pub fn alloc_flush(&mut self, alloc: A) {
-        *self = Self::new(alloc);
-    }
-}
-
-impl<A: Allocator> DynarecCache<A> {
-    const PROB: Option<usize> = Self::map_addr_to_idx(0x8004f434);
-    const RAM_END: usize = Self::map_addr_to_idx(0x200000).unwrap();
-    const BIOS_START: usize = Self::map_addr_to_idx(0xbfc0_0000).unwrap();
-
-    fn block_mut(&mut self, page_idx: usize, element_idx: usize) -> &mut Option<DynarecBlock<A>> {
-        &mut self.blocks[page_idx * PAGE_LEN + element_idx]
-    }
-    fn block(&self, page_idx: usize, element_idx: usize) -> Option<&DynarecBlock<A>> {
-        self.blocks[page_idx * PAGE_LEN + element_idx].as_ref()
-    }
-
-    const fn map_addr_to_idx(address: u32) -> Option<usize> {
-        match address & 0x1fff_ffff {
-            // align by 4
-            // ram
-            addr @ 0..0x200000 => Some(((addr as usize) >> 2) / PAGE_LEN),
-            // bios
-            addr @ 0x1fc00000.. => Some(((addr as usize - 0x1fc00000 + kb(2048)) >> 2) / PAGE_LEN),
-            _ => None,
-        }
-    }
-    const fn map_addr(address: u32) -> Option<(usize, usize)> {
-        let page_idx = Self::map_addr_to_idx(address)?;
-        let element_idx = (address & 0xffff) >> 2;
-        Some((page_idx, element_idx as usize))
-    }
-    pub fn remove(&mut self, at: u32) -> Option<DynarecBlock<A>> {
-        Self::map_addr(at)
-            .map(|(page_idx, element_idx)| self.block_mut(page_idx, element_idx))
-            .and_then(Option::take)
-    }
-    pub fn get(&self, at: u32) -> Option<&DynarecBlock<A>> {
-        Self::map_addr(at).and_then(|(page_idx, element_idx)| self.block(page_idx, element_idx))
-    }
-    pub fn insert(&mut self, at: u32, value: DynarecBlock<A>) -> bool {
-        if let Some((page_idx, element_idx)) = Self::map_addr(at) {
-            *self.block_mut(page_idx, element_idx) = Some(value);
-            self.metadata[page_idx].cleared = false;
-            self.metadata[page_idx].inserted.insert(element_idx);
-            true
-        } else {
-            false
-        }
-    }
-    pub fn invalidate(&mut self, at: u32) {
-        if let Some((page_idx, _)) = Self::map_addr(at) {
-            if self.metadata[page_idx].cleared {
-                return;
+    pub fn insert(&mut self, address: u32, ptr: fn(*mut Emu<A>)) {
+        let page_idx = address >> 16;
+        let page = CACHE_LUT[page_idx as usize];
+        match page {
+            Some(page) => {
+                let offset = (address & 0xFFFF) >> 2;
+                let page = &mut self.pages[usize::from(page)];
+                page.blocks[offset as usize] = Some(ptr);
+                page.dirty = true;
             }
-            let page_blocks = &self.metadata[page_idx].inserted;
-            for block in page_blocks {
-                self.blocks[page_idx * PAGE_LEN + *block] = None;
+            None => panic!("unmapped memory"),
+        }
+    }
+
+    pub fn get(&self, address: u32) -> Option<fn(*mut Emu<A>)> {
+        let page_idx = address >> 16;
+        let page = CACHE_LUT[page_idx as usize];
+        match page {
+            Some(page) => {
+                let offset = (address & 0xFFFF) >> 2;
+                self.pages[usize::from(page)].blocks[offset as usize]
             }
-            self.metadata[page_idx].cleared = true;
-            self.metadata[page_idx].inserted.clear();
+            None => panic!("unmapped memory"),
+        }
+    }
+
+    pub fn invalidate(&mut self, address: u32) {
+        let page_idx = address >> 16;
+        let page = CACHE_LUT[page_idx as usize];
+        match page {
+            Some(page) => {
+                let page = &mut self.pages[usize::from(page)];
+                if page.dirty {
+                    page.blocks.fill(None);
+                    page.dirty = false;
+                }
+            }
+            None => panic!("unmapped memory"),
+        }
+    }
+
+    pub fn flush(&mut self) {
+        for page in &mut self.pages {
+            page.blocks.fill(None);
+            page.dirty = false;
         }
     }
 }
@@ -1119,7 +1118,6 @@ impl<A: Allocator> DynarecCache<A> {
 mod tests {
     use std::alloc::Global;
 
-    use color_eyre::Result;
     use pchan_utils::setup_tracing;
 
     use super::*;

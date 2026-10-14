@@ -17,9 +17,7 @@ use pchan_utils::{Chan, hex};
 use crate::Emu;
 use crate::cpu::interp::{Interpreter, InterpreterResult};
 use crate::dynarec_v2::emitters::{DecodedOp, DynarecOp, EmitCtx};
-use crate::dynarec_v2::{
-    CreateDynarecParams, Dynarec, DynarecBlock, PipelineCompileError, run_step,
-};
+use crate::dynarec_v2::{CreateDynarecParams, Dynarec, PipelineCompileError, run_block, run_step};
 use crate::memory::mb;
 
 #[derive(derive_more::Debug)]
@@ -82,7 +80,7 @@ enum CompileActorMsg {
 }
 
 enum CompileActorResponse<A: Allocator> {
-    Compiled(Result<DynarecBlock<A>, PipelineCompileError>),
+    Compiled(Result<(u32, fn(*mut Emu<A>)), PipelineCompileError>),
 }
 
 #[derive(Debug, Clone)]
@@ -170,23 +168,23 @@ impl<A: Allocator + Copy + Clone> Runner<A> {
                 run_step(emu, &mut self.dynarec);
             }
             None => loop {
-                if let Ok(Some(CompileActorResponse::Compiled(Ok(block)))) =
+                if let Ok(Some(CompileActorResponse::Compiled(Ok((pc, block))))) =
                     self.transport.out_chan.1.try_recv()
                 {
-                    tracing::info!("got compiled block: {}", hex(block.pc));
+                    tracing::info!("got compiled block: {}", hex(pc));
                     self.mode = RunnerMode::Dynarec;
-                    block.run(emu, &mut self.dynarec, false);
-                    emu.dynarec_cache.insert(block.pc, block);
+                    run_block(block, emu, false);
+                    emu.dynarec_cache.insert(pc, block);
                     continue;
                 }
                 match self.mode {
                     RunnerMode::Dynarec => {
                         let pc = emu.cpu.pc;
-                        let Some(block) = emu.dynarec_cache.remove(pc) else {
+                        let Some(block) = emu.dynarec_cache.get(pc) else {
                             self.mode = RunnerMode::Interpreter;
                             continue;
                         };
-                        block.run(emu, &mut self.dynarec, false);
+                        run_block(block, emu, false);
                         emu.dynarec_cache.insert(pc, block);
                         return;
                     }
@@ -199,18 +197,18 @@ impl<A: Allocator + Copy + Clone> Runner<A> {
                             .load(Ordering::Acquire)
                             == pc
                         {
-                            if let Ok(CompileActorResponse::Compiled(Ok(block))) =
+                            if let Ok(CompileActorResponse::Compiled(Ok((pc, block)))) =
                                 self.transport.out_chan.1.recv()
                             {
-                                tracing::info!("SYNC got compiled block: {}", hex(block.pc));
+                                tracing::info!("SYNC got compiled block: {}", hex(block));
                                 self.mode = RunnerMode::Dynarec;
-                                block.run(emu, &mut self.dynarec, false);
-                                emu.dynarec_cache.insert(block.pc, block);
+                                run_block(block, emu, false);
+                                emu.dynarec_cache.insert(pc, block);
                                 continue;
                             }
-                        } else if let Some(block) = emu.dynarec_cache.remove(pc) {
+                        } else if let Some(block) = emu.dynarec_cache.get(pc) {
                             self.mode = RunnerMode::Dynarec;
-                            block.run(emu, &mut self.dynarec, false);
+                            run_block(block, emu, false);
                             emu.dynarec_cache.insert(pc, block);
                             continue;
                         }
@@ -365,15 +363,13 @@ impl<A: Allocator + Copy + Clone> Runner<A> {
                                 false => Some(compile_state.pc + 0x4),
                             };
                             dynarec.emit_block_epilogue(compile_state.cycles, new_pc, true);
-                            let fn_ptr = dynarec.commit(start).unwrap();
+                            let block = dynarec.commit(start).unwrap();
 
-                            let func = DynarecBlock {
-                                fn_ptr,
-                                op_count: compile_state.op_count as u32,
-                                pc: compile_state.init_pc,
-                            };
-                            tx.send(CompileActorResponse::Compiled(Ok(func)))
-                                .expect("channel closed");
+                            tx.send(CompileActorResponse::Compiled(Ok((
+                                compile_state.init_pc,
+                                block,
+                            ))))
+                            .expect("channel closed");
                             handle
                                 .currently_compiling
                                 .store(u32::MAX, Ordering::Release);
