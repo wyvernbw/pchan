@@ -264,9 +264,7 @@ impl<'a> Exe<'a, Cow<'a, [u8]>> {
     }
 
     fn to_owned_code<A: Allocator>(&self, alloc: A) -> Exe<'static, Vec<u8, A>> {
-        let mut vec = Vec::new_in(alloc);
-        vec.reserve(self.code.len());
-        vec.copy_from_slice(&self.code);
+        let vec = self.code.to_vec_in(alloc);
         Exe {
             header: self.header.clone(),
             code:   vec,

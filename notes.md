@@ -92,3 +92,28 @@ pc history:
 
 looks like a memset loop. unhandled write happens because of a buffer overflow,
 cursor `$a1` is greater than the end `$a3` when entering the loop.
+
+# psxtest_cpu
+
+comparision with duckstation dynarec, fails:
+- probably ok
+  - [ ] mthi/mfhi
+  - [ ] mtlo/mflo
+  - [ ] mthi/mflo
+  - [ ] mtlo/mfhi
+  - [ ] almost all of mem adv
+  - [ ] all of bra adv
+- not great
+  - [ ] break x/v
+  - [ ] syscall v
+- bad
+  - [ ] div q
+  - [ ] div r
+  - [ ] divu q
+  - [ ] divu r
+  - [ ] mult l
+  - [ ] mult h
+  - [ ] multu l
+  - [ ] multu hi
+- disastrous
+  - [x] sltiu
