@@ -11,6 +11,7 @@ extern crate alloc;
 pub mod game_surface;
 
 use alloc::borrow::Cow;
+use alloc::collections::VecDeque;
 use alloc::rc::Rc;
 use alloc::sync::Arc;
 use core::cell::RefCell;
@@ -28,7 +29,7 @@ use gpui_component::slider::{Slider, SliderEvent, SliderState};
 use gpui_component::switch::Switch;
 use gpui_component::tab::TabBar;
 use gpui_component::{
-    ActiveTheme, IconName, Selectable, Sizable, StyledExt, Theme, h_flex, v_flex,
+    ActiveTheme, Selectable, Sizable, StyledExt, Theme, WindowExt, h_flex, v_flex,
 };
 use pchan_bind::ringbuf::StaticRb;
 use pchan_bind::ringbuf::traits::{Consumer, Observer, RingBuffer};
@@ -226,7 +227,9 @@ fn main() {
             });
 
             let game_view = cx.new(|_| GameView {
-                appcx: appcx.clone(),
+                appcx:    appcx.clone(),
+                toasts:   VecDeque::new(),
+                toast_id: 0,
             });
 
             let settings_view = cx.new(|_| SettingsView {
@@ -311,6 +314,51 @@ fn main() {
                     cx.notify();
                 });
             });
+            cx.spawn({
+                async move |cx| {
+                    emu_loop(appcx.clone(), cx).await;
+                }
+            })
+            .detach();
+
+            cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                        None,
+                        size(px(640.), px(480.)),
+                        cx,
+                    ))),
+                    ..window_opts()
+                },
+                {
+                    let game_view = game_view.clone();
+                    |win, cx| {
+                        game_view.update(cx, |game_view, cx| {
+                            cx.subscribe(
+                                &game_view.appcx.emucx,
+                                |view, _, ev: &SavestateToast, cx| match ev {
+                                    SavestateToast::Loaded => {
+                                        view.push_toast(
+                                            "Loaded savestate from /tmp/pchan-save.bin",
+                                            cx,
+                                        );
+                                    }
+                                    SavestateToast::LoadErr => todo!(),
+                                    SavestateToast::Saved => {
+                                        view.push_toast("Saved state to /tmp/pchan-save.bin", cx);
+                                    }
+                                },
+                            )
+                            .detach();
+                            win.focus(&game_view.appcx.focus_handle, cx);
+                        });
+
+                        game_view
+                    }
+                },
+            )
+            .unwrap();
+
             cx.on_action({
                 let emucx = emucx.clone();
                 move |_: &SaveState, cx| {
@@ -321,37 +369,13 @@ fn main() {
             });
             cx.on_action({
                 let emucx = emucx.clone();
+                let game_view = game_view.clone();
                 move |_: &LoadState, cx| {
                     emucx.update(cx, |emucx, _| {
                         emucx.load = true;
                     });
                 }
             });
-
-            cx.spawn({
-                async move |cx| {
-                    emu_loop(appcx.clone(), cx).await;
-                }
-            })
-            .detach();
-
-            _ = cx.open_window(
-                WindowOptions {
-                    window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-                        None,
-                        size(px(640.), px(480.)),
-                        cx,
-                    ))),
-                    ..window_opts()
-                },
-                |win, cx| {
-                    game_view.update(cx, |game_view, cx| {
-                        win.focus(&game_view.appcx.focus_handle, cx);
-                    });
-
-                    game_view
-                },
-            );
 
             cx.activate(true);
         });
@@ -381,7 +405,17 @@ struct Steel {
 }
 
 struct GameView {
-    appcx: AppCx,
+    appcx:    AppCx,
+    toasts:   VecDeque<Toast>,
+    toast_id: u64,
+}
+
+pub struct Toast {
+    task:    Task<()>,
+    msg:     SharedString,
+    anim:    Animation,
+    id:      u64,
+    expired: bool,
 }
 
 #[derive(Copy)]
@@ -738,11 +772,13 @@ async fn emu_loop(appcx: AppCx, cx: &mut AsyncApp) {
             if emucx.save {
                 emucx.save = false;
                 emucx.save_state().unwrap();
+                cx.emit(SavestateToast::Saved);
                 cx.notify();
             }
             if emucx.load {
                 emucx.load = false;
                 emucx.load_state().unwrap();
+                cx.emit(SavestateToast::Loaded);
                 cx.notify();
             }
 
@@ -806,6 +842,10 @@ impl Render for GameView {
         .min_h_4()
         .min_w_4();
 
+        if self.toasts.iter().all(|t| t.expired) {
+            self.toasts.clear();
+        }
+
         let content = self.appcx.emucx.read(cx).content_title();
         let view = v_flex()
             .h_full()
@@ -865,9 +905,100 @@ impl Render for GameView {
                         this.child(Separator::vertical().h_full())
                             .child(div().w(rems(2.)).child(format!("{frame_time_ms}ms")))
                     })
-            });
+            })
+            .child(
+                div()
+                    .absolute()
+                    .h_full()
+                    .w_full()
+                    .h_flex()
+                    .justify_end()
+                    .p_2()
+                    .px_4()
+                    .child(
+                        v_flex()
+                            .gap_neg_4()
+                            .h_full()
+                            .min_w_0()
+                            .justify_end()
+                            .items_end()
+                            .children({
+                                self.toasts.iter().rev().enumerate().map(|(ix, toast)| {
+                                    let toast_count = self.toasts.len();
+                                    div().child(
+                                        deferred(
+                                            div()
+                                                .when(toast.expired, |toast| toast.invisible())
+                                                .bg(cx.theme().background)
+                                                .p_2()
+                                                .child(toast.msg.clone())
+                                                .border_1()
+                                                .border_color(cx.theme().border)
+                                                .text_right()
+                                                .with_animation(
+                                                    ElementId::named_usize(
+                                                        "toast",
+                                                        toast.id as usize,
+                                                    ),
+                                                    toast.anim.clone(),
+                                                    |this, t| {
+                                                        let fade = 0.15;
+                                                        let opacity = if t < fade {
+                                                            t / fade
+                                                        } else if t > 1.0 - fade {
+                                                            (1.0 - t) / fade
+                                                        } else {
+                                                            1.0
+                                                        };
+
+                                                        let slide = if t < fade {
+                                                            (t / fade) - 1.0
+                                                        } else if t > 1.0 - fade {
+                                                            (t - (1.0 - fade)) / fade
+                                                        } else {
+                                                            0.0
+                                                        };
+                                                        this.opacity(opacity)
+                                                            .top(px((1. - slide) * 8. - 32.))
+                                                    },
+                                                ),
+                                        )
+                                        .priority(1 + toast_count - ix),
+                                    )
+                                })
+                            }),
+                    ),
+            );
 
         view.wrap_window(cx).title(None).content(content)
+    }
+}
+
+impl GameView {
+    pub fn push_toast(&mut self, msg: impl Into<SharedString>, cx: &mut Context<Self>) {
+        let duration = Duration::from_secs(2);
+        let id = self.toast_id;
+        let task = cx.spawn(async move |view, cx| {
+            let Some(view) = view.upgrade() else {
+                return;
+            };
+            let timer = cx.background_executor().timer(duration);
+            timer.await;
+            view.update(cx, |view, _| {
+                let toast = view.toasts.iter_mut().find(|t| t.id == id);
+                if let Some(toast) = toast {
+                    toast.expired = true;
+                }
+            });
+        });
+        self.toasts.push_back(Toast {
+            task,
+            id: self.toast_id,
+            anim: Animation::new(duration),
+            msg: msg.into(),
+            expired: false,
+        });
+        self.toast_id += 1;
     }
 }
 
@@ -1271,9 +1402,15 @@ pub struct EmuContext {
 
 struct RenderedFrameEvent;
 struct ResetEvent;
+enum SavestateToast {
+    Loaded,
+    LoadErr,
+    Saved,
+}
 
 impl EventEmitter<RenderedFrameEvent> for EmuContext {}
 impl EventEmitter<ResetEvent> for EmuContext {}
+impl EventEmitter<SavestateToast> for EmuContext {}
 
 impl EmuContext {
     pub fn runner_mode(&self) -> RunnerMode {

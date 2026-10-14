@@ -12,20 +12,17 @@ use arbitrary_int::prelude::Integer;
 use blink_alloc::BlinkAlloc;
 pub use glam;
 use pchan_emu::gpu::vram::{IVramCoord, VramCoord};
-use pchan_emu::memory::{kb, mb};
-use pchan_utils::default;
+use pchan_emu::memory::mb;
 use pchan_utils::tracy::TracyClient;
 pub(crate) mod render_pass;
 
 use alloc::sync::Arc;
 use core::alloc::Allocator;
 use core::num::NonZeroU64;
-use core::sync::atomic::{self};
 use core::{mem, ptr};
 use std::mem::offset_of;
 use std::sync::Mutex;
 use std::time::Instant;
-use tracing::Level;
 use wgpu::util::StagingBelt;
 
 use glam::prelude::*;
@@ -722,7 +719,7 @@ impl<A: Allocator + Copy> Scene<A> {
                 );
                 Some(scene)
             }
-            DrawCallKind::Line(draw_line) => {
+            DrawCallKind::Line(_draw_line) => {
                 tracing::warn!("todo: DrawCall Line");
                 Some(scene)
             }
