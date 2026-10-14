@@ -16,12 +16,14 @@ type Runner = RunnerInner<Global>;
 fn interp() -> Runner {
     Runner::new().with_config(RunnerConfig {
         force_mode: Some(RunnerMode::Interpreter),
+        speed:      crate::run::EmuSpeed::Unlimited,
     })
 }
 #[fixture]
 fn dynarec() -> Runner {
     Runner::new().with_config(RunnerConfig {
         force_mode: Some(RunnerMode::Dynarec),
+        speed:      crate::run::EmuSpeed::Unlimited,
     })
 }
 

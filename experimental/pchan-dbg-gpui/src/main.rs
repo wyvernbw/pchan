@@ -3,7 +3,6 @@
 #![allow(clippy::redundant_closure_for_method_calls)]
 #![allow(clippy::type_complexity)]
 #![allow(recursion_depth_exceeding_limit)]
-#![feature(try_blocks)]
 
 extern crate alloc;
 
@@ -28,9 +27,7 @@ use gpui_component::separator::Separator;
 use gpui_component::slider::{Slider, SliderEvent, SliderState};
 use gpui_component::switch::Switch;
 use gpui_component::tab::TabBar;
-use gpui_component::{
-    ActiveTheme, Selectable, Sizable, StyledExt, Theme, WindowExt, h_flex, v_flex,
-};
+use gpui_component::{ActiveTheme, Selectable, Sizable, StyledExt, Theme, h_flex, v_flex};
 use pchan_bind::ringbuf::StaticRb;
 use pchan_bind::ringbuf::traits::{Consumer, Observer, RingBuffer};
 use pchan_emu::debug::{Breakpoint, BreakpointKind};

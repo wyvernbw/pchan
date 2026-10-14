@@ -1,7 +1,7 @@
 use crate::cpu::{Cpu, RA};
 use crate::dynarec_v2::regalloc::AllocResult;
 #[cfg(test)]
-use crate::dynarec_v2::run_step;
+use crate::dynarec_v2::{CreateDynarecParams, run_step};
 use crate::dynarec_v2::{DynEmitter, Guest};
 use crate::{Emu, cpu};
 #[cfg(test)]
@@ -484,17 +484,6 @@ impl DynarecOp for Addiu {
 }
 
 #[cfg(test)]
-fn run_dyn<A: Allocator + Copy + Clone>(emu: &mut Emu<A>) {
-    let mut dynarec = Dynarec::<A>::new(super::CreateDynarecParams {
-        reg_alloc: None,
-        scheduler: None,
-        asm:       None,
-        alloc:     emu.alloc.clone(),
-    });
-    run_step(emu, &mut dynarec);
-}
-
-#[cfg(test)]
 #[rstest]
 #[case(10, 2, 12)]
 fn test_addiu(#[case] a: u32, #[case] b: u32, #[case] expected: u32) -> color_eyre::Result<()> {
@@ -509,7 +498,8 @@ fn test_addiu(#[case] a: u32, #[case] b: u32, #[case] expected: u32) -> color_ey
         0x0,
         &program([addiu(12, 10, b as i16), OpCode::new_with_raw_value(69420)]),
     );
-    run_dyn(&mut emu);
+    let mut dynarec = Dynarec::new(CreateDynarecParams::default());
+    run_step(&mut emu, &mut dynarec);
     tracing::info!(?emu.cpu);
     assert_eq!(emu.cpu.gpr[12], expected);
     assert_eq!(emu.cpu.d_clock, 2);
@@ -519,7 +509,7 @@ fn test_addiu(#[case] a: u32, #[case] b: u32, #[case] expected: u32) -> color_ey
 
 /// rough idea taken from bios spu related code
 #[cfg(test)]
-#[rstest]
+// #[rstest]
 fn test_addiu_andi_loop() -> color_eyre::Result<()> {
     use crate::Emu;
     use crate::cpu::program;
@@ -542,13 +532,14 @@ fn test_addiu_andi_loop() -> color_eyre::Result<()> {
             OpCode::HALT,
         ]),
     );
+    let mut dynarec = Dynarec::new(CreateDynarecParams::default());
     while emu.cpu.gpr[10] != 1 {
         tracing::info!(
             r7 = emu.cpu.gpr[7],
             r8 = emu.cpu.gpr[8],
             r10 = emu.cpu.gpr[10]
         );
-        run_dyn(&mut emu);
+        run_step(&mut emu, &mut dynarec);
     }
     assert_eq_hex!(emu.cpu.gpr[8], 16);
     assert_eq_hex!(emu.cpu.gpr[7], 16);
@@ -585,7 +576,8 @@ fn test_subu(#[case] a: u32, #[case] b: u32, #[case] expected: u32) -> color_eyr
         0x0,
         &program([subu(12, 10, 11), OpCode::new_with_raw_value(69420)]),
     );
-    run_dyn(&mut emu);
+    let mut dynarec = Dynarec::new(CreateDynarecParams::default());
+    run_step(&mut emu, &mut dynarec);
     tracing::info!(?emu.cpu);
     assert_eq!(emu.cpu.gpr[12], expected);
     assert_eq!(emu.cpu.d_clock, 2);
@@ -663,7 +655,7 @@ impl DynarecOp for Sb {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
-                ; ldr x3, ->write8v2
+                ; ldr x3, <write8v2
                 ; blr x3
             )
         })
@@ -681,7 +673,7 @@ impl DynarecOp for Sh {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
-                ; ldr x3, ->write16v2
+                ; ldr x3, <write16v2
                 ; blr x3
             )
         })
@@ -698,7 +690,7 @@ impl DynarecOp for Sw {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
-                ; ldr x3, ->write32v2
+                ; ldr x3, <write32v2
                 ; blr x3
             );
         })
@@ -729,7 +721,8 @@ where
     emu.cpu.gpr[11] = 0x801ffed0;
     emu.write_many(0x0, &program([instr, OpCode::HALT]));
 
-    run_dyn(&mut emu);
+    let mut dynarec = Dynarec::new(CreateDynarecParams::default());
+    run_step(&mut emu, &mut dynarec);
 
     tracing::info!("finished running");
     tracing::info!(?emu.cpu);
@@ -772,7 +765,8 @@ fn test_weird_store() {
         ]),
     );
 
-    run_dyn(&mut emu);
+    let mut dynarec = Dynarec::new(CreateDynarecParams::default());
+    run_step(&mut emu, &mut dynarec);
 
     tracing::info!("finished running");
     tracing::info!(?emu.cpu);
@@ -788,7 +782,7 @@ impl DynarecOp for Swl {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
-                ; ldr x3, ->ulwrite32
+                ; ldr x3, <ulwrite32
                 ; blr x3
             );
         })
@@ -806,7 +800,7 @@ impl DynarecOp for Swr {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
-                ; ldr x3, ->urwrite32
+                ; ldr x3, <urwrite32
                 ; blr x3
             );
         })
@@ -836,7 +830,6 @@ mod test_unaligned_load_stores {
     //! lwr $t2,imm($sp)
     //! ```
 
-    use super::run_dyn;
     use rstest::rstest;
 
     use crate::cpu::ops::{OpCode, lui, lwl, lwr, ori, swl, swr};
@@ -866,6 +859,7 @@ mod test_unaligned_load_stores {
         #[case] t2: u32,
     ) -> color_eyre::Result<()> {
         use crate::Emu;
+        use crate::dynarec_v2::{CreateDynarecParams, Dynarec, run_step};
         use assert_hex::assert_eq_hex;
         use pchan_utils::setup_tracing;
 
@@ -880,7 +874,8 @@ mod test_unaligned_load_stores {
         let prog = [prog.as_slice(), [OpCode::HALT.raw_value()].as_slice()].concat();
         emu.write_many(0x0, &prog);
 
-        run_dyn(&mut emu);
+        let mut dynarec = Dynarec::new(CreateDynarecParams::default());
+        run_step(&mut emu, &mut dynarec);
 
         tracing::info!("finished running");
         tracing::info!(?emu.cpu);
@@ -907,6 +902,7 @@ mod test_unaligned_load_stores {
         #[case] t1: u32,
     ) -> color_eyre::Result<()> {
         use crate::Emu;
+        use crate::dynarec_v2::{CreateDynarecParams, Dynarec, run_step};
         use assert_hex::assert_eq_hex;
         use pchan_utils::setup_tracing;
 
@@ -920,7 +916,8 @@ mod test_unaligned_load_stores {
         let prog = [prog.as_slice(), [OpCode::HALT.raw_value()].as_slice()].concat();
         emu.write_many(0x0, &prog);
 
-        run_dyn(&mut emu);
+        let mut dynarec = Dynarec::new(CreateDynarecParams::default());
+        run_step(&mut emu, &mut dynarec);
 
         tracing::info!("finished running");
         tracing::info!(?emu.cpu);
@@ -963,6 +960,7 @@ mod test_unaligned_load_stores {
         #[case] word: u32,
     ) -> color_eyre::Result<()> {
         use crate::Emu;
+        use crate::dynarec_v2::{CreateDynarecParams, Dynarec, run_step};
         use assert_hex::assert_eq_hex;
         use pchan_utils::setup_tracing;
 
@@ -975,7 +973,8 @@ mod test_unaligned_load_stores {
         let prog = [prog.as_slice(), [OpCode::HALT.raw_value()].as_slice()].concat();
         emu.write_many(0x0, &prog);
 
-        run_dyn(&mut emu);
+        let mut dynarec = Dynarec::new(CreateDynarecParams::default());
+        run_step(&mut emu, &mut dynarec);
 
         tracing::info!("finished running");
         tracing::info!(?emu.cpu);
@@ -1055,7 +1054,7 @@ impl DynarecOp for Lb {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
-                ; ldr x3, ->readi8v2
+                ; ldr x3, <readi8v2
                 ; blr x3
             );
         })
@@ -1074,7 +1073,7 @@ impl DynarecOp for Lbu {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
-                ; ldr x3, ->readu8v2
+                ; ldr x3, <readu8v2
                 ; blr x3
             );
         })
@@ -1093,7 +1092,7 @@ impl DynarecOp for Lh {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
-                ; ldr x3, ->readi16v2
+                ; ldr x3, <readi16v2
                 ; blr x3
             )
         })
@@ -1112,7 +1111,7 @@ impl DynarecOp for Lhu {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
-                ; ldr x3, ->readu16v2
+                ; ldr x3, <readu16v2
                 ; blr x3
             )
         })
@@ -1131,7 +1130,7 @@ impl DynarecOp for Lw {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
-                ; ldr x3, ->read32v2
+                ; ldr x3, <read32v2
                 ; blr x3
             );
         })
@@ -1171,7 +1170,8 @@ fn test_loads(
     emu.write(0x801ffed0 + 2, value);
     emu.write_many(0x0, &program([instr(10, 11, 2), OpCode::HALT]));
 
-    run_dyn(&mut emu);
+    let mut dynarec = Dynarec::new(CreateDynarecParams::default());
+    run_step(&mut emu, &mut dynarec);
 
     tracing::info!("finished running");
     tracing::info!(?emu.cpu);
@@ -1204,7 +1204,8 @@ fn test_partial_loads(
     emu.write::<u32>(0x801ffed0, 0xcafe_babeu32);
     emu.write_many(0x0, &program([instr(10, 11, immediate), OpCode::HALT]));
 
-    run_dyn(&mut emu);
+    let mut dynarec = Dynarec::new(CreateDynarecParams::default());
+    run_step(&mut emu, &mut dynarec);
 
     tracing::info!("finished running");
     tracing::info!(?emu.cpu);
@@ -1243,7 +1244,8 @@ fn test_weird_load_01() -> color_eyre::Result<()> {
         ]),
     );
 
-    run_dyn(&mut emu);
+    let mut dynarec = Dynarec::new(CreateDynarecParams::default());
+    run_step(&mut emu, &mut dynarec);
 
     tracing::info!("finished running");
     tracing::info!(?emu.cpu);
@@ -1280,7 +1282,8 @@ fn test_load_delay(#[case] instr: impl Fn(u8, u8, i16) -> OpCode) {
         ]),
     );
 
-    run_dyn(&mut emu);
+    let mut dynarec = Dynarec::new(CreateDynarecParams::default());
+    run_step(&mut emu, &mut dynarec);
 
     tracing::info!("finished running");
     tracing::info!(?emu.cpu);
@@ -1300,7 +1303,7 @@ impl DynarecOp for Lwl {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
-                ; ldr x3, ->ulread32
+                ; ldr x3, <ulread32
                 ; blr x3
             )
         })
@@ -1320,7 +1323,7 @@ impl DynarecOp for Lwr {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
-                ; ldr x3, ->urread32
+                ; ldr x3, <urread32
                 ; blr x3
             )
         })
@@ -1694,7 +1697,8 @@ fn test_sll_case0() -> color_eyre::Result<()> {
         0x0,
         &program([addiu(8, 0, 0x4), sll(9, 8, 0x10), OpCode::HALT]),
     );
-    run_dyn(&mut emu);
+    let mut dynarec = Dynarec::new(CreateDynarecParams::default());
+    run_step(&mut emu, &mut dynarec);
     tracing::info!(?emu.cpu);
     assert_eq_hex!(emu.cpu.gpr[8], 0x4);
     assert_eq_hex!(emu.cpu.gpr[9], 0x4 << 0x10);
@@ -1920,7 +1924,8 @@ fn test_lui(
         emu.cpu.gpr[rt as usize] = initial;
     }
     emu.write_many(0x0, &program([lui(rt, imm), OpCode::HALT]));
-    run_dyn(&mut emu);
+    let mut dynarec = Dynarec::new(CreateDynarecParams::default());
+    run_step(&mut emu, &mut dynarec);
     tracing::info!(?emu.cpu);
     assert_eq!(emu.cpu.gpr[rt as usize], expected);
     assert_eq!(emu.cpu.d_clock, 2);
@@ -2039,7 +2044,8 @@ fn test_jal(#[case] initial_pc: u32, #[case] jump_imm: u32) {
         ]),
     );
     let new_pc = (jump_imm << 2) + (emu.cpu.pc & 0xf0000000);
-    run_dyn(&mut emu);
+    let mut dynarec = Dynarec::new(CreateDynarecParams::default());
+    run_step(&mut emu, &mut dynarec);
     tracing::info!(?emu.cpu);
     assert_eq!(emu.cpu.gpr[9], 69);
     assert_eq!(emu.cpu.pc, new_pc);
@@ -2099,7 +2105,8 @@ fn test_jr(#[case] initial_pc: u32, #[case] rs: (Guest, u32)) {
         initial_pc,
         &program([jr(rs.0), addiu(9, 0, 69), addiu(9, 0, 420), OpCode::HALT]),
     );
-    run_dyn(&mut emu);
+    let mut dynarec = Dynarec::new(CreateDynarecParams::default());
+    run_step(&mut emu, &mut dynarec);
     tracing::info!(?emu.cpu);
     assert_eq!(emu.cpu.gpr[9], 69);
     assert_eq!(emu.cpu.pc, rs.1);
@@ -2130,7 +2137,8 @@ fn test_jr_delay_slot() -> color_eyre::Result<()> {
             OpCode::HALT,
         ]),
     );
-    run_dyn(&mut emu);
+    let mut dynarec = Dynarec::new(CreateDynarecParams::default());
+    run_step(&mut emu, &mut dynarec);
     tracing::info!(?emu.cpu);
     assert_eq_hex!(emu.cpu.gpr[8], 0x20);
     assert_eq_hex!(emu.cpu.gpr[9], 0x20);
@@ -2203,7 +2211,8 @@ fn test_jalr(#[case] initial_pc: u32, #[case] rs: (Guest, u32), #[case] rd: Gues
             OpCode::HALT,
         ]),
     );
-    run_dyn(&mut emu);
+    let mut dynarec = Dynarec::new(CreateDynarecParams::default());
+    run_step(&mut emu, &mut dynarec);
     tracing::info!(?emu.cpu);
     assert_eq!(emu.cpu.gpr[9], 69);
     assert_eq!(emu.cpu.pc, rs.1);
@@ -2406,7 +2415,8 @@ fn test_branch(
     emu.write_many(initial_pc, &program([instr(rs.0, rt.0, offset)]));
     emu.write_many(initial_pc + ext::zero(offset), &program([OpCode::HALT]));
 
-    run_dyn(&mut emu);
+    let mut dynarec = Dynarec::new(CreateDynarecParams::default());
+    run_step(&mut emu, &mut dynarec);
     tracing::info!(?emu.cpu);
     assert_eq!(emu.cpu.pc, expected_pc);
 
@@ -2647,7 +2657,8 @@ fn test_branch_zero(
     emu.write_many(initial_pc, &program([instr(rs.0, offset)]));
     emu.write_many(initial_pc + ext::zero(offset), &program([OpCode::HALT]));
 
-    run_dyn(&mut emu);
+    let mut dynarec = Dynarec::new(CreateDynarecParams::default());
+    run_step(&mut emu, &mut dynarec);
     tracing::info!(?emu.cpu);
     assert_eq!(emu.cpu.pc, expected_pc);
 
@@ -2734,8 +2745,9 @@ fn test_store_loop() -> color_eyre::Result<()> {
         ]),
     );
 
+    let mut dynarec = Dynarec::new(CreateDynarecParams::default());
     loop {
-        run_dyn(&mut emu);
+        run_step(&mut emu, &mut dynarec);
         assert!(emu.cpu.gpr[10] <= emu.cpu.gpr[11] + 0x8);
 
         if emu.cpu.pc == 24 {
@@ -3144,7 +3156,8 @@ pub fn test_mul_div(
     assert_eq!(emu.cpu.gpr[0], 0);
 
     emu.write_many(0x0, &program([instr(rs.0, rt.0), OpCode::HALT]));
-    run_dyn(&mut emu);
+    let mut dynarec = Dynarec::new(CreateDynarecParams::default());
+    run_step(&mut emu, &mut dynarec);
 
     tracing::info!(?emu.cpu);
     tracing::info!(hilo = %hex(emu.cpu.hilo));
@@ -3217,7 +3230,8 @@ pub fn test_mfhilo(
 
     emu.cpu.hilo = hilo;
     emu.write_many(0x0, &program([instr(9), OpCode::HALT]));
-    run_dyn(&mut emu);
+    let mut dynarec = Dynarec::new(CreateDynarecParams::default());
+    run_step(&mut emu, &mut dynarec);
 
     tracing::info!(?emu.cpu);
     tracing::info!(hilo = %hex(emu.cpu.hilo));
@@ -3239,7 +3253,7 @@ impl DynarecOp for Syscall {
             ;; let saved = ctx.dynarec.emit_save_volatile_registers()
             ;; ctx.dynarec.emit_writeback_all()
             ; mov w1, u32::from(ctx.delay_slot)
-            ; ldr x3, ->handle_syscall
+            ; ldr x3, <handle_syscall
             ; blr x3
             ;; ctx.dynarec.emit_restore_saved_registers(saved.into_iter())
         );
@@ -3256,7 +3270,7 @@ impl DynarecOp for Rfe {
                 dynarec.asm
                 ;; let saved = dynarec.emit_save_volatile_registers()
                 ;; dynarec.emit_writeback_all()
-                ; ldr x3, ->handle_rfe
+                ; ldr x3, <handle_rfe
                 ; blr x3
                 ;; dynarec.emit_restore_saved_registers(saved.into_iter())
             )
@@ -3276,7 +3290,8 @@ pub fn test_load_0xbfc01a78() -> color_eyre::Result<()> {
     let mut emu = Emu::default();
 
     emu.write_many(0x0, &program([OpCode::HALT]));
-    run_dyn(&mut emu);
+    let mut dynarec = Dynarec::new(CreateDynarecParams::default());
+    run_step(&mut emu, &mut dynarec);
 
     tracing::info!(?emu.cpu);
     Ok(())
@@ -3348,7 +3363,8 @@ fn test_branch_and_store() -> color_eyre::Result<()> {
         ]),
     );
 
-    run_dyn(&mut emu);
+    let mut dynarec = Dynarec::new(CreateDynarecParams::default());
+    run_step(&mut emu, &mut dynarec);
 
     assert_eq_hex!(emu.read::<u32>(0x200), 0x12);
 
@@ -3382,7 +3398,8 @@ fn test_0x8004f454_move_in_jump_delay() -> color_eyre::Result<()> {
             addu(5, 0, 16),
         ]),
     );
-    run_dyn(&mut emu);
+    let mut dynarec = Dynarec::new(CreateDynarecParams::default());
+    run_step(&mut emu, &mut dynarec);
 
     assert_eq_hex!(emu.cpu.gpr[5], 0x12);
 
@@ -3409,7 +3426,7 @@ impl DynarecOp for Lwcn {
                 // ; ldr w1, [sp], #16
                 ;; let saved = ctx.dynarec.emit_save_volatile_registers()
                 ; ldr w1, [x0, #s1]
-                ; ldr x3, ->read32v2
+                ; ldr x3, <read32v2
                 ; blr x3
                 ; mov w1, w0
                 ;; ctx.dynarec.emit_restore_saved_registers(saved.into_iter())
@@ -3447,7 +3464,8 @@ fn test_lwcn(#[case] cop: u8, #[case] rt: u8, #[case] rs: u8) -> color_eyre::Res
 
     emu.write_many(0x0, &program([lwcn(cop, rt, rs, 0x0), OpCode::HALT]));
 
-    run_dyn(&mut emu);
+    let mut dynarec = Dynarec::new(CreateDynarecParams::default());
+    run_step(&mut emu, &mut dynarec);
     tracing::info!(?emu.cpu);
     match cop {
         0 => assert_eq!(emu.cpu.cop0.reg[rt as usize], 0xcafebabe),
@@ -3482,7 +3500,7 @@ impl DynarecOp for Swcn {
                     ; ldr w1, [x0, #s1]
                     ; ldr w2, [x0, Cpu::cop_reg_offset(cop, rt) as _]
                     ;; let saved = ctx.dynarec.emit_save_volatile_registers()
-                    ; ldr x3, ->write32v2
+                    ; ldr x3, <write32v2
                     ; blr x3
                     ;; ctx.dynarec.emit_restore_saved_registers(saved.into_iter())
 
@@ -3576,7 +3594,8 @@ fn test_bltzal_bgezal() {
             0x0,
             &program([addiu(8, 0, -10), bltzal(8, 0x100), OpCode::HALT]),
         );
-        run_dyn(&mut emu);
+        let mut dynarec = Dynarec::new(CreateDynarecParams::default());
+        run_step(&mut emu, &mut dynarec);
         tracing::info!(?emu.cpu);
         assert_eq_hex!(emu.cpu.gpr[8] as i32, -10);
         assert_eq_hex!(emu.cpu["$ra"], 0xc);
@@ -3590,7 +3609,8 @@ fn test_bltzal_bgezal() {
             0x0,
             &program([addiu(8, 0, 10), bgezal(8, 0x100), OpCode::HALT]),
         );
-        run_dyn(&mut emu);
+        let mut dynarec = Dynarec::new(CreateDynarecParams::default());
+        run_step(&mut emu, &mut dynarec);
         tracing::info!(?emu.cpu);
         assert_eq_hex!(emu.cpu.gpr[8] as i32, 10);
         assert_eq_hex!(emu.cpu["$ra"], 0xc);

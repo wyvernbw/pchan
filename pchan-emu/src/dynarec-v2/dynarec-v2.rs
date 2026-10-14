@@ -1,19 +1,23 @@
-use alloc::sync::Arc;
+use alloc::alloc::Global;
 use core::alloc::Allocator;
 use core::cell::Cell;
-use core::mem::MaybeUninit;
-use core::ptr::NonNull;
+use core::mem::{MaybeUninit, transmute};
 use core::sync::atomic::{AtomicU64, Ordering};
-use core::{cmp, iter, mem};
+use core::{cmp, iter};
 use derive_more as d;
 use dynasm::dynasm;
-use dynasmrt::{Assembler, DynasmApi, DynasmLabelApi, ExecutableBuffer};
+#[cfg(target_arch = "aarch64")]
+use dynasmrt::relocations::Relocation;
+use dynasmrt::{
+    Assembler, AssemblyOffset, DynasmApi, DynasmError, DynasmLabelApi, ExecutableBuffer, Executor,
+};
 use heapless::binary_heap::Min;
 use pchan_utils::{default, hex, max_simd_elements};
 use smallbox::SmallBox;
 use smallvec::SmallVec;
 use std::collections::HashSet;
 use std::simd::Simd;
+use std::sync::RwLockReadGuard;
 use thiserror::Error;
 use tracing::{Instrument, Level, enabled};
 
@@ -25,7 +29,7 @@ use crate::dynarec_v2::emitters::{DecodedOp, DynarecOp, EmitCtx, EmitSummary};
 use crate::dynarec_v2::regalloc::{
     AllocResult, AllocResultStackless, Guest, Reg, RegAlloc, RegAllocError, RegAllocErrorStackless,
 };
-use crate::memory::kb;
+use crate::memory::{kb, mb};
 
 pub mod emitters;
 pub mod regalloc;
@@ -37,7 +41,7 @@ pub static BLOCKS_EXECUTED: AtomicU64 = AtomicU64::new(0);
 pub static CACHE_HITS: AtomicU64 = AtomicU64::new(0);
 pub static CACHE_MISSES: AtomicU64 = AtomicU64::new(0);
 
-static ASM_CAPACITY: usize = 64 * size_of::<usize>();
+static ASM_CAPACITY: usize = mb(8);
 
 pub fn cache_hitrate() -> f32 {
     let hits = CACHE_HITS.load(Ordering::Relaxed) as f32;
@@ -74,11 +78,10 @@ type DynEmitter<A> = SmallBox<dyn for<'a> Fn(EmitCtx<'a, A>) -> EmitSummary, [us
 
 #[derive(derive_more::Debug)]
 pub struct Dynarec<A: Allocator> {
-    pub(crate) reg_alloc:  RegAlloc,
-    pub(crate) scheduler:  Box<Scheduler<A>, A>,
-    pub last_ran_function: Option<DynarecFunction<A>>,
+    pub(crate) reg_alloc: RegAlloc,
+    pub(crate) scheduler: Box<Scheduler<A>, A>,
     #[debug(skip)]
-    asm:                   Assembler<Reloc>,
+    pub(crate) asm:       Assembler<Reloc>,
 }
 
 pub struct CreateDynarecParams<A: Allocator + Copy> {
@@ -86,6 +89,17 @@ pub struct CreateDynarecParams<A: Allocator + Copy> {
     scheduler: Option<Box<Scheduler<A>, A>>,
     asm:       Option<Assembler<Reloc>>,
     alloc:     A,
+}
+
+impl Default for CreateDynarecParams<Global> {
+    fn default() -> Self {
+        Self {
+            reg_alloc: None,
+            scheduler: None,
+            asm:       None,
+            alloc:     Global,
+        }
+    }
 }
 
 impl<A: Allocator + Copy> CreateDynarecParams<A> {
@@ -113,42 +127,56 @@ impl<A: Allocator + Copy> Dynarec<A> {
     ) -> Self {
         let reg_alloc = reg_alloc.unwrap_or_default();
         let scheduler = scheduler.unwrap_or_else(|| Box::new_in(Scheduler::<A>::default(), alloc));
-        let asm = asm.unwrap_or_else(|| {
+        let mut asm = asm.unwrap_or_else(|| {
             Assembler::new_with_capacity(ASM_CAPACITY).expect("fatal: failed to allocate assembler")
         });
+        // Self::emit_globals(&mut asm);
         Self {
             reg_alloc,
             scheduler,
             asm,
-            last_ran_function: None,
         }
     }
 
     pub fn reset(&mut self, alloc: A) {
         self.reg_alloc = default();
         self.scheduler = Box::new_in(Scheduler::default(), alloc);
-        self.asm =
-            Assembler::new_with_capacity(ASM_CAPACITY).expect("fatal failed to allocate assembler");
     }
-}
 
-#[derive(Debug, Clone)]
-pub struct DynarecFunction<A: Allocator> {
-    pub func: fn(*mut Emu<A>),
-    pub exec: Arc<ExecutableBuffer>,
+    fn exec(&self) -> DynExecutor {
+        DynExecutor {
+            exec: self.asm.reader(),
+        }
+    }
 }
 
 #[derive(Clone)]
 pub struct DynarecBlock<A: Allocator> {
-    pub(crate) function: DynarecFunction<A>,
+    pub(crate) fn_ptr:   fn(*mut Emu<A>),
     pub(crate) pc:       u32,
     pub(crate) op_count: u32,
 }
 
-type DynarecBlockArgs<'a, A> = (&'a mut Emu<A>, bool);
+struct DynExecutor {
+    exec: Executor,
+}
+
+impl DynExecutor {
+    #[inline(always)]
+    fn get_fn_ptr<A: Allocator>(&self, offset: AssemblyOffset) -> DynFnPtr<'_, A> {
+        let buf = self.exec.lock();
+        let ptr = unsafe { transmute::<*const u8, fn(*mut Emu<A>)>(buf.ptr(offset)) };
+        DynFnPtr { _guard: buf, ptr }
+    }
+}
+
+struct DynFnPtr<'a, A: Allocator> {
+    _guard: RwLockReadGuard<'a, ExecutableBuffer>,
+    ptr:    fn(*mut Emu<A>),
+}
 
 impl<A: Allocator + Copy> DynarecBlock<A> {
-    pub fn call_block(&self, (emu, instrument): DynarecBlockArgs<A>) {
+    pub fn run(&self, emu: &mut Emu<A>, dynarec: &mut Dynarec<A>, instrument: bool) {
         #[cfg(debug_assertions)]
         {
             BLOCKS_EXECUTED.fetch_add(1, Ordering::Relaxed);
@@ -158,12 +186,13 @@ impl<A: Allocator + Copy> DynarecBlock<A> {
         // reset delta clock before running
         emu.cpu.d_clock = 0;
 
+        let fn_ptr = self.fn_ptr;
         if instrument {
-            (self.function.func)
-                .instrument(tracing::info_span!("fn", addr = ?self.function.func))
+            (fn_ptr)
+                .instrument(tracing::info_span!("fn", addr = ?fn_ptr))
                 .inner()(emu)
         } else {
-            (self.function.func)(emu)
+            (fn_ptr)(emu)
         }
 
         #[cfg(feature = "debugger-ext")]
@@ -186,30 +215,6 @@ impl<A: Allocator + Copy> DynarecBlock<A> {
 
         debug_assert_eq!(emu.cpu.gpr[0], 0);
     }
-
-    #[must_use]
-    pub fn buffer(&self) -> &ExecutableBuffer {
-        &self.function.exec
-    }
-}
-
-impl<A: Allocator + Copy> FnMut<DynarecBlockArgs<'_, A>> for DynarecBlock<A> {
-    extern "rust-call" fn call_mut(&mut self, args: DynarecBlockArgs<A>) -> Self::Output {
-        self.call_block(args)
-    }
-}
-
-impl<A: Allocator + Copy> FnOnce<DynarecBlockArgs<'_, A>> for DynarecBlock<A> {
-    type Output = ();
-    extern "rust-call" fn call_once(mut self, args: DynarecBlockArgs<A>) -> Self::Output {
-        self.call_mut(args)
-    }
-}
-
-impl<A: Allocator + Copy> Fn<DynarecBlockArgs<'_, A>> for DynarecBlock<A> {
-    extern "rust-call" fn call(&self, args: DynarecBlockArgs<A>) -> Self::Output {
-        self.call_block(args);
-    }
 }
 
 #[derive(Error, Debug)]
@@ -221,77 +226,54 @@ pub(crate) enum FinalizeError {
 }
 
 impl<A: Allocator + Copy> Dynarec<A> {
-    pub(crate) fn finalize(&mut self) -> Result<DynarecFunction<A>, FinalizeError> {
-        self.scheduler.queue.clear();
-        self.reg_alloc = RegAlloc::default();
-        let asm = mem::replace(
-            &mut self.asm,
-            Assembler::new_with_capacity(ASM_CAPACITY).unwrap(),
-        );
-        let exec = match asm.finalize() {
-            Ok(exec) => exec,
-            Err(asm) => {
-                self.asm = asm;
-                return Err(FinalizeError::AssembleError);
-            }
-        };
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) fn emit_globals<R: Relocation>(asm: &mut Assembler<R>) {
+        dynasm!(
+            asm
+            ; .arch aarch64
+            ; b >after_table
 
-        if enabled!(Level::DEBUG) {
-            use std::fs::File;
-            use std::io::Write;
-            File::create("/tmp/jit_code.bin")?.write_all(exec.as_ref())?;
-            tracing::trace!("Wrote {} bytes to /tmp/jit_code.bin", exec.len());
-        }
-
-        let func = unsafe { mem::transmute::<*const u8, fn(*mut Emu<A>)>(exec.as_ptr()) };
-        Ok(DynarecFunction {
-            func,
-            exec: Arc::new(exec),
-        })
+            // -- function table --
+            ; write32v2:
+            ; .u64 Emu::<A>::write32v2 as *const () as _
+            ; write16v2:
+            ; .u64 Emu::<A>::write16v2 as *const () as _
+            ; write8v2:
+            ; .u64 Emu::<A>::write8v2 as *const () as _
+            ; ulwrite32:
+            ; .u64 Emu::<A>::ulwrite32 as *const () as _
+            ; urwrite32:
+            ; .u64 Emu::<A>::urwrite32 as *const () as _
+            ; readi8v2:
+            ; .u64 Emu::<A>::readi8v2 as *const () as _
+            ; readu8v2:
+            ; .u64 Emu::<A>::readu8v2 as *const () as _
+            ; readi16v2:
+            ; .u64 Emu::<A>::readi16v2 as *const () as _
+            ; readu16v2:
+            ; .u64 Emu::<A>::readu16v2 as *const () as _
+            ; read32v2:
+            ; .u64 Emu::<A>::read32v2 as *const () as _
+            ; ulread32:
+            ; .u64 Emu::<A>::ulread32 as *const () as _
+            ; urread32:
+            ; .u64 Emu::<A>::urread32 as *const () as _
+            ; handle_syscall:
+            ; .u64 Emu::<A>::handle_syscall as *const () as _
+            ; handle_rfe:
+            ; .u64 Emu::<A>::handle_rfe as *const () as _
+            ; run_io:
+            ; .u64 Emu::<A>::ext_run_io as *const () as _
+            ; after_table:
+        )
     }
     pub(crate) fn emit_block_prelude(&mut self) {
+        Self::emit_globals(&mut self.asm);
         #[cfg(target_arch = "aarch64")]
         {
             dynasm!(
                 self.asm
                 ; .arch aarch64
-                ; b >after_table
-
-                // -- function table --
-                ; -> write32v2:
-                ; .u64 Emu::<A>::write32v2 as *const () as _
-                ; -> write16v2:
-                ; .u64 Emu::<A>::write16v2 as *const () as _
-                ; -> write8v2:
-                ; .u64 Emu::<A>::write8v2 as *const () as _
-                ; -> ulwrite32:
-                ; .u64 Emu::<A>::ulwrite32 as *const () as _
-                ; -> urwrite32:
-                ; .u64 Emu::<A>::urwrite32 as *const () as _
-                ; -> readi8v2:
-                ; .u64 Emu::<A>::readi8v2 as *const () as _
-                ; -> readu8v2:
-                ; .u64 Emu::<A>::readu8v2 as *const () as _
-                ; -> readi16v2:
-                ; .u64 Emu::<A>::readi16v2 as *const () as _
-                ; -> readu16v2:
-                ; .u64 Emu::<A>::readu16v2 as *const () as _
-                ; -> read32v2:
-                ; .u64 Emu::<A>::read32v2 as *const () as _
-                ; -> ulread32:
-                ; .u64 Emu::<A>::ulread32 as *const () as _
-                ; -> urread32:
-                ; .u64 Emu::<A>::urread32 as *const () as _
-                ; -> handle_syscall:
-                ; .u64 Emu::<A>::handle_syscall as *const () as _
-                ; -> handle_rfe:
-                ; .u64 Emu::<A>::handle_rfe as *const () as _
-                ; -> jump:
-                ; .u64 DynarecCache::<A>::jump as *const () as _
-                ; -> run_io:
-                ; .u64 Emu::<A>::ext_run_io as *const () as _
-                ; after_table:
-
                 ; stp x19, x20, [sp, -16]!
                 ; stp x21, x22, [sp, -16]!
                 ; stp x23, x24, [sp, -16]!
@@ -658,6 +640,17 @@ impl<A: Allocator + Copy> Dynarec<A> {
             ; ldr x0, [sp], #16
         );
     }
+
+    pub(crate) fn commit(
+        &mut self,
+        offset: AssemblyOffset,
+    ) -> Result<fn(*mut Emu<A>), DynasmError> {
+        self.scheduler.queue.clear();
+        self.reg_alloc = RegAlloc::default();
+        self.asm.commit()?;
+        let fn_ptr = unsafe { transmute(self.asm.reader().lock().ptr(offset)) };
+        Ok(fn_ptr)
+    }
 }
 
 #[derive(Debug, Clone, d::Deref, d::DerefMut)]
@@ -857,10 +850,9 @@ pub fn run_step<A: Allocator + Copy + Clone>(emu: &mut Emu<A>, dynarec: &mut Dyn
             block
         }
     };
-    block(emu, false);
+    block.run(emu, dynarec, false);
     emu.stats.blocks_ran += 1;
 
-    dynarec.last_ran_function = Some(block.function.clone());
     emu.dynarec_cache.insert(pc, block);
 }
 
@@ -903,9 +895,22 @@ pub enum PipelineV2<A: Allocator + Copy> {
 pub struct PipelineCompileError;
 
 pub(crate) fn fetch_and_compile_single_threaded<A: Allocator + Copy>(
-    emu: &Emu<A>,
+    emu: &mut Emu<A>,
     dynarec: &mut Dynarec<A>,
-) -> Result<DynarecBlock<A>, PipelineCompileError> {
+) -> Result<DynarecBlock<A>, DynasmError> {
+    let mut start = dynarec.asm.offset();
+
+    if start.0 > ASM_CAPACITY * 3 / 4 {
+        emu.dynarec_cache.alloc_flush(emu.alloc);
+        *dynarec = Dynarec::new(CreateDynarecParams {
+            reg_alloc: None,
+            scheduler: None,
+            asm:       None,
+            alloc:     emu.alloc,
+        });
+        start = dynarec.asm.offset();
+    }
+
     dynarec.emit_block_prelude();
     let initial_pc = emu.cpu.pc;
     let mut lifetime = 2u8;
@@ -995,11 +1000,10 @@ pub(crate) fn fetch_and_compile_single_threaded<A: Allocator + Copy>(
         false => Some(last_address + 0x4),
     };
     dynarec.emit_block_epilogue(cycles, new_pc, true);
-
-    let func = dynarec.finalize().map_err(|_| PipelineCompileError)?;
+    let fn_ptr = dynarec.commit(start)?;
 
     Ok(DynarecBlock {
-        function: func,
+        fn_ptr,
         op_count,
         pc: initial_pc,
     })
@@ -1109,15 +1113,6 @@ impl<A: Allocator> DynarecCache<A> {
             self.metadata[page_idx].inserted.clear();
         }
     }
-    pub extern "C" fn jump(emu: &mut Emu<A>, at: u32) -> Option<NonNull<*const fn(*mut Emu<A>)>> {
-        tracing::info!("jump called: pc={}", hex(at));
-        unsafe {
-            emu.dynarec_cache.get(at).map(|block| {
-                tracing::info!("  found block at {:p}", block.function.func);
-                NonNull::new_unchecked(block.function.func as _)
-            })
-        }
-    }
 }
 
 #[cfg(test)]
@@ -1131,7 +1126,7 @@ mod tests {
     use crate::Emu;
 
     #[test]
-    fn dynarec_minimal_test() -> Result<()> {
+    fn dynarec_minimal_test() {
         setup_tracing();
         let mut emu = Emu::default();
         let mut dynarec = Dynarec::new(CreateDynarecParams {
@@ -1141,16 +1136,16 @@ mod tests {
             alloc:     Global,
         });
 
+        let offset = dynarec.asm.offset();
         #[cfg(target_arch = "aarch64")]
         {
             dynasm!(dynarec.asm; .arch aarch64; ret);
         }
+        dynarec.asm.commit().unwrap();
 
-        let func = dynarec.finalize()?;
+        let exec = dynarec.exec();
         tracing::info!("Calling JIT function...");
-        func.func.call((&mut emu,));
+        exec.get_fn_ptr(offset).ptr.call((&raw mut emu,));
         tracing::info!("JIT call succeeded!");
-
-        Ok(())
     }
 }

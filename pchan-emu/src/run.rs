@@ -3,6 +3,7 @@ use core::alloc::Allocator;
 use core::num::NonZeroU16;
 use core::sync::atomic::{AtomicU32, Ordering};
 use core::time::Duration;
+use dynasmrt::DynasmApi;
 use std::alloc::Global;
 use std::time::Instant;
 
@@ -31,7 +32,7 @@ pub struct Runner<A: Allocator> {
     transport:       Transport<A>,
     #[debug(skip)]
     actor_tx:        Caching<Arc<SharedRb<Heap<CompileActorMsg>>>, true, false>,
-    own_dynarec:     Dynarec<A>,
+    dynarec:         Dynarec<A>,
     actor_handle:    ActorHandle,
     #[debug(skip)]
     alloc:           A,
@@ -89,7 +90,7 @@ struct Transport<A: Allocator> {
     out_chan: Chan<CompileActorResponse<A>>,
 }
 
-impl<A: Allocator + Copy> Transport<A> {
+impl<A: Allocator> Transport<A> {
     fn new() -> Self {
         Transport {
             out_chan: kanal::bounded(1024),
@@ -97,7 +98,7 @@ impl<A: Allocator + Copy> Transport<A> {
     }
 }
 
-impl Default for Transport<Global> {
+impl<A: Allocator> Default for Transport<A> {
     fn default() -> Self {
         Transport::new()
     }
@@ -130,7 +131,7 @@ impl<A: Allocator + Copy + Clone> Runner<A> {
             config: RunnerConfig::default(),
             transport,
             actor_tx: prod,
-            own_dynarec: Dynarec::new(CreateDynarecParams::new(alloc)),
+            dynarec: Dynarec::new(CreateDynarecParams::new(alloc)),
             actor_handle,
             alloc,
             running: true,
@@ -166,7 +167,7 @@ impl<A: Allocator + Copy + Clone> Runner<A> {
                 }
             },
             Some(RunnerMode::Dynarec) => {
-                run_step(emu, &mut self.own_dynarec);
+                run_step(emu, &mut self.dynarec);
             }
             None => loop {
                 if let Ok(Some(CompileActorResponse::Compiled(Ok(block)))) =
@@ -174,7 +175,7 @@ impl<A: Allocator + Copy + Clone> Runner<A> {
                 {
                     tracing::info!("got compiled block: {}", hex(block.pc));
                     self.mode = RunnerMode::Dynarec;
-                    block(emu, false);
+                    block.run(emu, &mut self.dynarec, false);
                     emu.dynarec_cache.insert(block.pc, block);
                     continue;
                 }
@@ -185,7 +186,7 @@ impl<A: Allocator + Copy + Clone> Runner<A> {
                             self.mode = RunnerMode::Interpreter;
                             continue;
                         };
-                        block(emu, false);
+                        block.run(emu, &mut self.dynarec, false);
                         emu.dynarec_cache.insert(pc, block);
                         return;
                     }
@@ -203,13 +204,13 @@ impl<A: Allocator + Copy + Clone> Runner<A> {
                             {
                                 tracing::info!("SYNC got compiled block: {}", hex(block.pc));
                                 self.mode = RunnerMode::Dynarec;
-                                block(emu, false);
+                                block.run(emu, &mut self.dynarec, false);
                                 emu.dynarec_cache.insert(block.pc, block);
                                 continue;
                             }
                         } else if let Some(block) = emu.dynarec_cache.remove(pc) {
                             self.mode = RunnerMode::Dynarec;
-                            block(emu, false);
+                            block.run(emu, &mut self.dynarec, false);
                             emu.dynarec_cache.insert(pc, block);
                             continue;
                         }
@@ -315,6 +316,7 @@ impl<A: Allocator + Copy + Clone> Runner<A> {
         let mut dynarec = Dynarec::new(CreateDynarecParams::new(alloc));
         let sleep_duration = Duration::from_millis(2);
         let mut last_packet = Instant::now();
+        let mut start = dynarec.asm.offset();
         loop {
             let Some(msg) = rx.try_pop() else {
                 if last_packet.elapsed() > Duration::from_millis(3) {
@@ -328,6 +330,7 @@ impl<A: Allocator + Copy + Clone> Runner<A> {
                 CompileActorMsg::Op(pc, op) => {
                     match state {
                         ActorState::Idle => {
+                            start = dynarec.asm.offset();
                             dynarec.reset(alloc);
                             dynarec.emit_block_prelude();
                             let compile_state = CompileState::new(pc);
@@ -362,17 +365,14 @@ impl<A: Allocator + Copy + Clone> Runner<A> {
                                 false => Some(compile_state.pc + 0x4),
                             };
                             dynarec.emit_block_epilogue(compile_state.cycles, new_pc, true);
+                            let fn_ptr = dynarec.commit(start).unwrap();
 
-                            let func =
-                                dynarec
-                                    .finalize()
-                                    .map_err(|_| PipelineCompileError)
-                                    .map(|func| DynarecBlock {
-                                        function: func,
-                                        op_count: compile_state.op_count as u32,
-                                        pc:       compile_state.init_pc,
-                                    });
-                            tx.send(CompileActorResponse::Compiled(func))
+                            let func = DynarecBlock {
+                                fn_ptr,
+                                op_count: compile_state.op_count as u32,
+                                pc: compile_state.init_pc,
+                            };
+                            tx.send(CompileActorResponse::Compiled(Ok(func)))
                                 .expect("channel closed");
                             handle
                                 .currently_compiling
