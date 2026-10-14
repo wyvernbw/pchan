@@ -199,12 +199,12 @@ pub fn run_block<A: Allocator + Copy>(block: fn(*mut Emu<A>), emu: &mut Emu<A>, 
     }
 
     emu.cpu.drain_jump_queue();
-    if emu.cpu.pc % 0x4 != 0 {
+    if !emu.cpu.pc.is_multiple_of(0x4) {
         emu.raise_exception(Exception::AdEl);
     }
     emu.run_io();
     emu.cpu.drain_jump_queue();
-    if emu.cpu.pc % 0x4 != 0 {
+    if !emu.cpu.pc.is_multiple_of(0x4) {
         emu.raise_exception(Exception::AdEl);
     }
     emu.cpu.cop0.set_bd(false);
@@ -1015,8 +1015,24 @@ pub struct DynCache<A: Allocator> {
 #[derive(derive_more::Debug, Clone)]
 #[debug("CachePage")]
 struct CachePage2<A: Allocator> {
-    blocks: [Option<fn(*mut Emu<A>)>; PAGE_SIZE2],
-    dirty:  bool,
+    blocks:     [Option<CacheBlockPtr<A>>; PAGE_SIZE2],
+    dirty:      bool,
+    generation: usize,
+}
+
+#[derive(derive_more::Debug, Copy)]
+struct CacheBlockPtr<A: Allocator> {
+    ptr:        fn(*mut Emu<A>),
+    generation: usize,
+}
+
+impl<A: Allocator> Clone for CacheBlockPtr<A> {
+    fn clone(&self) -> Self {
+        Self {
+            ptr:        self.ptr.clone(),
+            generation: self.generation.clone(),
+        }
+    }
 }
 
 type PageTable = [Option<u8>; PAGE_COUNT2];
@@ -1072,20 +1088,35 @@ impl<A: Allocator> DynCache<A> {
             Some(page) => {
                 let offset = (address & 0xFFFF) >> 2;
                 let page = &mut self.pages[usize::from(page)];
-                page.blocks[offset as usize] = Some(ptr);
+                page.blocks[offset as usize] = Some(CacheBlockPtr {
+                    ptr,
+                    generation: page.generation,
+                });
                 page.dirty = true;
             }
             None => panic!("unmapped memory"),
         }
     }
 
-    pub fn get(&self, address: u32) -> Option<fn(*mut Emu<A>)> {
+    pub fn get(&mut self, address: u32) -> Option<fn(*mut Emu<A>)> {
         let page_idx = address >> 16;
         let page = CACHE_LUT[page_idx as usize];
         match page {
             Some(page) => {
                 let offset = (address & 0xFFFF) >> 2;
-                self.pages[usize::from(page)].blocks[offset as usize]
+                let page = &mut self.pages[usize::from(page)];
+                let block = &page.blocks[offset as usize];
+                match block {
+                    Some(block) => {
+                        if block.generation != page.generation {
+                            page.blocks[offset as usize] = None;
+                            None
+                        } else {
+                            Some(block.ptr)
+                        }
+                    }
+                    None => None,
+                }
             }
             None => panic!("unmapped memory"),
         }
@@ -1098,7 +1129,7 @@ impl<A: Allocator> DynCache<A> {
             Some(page) => {
                 let page = &mut self.pages[usize::from(page)];
                 if page.dirty {
-                    page.blocks.fill(None);
+                    page.generation += 1;
                     page.dirty = false;
                 }
             }
