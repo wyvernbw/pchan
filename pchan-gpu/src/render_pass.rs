@@ -64,7 +64,6 @@ pub struct RenderPass<'a, A: Allocator> {
 impl<A: Allocator + Copy> RenderPass<'_, A> {
     pub(crate) fn draw(&mut self, vram: &[u16], dirty: bool) {
         let _draw = tracy::span!("rd-gpu-draw");
-        tracing::info!("drawing...");
         self.init_vram(vram, dirty);
 
         let pass = self.pass.take();

@@ -19,6 +19,7 @@ pub(crate) mod render_pass;
 
 use alloc::sync::Arc;
 use core::alloc::Allocator;
+use core::num::NonZeroU64;
 use core::sync::atomic::{self};
 use core::{mem, ptr};
 use std::mem::offset_of;
@@ -35,7 +36,7 @@ use pchan_emu::gpu::draw_call::{
 };
 use pchan_emu::gpu::{
     Conn, Display, DisplayColorDepth, DrawCallMsg, DrawPixels, FlushMsg, Gp0TexWindowCmd,
-    GpuStatReg, TextureColorMode,
+    GpuStatReg, TextureColorMode, VramPayload,
 };
 use thiserror::Error;
 pub use wgpu;
@@ -404,7 +405,6 @@ impl Renderer {
             conn: Conn {
                 draw_call_chan: kanal::bounded_async(128),
                 vram_out_chan: kanal::bounded_async(128),
-                reset_flag: &pchan_emu::gpu::RESET_FLAG,
             },
             display_pipeline,
             display_bind_group,
@@ -418,10 +418,6 @@ impl Renderer {
             vram_blit_buffer,
             blit: blit_v2v,
         })
-    }
-
-    pub fn reset(&self) {
-        self.conn.reset_flag.store(true, atomic::Ordering::Release);
     }
 
     pub async fn try_new() -> Result<Self, InitError> {
@@ -471,18 +467,6 @@ impl Renderer {
         emu.gpu.conn = self.conn.clone();
     }
 
-    fn consume_reset(&self) -> bool {
-        self.conn
-            .reset_flag
-            .compare_exchange(
-                true,
-                false,
-                atomic::Ordering::AcqRel,
-                atomic::Ordering::Relaxed,
-            )
-            .is_ok()
-    }
-
     fn set_hw_display(&self, hw_dp: HWDisplayUniforms) {
         *self.display_uniforms.hw.lock().unwrap() = hw_dp;
     }
@@ -500,6 +484,7 @@ impl Renderer {
     async fn render_loop(self: Arc<Self>) {
         tracing::info!("started gpu renderer task");
         let mut alloc = BlinkAlloc::new();
+        let mut vram_cleared = true;
         loop {
             let msg = self
                 .conn
@@ -514,7 +499,10 @@ impl Renderer {
                     let mut pass = Pass::new_in(&alloc);
                     pass.add_draw_call(draw_call);
                     let mut flush = match self.draw_submission_loop(&mut pass).await {
-                        SubmissionResult::Reset => {
+                        SubmissionResult::Reset(ack) => {
+                            self.reset();
+                            vram_cleared = true;
+                            ack.send(()).await.unwrap();
                             continue;
                         }
                         SubmissionResult::RequestedVram => {
@@ -526,40 +514,48 @@ impl Renderer {
                     self.update_hw_display_uniforms(&flush.display, flush.gpustat);
 
                     let start = Instant::now();
+                    tracing::info!("draw#{}:", flush.draw_idx);
                     let mut render_pass = self.create_render_pass(pass);
-                    render_pass.draw(&flush.vram.vram, flush.vram.dirty);
+                    render_pass.draw(&flush.vram.vram, flush.vram.dirty || vram_cleared);
                     render_pass.finish(&mut flush.vram.vram).await.unwrap();
                     let elapsed = start.elapsed();
 
-                    if tracing::enabled!(Level::DEBUG) {
-                        tracing::info!("finished render in {:.2}ms", elapsed.as_millis_f32());
-                    }
+                    vram_cleared = false;
+
+                    // if tracing::enabled!(Level::DEBUG) {
+                    tracing::info!("finished render in {:.2}ms", elapsed.as_millis_f32());
+                    // }
 
                     self.conn
                         .vram_out_chan
                         .0
-                        .send(pchan_emu::gpu::VramRes::Result {
+                        .send(pchan_emu::gpu::VramRes::Ok(VramPayload {
                             vram: flush.vram.vram,
-                        })
+                            draw_idx: flush.draw_idx,
+                        }))
                         .await
                         .unwrap();
                 }
                 DrawCallMsg::Flush(flush) => {
                     self.update_hw_display_uniforms(&flush.display, flush.gpustat);
+                    self.upload_vram(&flush.vram.vram);
                     self.conn
                         .vram_out_chan
                         .0
-                        .send(pchan_emu::gpu::VramRes::Result {
+                        .send(pchan_emu::gpu::VramRes::Ok(VramPayload {
                             vram: flush.vram.vram,
-                        })
+                            draw_idx: flush.draw_idx,
+                        }))
                         .await
                         .unwrap();
-                    // tracing::warn!("nothing to flush")
                 }
                 DrawCallMsg::UpdateDisplay(display, gpustat) => {
                     self.update_hw_display_uniforms(&display, gpustat);
                 }
-                DrawCallMsg::Reset => {}
+                DrawCallMsg::Reset(ack) => {
+                    self.reset();
+                    ack.send(()).await.unwrap();
+                }
                 DrawCallMsg::RequestVram => {}
             }
         }
@@ -593,15 +589,84 @@ impl Renderer {
                 DrawCallMsg::UpdateDisplay(display, gpustat) => {
                     self.update_hw_display_uniforms(&display, gpustat);
                 }
-                DrawCallMsg::Reset => return SubmissionResult::Reset,
+                DrawCallMsg::Reset(ack) => return SubmissionResult::Reset(ack),
                 DrawCallMsg::RequestVram => return SubmissionResult::RequestedVram,
             }
         }
     }
+
+    pub fn reset(&self) {
+        let mut encoder = self
+            .device
+            .create_command_encoder(&CommandEncoderDescriptor::default());
+        let ranges = ImageSubresourceRange {
+            aspect: TextureAspect::All,
+            base_mip_level: 0,
+            mip_level_count: None,
+            base_array_layer: 0,
+            array_layer_count: None,
+        };
+        encoder.clear_texture(&self.render_texture, &ranges);
+        encoder.clear_texture(&self.vram_texture, &ranges);
+        encoder.clear_buffer(&self.vram_blit_buffer, 0, None);
+        encoder.clear_buffer(&self.vram_out_buf, 0, None);
+        let six = self.queue.submit([encoder.finish()]);
+        self.device
+            .poll(wgt::PollType::Wait {
+                submission_index: Some(six),
+                timeout: None,
+            })
+            .unwrap();
+    }
+
+    pub fn upload_vram(&self, vram: &[u16]) {
+        let vram =
+            unsafe { slice::from_raw_parts(vram.as_ptr().cast::<u8>(), mem::size_of_val(vram)) };
+        let mut belt = self.belt.lock().unwrap();
+        let mut encoder = self
+            .device
+            .create_command_encoder(&CommandEncoderDescriptor::default());
+
+        let vram_buf = belt.allocate(
+            NonZeroU64::new(mb(2) as u64).unwrap(),
+            NonZeroU64::new(256).unwrap(),
+        );
+        vram_buf
+            .slice(0..vram.len() as u64)
+            .get_mapped_range_mut()
+            .unwrap()
+            .copy_from_slice(vram);
+
+        let copy_size = Extent3d {
+            width: 1024,
+            height: 512,
+            depth_or_array_layers: 1,
+        };
+        let source = TexelCopyBufferInfo {
+            buffer: vram_buf.buffer(),
+            layout: TexelCopyBufferLayout {
+                offset: vram_buf.offset(),
+                bytes_per_row: Some(1024u32 * size_of::<u16>() as u32),
+                rows_per_image: Some(512),
+            },
+        };
+        encoder.copy_buffer_to_texture(source, self.render_texture.as_image_copy(), copy_size);
+        encoder.copy_buffer_to_texture(source, self.vram_texture.as_image_copy(), copy_size);
+
+        belt.finish();
+        let six = self.queue.submit([encoder.finish()]);
+        belt.recall();
+        self.device
+            .poll(wgt::PollType::Wait {
+                submission_index: Some(six),
+                timeout: None,
+            })
+            .unwrap();
+    }
 }
 
 enum SubmissionResult<A: Allocator> {
-    Reset,
+    Reset(kanal::AsyncSender<()>),
     RequestedVram,
     Flush(FlushMsg<A>),
 }

@@ -430,19 +430,35 @@ impl EmuContext {
         let ser = pchan_encode::encode(&mut self.emu, sink, self.alloc).into_diagnostic()?;
         let mut f = fs::File::create("/tmp/pchan-save.bin").into_diagnostic()?;
         f.write_all(ser.bytes()).into_diagnostic()?;
+        {
+            const W: usize = 1024;
+            const H: usize = 512;
+            let expand = |c: u16| -> u8 {
+                let c = (c & 0x1f) as u8;
+                (c << 3) | (c >> 2)
+            };
+
+            let mut ppm = format!("P6\n{W} {H}\n255\n").into_bytes();
+            for px in self.emu.gpu.lock_vram().iter().take(W * H) {
+                ppm.extend_from_slice(&[expand(*px), expand(*px >> 5), expand(*px >> 10)]);
+            }
+            fs::write("/tmp/vram-save.ppm", &ppm).into_diagnostic()?;
+        }
+
+        tracing::info!("SAVED");
         Ok(())
     }
 
     fn load_state(&mut self) -> miette::Result<()> {
-        self.emu.gpu.flush_draw_calls();
-        self.emu.gpu.wait_for_render_result();
-        // self.emu.gpu.reset_renderer();
+        self.hard_reset();
         let mut f = fs::File::open("/tmp/pchan-save.bin").into_diagnostic()?;
         let mut sink = Vec::new();
         f.read_to_end(&mut sink).into_diagnostic()?;
         pchan_encode::decode_in_place(&mut self.emu, sink, self.alloc).into_diagnostic()?;
         self.emu.dynarec_cache.alloc_flush(self.alloc);
+        self.emu.gpu.drain_messages();
         println!("LOADED");
+        tracing::info!("LOADED");
 
         {
             const W: usize = 1024;
@@ -457,10 +473,28 @@ impl EmuContext {
             for px in vram.iter().take(W * H) {
                 ppm.extend_from_slice(&[expand(*px), expand(*px >> 5), expand(*px >> 10)]);
             }
-            fs::write("/tmp/vram.ppm", &ppm).into_diagnostic()?;
+            fs::write("/tmp/vram-load.ppm", &ppm).into_diagnostic()?;
         }
 
         Ok(())
+    }
+
+    fn hard_reset(&mut self) {
+        self.emu.gpu.reset_renderer();
+        self.runner.frame_idx = 0;
+
+        let bios_path = self.emu.boot.bios_path.clone();
+        let alloc = self.emu.alloc;
+        let mut new = Emu::new_in(alloc);
+        new.set_bios_path(bios_path);
+        new.load_bios(alloc).unwrap();
+        new.cpu.jump_to_bios();
+        new.tty.set_tracing();
+
+        mem::swap(&mut new.gpu.conn, &mut self.emu.gpu.conn);
+        new.spu.put_prod(self.emu.spu.take_prod());
+
+        self.emu = new;
     }
 }
 
@@ -878,23 +912,8 @@ trait PchanAppActions: Sized + 'static {
     }
 
     fn hard_reset(&mut self, _: &HardReset, _: &mut Window, cx: &mut Context<Self>) {
-        self.appcx().emucx.update(cx, |emucx, cx| {
-            emucx.runner.frame_idx = 0;
-
-            emucx.emu.gpu.wait_for_render_result();
-            let bios_path = emucx.emu.boot.bios_path.clone();
-            let alloc = emucx.emu.alloc;
-            emucx.emu.gpu.reset_renderer();
-            let mut new = Emu::new_in(alloc);
-            new.set_bios_path(bios_path);
-            new.load_bios(alloc).unwrap();
-            new.cpu.jump_to_bios();
-            new.tty.set_tracing();
-
-            mem::swap(&mut new.gpu.conn, &mut emucx.emu.gpu.conn);
-            new.spu.put_prod(emucx.emu.spu.take_prod());
-
-            emucx.emu = new;
+        self.appcx().emucx.update(cx, |emucx, _| {
+            emucx.hard_reset();
         });
         cx.notify();
     }

@@ -157,55 +157,50 @@ impl VramCursor {
     }
 }
 
-pub struct Read;
-pub struct ReadWrite;
-
-pub trait VramAccessType {
-    type VramRef<'a>;
-    type SignalRef<'a>;
-}
-
-impl VramAccessType for Read {
-    type VramRef<'a> = &'a [u16];
-    type SignalRef<'a> = &'a bool;
-}
-impl VramAccessType for ReadWrite {
-    type VramRef<'a> = &'a mut [u16];
-    type SignalRef<'a> = &'a mut bool;
-}
-
-#[derive(derive_more::Deref)]
-pub struct VramGuard<'a, T: VramAccessType> {
-    #[deref]
-    vram:   T::VramRef<'a>,
-    signal: T::SignalRef<'a>,
-}
-
-impl VramGuard<'_, ReadWrite> {
-    fn as_readonly(&self) -> VramGuard<'_, Read> {
-        VramGuard {
-            vram:   self.vram,
-            signal: self.signal,
-        }
-    }
-    pub fn vram_write(&mut self, coord: VramCoord, value: u16) {
+impl<A: Allocator + Copy> GpuState<A> {
+    pub(crate) fn vram_write(&mut self, coord: VramCoord, value: u16) {
         let coord = coord.wrap();
         let addr = coord.x as usize + coord.y as usize * kb(1);
-        *self.signal = true;
-        self.vram[addr] = value;
+        self.vram_mutation_signal = true;
+        match &mut self.vram {
+            Vram::Mapped(vram) => {
+                vram[addr] = value;
+            }
+            Vram::Lent => {
+                tracing::error!("vram is lent.");
+            }
+        }
     }
 
-    /// like `vram_write`, but takes mask bit into account
-    pub fn vram_draw(&mut self, coord: VramCoord, mut value: u16, gpustat: GpuStatReg) {
-        match gpustat.draw_pixels() {
+    pub(crate) fn vram_read_direct(&mut self, coord: VramCoord) -> u16 {
+        let coord = coord.wrap();
+        let addr = coord.x as usize + coord.y as usize * kb(1);
+        match &self.vram {
+            Vram::Mapped(vram) => vram[addr],
+            Vram::Lent => {
+                tracing::error!("vram is lent.");
+                0
+            }
+        }
+    }
+
+    /// returns value through `self.gp0read`
+    pub(crate) fn vram_read(&mut self, coord: VramCoord, idx: usize) {
+        debug_assert!((0..=1).contains(&idx));
+        let value = self.vram_read_direct(coord);
+        self.gp0read[idx] = value;
+    }
+
+    pub fn vram_draw(&mut self, coord: VramCoord, mut value: u16) {
+        match self.gpustat.draw_pixels() {
             DrawPixels::Always => {}
             DrawPixels::NotToMaskedAreas => {
-                let current = self.vram_read(coord);
+                let current = self.vram_read_direct(coord);
 
                 if mask_bit(current) {
                     return;
                 }
-                if gpustat.set_mask() {
+                if self.gpustat.set_mask() {
                     value = set_mask_bit(value, true);
                 }
             }
@@ -213,53 +208,18 @@ impl VramGuard<'_, ReadWrite> {
         self.vram_write(coord, value);
     }
 
-    pub fn vram_read(&mut self, coord: VramCoord) -> u16 {
-        self.as_readonly().vram_read(coord)
-    }
-}
-impl VramGuard<'_, Read> {
-    fn vram_read(&mut self, coord: VramCoord) -> u16 {
-        let coord = coord.wrap();
-        let addr = coord.x as usize + coord.y as usize * kb(1);
-        self.vram[addr]
+    pub fn lock_vram(&mut self) -> &[u16] {
+        self.flush_draw_calls();
+        self.wait_for_render_result();
+        self.vram.as_slice()
     }
 }
 
-impl<A: Allocator + Copy> GpuState<A> {
-    pub fn get_gpu_info_cmd(&self, cmd: GpuCmd) -> Option<GpuInfoCmd> {
-        let value = cmd.raw_value();
-        let value = match self.model {
-            GpuModel::Gpu160Pin => return None,
-            GpuModel::Gpu180Pin => value & 0x7,
-            GpuModel::Gpu208Pin => value & 0xf,
-        };
-        Some(
-            GpuInfoCmd::from_repr(value as _)
-                .unwrap_or_else(|| todo!("gpu get info {}", hex(value))),
-        )
-    }
-
-    pub fn lock_vram(&mut self) -> VramGuard<'_, Read> {
-        self.flush_draw_calls();
-        self.wait_for_render_result();
-        let Vram::Mapped(vram) = &self.vram else {
-            panic!("unmapped");
-        };
-        VramGuard {
-            vram,
-            signal: &self.vram_mutation_signal,
-        }
-    }
-
-    pub fn lock_vram_mut(&mut self) -> VramGuard<'_, ReadWrite> {
-        self.flush_draw_calls();
-        self.wait_for_render_result();
-        let Vram::Mapped(vram) = &mut self.vram else {
-            panic!("unmapped");
-        };
-        VramGuard {
-            vram,
-            signal: &mut self.vram_mutation_signal,
+impl<A: Allocator> Vram<A> {
+    fn as_slice(&self) -> &[u16] {
+        match &self {
+            Vram::Mapped(items) => items,
+            Vram::Lent => &[],
         }
     }
 }

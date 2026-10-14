@@ -1,7 +1,9 @@
 use core::alloc::Allocator;
 
+use alloc::alloc::Global;
+
 use crate::Emu;
-use crate::gpu::{DrawEvenOdd, VBLANK_COUNT};
+use crate::gpu::{DrawEvenOdd, VBLANK_COUNT, create_vram};
 use crate::io::irq::Irq;
 
 pub const CPU_FREQ: u32 = 33_868_800;
@@ -36,10 +38,10 @@ impl<A: Allocator + Copy> Emu<A> {
         match self.gpu.vram {
             crate::gpu::Vram::Mapped(_) => {}
             crate::gpu::Vram::Lent => {
-                if let Some(crate::gpu::VramRes::Result { vram }) =
+                if let Some(crate::gpu::VramRes::Ok(vram)) =
                     self.gpu.conn.vram_out_chan.1.as_sync().try_recv().unwrap()
                 {
-                    self.gpu.vram = crate::gpu::Vram::Mapped(vram);
+                    self.gpu.submit_vram(vram);
                 }
             }
         }
