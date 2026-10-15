@@ -4,7 +4,7 @@ use bitvec::prelude::{self as bv};
 use bitvec::view::BitView;
 use bv::Lsb0;
 use derive_more as de;
-use pchan_utils::array;
+use pchan_utils::{array, default};
 use smallvec::SmallVec;
 
 #[cfg(target_arch = "aarch64")]
@@ -17,12 +17,18 @@ type RegAllocBitMap = bv::BitArray<[u16; 1]>;
 #[derive(de::Debug, Clone)]
 pub struct RegAlloc {
     pub loaded:          bv::BitArray<[u32; 1]>,
+    /// indexed by guest register
     pub dirty:           bv::BitArray<[u32; 1]>,
+    /// indexed by host register
     pub allocated:       RegAllocBitMap,
+    /// indexed by host register
     #[debug(skip)]
     pub allocatable:     RegAllocBitMap,
+    /// indexed by host register
     #[debug(skip)]
     pub volatile:        RegAllocBitMap,
+    /// indexed by host register
+    pub locked:          RegAllocBitMap,
     /// this is in guest register space
     #[debug(skip)]
     pub priority:        RegAllocBitMap,
@@ -61,7 +67,7 @@ impl Default for RegAlloc {
             ],
 
             #[cfg(target_arch = "aarch64")]
-            volatile:                                 bv::bitarr!(
+            volatile: bv::bitarr!(
                 u32, Lsb0;
                 0, 0, 0, 0, // x0-x3
                 1, 1, 1, 1, // x4-x7
@@ -72,6 +78,7 @@ impl Default for RegAlloc {
                 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                 1, 1, 1 // r29 and r30 - frame and link registers, r31 - zero register (or sp)
             ),
+            locked: default(),
 
             #[cfg(target_arch = "aarch64")]
             priority: bv::bitarr![
@@ -142,14 +149,15 @@ impl RegAlloc {
         let [allocated] = self.allocated.into_inner();
         let [allocatable] = self.allocatable.into_inner();
         let [volatile] = self.volatile.into_inner();
+        let [locked] = self.locked.into_inner();
         // use non volatile first
-        let allocate_from = allocatable & (!allocated) & (!volatile);
+        let allocate_from = allocatable & (!allocated) & (!volatile) & (!locked);
         if allocate_from != 0 {
             let index = allocate_from.trailing_zeros();
             return Some(Reg::new(index as _));
         }
         // fallback to volatile
-        let allocate_from = allocatable & (!allocated);
+        let allocate_from = allocatable & (!allocated) & (!locked);
         if allocate_from != 0 {
             let index = allocate_from.trailing_zeros();
             return Some(Reg::new(index as _));
@@ -178,6 +186,9 @@ impl RegAlloc {
     #[must_use]
     pub fn first_allocatable(&self) -> Reg {
         let [allocatable] = self.allocatable.into_inner();
+        let [locked] = self.locked.into_inner();
+        let allocatable = allocatable & (!locked);
+        debug_assert_ne!(allocatable, 0, "all registers are locked");
         let index = allocatable.trailing_zeros() as u8;
         Reg::new(index)
     }
@@ -191,12 +202,13 @@ impl RegAlloc {
     // guest index of first allocated low priority.
     // use [`allocated_guest_to_host`] to map to host register.
     #[must_use]
-    pub fn first_allocated_low_priority(&self) -> Option<u8> {
+    pub fn first_unlocked_allocated_low_priority(&self) -> Option<u8> {
         self.mapping
             .iter()
             .enumerate()
             .position(|(guest_idx, host)| {
-                host.is_some() && !self.priority[guest_idx] // LOW priority = !prio
+                let Some(host) = host else { return false };
+                !self.locked[usize::from(*host)] && !self.priority[guest_idx] // LOW priority = !prio
             })
             .map(|idx| idx as _)
         // .and_then(|idx| Self::ensure_reg(idx as _))
@@ -225,7 +237,7 @@ impl RegAlloc {
             return Ok(self.alloc(guest_reg, free));
         }
 
-        let first_low_prio = self.first_allocated_low_priority();
+        let first_low_prio = self.first_unlocked_allocated_low_priority();
 
         match first_low_prio {
             Some(first_low_prio) => {
@@ -263,7 +275,7 @@ impl RegAlloc {
             return Ok(self.alloc(guest_reg, free));
         }
 
-        let first_low_prio = self.first_allocated_low_priority();
+        let first_low_prio = self.first_unlocked_allocated_low_priority();
 
         match first_low_prio {
             Some(first_low_prio) => {
@@ -308,7 +320,7 @@ impl RegAlloc {
         loop {
             let Some(reg) = self.history.pop_front() else {
                 let evicted_host = self
-                    .first_allocated_low_priority()
+                    .first_unlocked_allocated_low_priority()
                     .and_then(|reg| self.allocated_guest_to_host(reg))
                     .unwrap_or_else(|| self.first_allocatable());
                 return (self.evict_at(evicted_host), Evicted(evicted_host));
@@ -316,6 +328,9 @@ impl RegAlloc {
             let Some(reg) = self.allocated_guest_to_host(reg) else {
                 continue;
             };
+            if self.locked[usize::from(reg)] {
+                continue;
+            }
             return (self.evict_at(reg), Evicted(reg));
         }
     }
@@ -394,6 +409,13 @@ const impl From<Reg> for u8 {
         match value {
             Reg::W(reg) => reg,
         }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+const impl From<Reg> for usize {
+    fn from(value: Reg) -> Self {
+        usize::from(u8::from(value))
     }
 }
 

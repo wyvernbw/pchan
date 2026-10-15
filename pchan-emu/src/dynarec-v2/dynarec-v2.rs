@@ -721,6 +721,15 @@ impl LoadedReg<AllocResult> {
             )
         }
     }
+
+    fn lock<A: Allocator + Copy>(self, dynarec: &mut Dynarec<A>) -> Self {
+        dynarec.reg_alloc.locked.set(usize::from(self.reg), true);
+        self
+    }
+    fn unlock<A: Allocator + Copy>(self, dynarec: &mut Dynarec<A>) -> Self {
+        dynarec.reg_alloc.locked.set(usize::from(self.reg), false);
+        self
+    }
 }
 
 #[derive(d::Debug)]
