@@ -3231,19 +3231,20 @@ pub fn test_mfhilo(
 
 impl DynarecOp for Syscall {
     fn boundary(&self) -> Boundary {
-        Boundary::Soft
+        Boundary::Hard
     }
     #[allow(clippy::useless_conversion)]
     fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
         #[cfg(target_arch = "aarch64")]
         dynasm!(
             ctx.dynarec.asm
-            ;; let saved = ctx.dynarec.emit_save_volatile_registers()
             ;; ctx.dynarec.emit_writeback_all()
+            ;; ctx.dynarec.reg_alloc.dealloc_all()
+            ;; ctx.dynarec.emit_save_critical_registers()
             ; mov w1, u32::from(ctx.delay_slot)
             ; ldr x3, <handle_syscall
+            ;; ctx.dynarec.emit_restore_critical_registers()
             ; blr x3
-            ;; ctx.dynarec.emit_restore_saved_registers(saved.into_iter())
         );
 
         EmitSummary::pc_updated()

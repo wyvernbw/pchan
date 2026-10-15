@@ -328,21 +328,18 @@ impl<A: Allocator + Copy> Dynarec<A> {
 
     #[inline(always)]
     fn emit_writeback(&mut self, guest_reg: u8, host_reg: Reg) {
+        self.mark_clean(guest_reg);
         Self::emit_writeback_free(&mut self.asm, guest_reg, host_reg);
     }
 
     fn emit_writeback_all(&mut self) {
         // emit write back to dirty registers
-        self.reg_alloc
-            .dirty
-            .clone() // this is actually cheap since `dirty` is just a u32
-            .iter()
-            .enumerate()
-            .filter_map(|(guest_reg, dirty)| if *dirty { Some(guest_reg) } else { None })
-            .for_each(|guest_reg| {
-                let host_reg = self.alloc_reg(guest_reg as _);
-                self.emit_writeback(guest_reg as _, host_reg.reg());
-            });
+        for guest in self.reg_alloc.dirty.clone().iter_ones() {
+            let Some(host) = self.reg_alloc.mapping[guest] else {
+                continue;
+            };
+            self.emit_writeback(guest as u8, host);
+        }
     }
 
     pub(crate) fn emit_block_epilogue(
@@ -638,6 +635,38 @@ impl<A: Allocator + Copy> Dynarec<A> {
             ; .arch aarch64
             ; ldr x0, [sp], #16
         );
+    }
+
+    /// critical registers are unallocatable volatile registers that must never
+    /// get trampled. this includes  the platform registers on arm, and a few others.
+    #[allow(clippy::useless_conversion)]
+    fn emit_save_critical_registers(&mut self) {
+        let critical = (!self.reg_alloc.allocatable) & self.reg_alloc.volatile;
+
+        for reg in critical.iter_ones() {
+            let reg = reg as u8;
+            #[cfg(target_arch = "aarch64")]
+            dynasm!(
+                self.asm
+                ; .arch aarch64
+                ; str X(reg), [sp, #-16]!
+            );
+        }
+    }
+
+    #[allow(clippy::useless_conversion)]
+    fn emit_restore_critical_registers(&mut self) {
+        let critical = (!self.reg_alloc.allocatable) & self.reg_alloc.volatile;
+
+        for reg in critical.iter_ones() {
+            let reg = reg as u8;
+            #[cfg(target_arch = "aarch64")]
+            dynasm!(
+                self.asm
+                ; .arch aarch64
+                ; ldr X(reg), [sp], #16
+            );
+        }
     }
 
     pub(crate) fn commit(

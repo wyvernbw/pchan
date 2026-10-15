@@ -729,7 +729,6 @@ fn test_lwcn(
 
 // DONE: on interpreter, consecutive branches are additive ;-;
 #[rstest]
-// #[cfg(false)]
 fn test_branch_in_branch_delay_slot(#[values(dynarec(), interp())] mut runner: Runner) {
     use crate::cpu::program;
     use pchan_utils::setup_tracing;

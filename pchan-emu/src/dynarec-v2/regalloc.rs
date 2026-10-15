@@ -308,6 +308,13 @@ impl RegAlloc {
         }
     }
 
+    pub fn dealloc_all(&mut self) {
+        self.allocated.fill(false);
+        self.locked.fill(false);
+        self.mapping.fill(None);
+        self.dirty.fill(false);
+    }
+
     /// evict any register
     /// policy: oldest first
     fn evict_any(&mut self) -> (Evicted<Guest>, Evicted<Host>) {

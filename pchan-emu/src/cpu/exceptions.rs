@@ -67,15 +67,17 @@ impl<A: Allocator> Emu<A> {
             return;
         }
 
+        sr.push_exception_stack();
+
         let cause = self.cpu.cop0.reg[13];
         let mut cause = CauseRegister::new_with_raw_value(cause);
 
         cause.set_excode(exception.raw_value());
         self.cpu.cop0.reg[13] = cause.raw_value();
 
-        let epc = match (cause.bd(), exception) {
-            (false, _) => self.cpu.pc,
-            (true, _) => {
+        let epc = match cause.bd() {
+            false => self.cpu.pc,
+            true => {
                 // bd is set, meaning pc was updated to the branch destination
                 // as such, we can simply update the TAR register to the current pc.
                 self.cpu.cop0.reg[6] = self.cpu.pc;
@@ -84,7 +86,6 @@ impl<A: Allocator> Emu<A> {
         };
         self.cpu.cop0.reg[14] = epc;
 
-        sr.push_exception_stack();
         self.cpu.cop0.reg[12] = sr.raw_value();
 
         let new_pc = match self.cpu.cop0.status().bev() {
