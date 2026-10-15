@@ -3087,8 +3087,11 @@ impl DynarecOp for Multu {
                 );
             }
             (_, _) => {
-                let rs = ctx.dynarec.emit_load_reg(self.rs);
-                let rt = ctx.dynarec.emit_load_reg(self.rt);
+                let rs = ctx
+                    .dynarec
+                    .emit_load_reg_stackless(self.rs)
+                    .lock(ctx.dynarec);
+                let rt = ctx.dynarec.emit_load_reg_stackless(self.rt);
 
                 #[cfg(target_arch = "aarch64")]
                 dynasm!(
@@ -3096,6 +3099,8 @@ impl DynarecOp for Multu {
                     ; umull x1, W(*rs), W(*rt)
                     ; str x1, [x0, Emu::<A>::HILO_OFFSET as _]
                 );
+
+                rs.unlock(ctx.dynarec);
             }
         };
         EmitSummary::default()
@@ -3120,8 +3125,11 @@ impl DynarecOp for Mult {
                 );
             }
             (_, _) => {
-                let rs = ctx.dynarec.emit_load_reg(self.rs).lock(ctx.dynarec);
-                let rt = ctx.dynarec.emit_load_reg(self.rt).lock(ctx.dynarec);
+                let rs = ctx
+                    .dynarec
+                    .emit_load_reg_stackless(self.rs)
+                    .lock(ctx.dynarec);
+                let rt = ctx.dynarec.emit_load_reg_stackless(self.rt);
 
                 #[cfg(target_arch = "aarch64")]
                 dynasm!(
@@ -3130,8 +3138,7 @@ impl DynarecOp for Mult {
                     ; str x1, [x0, Emu::<A>::HILO_OFFSET as _]
                 );
 
-                rt.unlock(ctx.dynarec).restore(ctx.dynarec);
-                rs.unlock(ctx.dynarec).restore(ctx.dynarec);
+                rs.unlock(ctx.dynarec);
             }
         };
         EmitSummary::default()
@@ -3187,7 +3194,7 @@ impl DynarecOp for Mflo {
             return EmitSummary::default();
         }
 
-        let rd = ctx.dynarec.alloc_reg(self.rd);
+        let rd = ctx.dynarec.alloc_reg_stackless(self.rd);
 
         #[cfg(target_arch = "aarch64")]
         dynasm!(
@@ -3197,7 +3204,6 @@ impl DynarecOp for Mflo {
         );
 
         ctx.dynarec.mark_dirty(self.rd);
-        rd.restore(ctx.dynarec);
 
         EmitSummary::default()
     }
@@ -3210,7 +3216,7 @@ impl DynarecOp for Mfhi {
             return EmitSummary::default();
         }
 
-        let rd = ctx.dynarec.alloc_reg(self.rd);
+        let rd = ctx.dynarec.alloc_reg_stackless(self.rd);
 
         #[cfg(target_arch = "aarch64")]
         dynasm!(
@@ -3220,7 +3226,6 @@ impl DynarecOp for Mfhi {
         );
 
         ctx.dynarec.mark_dirty(self.rd);
-        rd.restore(ctx.dynarec);
 
         EmitSummary::default()
     }

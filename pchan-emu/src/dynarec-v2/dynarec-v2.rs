@@ -731,6 +731,19 @@ impl LoadedReg<AllocResult> {
         self
     }
 }
+impl LoadedReg<AllocResultStackless> {
+    fn reg(&self) -> Reg {
+        self.reg
+    }
+    fn lock<A: Allocator + Copy>(self, dynarec: &mut Dynarec<A>) -> Self {
+        dynarec.reg_alloc.locked.set(usize::from(self.reg), true);
+        self
+    }
+    fn unlock<A: Allocator + Copy>(self, dynarec: &mut Dynarec<A>) -> Self {
+        dynarec.reg_alloc.locked.set(usize::from(self.reg), false);
+        self
+    }
+}
 
 #[derive(d::Debug)]
 pub struct ScheduledEmitter<A: Allocator> {
@@ -777,13 +790,24 @@ impl<A: Allocator + Copy> Default for Scheduler<A> {
 
 impl<A: Allocator + Copy> Dynarec<A> {
     pub fn lock_register(&mut self, reg: &LoadedReg<AllocResultStackless>) {
-        debug_assert!(self.reg_alloc.allocatable[**reg as usize]);
+        let host = reg.reg;
+        let idx = host.to_idx() as usize;
+        debug_assert!(
+            self.reg_alloc.allocated[idx],
+            "locking an unallocated register"
+        );
+
+        let guest = self.reg_alloc.reverse_mapping[idx];
+        if self.reg_alloc.dirty[guest as usize] {
+            self.emit_writeback(guest, host);
+            self.reg_alloc.dirty.set(guest as usize, false);
+        }
+
         self.reg_alloc.evict_at(reg.reg);
-        self.reg_alloc.allocatable.set(**reg as _, false);
+        self.reg_alloc.locked.set(idx, true);
     }
     pub fn unlock_register(&mut self, reg: &LoadedReg<AllocResultStackless>) {
-        debug_assert!(!self.reg_alloc.allocatable[**reg as usize]);
-        self.reg_alloc.allocatable.set(**reg as _, true);
+        self.reg_alloc.locked.set(**reg as _, false);
     }
     pub fn pop_scheduled_at(&mut self, pc: u32) -> Option<ScheduledEmitter<A>> {
         if let Some(emitter) = self.scheduler.queue.peek() {
