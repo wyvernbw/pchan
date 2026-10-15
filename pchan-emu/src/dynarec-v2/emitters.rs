@@ -3300,16 +3300,16 @@ fn emit_mthilo<A: Allocator + Copy>(rs: u8, mut ctx: EmitCtx<A>, hilo: Hilo) -> 
     let rs = ctx.dynarec.emit_load_reg_stackless(rs);
     ctx.dynarec.lock_register(&rs);
 
-    ctx.schedule_in(2, move |ctx| {
-        #[cfg(target_arch = "aarch64")]
-        dynasm!(
-            ctx.dynarec.asm
-            ; .arch aarch64
-            ; str W(*rs), [x0, offset as _]
-        );
-        ctx.dynarec.unlock_register(&rs);
-        EmitSummary::default()
-    });
+    // ctx.schedule_in(2, move |ctx| {
+    #[cfg(target_arch = "aarch64")]
+    dynasm!(
+        ctx.dynarec.asm
+        ; .arch aarch64
+        ; str W(*rs), [x0, offset as _]
+    );
+    ctx.dynarec.unlock_register(&rs);
+    // EmitSummary::default()
+    // });
     EmitSummary::default()
 }
 
@@ -3375,6 +3375,7 @@ fn test_0x8004f454_move_in_jump_delay() -> color_eyre::Result<()> {
     emu.write_many(
         0x0,
         &program([
+            OpCode::HALT,
             addiu(cpu::SP, cpu::SP, 0x4),
             sw(16, cpu::SP, 0x0018),
             addu(16, 0, 4),
@@ -3386,6 +3387,7 @@ fn test_0x8004f454_move_in_jump_delay() -> color_eyre::Result<()> {
             addu(5, 0, 16),
         ]),
     );
+    emu.cpu.pc = 0x4;
     let mut dynarec = Dynarec::new(CreateDynarecParams::default());
     run_step(&mut emu, &mut dynarec);
 
