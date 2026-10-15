@@ -336,13 +336,18 @@ impl<A: Allocator + Copy> Dynarec<A> {
     }
 
     fn emit_writeback_all(&mut self) {
-        let dirty = self.reg_alloc.dirty;
-        for guest_reg in dirty.iter_ones() {
-            let host = self.reg_alloc.mapping[guest_reg]
-                .expect("dirty guest register without a host mapping");
-            self.emit_writeback(guest_reg as _, host);
-            self.reg_alloc.dirty.set(guest_reg, false);
-        }
+        // emit write back to dirty registers
+        self.reg_alloc
+            .dirty
+            .clone() // this is actually cheap since `dirty` is just a u32
+            .iter()
+            .enumerate()
+            .filter_map(|(guest_reg, dirty)| if *dirty { Some(guest_reg) } else { None })
+            .for_each(|guest_reg| {
+                let host_reg = self.alloc_reg(guest_reg as _);
+                self.emit_writeback(guest_reg as _, host_reg.reg());
+                host_reg.restore(self);
+            });
     }
 
     pub(crate) fn emit_block_epilogue(
@@ -528,7 +533,7 @@ impl<A: Allocator + Copy> Dynarec<A> {
 
     #[allow(clippy::useless_conversion)]
     fn emit_immediate_large(&mut self, guest_reg: Guest, imm: u32) -> EmitSummary {
-        let reg = self.alloc_reg_stackless(guest_reg);
+        let reg = self.alloc_reg(guest_reg);
 
         #[cfg(target_arch = "aarch64")]
         dynasm!(
@@ -539,23 +544,26 @@ impl<A: Allocator + Copy> Dynarec<A> {
         );
 
         self.mark_dirty(guest_reg);
+        reg.restore(self);
 
         EmitSummary::default()
     }
 
     #[allow(clippy::useless_conversion)]
     fn emit_immediate_sext(&mut self, guest_reg: Guest, imm: i16) -> EmitSummary {
-        let reg = self.alloc_reg_stackless(guest_reg);
-        self.emit_imm16_sext(reg.reg, imm);
+        let reg = self.alloc_reg(guest_reg);
+        self.emit_imm16_sext(reg.reg(), imm);
         self.mark_dirty(guest_reg);
+        reg.restore(self);
         EmitSummary::default()
     }
 
     #[allow(clippy::useless_conversion)]
     fn emit_immediate_uext(&mut self, guest_reg: Guest, imm: i16) -> EmitSummary {
-        let reg = self.alloc_reg_stackless(guest_reg);
-        self.emit_imm16_uext(reg.reg, imm);
+        let reg = self.alloc_reg(guest_reg);
+        self.emit_imm16_uext(reg.reg(), imm);
         self.mark_dirty(guest_reg);
+        reg.restore(self);
         EmitSummary::default()
     }
 
@@ -565,14 +573,15 @@ impl<A: Allocator + Copy> Dynarec<A> {
 
     #[allow(clippy::useless_conversion)]
     fn emit_load_and_move_into(&mut self, target: Guest, reg: Guest) -> EmitSummary {
+        let rd = self.alloc_reg(target);
         self.emit_load_temp_reg(reg, Reg::W(1));
-        let rd = self.alloc_reg_stackless(target);
         dynasm!(
             self.asm
             ; .arch aarch64
             ; mov W(*rd), w1
         );
         self.mark_dirty(target);
+        rd.restore(self);
         EmitSummary::default()
     }
 
@@ -967,7 +976,7 @@ pub(crate) fn fetch_and_compile_single_threaded<A: Allocator + Copy>(
                     scratch_cursor: &mut scratch_cursor,
                 })
                 .pc_updated;
-            while let Some(pre_scheduled) = dynarec.pop_scheduled_at(address) {
+            if let Some(pre_scheduled) = dynarec.pop_scheduled_at(address) {
                 // let cache_boundary_check = (pre_scheduled.pc.saturating_sub(0x4)) >> 2;
                 // let boundary = cache_boundary_check != 0
                 //     && cache_boundary_check.is_multiple_of(PAGE_LEN as u32);
