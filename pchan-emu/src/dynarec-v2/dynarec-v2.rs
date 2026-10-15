@@ -525,7 +525,7 @@ impl<A: Allocator + Copy> Dynarec<A> {
 
     #[allow(clippy::useless_conversion)]
     fn emit_immediate_large(&mut self, guest_reg: Guest, imm: u32) -> EmitSummary {
-        let reg = self.alloc_reg(guest_reg);
+        let reg = self.alloc_reg_stackless(guest_reg);
 
         #[cfg(target_arch = "aarch64")]
         dynasm!(
@@ -536,26 +536,23 @@ impl<A: Allocator + Copy> Dynarec<A> {
         );
 
         self.mark_dirty(guest_reg);
-        reg.restore(self);
 
         EmitSummary::default()
     }
 
     #[allow(clippy::useless_conversion)]
     fn emit_immediate_sext(&mut self, guest_reg: Guest, imm: i16) -> EmitSummary {
-        let reg = self.alloc_reg(guest_reg);
+        let reg = self.alloc_reg_stackless(guest_reg);
         self.emit_imm16_sext(reg.reg(), imm);
         self.mark_dirty(guest_reg);
-        reg.restore(self);
         EmitSummary::default()
     }
 
     #[allow(clippy::useless_conversion)]
     fn emit_immediate_uext(&mut self, guest_reg: Guest, imm: i16) -> EmitSummary {
-        let reg = self.alloc_reg(guest_reg);
+        let reg = self.alloc_reg_stackless(guest_reg);
         self.emit_imm16_uext(reg.reg(), imm);
         self.mark_dirty(guest_reg);
-        reg.restore(self);
         EmitSummary::default()
     }
 
@@ -565,7 +562,7 @@ impl<A: Allocator + Copy> Dynarec<A> {
 
     #[allow(clippy::useless_conversion)]
     fn emit_load_and_move_into(&mut self, target: Guest, reg: Guest) -> EmitSummary {
-        let rd = self.alloc_reg(target);
+        let rd = self.alloc_reg_stackless(target);
         self.emit_load_temp_reg(reg, Reg::W(1));
         dynasm!(
             self.asm
@@ -573,7 +570,6 @@ impl<A: Allocator + Copy> Dynarec<A> {
             ; mov W(*rd), w1
         );
         self.mark_dirty(target);
-        rd.restore(self);
         EmitSummary::default()
     }
 
@@ -696,12 +692,12 @@ impl<A: Allocator + Copy> Dynarec<A> {
 
 #[derive(Debug, Clone, d::Deref, d::DerefMut)]
 pub struct LoadedReg<T> {
-    result:   T,
-    reg:      Reg,
+    result:  T,
+    reg:     Reg,
     #[deref]
     #[deref_mut]
-    reg_idx:  u8,
-    restored: Cell<bool>,
+    reg_idx: u8,
+    locked:  Cell<bool>,
 }
 
 impl From<AllocResult> for LoadedReg<AllocResult> {
@@ -718,7 +714,7 @@ impl From<AllocResult> for LoadedReg<AllocResult> {
             reg,
             reg_idx: reg.to_idx(),
             result,
-            restored: Cell::new(false),
+            locked: Cell::new(false),
         }
     }
 }
@@ -735,7 +731,7 @@ impl From<AllocResultStackless> for LoadedReg<AllocResultStackless> {
             reg,
             reg_idx: reg.to_idx(),
             result,
-            restored: Cell::new(false),
+            locked: Cell::new(false),
         }
     }
 }
@@ -745,9 +741,9 @@ impl LoadedReg<AllocResult> {
         self.reg
     }
     fn restore<A: Allocator + Copy>(&self, dynarec: &mut Dynarec<A>) {
-        debug_assert!(!self.restored.get(), "loaded reg already restored.");
+        debug_assert!(!self.locked.get(), "loaded reg already restored.");
 
-        self.restored.set(true);
+        self.locked.set(true);
 
         if let Err(RegAllocError::EvictToStack(_, reg)) = self.result {
             let current_guest = dynarec.reg_alloc.reverse_mapping[(*reg).to_idx() as usize];
@@ -773,17 +769,26 @@ impl LoadedReg<AllocResult> {
         self
     }
 }
+
 impl LoadedReg<AllocResultStackless> {
     fn reg(&self) -> Reg {
         self.reg
     }
     fn lock<A: Allocator + Copy>(self, dynarec: &mut Dynarec<A>) -> Self {
+        self.locked.set(true);
         dynarec.reg_alloc.locked.set(usize::from(self.reg), true);
         self
     }
     fn unlock<A: Allocator + Copy>(self, dynarec: &mut Dynarec<A>) -> Self {
+        self.locked.set(false);
         dynarec.reg_alloc.locked.set(usize::from(self.reg), false);
         self
+    }
+}
+
+impl<T> Drop for LoadedReg<T> {
+    fn drop(&mut self) {
+        debug_assert!(!self.locked.get(), "dropped locked register. call `unlock`");
     }
 }
 
