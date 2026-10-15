@@ -2970,48 +2970,29 @@ impl DynarecOp for Cfcn {
 impl DynarecOp for Div {
     #[allow(clippy::useless_conversion)]
     fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
-        match (self.rs, self.rt) {
-            (_, 0) => {
-                let rt = ctx.dynarec.emit_load_reg(self.rt);
-                #[cfg(target_arch = "aarch64")]
-                dynasm!(
-                    ctx.dynarec.asm
-                    ; stp wzr, W(*rt), [x0, Emu::<A>::HILO_OFFSET as _]
-                );
-            }
-            (0, _) => {
-                #[cfg(target_arch = "aarch64")]
-                dynasm!(
-                    ctx.dynarec.asm
-                    ; str xzr, [x0, Emu::<A>::HILO_OFFSET as _]
-                );
-            }
-            (_, _) => {
-                let rs = ctx.dynarec.emit_load_reg(self.rs);
-                let rt = ctx.dynarec.emit_load_reg(self.rt);
+        let rs = ctx.dynarec.emit_load_reg(self.rs);
+        let rt = ctx.dynarec.emit_load_reg(self.rt);
 
-                #[cfg(target_arch = "aarch64")]
-                dynasm!(
-                    ctx.dynarec.asm
-                    ; sdiv w1, W(*rs), W(*rt)
-                    ; msub w2, w1, W(*rt), W(*rs)
-                    // rt = 0 => w1 = 0 => hi = w2 = rs
-                    // remainder checks out
-                    // rt = 0 => lo = rs > 0 ? -1 : 1
-                    //           w1 = 0 => ~w1 = -1;
-                    //           rs > 0 ? ~w1 : 1
-                    //           rs <= 0 ? 1 : ~w1
-                    //           (mov w3 1) rs <= 0 ? w3 : ~w1
-                    //           (mov w3 1) cmp rs, 0 then csinv w3, w3, w1, le
-                    ; mov w3, 1
-                    ; cmp WSP(*rs), 0
-                    ; csinv w3, w3, w1, le
-                    ; cmp WSP(*rt), 0
-                    ; csel w1, w3, w1, eq
-                    ; stp w1, w2, [x0, Emu::<A>::HILO_OFFSET as _]
-                );
-            }
-        };
+        #[cfg(target_arch = "aarch64")]
+        dynasm!(
+            ctx.dynarec.asm
+            ; sdiv w1, W(*rs), W(*rt)
+            ; msub w2, w1, W(*rt), W(*rs)
+            // rt = 0 => w1 = 0 => hi = w2 = rs
+            // remainder checks out
+            // rt = 0 => lo = rs > 0 ? -1 : 1
+            //           w1 = 0 => ~w1 = -1;
+            //           rs > 0 ? ~w1 : 1
+            //           rs <= 0 ? 1 : ~w1
+            //           (mov w3 1) rs <= 0 ? w3 : ~w1
+            //           (mov w3 1) cmp rs, 0 then csinv w3, w3, w1, le
+            ; mov w3, 1
+            ; cmp WSP(*rs), 0
+            ; csinv w3, w3, w1, lt
+            ; cmp WSP(*rt), 0
+            ; csel w1, w3, w1, eq
+            ; stp w1, w2, [x0, Emu::<A>::HILO_OFFSET as _]
+        );
         EmitSummary::default()
     }
     // average values
@@ -3026,38 +3007,26 @@ impl DynarecOp for Div {
 impl DynarecOp for Divu {
     #[allow(clippy::useless_conversion)]
     fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
-        match (self.rs, self.rt) {
-            (0, _) => {
-                let rt = ctx.dynarec.emit_load_reg(self.rt);
-                #[cfg(target_arch = "aarch64")]
-                dynasm!(
-                    ctx.dynarec.asm
-                    ; stp wzr, W(*rt), [x0, Emu::<A>::HILO_OFFSET as _]
-                );
-            }
-            (_, _) => {
-                let rs = ctx.dynarec.emit_load_reg(self.rs);
-                let rt = ctx.dynarec.emit_load_reg(self.rt);
+        let rs = ctx.dynarec.emit_load_reg(self.rs);
+        let rt = ctx.dynarec.emit_load_reg(self.rt);
 
-                #[cfg(target_arch = "aarch64")]
-                dynasm!(
-                    ctx.dynarec.asm
-                    ; udiv w1, W(*rs), W(*rt)
-                    ; msub w2, w1, W(*rt), W(*rs)
-                    // rt = 0 => w1 = 0 => hi = w2 = rs
-                    // remainder checks out
-                    //
-                    // udiv is much simpler than sdiv
-                    // rt = 0 => lo = -0x1 (0xffffffff)
-                    //
-                    // rt != 0 ? rs%rt : ~0 (w2)
-                    ; cmp WSP(*rt), 0
-                    ; csinv w1, w1, wzr, ne
+        #[cfg(target_arch = "aarch64")]
+        dynasm!(
+            ctx.dynarec.asm
+            ; udiv w1, W(*rs), W(*rt)
+            ; msub w2, w1, W(*rt), W(*rs)
+            // rt = 0 => w1 = 0 => hi = w2 = rs
+            // remainder checks out
+            //
+            // udiv is much simpler than sdiv
+            // rt = 0 => lo = -0x1 (0xffffffff)
+            //
+            // rt != 0 ? rs%rt : ~0 (w2)
+            ; cmp WSP(*rt), 0
+            ; csinv w1, w1, wzr, ne
 
-                    ; stp w1, w2, [x0, Emu::<A>::HILO_OFFSET as _]
-                );
-            }
-        };
+            ; stp w1, w2, [x0, Emu::<A>::HILO_OFFSET as _]
+        );
         EmitSummary::default()
     }
     // average values

@@ -107,10 +107,10 @@ comparision with duckstation dynarec, fails:
   - [ ] break x/v
   - [ ] syscall v
 - bad
-  - [ ] div q
-  - [ ] div r
-  - [ ] divu q
-  - [ ] divu r
+  - [x] div q
+  - [x] div r
+  - [x] divu q
+  - [x] divu r
   - [x] mult l
   - [x] mult h
   - [x] multu l
