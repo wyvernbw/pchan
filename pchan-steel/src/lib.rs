@@ -4,6 +4,7 @@ use core::alloc::Allocator;
 use core::mem;
 use core::num::ParseIntError;
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use kanal::{ReceiveError, SendError, Sender};
 use miette::Report;
@@ -61,7 +62,7 @@ pub enum Call {
     SwitchBreakpoint(u32, bool, Sender<Result<(), PchanSteelErr>>),
     SetVolume(f32),
     SetSpeed(EmuSpeed),
-    OpenContent(Sender<Result<(), PchanSteelErr>>),
+    OpenContent(Option<PathBuf>, Sender<Result<(), PchanSteelErr>>),
 }
 
 #[derive(Debug, Clone)]
@@ -237,10 +238,11 @@ impl SteelCtx {
         });
 
         let c = conn.clone();
-        module.register_fn("open-content", move || {
+        module.register_fn("open-content", move |path: Option<String>| {
             future(&c, async move |c| -> SteelResult<_> {
                 let (tx, rx) = kanal::bounded_async(0);
-                c.send_async(Call::OpenContent(tx.to_sync()))
+                let path: Option<PathBuf> = path.map(|path| path.into());
+                c.send_async(Call::OpenContent(path, tx.to_sync()))
                     .await
                     .steel()?;
                 rx.recv().await.steel()?.steel()
@@ -363,7 +365,7 @@ pub struct SteelExecutor {
 
 #[derive(Default)]
 pub struct ExecSummary {
-    pub open_content: Option<Sender<Result<(), PchanSteelErr>>>,
+    pub open_content: Option<(Option<PathBuf>, Sender<Result<(), PchanSteelErr>>)>,
 }
 
 impl SteelExecutor {
@@ -452,9 +454,9 @@ impl SteelExecutor {
                 }
                 self.breakpoint_wakers.push((address, tx));
             }
-            Call::OpenContent(tx) => {
+            Call::OpenContent(path, tx) => {
                 return ExecSummary {
-                    open_content: Some(tx),
+                    open_content: Some((path, tx)),
                 };
             }
         };

@@ -26,7 +26,7 @@
 (define (breakpoint address) void)
 (define (set-volume v) void)
 (define (set-speed v) void)
-(define (open-content) void)
+(define (open-content #:optional v) void)
 (define (emu.readu32 address) void)
 (define (emu.cpu.gpr) void)
 (define (block-on) void)

@@ -2,9 +2,9 @@
 (require-builtin "pchan/emu")
 
 (begin
+  (block-on (open-content (env-var "MK2")))
   (set-speed 'unlimited)
-  ; (set-volume 0.0)
-  (block-on (open-content))
+  (set-volume 0.0)
   (block-on (frames 4825))
   (define crash (add-breakpoint #x80076734 'x))
   (displayln "added breakpoint" crash)

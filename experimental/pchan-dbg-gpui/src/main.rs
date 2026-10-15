@@ -628,7 +628,18 @@ impl PChanApp {
         win.active
     }
 
-    fn load_content(&mut self, cx: &mut Context<Self>) -> Task<miette::Result<()>> {
+    fn open_or_load_content(
+        &mut self,
+        cx: &mut Context<Self>,
+        path: Option<PathBuf>,
+    ) -> Task<miette::Result<()>> {
+        match path {
+            Some(path) => self.load_content(cx, path),
+            None => self.open_content(cx),
+        }
+    }
+
+    fn open_content(&mut self, cx: &mut Context<Self>) -> Task<miette::Result<()>> {
         let path_recv = cx.prompt_for_paths(PathPromptOptions {
             files:       true,
             directories: false,
@@ -645,6 +656,23 @@ impl PChanApp {
             let content_path = res
                 .pop()
                 .ok_or_else(|| miette!("expected at least one disc path"))?;
+
+            let task = view.update(cx, move |view, cx| view.load_content(cx, content_path));
+            task.await?;
+
+            Ok(())
+        })
+    }
+
+    fn load_content(
+        &mut self,
+        cx: &mut Context<'_, Self>,
+        content_path: PathBuf,
+    ) -> Task<miette::Result<()>> {
+        cx.spawn(async move |view, cx| -> miette::Result<()> {
+            let Some(view) = view.upgrade() else {
+                return Ok(());
+            };
 
             match content_path
                 .extension()
@@ -699,7 +727,7 @@ impl PChanApp {
     }
 
     fn load_content_listener(&mut self, _: &LoadContent, cx: &mut Context<Self>) {
-        self.load_content(cx).detach();
+        self.open_content(cx).detach();
     }
 }
 
@@ -734,8 +762,10 @@ async fn emu_loop(appcx: AppCx, cx: &mut AsyncApp) {
                     })
                 });
 
-                if let Some(tx) = summary.open_content {
-                    let task = appcx.app.update(cx, |app, cx| app.load_content(cx));
+                if let Some((path, tx)) = summary.open_content {
+                    let task = appcx
+                        .app
+                        .update(cx, |app, cx| app.open_or_load_content(cx, path));
                     cx.background_spawn(async move {
                         let res = task.await.map_err(PchanSteelErr::OpenContentError);
                         tx.as_async().send(res).await.unwrap();
