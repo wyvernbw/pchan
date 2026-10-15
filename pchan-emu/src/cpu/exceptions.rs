@@ -106,11 +106,13 @@ impl<A: Allocator> Emu<A> {
         self.cpu.cop0.reg[12] = sr.raw_value();
     }
 
-    pub extern "C" fn handle_break(&mut self, _: bool) {
+    pub extern "C" fn handle_break(&mut self, _: bool, pc: u32) {
+        self.cpu.pc = pc;
         self.handle_exception(Exception::Break);
     }
 
-    pub extern "C" fn handle_syscall(&mut self, bd: bool) {
+    pub extern "C" fn handle_syscall(&mut self, bd: bool, pc: u32) {
+        self.cpu.pc = pc;
         if bd {
             let cause = self.cpu.cop0.reg[13];
             let cause = CauseRegister::new_with_raw_value(cause);

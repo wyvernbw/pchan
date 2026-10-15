@@ -235,7 +235,7 @@ impl<A: Allocator + Copy> Emu<A> {
                 None
             }
             DecodedOp::Syscall(_) => {
-                self.handle_syscall(false);
+                self.handle_syscall(false, self.cpu.pc);
                 // interp.in_delay_slot = true;
                 if interp.in_delay_slot {
                     todo!("syscall in delay slot!!!");
@@ -243,7 +243,7 @@ impl<A: Allocator + Copy> Emu<A> {
                 None
             }
             DecodedOp::Brk(_) => {
-                self.handle_break(false);
+                self.handle_break(false, self.cpu.pc);
                 // interp.in_delay_slot = true;
                 if interp.in_delay_slot {
                     todo!("brk in delay slot!!!");

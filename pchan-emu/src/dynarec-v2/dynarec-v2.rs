@@ -993,6 +993,7 @@ pub(crate) fn fetch_and_compile_single_threaded<A: Allocator + Copy>(
     let mut op_count = 0;
     let mut last_address = initial_pc;
     let mut pc_updated = false;
+    let mut used_syscall = false;
     emu.linear_fetch_no_decode()
         .zip((initial_pc..).step_by(0x4))
         .map_while(|(op, address)| {
@@ -1020,15 +1021,15 @@ pub(crate) fn fetch_and_compile_single_threaded<A: Allocator + Copy>(
             ret
         })
         .for_each(|(op, address)| {
-            pc_updated |= op
-                .emit(EmitCtx {
-                    dynarec,
-                    pc: address,
-                    d_clock: cycles,
-                    delay_slot: false,
-                    scratch_cursor: &mut scratch_cursor,
-                })
-                .pc_updated;
+            let summary = op.emit(EmitCtx {
+                dynarec,
+                pc: address,
+                d_clock: cycles,
+                delay_slot: false,
+                scratch_cursor: &mut scratch_cursor,
+            });
+            pc_updated |= summary.pc_updated;
+            used_syscall |= summary.used_syscall;
             if let Some(pre_scheduled) = dynarec.pop_scheduled_at(address) {
                 // let cache_boundary_check = (pre_scheduled.pc.saturating_sub(0x4)) >> 2;
                 // let boundary = cache_boundary_check != 0
@@ -1056,17 +1057,17 @@ pub(crate) fn fetch_and_compile_single_threaded<A: Allocator + Copy>(
     // drain scheduler
     while let Some(emitter) = dynarec.scheduler.queue.pop() {
         tracing::trace!("draining {:?}", emitter);
-        pc_updated |= emitter
-            .emitter
-            .call((EmitCtx {
-                dynarec,
-                pc: emitter.pc,
-                d_clock: cycles,
-                // this happens in the delay slot basically
-                delay_slot: true,
-                scratch_cursor: &mut scratch_cursor,
-            },))
-            .pc_updated;
+        let emitter_fn = &emitter.emitter;
+        let summary = emitter_fn(EmitCtx {
+            dynarec,
+            pc: emitter.pc,
+            d_clock: cycles,
+            // this happens in the delay slot basically
+            delay_slot: true,
+            scratch_cursor: &mut scratch_cursor,
+        });
+        pc_updated |= summary.pc_updated;
+        used_syscall |= summary.used_syscall;
     }
 
     let new_pc = match pc_updated {
@@ -1074,7 +1075,18 @@ pub(crate) fn fetch_and_compile_single_threaded<A: Allocator + Copy>(
         false => Some(last_address + 0x4),
     };
     dynarec.emit_block_epilogue(cycles, new_pc, true);
+    let end = dynarec.asm.offset();
     let fn_ptr = dynarec.commit(start)?;
+
+    #[cfg(debug_assertions)]
+    if used_syscall {
+        tracing::info!("syscall used");
+        let code_len = end.0 - start.0;
+        let code_buf = unsafe { core::slice::from_raw_parts(fn_ptr as *const u8, code_len) };
+        std::fs::write(format!("/tmp/jit-{}", hex(initial_pc)), code_buf).unwrap();
+
+        // std::process::exit(0);
+    }
 
     Ok((op_count, fn_ptr))
 }

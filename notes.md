@@ -95,17 +95,17 @@ cursor `$a1` is greater than the end `$a3` when entering the loop.
 
 # psxtest_cpu
 
-comparision with duckstation dynarec, fails:
+in comparision with duckstation dynarec, fails:
 - probably ok
-  - [ ] mthi/mfhi
-  - [ ] mtlo/mflo
-  - [ ] mthi/mflo
-  - [ ] mtlo/mfhi
+  - [x] mthi/mfhi
+  - [x] mtlo/mflo
+  - [x] mthi/mflo
+  - [x] mtlo/mfhi
   - [ ] almost all of mem adv
   - [ ] all of bra adv
 - not great
-  - [ ] break x/v
-  - [ ] syscall v
+  - [x] break x/v
+  - [x] syscall v
 - bad
   - [x] div q
   - [x] div r

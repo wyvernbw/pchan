@@ -95,13 +95,23 @@ pub enum Boundary {
 
 #[derive(Debug, Default)]
 pub struct EmitSummary {
-    pub pc_updated: bool,
+    pub pc_updated:   bool,
+    pub used_syscall: bool,
 }
 
 impl EmitSummary {
     #[must_use]
     pub fn pc_updated() -> Self {
-        Self { pc_updated: true }
+        Self {
+            pc_updated:   true,
+            used_syscall: false,
+        }
+    }
+
+    #[must_use]
+    pub fn used_syscall(mut self) -> Self {
+        self.used_syscall = true;
+        self
     }
 }
 
@@ -3246,6 +3256,7 @@ impl DynarecOp for Syscall {
     }
     #[allow(clippy::useless_conversion)]
     fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+        assert!(!ctx.delay_slot);
         #[cfg(target_arch = "aarch64")]
         dynasm!(
             ctx.dynarec.asm
@@ -3253,12 +3264,15 @@ impl DynarecOp for Syscall {
             ;; ctx.dynarec.reg_alloc.dealloc_all()
             ;; ctx.dynarec.emit_save_critical_registers()
             ; mov w1, u32::from(ctx.delay_slot)
+            ; movz w2, u32::from(ctx.pc) >> 16, lsl #16
+            ; movk w2, u32::from(ctx.pc) & 0x0000_ffff
             ; ldr x3, <handle_syscall
             ; blr x3
+            ; nop
             ;; ctx.dynarec.emit_restore_critical_registers()
         );
 
-        EmitSummary::pc_updated()
+        EmitSummary::pc_updated().used_syscall()
     }
 }
 
@@ -3275,6 +3289,8 @@ impl DynarecOp for Brk {
             ;; ctx.dynarec.reg_alloc.dealloc_all()
             ;; ctx.dynarec.emit_save_critical_registers()
             ; mov w1, u32::from(ctx.delay_slot)
+            ; movz w2, u32::from(ctx.pc) >> 16, lsl #16
+            ; movk w2, u32::from(ctx.pc) & 0x0000_ffff
             ; ldr x3, <handle_break
             ; blr x3
             ;; ctx.dynarec.emit_restore_critical_registers()
@@ -3448,12 +3464,14 @@ impl DynarecOp for Lwcn {
                 ctx.dynarec.asm
                 ; .arch aarch64
                 // ; ldr w1, [sp], #16
-                ;; let saved = ctx.dynarec.emit_save_volatile_registers()
+                ;; ctx.dynarec.emit_writeback_all()
+                ;; ctx.dynarec.reg_alloc.dealloc_all()
+                ;; ctx.dynarec.emit_save_critical_registers()
                 ; ldr w1, [x0, #s1]
                 ; ldr x3, <read32v2
                 ; blr x3
                 ; mov w1, w0
-                ;; ctx.dynarec.emit_restore_saved_registers(saved.into_iter())
+                ;; ctx.dynarec.emit_restore_critical_registers()
                 ; str w1, [x0, Cpu::cop_reg_offset(cop, rt) as _]
             );
             EmitSummary::default()
@@ -3523,10 +3541,12 @@ impl DynarecOp for Swcn {
                     ; .arch aarch64
                     ; ldr w1, [x0, #s1]
                     ; ldr w2, [x0, Cpu::cop_reg_offset(cop, rt) as _]
-                    ;; let saved = ctx.dynarec.emit_save_volatile_registers()
+                    ;; ctx.dynarec.emit_writeback_all()
+                    ;; ctx.dynarec.reg_alloc.dealloc_all()
+                    ;; ctx.dynarec.emit_save_critical_registers()
                     ; ldr x3, <write32v2
                     ; blr x3
-                    ;; ctx.dynarec.emit_restore_saved_registers(saved.into_iter())
+                    ;; ctx.dynarec.emit_restore_critical_registers()
 
                 );
                 EmitSummary::default()
