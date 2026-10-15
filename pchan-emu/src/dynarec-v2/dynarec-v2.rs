@@ -261,6 +261,8 @@ impl<A: Allocator + Copy> Dynarec<A> {
             ; .u64 Emu::<A>::handle_syscall as *const () as _
             ; handle_rfe:
             ; .u64 Emu::<A>::handle_rfe as *const () as _
+            ; handle_break:
+            ; .u64 Emu::<A>::handle_break as *const () as _
             ; run_io:
             ; .u64 Emu::<A>::ext_run_io as *const () as _
             ; after_table:
@@ -335,9 +337,7 @@ impl<A: Allocator + Copy> Dynarec<A> {
     fn emit_writeback_all(&mut self) {
         // emit write back to dirty registers
         for guest in self.reg_alloc.dirty.clone().iter_ones() {
-            let Some(host) = self.reg_alloc.mapping[guest] else {
-                continue;
-            };
+            let host = self.reg_alloc.mapping[guest].expect("unmapped dirty register");
             self.emit_writeback(guest as u8, host);
         }
     }
@@ -638,11 +638,18 @@ impl<A: Allocator + Copy> Dynarec<A> {
     }
 
     /// critical registers are unallocatable volatile registers that must never
-    /// get trampled. this includes  the platform registers on arm, and a few others.
+    /// get trampled. this includes the platform registers on arm, and a few others.
+    /// also includes the first register x0.
     #[allow(clippy::useless_conversion)]
     fn emit_save_critical_registers(&mut self) {
         let critical = (!self.reg_alloc.allocatable) & self.reg_alloc.volatile;
 
+        #[cfg(target_arch = "aarch64")]
+        dynasm!(
+            self.asm
+            ; .arch aarch64
+            ; str x0, [sp, #-16]!
+        );
         for reg in critical.iter_ones() {
             let reg = reg as u8;
             #[cfg(target_arch = "aarch64")]
@@ -667,6 +674,12 @@ impl<A: Allocator + Copy> Dynarec<A> {
                 ; ldr X(reg), [sp], #16
             );
         }
+        #[cfg(target_arch = "aarch64")]
+        dynasm!(
+            self.asm
+            ; .arch aarch64
+            ; ldr x0, [sp], #16
+        );
     }
 
     pub(crate) fn commit(

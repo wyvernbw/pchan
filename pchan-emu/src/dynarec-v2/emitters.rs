@@ -145,6 +145,7 @@ pub enum DecodedOp {
     Jr(Jr),
     Jalr(Jalr),
     Syscall(Syscall),
+    Brk(Brk),
     Mfhi(Mfhi),
     Mthi(Mthi),
     Mflo(Mflo),
@@ -256,7 +257,7 @@ impl DecodedOp {
                 (0x0, _, _, 0xA) => Self::illegal(),
                 (0x0, _, _, 0xB) => Self::illegal(),
                 (0x0, _, _, 0xC) => Self::Syscall(Syscall),
-                (0x0, _, _, 0xD) => Self::Nop(Nop), // brk
+                (0x0, _, _, 0xD) => Self::Brk(Brk), // brk
                 (0x0, _, _, 0xE) => Self::illegal(),
                 (0x0, _, _, 0xF) => Self::illegal(),
                 (0x0, _, _, 0x10) => Self::Mfhi(Mfhi::new(rd)),
@@ -591,9 +592,13 @@ fn emit_call<A: Allocator + Copy>(ctx: &mut EmitCtx<A>, emitter: impl Fn(&mut Dy
     dynasm!(
         ctx.dynarec.asm
         ; .arch aarch64
-        ;; let saved = ctx.dynarec.emit_save_volatile_registers()
+        ;; ctx.dynarec.emit_writeback_all()
+        ;; ctx.dynarec.reg_alloc.dealloc_all()
+        ;; ctx.dynarec.emit_save_critical_registers()
+        // ;; let saved = ctx.dynarec.emit_save_volatile_registers()
         ;; emitter(ctx.dynarec)
-        ;; ctx.dynarec.emit_restore_saved_registers(saved.into_iter())
+        // ;; ctx.dynarec.emit_restore_saved_registers(saved.into_iter())
+        ;; ctx.dynarec.emit_restore_critical_registers()
     );
 }
 
@@ -625,7 +630,9 @@ fn emit_store<A: Allocator + Copy>(
             // need to track caller saved registers in regalloc
             // we have to store x0 since the function call will clobber it
             // call to function
-            ;; let saved = ctx.dynarec.emit_save_volatile_registers()
+            ;; ctx.dynarec.emit_writeback_all()
+            ;; ctx.dynarec.reg_alloc.dealloc_all()
+            ;; ctx.dynarec.emit_save_critical_registers()
 
             ;; if ctx.delay_slot {
                 dynasm!(
@@ -639,7 +646,7 @@ fn emit_store<A: Allocator + Copy>(
 
             ; ldp w1, w2, [x0, #s1]
             ;; func_call(&mut ctx)
-            ;; ctx.dynarec.emit_restore_saved_registers(saved.into_iter())
+            ;; ctx.dynarec.emit_restore_critical_registers()
 
         );
         EmitSummary::default()
@@ -1010,11 +1017,13 @@ fn emit_load<const ALIGNED: bool, A: Allocator + Copy>(
                 ctx.dynarec.asm
                 ; .arch aarch64
                 // ; ldr w1, [sp], #16
-                ;; let saved = ctx.dynarec.emit_save_volatile_registers()
+                ;; ctx.dynarec.emit_writeback_all()
+                ;; ctx.dynarec.reg_alloc.dealloc_all()
+                ;; ctx.dynarec.emit_save_critical_registers()
                 ; ldr w1, [x0, #s1]
                 ;; func_call(&mut ctx)
                 ; mov w1, w0
-                ;; ctx.dynarec.emit_restore_saved_registers(saved.into_iter())
+                ;; ctx.dynarec.emit_restore_critical_registers()
                 ; str w1, [x0, #s1]
             );
         } else {
@@ -1022,12 +1031,14 @@ fn emit_load<const ALIGNED: bool, A: Allocator + Copy>(
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
-                ;; let saved = ctx.dynarec.emit_save_volatile_registers()
+                ;; ctx.dynarec.emit_writeback_all()
+                ;; ctx.dynarec.reg_alloc.dealloc_all()
+                ;; ctx.dynarec.emit_save_critical_registers()
                 ; ldr w1, [x0, #s1]
                 ; mov w2, W(*rt)
                 ;; func_call(&mut ctx)
                 ; mov w1, w0
-                ;; ctx.dynarec.emit_restore_saved_registers(saved.into_iter())
+                ;; ctx.dynarec.emit_restore_critical_registers()
                 ; str w1, [x0, #s1]
             );
         }
@@ -3243,8 +3254,30 @@ impl DynarecOp for Syscall {
             ;; ctx.dynarec.emit_save_critical_registers()
             ; mov w1, u32::from(ctx.delay_slot)
             ; ldr x3, <handle_syscall
-            ;; ctx.dynarec.emit_restore_critical_registers()
             ; blr x3
+            ;; ctx.dynarec.emit_restore_critical_registers()
+        );
+
+        EmitSummary::pc_updated()
+    }
+}
+
+impl DynarecOp for Brk {
+    fn boundary(&self) -> Boundary {
+        Boundary::Hard
+    }
+    #[allow(clippy::useless_conversion)]
+    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+        #[cfg(target_arch = "aarch64")]
+        dynasm!(
+            ctx.dynarec.asm
+            ;; ctx.dynarec.emit_writeback_all()
+            ;; ctx.dynarec.reg_alloc.dealloc_all()
+            ;; ctx.dynarec.emit_save_critical_registers()
+            ; mov w1, u32::from(ctx.delay_slot)
+            ; ldr x3, <handle_break
+            ; blr x3
+            ;; ctx.dynarec.emit_restore_critical_registers()
         );
 
         EmitSummary::pc_updated()

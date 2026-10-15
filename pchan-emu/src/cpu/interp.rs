@@ -242,6 +242,14 @@ impl<A: Allocator + Copy> Emu<A> {
                 }
                 None
             }
+            DecodedOp::Brk(_) => {
+                self.handle_break(false);
+                // interp.in_delay_slot = true;
+                if interp.in_delay_slot {
+                    todo!("brk in delay slot!!!");
+                }
+                None
+            }
             DecodedOp::Mfhi(mfhi) => {
                 let hi = self.cpu.hilo >> 32;
                 self.set_reg(mfhi.rd, hi as u32);

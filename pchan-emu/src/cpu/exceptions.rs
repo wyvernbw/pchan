@@ -106,7 +106,7 @@ impl<A: Allocator> Emu<A> {
         self.cpu.cop0.reg[12] = sr.raw_value();
     }
 
-    pub extern "C" fn handle_break(&mut self) {
+    pub extern "C" fn handle_break(&mut self, _: bool) {
         self.handle_exception(Exception::Break);
     }
 

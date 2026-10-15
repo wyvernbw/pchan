@@ -618,6 +618,16 @@ impl From<Syscall> for OpCode {
     }
 }
 
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, derive_more::Display)]
+#[display("brk")]
+pub struct Brk;
+
+impl From<Brk> for OpCode {
+    fn from(_: Brk) -> Self {
+        OpCode::default().with_funct(u6::new(0xd))
+    }
+}
+
 #[derive(Encode, Debug, Clone, Copy, Hash, PartialEq, Eq, d::Display)]
 #[encode(opcode = 0x00, funct = 0x26)]
 #[display("xor ${}, ${}, ${}", reg_str(self.rd), reg_str(self.rs), reg_str(self.rt))]
