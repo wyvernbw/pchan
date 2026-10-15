@@ -292,7 +292,7 @@ impl DecodedOp {
                 (0x7, _, _, _) => Self::Bgtz(Bgtz::new(rs, fields.imm16())),
                 (0x8 | 0x9, _, _, _) => Self::Addiu(Addiu::new(rt, rs, fields.imm16())),
                 (0xA, _, _, _) => Self::Slti(Slti::new(rt, rs, fields.imm16())),
-                (0xB, _, _, _) => Self::Sltiu(Sltiu::new(rt, rs, fields.imm16())),
+                (0xB, _, _, _) => Self::Sltiu(Sltiu::new(rt, rs, fields.imm16() as u16)),
                 (0xC, _, _, _) => Self::Andi(Andi::new(rt, rs, fields.imm16())),
                 (0xD, _, _, _) => Self::Ori(Ori::new(rt, rs, fields.imm16())),
                 (0xE, _, _, _) => Self::Xori(Xori::new(rt, rs, fields.imm16())),
@@ -2784,36 +2784,25 @@ impl DynarecOp for Sltiu {
         ctx.dynarec.lock_register(&rs);
         let rt = ctx.dynarec.alloc_reg_stackless(self.rt);
 
-        let imm32 = ext::sign(self.imm16);
         match self.imm16 {
-            -4095..=-1 => {
-                #[cfg(target_arch = "aarch64")]
-                dynasm!(
-                    ctx.dynarec.asm
-                    ; .arch aarch64
-                    ; cmn WSP(*rs), (-imm32).as_u32()
-                    ; cset W(*rt), lo
-                );
-            }
             0..4096 => {
                 #[cfg(target_arch = "aarch64")]
                 dynasm!(
                     ctx.dynarec.asm
                     ; .arch aarch64
-                    ; cmp WSP(*rs), imm32.as_u32()
+                    ; cmp WSP(*rs), ext::zero(self.imm16)
                     ; cset W(*rt), lo
-                );
+                )
             }
-            _ => {
+            4096.. => {
                 #[cfg(target_arch = "aarch64")]
                 dynasm!(
                     ctx.dynarec.asm
                     ; .arch aarch64
-                    ; movz w1, (imm32 as u32) >> 16, lsl #16
-                    ; movk w1, (imm32 as u32) & 0x0000_ffff
+                    ; mov w1, ext::zero(self.imm16)
                     ; cmp WSP(*rs), w1
                     ; cset W(*rt), lo
-                );
+                )
             }
         };
 
@@ -2864,14 +2853,15 @@ impl DynarecOp for Slti {
         ctx.dynarec.lock_register(&rs);
         let rt = ctx.dynarec.alloc_reg_stackless(self.rt);
 
-        let imm32 = ext::sign(self.imm16);
-        match imm32 {
-            -4095..=-1 => {
+        match self.imm16 {
+            ..0 => {
                 #[cfg(target_arch = "aarch64")]
                 dynasm!(
                     ctx.dynarec.asm
                     ; .arch aarch64
-                    ; cmn WSP(*rs), (-imm32).as_u32()
+                    ; mov w1, ext::zero(self.imm16)
+                    ; sxth w1, w1
+                    ; cmp WSP(*rs), w1
                     ; cset W(*rt), lt
                 );
             }
@@ -2880,17 +2870,16 @@ impl DynarecOp for Slti {
                 dynasm!(
                     ctx.dynarec.asm
                     ; .arch aarch64
-                    ; cmp WSP(*rs), imm32.as_u32()
+                    ; cmp WSP(*rs), ext::zero(self.imm16)
                     ; cset W(*rt), lt
                 );
             }
-            _ => {
+            4096.. => {
                 #[cfg(target_arch = "aarch64")]
                 dynasm!(
                     ctx.dynarec.asm
                     ; .arch aarch64
-                    ; movz w1, (imm32 as u32) >> 16, lsl #16
-                    ; movk w1, (imm32 as u32) & 0x0000_ffff
+                    ; mov w1, ext::zero(self.imm16)
                     ; cmp WSP(*rs), w1
                     ; cset W(*rt), lt
                 );

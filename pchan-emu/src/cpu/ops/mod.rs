@@ -540,7 +540,7 @@ pub struct Slti {
 pub struct Sltiu {
     pub rt:    u8,
     pub rs:    u8,
-    pub imm16: i16,
+    pub imm16: u16,
 }
 
 #[derive(Encode, Debug, Clone, Copy, Hash, PartialEq, Eq, d::Display)]
