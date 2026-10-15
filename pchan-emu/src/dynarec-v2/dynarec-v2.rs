@@ -263,10 +263,6 @@ impl<A: Allocator + Copy> Dynarec<A> {
             ; .u64 Emu::<A>::handle_rfe as *const () as _
             ; run_io:
             ; .u64 Emu::<A>::ext_run_io as *const () as _
-            ; log_mfhi:
-            ; .u64 Emu::<A>::log_mfhi as * const () as _
-            ; log_mflo:
-            ; .u64 Emu::<A>::log_mflo as * const () as _
             ; after_table:
         )
     }
@@ -346,7 +342,6 @@ impl<A: Allocator + Copy> Dynarec<A> {
             .for_each(|guest_reg| {
                 let host_reg = self.alloc_reg(guest_reg as _);
                 self.emit_writeback(guest_reg as _, host_reg.reg());
-                host_reg.restore(self);
             });
     }
 
@@ -712,15 +707,11 @@ impl LoadedReg<AllocResult> {
 
         self.restored.set(true);
 
-        if let Err(RegAllocError::EvictToStack(evicted_guest, reg)) = self.result {
+        if let Err(RegAllocError::EvictToStack(_, reg)) = self.result {
             let current_guest = dynarec.reg_alloc.reverse_mapping[(*reg).to_idx() as usize];
             if dynarec.reg_alloc.dirty[current_guest as usize] {
                 dynarec.emit_writeback(current_guest, *reg);
             }
-
-            dynarec.reg_alloc.evict_at(*reg);
-            dynarec.reg_alloc.dirty.set(current_guest as usize, false);
-            dynarec.reg_alloc.alloc(*evicted_guest, *reg);
 
             #[cfg(target_arch = "aarch64")]
             dynasm!(
@@ -777,22 +768,9 @@ impl<A: Allocator + Copy> Default for Scheduler<A> {
 
 impl<A: Allocator + Copy> Dynarec<A> {
     pub fn lock_register(&mut self, reg: &LoadedReg<AllocResultStackless>) {
-        let host = reg.reg;
-        let idx = host.to_idx() as usize;
-        debug_assert!(self.reg_alloc.allocatable[idx], "register already locked");
-        debug_assert!(
-            self.reg_alloc.allocated[idx],
-            "locking an unallocated register"
-        );
-
-        let guest = self.reg_alloc.reverse_mapping[idx];
-        if self.reg_alloc.dirty[guest as usize] {
-            self.emit_writeback(guest, host);
-            self.reg_alloc.dirty.set(guest as usize, false);
-        }
-
+        debug_assert!(self.reg_alloc.allocatable[**reg as usize]);
         self.reg_alloc.evict_at(reg.reg);
-        self.reg_alloc.allocatable.set(idx, false);
+        self.reg_alloc.allocatable.set(**reg as _, false);
     }
     pub fn unlock_register(&mut self, reg: &LoadedReg<AllocResultStackless>) {
         debug_assert!(!self.reg_alloc.allocatable[**reg as usize]);
@@ -871,10 +849,10 @@ pub fn run_step<A: Allocator + Copy + Clone>(emu: &mut Emu<A>, dynarec: &mut Dyn
             block
         }
     };
-
-    emu.dynarec_cache.insert(pc, block);
     run_block(block, emu, false);
     emu.stats.blocks_ran += 1;
+
+    emu.dynarec_cache.insert(pc, block);
 }
 
 #[derive(strum::EnumCount, strum::EnumDiscriminants, strum::EnumIs)]
@@ -1027,9 +1005,9 @@ pub(crate) fn fetch_and_compile_single_threaded<A: Allocator + Copy>(
 }
 
 const PAGE_COUNT2: usize = 0x10000;
-const PAGE_SIZE2: usize = kb(64 >> 2);
-const RAM_PAGE_COUNT: usize = kb(2048 >> 2) / PAGE_SIZE2;
-const BIOS_PAGE_COUNT: usize = kb(512 >> 2) / PAGE_SIZE2;
+const PAGE_SIZE2: usize = kb(64 << 2);
+const RAM_PAGE_COUNT: usize = kb(2048 << 2) / PAGE_SIZE2;
+const BIOS_PAGE_COUNT: usize = kb(512 << 2) / PAGE_SIZE2;
 const TOTAL_PAGE_COUNT: usize = RAM_PAGE_COUNT + BIOS_PAGE_COUNT;
 
 #[derive(derive_more::Debug, Clone)]
@@ -1055,8 +1033,8 @@ struct CacheBlockPtr<A: Allocator> {
 impl<A: Allocator> Clone for CacheBlockPtr<A> {
     fn clone(&self) -> Self {
         Self {
-            ptr:        self.ptr,
-            generation: self.generation,
+            ptr:        self.ptr.clone(),
+            generation: self.generation.clone(),
         }
     }
 }
