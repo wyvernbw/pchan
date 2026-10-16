@@ -2727,15 +2727,38 @@ impl DynarecOp for Mtcn {
         }
     }
     #[allow(clippy::useless_conversion)]
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
-        let rt = ctx.dynarec.emit_load_reg_stackless(self.rt);
+    fn emit<A: Allocator + Copy>(&self, mut ctx: EmitCtx<A>) -> EmitSummary {
+        match (self.cop, self.rd) {
+            // N/A
+            (0, 0..=2) => {
+                tracing::warn!("move to invalid cop0 register {}", self.rd);
+            }
+            // read only
+            (0, 6 | 8 | 14 | 15) => {}
+            // cause reg
+            (0, 13) => {
+                ctx.dynarec.emit_load_temp_reg(self.rt, Reg::W(1));
+                emit_call(&mut ctx, |dynarec| {
+                    #[cfg(target_arch = "aarch64")]
+                    dynasm!(
+                        dynarec.asm
+                        ; .arch aarch64
+                        ; ldr x3, <cop0_set_cause
+                        ; blr x3
+                    );
+                });
+            }
+            _ => {
+                let rt = ctx.dynarec.emit_load_reg_stackless(self.rt);
 
-        #[cfg(target_arch = "aarch64")]
-        dynasm!(
-            ctx.dynarec.asm
-            ; .arch aarch64
-            ; str W(*rt), [x0, Cpu::cop_reg_offset(self.cop, self.rd) as _]
-        );
+                #[cfg(target_arch = "aarch64")]
+                dynasm!(
+                    ctx.dynarec.asm
+                    ; .arch aarch64
+                    ; str W(*rt), [x0, Cpu::cop_reg_offset(self.cop, self.rd) as _]
+                );
+            }
+        }
 
         EmitSummary::default()
     }

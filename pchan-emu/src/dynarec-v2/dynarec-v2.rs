@@ -265,6 +265,8 @@ impl<A: Allocator + Copy> Dynarec<A> {
             ; .u64 Emu::<A>::handle_break as *const () as _
             ; run_io:
             ; .u64 Emu::<A>::ext_run_io as *const () as _
+            ; cop0_set_cause:
+            ; .u64 Emu::<A>::cop0_set_cause as *const () as _
             ; after_table:
         )
     }
@@ -1088,18 +1090,7 @@ pub(crate) fn fetch_and_compile_single_threaded<A: Allocator + Copy>(
         false => Some(last_address + 0x4),
     };
     dynarec.emit_block_epilogue(cycles, new_pc, true);
-    let end = dynarec.asm.offset();
     let fn_ptr = dynarec.commit(start)?;
-
-    #[cfg(debug_assertions)]
-    if used_syscall {
-        tracing::info!("syscall used");
-        let code_len = end.0 - start.0;
-        let code_buf = unsafe { core::slice::from_raw_parts(fn_ptr as *const u8, code_len) };
-        std::fs::write(format!("/tmp/jit-{}", hex(initial_pc)), code_buf).unwrap();
-
-        // std::process::exit(0);
-    }
 
     Ok((op_count, fn_ptr))
 }

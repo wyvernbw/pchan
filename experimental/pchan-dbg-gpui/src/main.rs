@@ -1480,7 +1480,7 @@ impl EmuContext {
 
         let mut runner =
             Runner::new_in(alloc::alloc::Global).with_config(pchan_emu::run::RunnerConfig {
-                force_mode: Some(pchan_emu::run::RunnerMode::Interpreter),
+                force_mode: Some(pchan_emu::run::RunnerMode::Dynarec),
                 speed:      pchan_emu::run::EmuSpeed::Percentage(NonZeroU16::new(100).unwrap()),
             });
         runner.running = false;

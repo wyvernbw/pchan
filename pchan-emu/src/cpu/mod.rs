@@ -1,3 +1,4 @@
+use core::alloc::Allocator;
 use core::fmt;
 use core::fmt::Display;
 use core::mem::offset_of;
@@ -8,6 +9,7 @@ use derive_more as d;
 use pchan_encode::derive::Endecode;
 use pchan_utils::{array, hex};
 
+use crate::Emu;
 use crate::cpu::exceptions::CauseRegister;
 use crate::cpu::ops::OpCode;
 
@@ -173,6 +175,17 @@ impl Cop0 {
     }
     pub fn set_bt(&mut self, value: bool) {
         self.reg[12] = self.cause().with_bt(value).raw_value();
+    }
+}
+
+impl<A: Allocator> Emu<A> {
+    pub(crate) fn cop0_set_cause(&mut self, value: u32) {
+        self.cpu.cop0.update_cause(|cause| {
+            let value = CauseRegister::new_with_raw_value(value);
+            cause
+                .with_irq_pending(0, value.irq_pending(0))
+                .with_irq_pending(1, value.irq_pending(1))
+        });
     }
 }
 
