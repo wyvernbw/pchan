@@ -91,7 +91,11 @@ pc history:
 - ...
 
 looks like a memset loop. unhandled write happens because of a buffer overflow,
-cursor `$a1` is greater than the end `$a3` when entering the loop.
+cursor `$a1` is greater than the end `$a3` when entering the loop. PCSX-R
+value for `$a1` is `0x800d73b2`. It's greater from earlier than the blocks pasted
+above.
+
+- `0x800766b4`
 
 # psxtest_cpu
 

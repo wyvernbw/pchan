@@ -639,7 +639,7 @@ impl Transfer for Dma3Cdrom {
         dest[..h].copy_from_slice(&head[..h]);
         dest[h..n].copy_from_slice(&tail[..n - h]);
 
-        let last = dest[n - 1];
+        let last = dest[n.saturating_sub(1)];
         dest[n..].fill(last);
         fifo.drain(..n);
 

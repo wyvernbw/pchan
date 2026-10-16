@@ -6,7 +6,7 @@
   (set-speed 'unlimited)
   (set-volume 0.0)
   (block-on (frames 4825))
-  (define crash (add-breakpoint #x80076734 'x))
+  (define crash (add-breakpoint #x800766b4 'x))
   (displayln "added breakpoint" crash)
   (block-on (breakpoint crash))
   (displayln "$a1=" (emu.cpu.gpr.$a1))

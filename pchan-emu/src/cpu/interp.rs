@@ -230,12 +230,14 @@ impl<A: Allocator + Copy> Emu<A> {
                 None
             }
             DecodedOp::Jalr(jalr) => {
+                let addr = self.get_reg(jalr.rs);
                 self.link_return_in(interp, op_pc, jalr.rd);
-                self.jump(interp, self.get_reg(jalr.rs));
+                self.jump(interp, addr);
                 None
             }
             DecodedOp::Syscall(_) => {
-                self.handle_syscall(false, self.cpu.pc);
+                self.handle_syscall(false, op_pc);
+                interp.delay_queue.fill(DelaySlot::Nop);
                 // interp.in_delay_slot = true;
                 if interp.in_delay_slot {
                     todo!("syscall in delay slot!!!");
@@ -243,7 +245,8 @@ impl<A: Allocator + Copy> Emu<A> {
                 None
             }
             DecodedOp::Brk(_) => {
-                self.handle_break(false, self.cpu.pc);
+                self.handle_break(false, op_pc);
+                interp.delay_queue.fill(DelaySlot::Nop);
                 // interp.in_delay_slot = true;
                 if interp.in_delay_slot {
                     todo!("brk in delay slot!!!");
@@ -341,38 +344,44 @@ impl<A: Allocator + Copy> Emu<A> {
                 None
             }
             DecodedOp::Bltz(bltz) => {
+                interp.in_delay_slot = true;
                 if (self.get_reg(bltz.rs) as i32) < 0 {
                     self.branch(interp, op_pc, bltz.imm16);
                 }
                 None
             }
             DecodedOp::Bgez(bgez) => {
+                interp.in_delay_slot = true;
                 if (self.get_reg(bgez.rs) as i32) >= 0 {
                     self.branch(interp, op_pc, bgez.imm16);
                 }
                 None
             }
             DecodedOp::Bltzal(bltzal) => {
+                interp.in_delay_slot = true;
+                let cond = (self.get_reg(bltzal.rs) as i32) < 0;
                 self.link_return(interp, op_pc);
-                if (self.get_reg(bltzal.rs) as i32) < 0 {
+                if cond {
                     self.branch(interp, op_pc, bltzal.imm16);
                 }
                 None
             }
             DecodedOp::Bgezal(bgezal) => {
+                interp.in_delay_slot = true;
+                let cond = (self.get_reg(bgezal.rs) as i32) >= 0;
                 self.link_return(interp, op_pc);
-                if (self.get_reg(bgezal.rs) as i32) >= 0 {
+                if cond {
                     self.branch(interp, op_pc, bgezal.imm16);
                 }
                 None
             }
             DecodedOp::J(j) => {
-                self.jump(interp, (self.cpu.pc & 0xf000_0000) + (j.imm26 << 2));
+                self.jump(interp, ((op_pc + 4) & 0xf000_0000) + (j.imm26 << 2));
                 None
             }
             DecodedOp::Jal(jal) => {
                 self.link_return(interp, op_pc);
-                self.jump(interp, (self.cpu.pc & 0xf000_0000) + (jal.imm26 << 2));
+                self.jump(interp, ((op_pc + 4) & 0xf000_0000) + (jal.imm26 << 2));
                 None
             }
             DecodedOp::Blez(blez) => {
@@ -408,6 +417,7 @@ impl<A: Allocator + Copy> Emu<A> {
                 None
             }
             DecodedOp::Beq(beq) => {
+                interp.in_delay_slot = true;
                 let rs = self.get_reg(beq.rs);
                 let rt = self.get_reg(beq.rt);
                 if rs == rt {
@@ -416,6 +426,7 @@ impl<A: Allocator + Copy> Emu<A> {
                 None
             }
             DecodedOp::Bne(bne) => {
+                interp.in_delay_slot = true;
                 let rs = self.get_reg(bne.rs);
                 let rt = self.get_reg(bne.rt);
                 if rs != rt {

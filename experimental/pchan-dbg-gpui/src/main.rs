@@ -151,8 +151,8 @@ fn main() {
     let _profiler = dhat::Profiler::new_heap();
     #[cfg(feature = "dhat-heap")]
     let _profiler_ptr = (&raw const _profiler).cast_mut();
-    let arena: &'static &'static Bump =
-        Box::leak(Box::new(Box::leak(Box::new(Bump::new())) as &'static _));
+    // let arena: &'static &'static Bump =
+    //     Box::leak(Box::new(Box::leak(Box::new(Bump::new())) as &'static _));
 
     gpui_platform::application()
         .with_assets(PchanAssets::new())
@@ -176,7 +176,7 @@ fn main() {
             });
 
             cx.set_app_identity("p-chan-gpui", "Pーちゃん");
-            let emucx = EmuContext::new(arena, cx).unwrap();
+            let emucx = EmuContext::new(cx).unwrap();
             let (target, target_buf) = create_target(
                 &emucx.renderer,
                 &emucx.renderer.display_uniforms.app.lock().unwrap(),
@@ -1411,8 +1411,8 @@ enum ContentPath {
 }
 
 pub struct EmuContext {
-    emu:                Emu<&'static Bump>,
-    runner:             Runner<&'static Bump>,
+    emu:                Emu<alloc::alloc::Global>,
+    runner:             Runner<alloc::alloc::Global>,
     run_for_one_frame:  bool,
     run_once:           bool,
     running_notify:     event_listener::Event,
@@ -1427,7 +1427,7 @@ pub struct EmuContext {
     start:              Instant,
     pc_history:         StaticRb<u32, 50>,
     content_path:       ContentPath,
-    alloc:              &'static Bump,
+    alloc:              alloc::alloc::Global,
 }
 
 struct RenderedFrameEvent;
@@ -1454,10 +1454,10 @@ use pchan_emu::run::{EmuSpeed, Runner, RunnerMode};
 use crate::game_surface::{GameSurface, SurfaceState, create_target};
 
 impl EmuContext {
-    pub fn new(alloc: &'static Bump, cx: &App) -> miette::Result<Self> {
-        let mut emu = Emu::new_in(alloc);
+    pub fn new(cx: &App) -> miette::Result<Self> {
+        let mut emu = Emu::new_in(alloc::alloc::Global);
         emu.set_bios_path(std::env::var("PCHAN_BIOS").into_diagnostic()?);
-        emu.load_bios(alloc).into_diagnostic()?;
+        emu.load_bios(alloc::alloc::Global).into_diagnostic()?;
         emu.cpu.jump_to_bios();
         emu.tty.set_tracing();
 
@@ -1478,10 +1478,11 @@ impl EmuContext {
         let gpu = Arc::new(gpu);
         gpu.clone().start();
 
-        let mut runner = Runner::new_in(alloc).with_config(pchan_emu::run::RunnerConfig {
-            force_mode: Some(pchan_emu::run::RunnerMode::Dynarec),
-            speed:      pchan_emu::run::EmuSpeed::Percentage(NonZeroU16::new(100).unwrap()),
-        });
+        let mut runner =
+            Runner::new_in(alloc::alloc::Global).with_config(pchan_emu::run::RunnerConfig {
+                force_mode: Some(pchan_emu::run::RunnerMode::Dynarec),
+                speed:      pchan_emu::run::EmuSpeed::Percentage(NonZeroU16::new(100).unwrap()),
+            });
         runner.running = false;
 
         Ok(EmuContext {
@@ -1497,7 +1498,7 @@ impl EmuContext {
             cycles_per_run: 0,
             real_time_running: Duration::ZERO,
             run_for_one_frame: false,
-            alloc,
+            alloc: alloc::alloc::Global,
             pc_history: StaticRb::default(),
             content_path: ContentPath::None,
             save: false,
