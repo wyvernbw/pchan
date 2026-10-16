@@ -3026,7 +3026,7 @@ impl DynarecOp for Cfcn {
         dynasm!(
             ctx.dynarec.asm
             ; .arch aarch64
-            ; ldr W(*rt), [x0, Cpu::cop_reg_offset(self.cop, self.rd) as _]
+            ; ldr W(*rt), [x0, Cpu::cop_reg_offset(self.cop, self.rd + 32) as _]
         );
 
         ctx.dynarec.mark_dirty(self.rt);
