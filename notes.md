@@ -95,7 +95,8 @@ cursor `$a1` is greater than the end `$a3` when entering the loop. PCSX-R
 value for `$a1` is `0x800d73b2`. It's greater from earlier than the blocks pasted
 above.
 
-- `0x800766b4`
+- ... 50 blocks
+- `0x800766b4` <- correct
 
 MK2 boots at `0x800809fc`.
 

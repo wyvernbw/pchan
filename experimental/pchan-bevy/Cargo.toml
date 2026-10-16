@@ -1,0 +1,14 @@
+[package]
+name = "pchan-bevy"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bevy = { version = "0.20.0", default-features = false, features = ["bevy_feathers", "system_font_discovery", "ui"] }
+pchan-audio.workspace = true
+pchan-emu.workspace = true
+pchan-gpu.workspace = true
+pchan-utils = { workspace = true, features = ["tracy", "tracy-enable"] }
+
+[lints]
+workspace = true
