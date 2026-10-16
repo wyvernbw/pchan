@@ -11,7 +11,7 @@ use core::num::NonZeroU8;
 use arbitrary_int::traits::Integer;
 use enum_dispatch::enum_dispatch;
 
-use pchan_utils::hex;
+use pchan_utils::{default, hex};
 #[cfg(test)]
 use rstest::rstest;
 use smallbox::SmallBox;
@@ -37,8 +37,21 @@ pub struct EmitCtx<'a, A: Allocator> {
 
 const MAX_SCRATCH_REG: u8 = 3;
 
+fn cop_reg(cop: u8, reg: u8) -> u8 {
+    match cop {
+        0 => 32 + reg,
+        2 => 32 + 64 + reg,
+        _ => unreachable!(),
+    }
+}
+
 impl<A: Allocator + Copy> EmitCtx<'_, A> {
-    fn schedule_in(&mut self, ops: u32, emitter: impl Fn(EmitCtx<A>) -> EmitSummary + 'static) {
+    fn schedule_in(
+        &mut self,
+        ops: u32,
+        write: Option<u8>,
+        emitter: impl Fn(EmitCtx<A>) -> EmitSummary + 'static,
+    ) {
         let emitter = SmallBox::new(emitter) as DynEmitter<A>;
         let at = self.pc + ops * 4;
         self.dynarec
@@ -47,6 +60,7 @@ impl<A: Allocator + Copy> EmitCtx<'_, A> {
             .push(ScheduledEmitter {
                 emitter,
                 schedule: at,
+                write,
                 pc: self.pc,
             })
             .expect("binary heap is at capacity. increase allocation size or decrease block size");
@@ -464,6 +478,8 @@ impl DynarecOp for Addiu {
             return EmitSummary::default();
         }
 
+        ctx.dynarec.cancel_next_write(self.rt);
+
         // $rs = $zero case
         if self.rs == 0 {
             let rt = ctx.dynarec.alloc_reg_stackless(self.rt);
@@ -633,7 +649,7 @@ fn emit_store<A: Allocator + Copy>(
         ; stp w1, w2, [x0, #s1]
     );
 
-    ctx.schedule_in(1, move |mut ctx| {
+    ctx.schedule_in(1, None, move |mut ctx| {
         dynasm!(
             ctx.dynarec.asm
             ; .arch aarch64
@@ -1021,7 +1037,7 @@ fn emit_load<const ALIGNED: bool, A: Allocator + Copy>(
         ; str w1, [x0, #s1]
     );
 
-    ctx.schedule_in(1, move |mut ctx| {
+    ctx.schedule_in(1, Some(rt), move |mut ctx| {
         if ALIGNED {
             dynasm!(
                 ctx.dynarec.asm
@@ -1383,6 +1399,7 @@ fn emit_alu_reg<A: Allocator + Copy>(
     let rta = ctx.dynarec.emit_load_reg_stackless(rt).lock(ctx.dynarec);
     let rda = ctx.dynarec.alloc_reg_stackless(rd);
 
+    ctx.dynarec.cancel_next_write(rd);
     #[cfg(target_arch = "aarch64")]
     dynasm!(
         ctx.dynarec.asm
@@ -1422,6 +1439,8 @@ impl DynarecOp for Subu {
             return EmitSummary::default();
         };
 
+        ctx.dynarec.cancel_next_write(self.rd);
+
         if self.rt == 0 {
             ctx.dynarec.emit_load_temp_reg(self.rs, Reg::W(1));
             let rd = ctx.dynarec.alloc_reg_stackless(self.rd);
@@ -1456,6 +1475,8 @@ impl DynarecOp for Addu {
             return EmitSummary::default();
         };
 
+        ctx.dynarec.cancel_next_write(self.rd);
+
         match either_zero(self.rs, self.rt) {
             EitherZero::None => emit_alu_reg(ctx, self.rd, self.rs, self.rt, |ctx, regs| {
                 #[cfg(target_arch = "aarch64")]
@@ -1480,6 +1501,8 @@ impl DynarecOp for And {
             return EmitSummary::default();
         }
 
+        ctx.dynarec.cancel_next_write(self.rd);
+
         match either_zero(self.rs, self.rt) {
             EitherZero::None => emit_alu_reg(ctx, self.rd, self.rs, self.rt, move |ctx, regs| {
                 #[cfg(target_arch = "aarch64")]
@@ -1500,6 +1523,8 @@ impl DynarecOp for Or {
         if self.rd == 0 {
             return EmitSummary::default();
         }
+
+        ctx.dynarec.cancel_next_write(self.rd);
 
         match either_zero(self.rs, self.rt) {
             EitherZero::None => emit_alu_reg(ctx, self.rd, self.rs, self.rt, move |ctx, regs| {
@@ -1524,6 +1549,8 @@ impl DynarecOp for Xor {
             return EmitSummary::default();
         }
 
+        ctx.dynarec.cancel_next_write(self.rd);
+
         match either_zero(self.rs, self.rt) {
             EitherZero::None => emit_alu_reg(ctx, self.rd, self.rs, self.rt, move |ctx, regs| {
                 dynasm!(
@@ -1546,6 +1573,9 @@ impl DynarecOp for Nor {
         if self.rd == 0 {
             return EmitSummary::default();
         }
+
+        ctx.dynarec.cancel_next_write(self.rd);
+
         match either_zero(self.rs, self.rt) {
             EitherZero::None => emit_alu_reg(ctx, self.rd, self.rs, self.rt, move |ctx, regs| {
                 dynasm!(
@@ -1585,6 +1615,8 @@ fn emit_shift_by_reg<A: Allocator + Copy>(
     if rd == 0 {
         return EmitSummary::default();
     }
+
+    ctx.dynarec.cancel_next_write(rd);
 
     if rt == 0 {
         return ctx.dynarec.emit_zero(rd);
@@ -1652,6 +1684,8 @@ fn emit_shift_imm<A: Allocator + Copy>(
     if rd == 0 {
         return EmitSummary::default();
     }
+
+    ctx.dynarec.cancel_next_write(rd);
 
     if imm == 0 {
         return ctx.dynarec.emit_load_and_move_into(rd, rt);
@@ -1780,6 +1814,7 @@ fn emit_alu_imm<A: Allocator + Copy>(
     let rsa = ctx.dynarec.emit_load_reg_stackless(rs).lock(ctx.dynarec);
     let rta = ctx.dynarec.alloc_reg_stackless(rt);
 
+    ctx.dynarec.cancel_next_write(rt);
     #[cfg(target_arch = "aarch64")]
     dynasm!(
         ctx.dynarec.asm
@@ -1796,6 +1831,8 @@ fn emit_alu_imm<A: Allocator + Copy>(
 impl DynarecOp for Andi {
     #[allow(clippy::useless_conversion)]
     fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+        ctx.dynarec.cancel_next_write(self.rt);
+
         match (self.rt, self.rs, self.imm16) {
             (0, _, _) => EmitSummary::default(),
             (_, 0, _) | (_, _, 0) => ctx.dynarec.emit_zero(self.rt),
@@ -1821,6 +1858,8 @@ impl DynarecOp for Andi {
 impl DynarecOp for Ori {
     #[allow(clippy::useless_conversion)]
     fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+        ctx.dynarec.cancel_next_write(self.rt);
+
         match self {
             Self {
                 rt: 0,
@@ -1859,6 +1898,8 @@ impl DynarecOp for Ori {
 impl DynarecOp for Xori {
     #[allow(clippy::useless_conversion)]
     fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+        ctx.dynarec.cancel_next_write(self.rt);
+
         match self {
             Self {
                 rt: 0,
@@ -1900,6 +1941,7 @@ impl DynarecOp for Lui {
         if self.rt == 0 {
             return EmitSummary::default();
         }
+        ctx.dynarec.cancel_next_write(self.rt);
         let rt = ctx.dynarec.emit_load_reg_stackless(self.rt);
 
         #[cfg(target_arch = "aarch64")]
@@ -1973,7 +2015,7 @@ impl<A: Allocator + Copy> Dynarec<A> {
 impl DynarecOp for J {
     fn emit<A: Allocator + Copy>(&self, mut ctx: EmitCtx<A>) -> EmitSummary {
         let new_pc = (self.imm26 << 2) | (ctx.pc & 0xf0000000);
-        ctx.schedule_in(1, move |ctx| {
+        ctx.schedule_in(1, None, move |ctx| {
             ctx.dynarec.emit_write_pc(Reg::W(1), new_pc);
             ctx.dynarec.emit_set_bt::<true>();
 
@@ -2025,7 +2067,8 @@ impl DynarecOp for Jal {
     fn emit<A: Allocator + Copy>(&self, mut ctx: EmitCtx<A>) -> EmitSummary {
         let new_pc = (self.imm26 << 2) + (ctx.pc & 0xf0000000);
         let return_address = ctx.pc + 0x8;
-        ctx.schedule_in(1, move |ctx| {
+        ctx.dynarec.cancel_next_write(RA);
+        ctx.schedule_in(1, Some(RA), move |ctx| {
             ctx.dynarec.emit_write_pc(Reg::W(3), new_pc);
             ctx.dynarec.emit_immediate_large(cpu::RA, return_address);
 
@@ -2086,7 +2129,7 @@ impl DynarecOp for Jr {
             ; str W(*dest), [x0, #s1]
         );
 
-        ctx.schedule_in(1, move |ctx| {
+        ctx.schedule_in(1, None, move |ctx| {
             #[cfg(target_arch = "aarch64")]
             dynasm!(
                 ctx.dynarec.asm
@@ -2181,8 +2224,9 @@ impl DynarecOp for Jalr {
         );
 
         let rd = self.rd;
+        ctx.dynarec.cancel_next_write(rd);
         // we know the delay slots runs at old pc + 4
-        ctx.schedule_in(1, move |ctx| {
+        ctx.schedule_in(1, Some(rd), move |ctx| {
             #[cfg(target_arch = "aarch64")]
             dynasm!(
                 ctx.dynarec.asm
@@ -2260,7 +2304,7 @@ fn emit_branch<A: Allocator + Copy>(
     );
 
     let branch_dest = (ctx.pc + 0x4).wrapping_add_signed(ext::sign(imm) << 2);
-    ctx.schedule_in(1, move |mut ctx| {
+    ctx.schedule_in(1, None, move |mut ctx| {
         dynasm!(
             ctx.dynarec.asm
             ; .arch aarch64
@@ -2466,7 +2510,8 @@ fn emit_branch_zero<A: Allocator + Copy>(
     );
 
     let branch_dest = (ctx.pc + 0x4).wrapping_add_signed(ext::sign(imm) << 2);
-    ctx.schedule_in(1, move |mut ctx| {
+    let write = if link { Some(RA) } else { None };
+    ctx.schedule_in(1, write, move |mut ctx| {
         if link {
             let return_dest = ctx.pc + 0x8;
             let ra = ctx.dynarec.alloc_reg_stackless(RA);
@@ -2773,6 +2818,8 @@ impl DynarecOp for Sltu {
             return EmitSummary::default();
         }
 
+        ctx.dynarec.cancel_next_write(self.rd);
+
         let rs = ctx
             .dynarec
             .emit_load_reg_stackless(self.rs)
@@ -2806,6 +2853,7 @@ impl DynarecOp for Sltiu {
             return EmitSummary::default();
         }
 
+        ctx.dynarec.cancel_next_write(self.rt);
         let rt = ctx
             .dynarec
             .emit_load_reg_stackless(self.rt)
@@ -2860,6 +2908,8 @@ impl DynarecOp for Slt {
             return EmitSummary::default();
         }
 
+        ctx.dynarec.cancel_next_write(self.rd);
+
         let rs = ctx
             .dynarec
             .emit_load_reg_stackless(self.rs)
@@ -2894,6 +2944,7 @@ impl DynarecOp for Slti {
             return EmitSummary::default();
         }
 
+        ctx.dynarec.cancel_next_write(self.rt);
         let rt = ctx
             .dynarec
             .emit_load_reg_stackless(self.rt)
@@ -2946,6 +2997,7 @@ impl DynarecOp for Mfcn {
         if self.rt == 0 {
             return EmitSummary::default();
         }
+        ctx.dynarec.cancel_next_write(self.rt);
         let rt = ctx.dynarec.alloc_reg_stackless(self.rt);
 
         #[cfg(target_arch = "aarch64")]
@@ -2967,6 +3019,7 @@ impl DynarecOp for Cfcn {
         if self.rt == 0 {
             return EmitSummary::default();
         }
+        ctx.dynarec.cancel_next_write(self.rt);
         let rt = ctx.dynarec.alloc_reg_stackless(self.rt);
 
         #[cfg(target_arch = "aarch64")]
@@ -3188,6 +3241,8 @@ impl DynarecOp for Mflo {
             return EmitSummary::default();
         }
 
+        ctx.dynarec.cancel_next_write(self.rd);
+
         let rd = ctx.dynarec.alloc_reg_stackless(self.rd);
 
         #[cfg(target_arch = "aarch64")]
@@ -3209,6 +3264,8 @@ impl DynarecOp for Mfhi {
         if self.rd == 0 {
             return EmitSummary::default();
         }
+
+        ctx.dynarec.cancel_next_write(self.rd);
 
         let rd = ctx.dynarec.alloc_reg_stackless(self.rd);
 
@@ -3463,7 +3520,7 @@ impl DynarecOp for Lwcn {
         );
         let cop = self.cop;
         let rt = self.rt;
-        ctx.schedule_in(1, move |ctx| {
+        ctx.schedule_in(1, None, move |ctx| {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
@@ -3539,7 +3596,7 @@ impl DynarecOp for Swcn {
                 ; str w1, [x0, #s1]
             );
 
-            ctx.schedule_in(1, move |ctx| {
+            ctx.schedule_in(1, None, move |ctx| {
                 dynasm!(
                     ctx.dynarec.asm
                     ; .arch aarch64
@@ -3581,6 +3638,7 @@ impl DynarecOp for Bltzal {
     }
     #[allow(clippy::useless_conversion)]
     fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+        ctx.dynarec.cancel_next_write(RA);
         #[cfg(target_arch = "aarch64")]
         emit_branch_zero(
             ctx,
@@ -3609,6 +3667,7 @@ impl DynarecOp for Bgezal {
         Boundary::Soft
     }
     fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+        ctx.dynarec.cancel_next_write(RA);
         #[cfg(target_arch = "aarch64")]
         emit_branch_zero(
             ctx,

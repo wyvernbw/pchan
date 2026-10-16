@@ -799,6 +799,7 @@ pub struct ScheduledEmitter<A: Allocator> {
     #[debug("{}", hex(self.schedule))]
     pub(crate) schedule: u32,
     pub(crate) pc:       u32,
+    pub(crate) write:    Option<u8>,
 }
 
 impl<A: Allocator + Copy> PartialEq for ScheduledEmitter<A> {
@@ -863,6 +864,13 @@ impl<A: Allocator + Copy> Dynarec<A> {
             }
         }
         None
+    }
+    pub fn cancel_next_write(&mut self, reg: u8) {
+        if let Some(emitter) = self.scheduler.queue.peek() {
+            if emitter.write == Some(reg) {
+                self.scheduler.queue.pop();
+            }
+        }
     }
 }
 

@@ -139,6 +139,28 @@ fn load_delay_03(#[values(dynarec(), interp())] mut runner: Runner) {
 }
 
 #[rstest]
+fn load_delay_04(#[values(dynarec(), interp())] mut runner: Runner) {
+    use pchan_utils::setup_tracing;
+
+    setup_tracing();
+    let mut emu: Emu = Emu::default();
+    emu.cpu.pc = 0x0;
+    emu.write(0x200, 3);
+    emu.write_many(
+        0x0,
+        &program([
+            addiu(8, 0, 0x200),
+            lw(9, 8, 0),
+            addiu(9, 0, 42),
+            OpCode::HALT,
+        ]),
+    );
+    runner.execute(&mut emu);
+    assert_eq!(emu.read::<u32>(0x200), 3);
+    assert_eq!(emu.get_reg(9), 42)
+}
+
+#[rstest]
 #[case::div_00(div, (8, 10), (9, 2), 0x00000000_00000005)]
 #[case::div_01(div, (0, 0), (8, 3), 0x00000000_00000000)]
 #[case::div_02(div, (8, 2), (9, 0), 0x00000002_ffffffff)]
