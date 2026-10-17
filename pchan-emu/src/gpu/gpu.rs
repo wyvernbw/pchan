@@ -4,7 +4,7 @@ pub mod vram;
 use core::alloc::Allocator;
 use core::mem::{self, transmute};
 use core::ops;
-use core::sync::atomic::{self, AtomicBool, AtomicU64};
+use core::sync::atomic::{AtomicBool, AtomicU64};
 use core::time::Duration;
 use std::time::Instant;
 
@@ -24,6 +24,7 @@ use crate::gpu::draw_call::{
     Gp0SetMaskBitCmd, Gp0VramBlitDecoder, GpuInternalDrawReg,
 };
 use crate::gpu::vram::{Rgb5, VramCoord, VramCursor};
+use crate::io::evque::Task;
 use crate::io::irq::Irq;
 use crate::io::{CastIOFrom, CastIOInto, IOResult, UnhandledIO};
 use crate::memory::{kb, mb};
@@ -98,6 +99,9 @@ pub struct GpuState<A: Allocator> {
     pub draw_reg:     GpuInternalDrawReg,
     pub model:        GpuModel,
 
+    pending_write:        Option<Gp0HostBlit>,
+    pending_read:         Option<Gp0HostBlit>,
+    pending_draw_calls:   VecDeque<DrawCall, A>,
     ongoing_read:         Option<Gp0HostBlit>,
     draw_calls_in_flight: bool,
     #[endecode(skip)]
@@ -148,9 +152,12 @@ impl<A: Allocator + Copy> GpuState<A> {
             vram_mutation_signal: false,
             alloc,
             gp0write: Vec::with_capacity(256 * 256 * 2),
+            pending_read: None,
             ongoing_read: None,
+            pending_write: None,
             gp0read_fifo: VecDeque::new_in(alloc),
             draw_idx: 0,
+            pending_draw_calls: VecDeque::new_in(alloc),
         }
     }
 }
@@ -345,6 +352,24 @@ impl<A: Allocator + Copy> Emu<A> {
         }
     }
 
+    pub(crate) async fn task_gpu_start_blit_cpu_to_vram(&mut self) {
+        if let Some(draw_call) = self.gpu.pending_write.take() {
+            self.gpu.task_gpu_flush_draw_calls().await;
+            self.gpu.wait_for_render_result().await;
+            self.gpu.gp0 = Gp0::RunBlitCpuToVram(draw_call, draw_call.cursor());
+        }
+    }
+
+    pub(crate) async fn task_gpu_start_blit_vram_to_cpu(&mut self) {
+        if let Some(blit) = self.gpu.pending_read.take() {
+            self.gpu.task_gpu_flush_draw_calls().await;
+            self.gpu.wait_for_render_result().await;
+            self.gpu.gp0read_fifo.clear();
+            self.gpu.ongoing_read = Some(blit);
+            self.gpu.gp0 = Gp0::CpuReadingVram;
+        }
+    }
+
     #[pchan_macros::instrument(level = "trace", skip_all)]
     pub fn gpu_gp0_cmd(&mut self, cmd: GpuCmd) {
         let value = cmd.raw_value();
@@ -363,9 +388,12 @@ impl<A: Allocator + Copy> Emu<A> {
 
                     if !self.gpu.draw_calls_in_flight && draw_call.is_small() {
                         tracing::info!("running blit on cpu");
-                        self.gpu.flush_draw_calls();
-                        self.gpu.wait_for_render_result();
-                        self.gpu.gp0 = Gp0::RunBlitCpuToVram(draw_call, draw_call.cursor());
+                        assert!(
+                            self.gpu.pending_write.is_none(),
+                            "multiple pending write, a queue is required"
+                        );
+                        self.gpu.pending_write = Some(draw_call);
+                        self.evque.spawn(Task::GpuStartBlitCpuToVram);
                     } else {
                         self.gpu.gp0 = Gp0::OffloadBlitCpuToVram {
                             cmd:  draw_call,
@@ -380,7 +408,7 @@ impl<A: Allocator + Copy> Emu<A> {
                 data.extend(bytes);
                 if data.len() >= buf_size {
                     self.gpu.gpustat.set_ready_recv_cmd(true);
-                    self.gpu_issue_draw_call(DrawCallKind::BlitCpu2Vram(cmd, data));
+                    self.gpu_spawn_issue_draw_call(DrawCallKind::BlitCpu2Vram(cmd, data));
                     self.gpu.gp0 = Gp0::WaitingForCmd;
                 } else {
                     self.gpu.gp0 = Gp0::OffloadBlitCpuToVram { cmd, data };
@@ -407,11 +435,12 @@ impl<A: Allocator + Copy> Emu<A> {
                     self.gpu.gp0 = Gp0::BlitVramToCpuDecoding(decoder);
                 }
                 Err(blit) => {
-                    self.gpu.flush_draw_calls();
-                    self.gpu.wait_for_render_result();
-                    self.gpu.gp0read_fifo.clear();
-                    self.gpu.ongoing_read = Some(blit);
-                    self.gpu.gp0 = Gp0::CpuReadingVram;
+                    assert!(
+                        self.gpu.pending_read.is_none(),
+                        "multiple pending read, a queue is required"
+                    );
+                    self.gpu.pending_read = Some(blit);
+                    self.evque.spawn(Task::GpuStartBlitVramToCpu);
                 }
             },
 
@@ -426,7 +455,7 @@ impl<A: Allocator + Copy> Emu<A> {
                         tracing::info!("blit:cpu-to-vram:{:?}", vram_blit);
                     }
                     self.gpu.gpustat.set_ready_recv_cmd(true);
-                    self.gpu_issue_draw_call(DrawCallKind::BlitVram2Vram(vram_blit));
+                    self.gpu_spawn_issue_draw_call(DrawCallKind::BlitVram2Vram(vram_blit));
                     self.gpu.gp0 = Gp0::WaitingForCmd;
                 }
             },
@@ -445,8 +474,10 @@ impl<A: Allocator + Copy> Emu<A> {
                         if tracing::enabled!(Level::TRACE) {
                             tracing::trace!(pc = %hex(self.cpu.pc), "started vram fill: {cursor:?}");
                         }
-                        self.gpu.flush_draw_calls();
-                        self.gpu.wait_for_render_result();
+                        smol::block_on(async {
+                            self.gpu.task_gpu_flush_draw_calls().await;
+                            self.gpu.wait_for_render_result().await;
+                        });
                         for dest in cursor.iter() {
                             let color = color >> 3u16;
                             let rgb5 = Rgb5::new_with_raw_value(0x0)
@@ -473,7 +504,7 @@ impl<A: Allocator + Copy> Emu<A> {
                             tracing::trace!(?draw_call, "decoded");
                         }
                         self.gpu.gpustat.set_ready_recv_cmd(true);
-                        self.gpu_issue_draw_call(DrawCallKind::Rect(draw_call));
+                        self.gpu_spawn_issue_draw_call(DrawCallKind::Rect(draw_call));
                         self.gpu.gp0 = Gp0::WaitingForCmd;
                     }
                 }
@@ -502,7 +533,7 @@ impl<A: Allocator + Copy> Emu<A> {
                         }
 
                         self.gpu.gpustat.set_ready_recv_cmd(true);
-                        self.gpu_issue_draw_call(DrawCallKind::Polygon(draw_call));
+                        self.gpu_spawn_issue_draw_call(DrawCallKind::Polygon(draw_call));
                         self.gpu.gp0 = Gp0::WaitingForCmd;
                     }
                 }
@@ -518,7 +549,7 @@ impl<A: Allocator + Copy> Emu<A> {
                             tracing::trace!(?draw_call, "decoded");
                         }
                         self.gpu.gpustat.set_ready_recv_cmd(true);
-                        self.gpu_issue_draw_call(DrawCallKind::Line(draw_call));
+                        self.gpu_spawn_issue_draw_call(DrawCallKind::Line(draw_call));
                         self.gpu.gp0 = Gp0::WaitingForCmd;
                     }
                 }
@@ -621,26 +652,22 @@ impl<A: Allocator + Copy> Emu<A> {
         }
     }
 
-    pub fn gpu_create_draw_call(&self, kind: DrawCallKind) -> DrawCall {
-        DrawCall {
-            gpustat:    self.gpu.gpustat,
-            tex_window: self.gpu.tex_window,
-            inner:      kind,
-            draw_reg:   self.gpu.draw_reg.clone(),
-            display:    self.gpu.dp.clone(),
+    pub(crate) async fn task_gpu_issue_draw_call(&mut self) {
+        let mut draw_call_kinds = mem::replace(
+            &mut self.gpu.pending_draw_calls,
+            VecDeque::new_in(self.alloc),
+        );
+        for kind in draw_call_kinds.drain(..) {
+            self.gpu.issue_draw_call(kind).await
         }
+        self.gpu.pending_draw_calls = draw_call_kinds;
     }
 
-    pub fn gpu_issue_draw_call(&mut self, kind: DrawCallKind) {
-        self.gpu.draw_calls_in_flight = true;
-        let draw_call = self.gpu_create_draw_call(kind);
+    pub fn gpu_spawn_issue_draw_call(&mut self, kind: DrawCallKind) {
         self.gpu
-            .conn
-            .draw_call_chan
-            .0
-            .as_sync()
-            .send(DrawCallMsg::DrawCall(draw_call))
-            .unwrap();
+            .pending_draw_calls
+            .push_back(self.gpu.create_draw_call(kind));
+        self.evque.spawn(Task::GpuIssueDrawCall);
     }
 }
 
@@ -691,6 +718,10 @@ impl<A: Allocator> Emu<A> {
             matches!(self.gpu.vram, Vram::Mapped(_))
         }
     }
+
+    pub fn gpu_flush_draw_calls(&mut self) {
+        self.evque.spawn(Task::GpuFlushDrawCalls);
+    }
 }
 
 impl<A: Allocator + Clone> Emu<A> {
@@ -733,14 +764,13 @@ impl<A: Allocator> GpuState<A> {
 }
 
 impl<A: Allocator + Copy> GpuState<A> {
-    pub fn flush_draw_calls(&mut self) {
+    pub async fn task_gpu_flush_draw_calls(&mut self) {
         match self.take_vram() {
             Vram::Mapped(vram) => {
                 self.draw_idx += 1;
                 self.conn
                     .draw_call_chan
                     .0
-                    .as_sync()
                     .send(DrawCallMsg::Flush(FlushMsg {
                         display:  self.dp.clone(),
                         gpustat:  self.gpustat,
@@ -750,13 +780,14 @@ impl<A: Allocator + Copy> GpuState<A> {
                             dirty: self.vram_mutation_signal,
                         },
                     }))
+                    .await
                     .unwrap();
             }
             Vram::Lent => {}
         }
     }
 
-    pub fn wait_for_render_result(&mut self) {
+    pub async fn wait_for_render_result(&mut self) {
         match self.vram {
             Vram::Mapped(_) => {}
             Vram::Lent => {
@@ -764,8 +795,8 @@ impl<A: Allocator + Copy> GpuState<A> {
                     .conn
                     .vram_out_chan
                     .1
-                    .as_sync()
                     .recv()
+                    .await
                     .expect("channel dropped: failed to receive queued render");
                 match vram {
                     VramRes::Ok(vram) => self.submit_vram(vram),
@@ -1350,6 +1381,26 @@ impl<A: Allocator> GpuState<A> {
         //     (VideoEventKind::Vblank, vblank)
         // }
         (VideoEventKind::Vblank, vblank)
+    }
+
+    pub async fn issue_draw_call(&mut self, draw_call: DrawCall) {
+        self.draw_calls_in_flight = true;
+        self.conn
+            .draw_call_chan
+            .0
+            .send(DrawCallMsg::DrawCall(draw_call))
+            .await
+            .unwrap();
+    }
+
+    pub fn create_draw_call(&self, kind: DrawCallKind) -> DrawCall {
+        DrawCall {
+            gpustat:    self.gpustat,
+            tex_window: self.tex_window,
+            inner:      kind,
+            draw_reg:   self.draw_reg.clone(),
+            display:    self.dp.clone(),
+        }
     }
 }
 

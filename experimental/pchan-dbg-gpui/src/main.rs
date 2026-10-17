@@ -454,9 +454,11 @@ impl EmuContext {
         }
     }
 
-    fn save_state(&mut self) -> miette::Result<()> {
-        self.emu.gpu.flush_draw_calls();
-        self.emu.gpu.wait_for_render_result();
+    fn save_state(&mut self, cx: &mut Context<Self>) -> miette::Result<()> {
+        cx.foreground_executor().block_on(async {
+            self.emu.gpu.task_gpu_flush_draw_calls().await;
+            self.emu.gpu.wait_for_render_result().await;
+        });
         let sink = Vec::new_in(self.alloc);
         let ser = pchan_encode::encode(&mut self.emu, sink, self.alloc).into_diagnostic()?;
         let mut f = fs::File::create("/tmp/pchan-save.bin").into_diagnostic()?;
@@ -470,7 +472,8 @@ impl EmuContext {
             };
 
             let mut ppm = format!("P6\n{W} {H}\n255\n").into_bytes();
-            for px in self.emu.gpu.lock_vram().iter().take(W * H) {
+            let vram = cx.foreground_executor().block_on(self.emu.gpu.lock_vram());
+            for px in vram.iter().take(W * H) {
                 ppm.extend_from_slice(&[expand(*px), expand(*px >> 5), expand(*px >> 10)]);
             }
             fs::write("/tmp/vram-save.ppm", &ppm).into_diagnostic()?;
@@ -480,7 +483,7 @@ impl EmuContext {
         Ok(())
     }
 
-    fn load_state(&mut self) -> miette::Result<()> {
+    fn load_state(&mut self, cx: &mut Context<Self>) -> miette::Result<()> {
         self.hard_reset();
         let mut f = fs::File::open("/tmp/pchan-save.bin").into_diagnostic()?;
         let mut sink = Vec::new();
@@ -500,7 +503,7 @@ impl EmuContext {
             };
 
             let mut ppm = format!("P6\n{W} {H}\n255\n").into_bytes();
-            let vram = self.emu.gpu.lock_vram();
+            let vram = cx.foreground_executor().block_on(self.emu.gpu.lock_vram());
             for px in vram.iter().take(W * H) {
                 ppm.extend_from_slice(&[expand(*px), expand(*px >> 5), expand(*px >> 10)]);
             }
@@ -798,16 +801,17 @@ async fn emu_loop(appcx: AppCx, cx: &mut AsyncApp) {
                 emucx.pc_history.push_overwrite(emu.cpu.pc);
                 emucx.run_once
             });
+            let elapsed = cx.foreground_executor().block_on(elapsed);
 
             if emucx.save {
                 emucx.save = false;
-                emucx.save_state().unwrap();
+                emucx.save_state(cx).unwrap();
                 cx.emit(SavestateToast::Saved);
                 cx.notify();
             }
             if emucx.load {
                 emucx.load = false;
-                emucx.load_state().unwrap();
+                emucx.load_state(cx).unwrap();
                 cx.emit(SavestateToast::Loaded);
                 cx.notify();
             }

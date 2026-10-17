@@ -32,6 +32,7 @@
 #![feature(allocator_ext)]
 #![feature(default_field_values)]
 #![feature(iter_array_chunks)]
+#![feature(vec_push_within_capacity)]
 // allow unused variables in tests to supress the setup tracing warnings
 #![cfg_attr(test, allow(unused_variables))]
 use core::alloc::Allocator;

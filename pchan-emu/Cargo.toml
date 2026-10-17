@@ -30,6 +30,7 @@ pchan-utils = { workspace = true, features = ["tracy"] }
 slotmap = "1.1.1"
 smallbox = { version = "0.8.8", features = ["nightly"] }
 smallvec = { version = "1.16.2", features = ["const_new"] }
+smol.workspace = true
 strum = { version = "0.28.0", features = ["derive"] }
 thiserror = "2.0.21"
 tracing = { workspace = true }

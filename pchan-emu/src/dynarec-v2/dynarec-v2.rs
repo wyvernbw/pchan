@@ -40,7 +40,7 @@ pub static BLOCKS_EXECUTED: AtomicU64 = AtomicU64::new(0);
 pub static CACHE_HITS: AtomicU64 = AtomicU64::new(0);
 pub static CACHE_MISSES: AtomicU64 = AtomicU64::new(0);
 
-static ASM_CAPACITY: usize = mb(8);
+static ASM_CAPACITY: usize = mb(4);
 
 pub fn cache_hitrate() -> f32 {
     let hits = CACHE_HITS.load(Ordering::Relaxed) as f32;
@@ -174,7 +174,11 @@ struct DynFnPtr<'a, A: Allocator> {
     ptr:    fn(*mut Emu<A>),
 }
 
-pub fn run_block<A: Allocator + Copy>(block: fn(*mut Emu<A>), emu: &mut Emu<A>, instrument: bool) {
+pub async fn run_block<A: Allocator + Copy>(
+    block: fn(*mut Emu<A>),
+    emu: &mut Emu<A>,
+    instrument: bool,
+) {
     #[cfg(debug_assertions)]
     {
         BLOCKS_EXECUTED.fetch_add(1, Ordering::Relaxed);
@@ -205,7 +209,7 @@ pub fn run_block<A: Allocator + Copy>(block: fn(*mut Emu<A>), emu: &mut Emu<A>, 
         if !emu.cpu.pc.is_multiple_of(0x4) {
             emu.raise_exception(Exception::AdEl);
         }
-        emu.run_io();
+        emu.run_io().await;
         emu.cpu.drain_jump_queue();
         if !emu.cpu.pc.is_multiple_of(0x4) {
             emu.raise_exception(Exception::AdEl);
@@ -687,7 +691,9 @@ impl<A: Allocator + Copy> Dynarec<A> {
         self.scheduler.queue.clear();
         self.reg_alloc = RegAlloc::default();
         self.asm.commit()?;
-        let fn_ptr = unsafe { transmute(self.asm.reader().lock().ptr(offset)) };
+        let fn_ptr = unsafe {
+            transmute::<*const u8, fn(*mut Emu<A>)>(self.asm.reader().lock().ptr(offset))
+        };
         Ok(fn_ptr)
     }
 }
@@ -918,7 +924,7 @@ impl<A: Allocator + Copy> Emu<A> {
     }
 }
 
-pub fn run_step<A: Allocator + Copy + Clone>(emu: &mut Emu<A>, dynarec: &mut Dynarec<A>) {
+pub async fn run_step<A: Allocator + Copy + Clone>(emu: &mut Emu<A>, dynarec: &mut Dynarec<A>) {
     let pc = emu.cpu.pc;
     let block = match emu.dynarec_cache.get(pc) {
         None => {
@@ -939,7 +945,7 @@ pub fn run_step<A: Allocator + Copy + Clone>(emu: &mut Emu<A>, dynarec: &mut Dyn
             block
         }
     };
-    run_block(block, emu, false);
+    run_block(block, emu, false).await;
     emu.stats.blocks_ran += 1;
 
     emu.dynarec_cache.insert(pc, block);
@@ -990,6 +996,7 @@ pub(crate) fn fetch_and_compile_single_threaded<A: Allocator + Copy>(
     let mut start = dynarec.asm.offset();
 
     if start.0 > ASM_CAPACITY * 3 / 4 {
+        tracing::warn!("JIT cache over capacity");
         emu.dynarec_cache.flush();
         *dynarec = Dynarec::new(CreateDynarecParams {
             reg_alloc: None,
@@ -1124,8 +1131,8 @@ struct CacheBlockPtr<A: Allocator> {
 impl<A: Allocator> Clone for CacheBlockPtr<A> {
     fn clone(&self) -> Self {
         Self {
-            ptr:        self.ptr.clone(),
-            generation: self.generation.clone(),
+            ptr:        self.ptr,
+            generation: self.generation,
         }
     }
 }
@@ -1203,11 +1210,11 @@ impl<A: Allocator> DynCache<A> {
                 let block = &page.blocks[offset as usize];
                 match block {
                     Some(block) => {
-                        if block.generation != page.generation {
+                        if block.generation == page.generation {
+                            Some(block.ptr)
+                        } else {
                             page.blocks[offset as usize] = None;
                             None
-                        } else {
-                            Some(block.ptr)
                         }
                     }
                     None => None,

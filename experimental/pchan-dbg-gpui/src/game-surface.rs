@@ -154,8 +154,8 @@ impl Element for GameSurface {
             };
 
             drop(state);
-            let render_image = self.emucx.update(cx, |emucx, _| {
-                let vram = emucx.emu.gpu.lock_vram();
+            let render_image = self.emucx.update(cx, |emucx, cx| {
+                let vram = cx.foreground_executor().block_on(emucx.emu.gpu.lock_vram());
 
                 let mut buf = Vec::with_capacity((W * H * 4) as usize);
                 for px in vram.iter().take((W * H) as usize) {

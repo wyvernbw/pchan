@@ -93,7 +93,7 @@ impl<A: Allocator + Copy> Emu<A> {
     /// # Safety
     pub unsafe extern "C" fn ext_run_io(self: *mut Self) {
         unsafe {
-            self.as_mut_unchecked().run_io();
+            smol::block_on(self.as_mut_unchecked().run_io());
         }
     }
 }

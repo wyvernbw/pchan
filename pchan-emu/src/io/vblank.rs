@@ -1,35 +1,13 @@
 use core::alloc::Allocator;
 
-use alloc::alloc::Global;
-
 use crate::Emu;
-use crate::gpu::{DrawEvenOdd, VBLANK_COUNT, create_vram};
+use crate::gpu::{DrawEvenOdd, VBLANK_COUNT};
 use crate::io::irq::Irq;
 
 pub const CPU_FREQ: u32 = 33_868_800;
 pub const NTSC_CYCLES: u32 = CPU_FREQ / 60;
 
 impl<A: Allocator + Copy> Emu<A> {
-    #[deprecated]
-    fn run_poll_vblank(&mut self) {
-        let even_odd = self.gpu.gpustat.even_odd_in_vblank();
-        let mut cycles = &mut self.cpu.vblank_timer;
-        while *cycles >= NTSC_CYCLES {
-            *cycles -= NTSC_CYCLES;
-
-            // gpustat.31 is 0x0 *during* vblank
-            self.gpu
-                .gpustat
-                .set_even_odd_in_vblank(DrawEvenOdd::EvenOrVBlank);
-            self.gpu.flush_draw_calls();
-            self.irq_trigger(Irq::Irq0Vblank);
-
-            self.gpu.flip_even_odd(Some(even_odd));
-
-            cycles = &mut self.cpu.vblank_timer;
-        }
-    }
-
     pub fn run_vblank(&mut self) {
         let even_odd = self.gpu.gpustat.even_odd_in_vblank();
         self.gpu
@@ -45,7 +23,7 @@ impl<A: Allocator + Copy> Emu<A> {
                 }
             }
         }
-        self.gpu.flush_draw_calls();
+        self.gpu_flush_draw_calls();
         self.irq_trigger(Irq::Irq0Vblank);
         self.gpu.vblank_signal = true;
 

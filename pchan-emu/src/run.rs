@@ -157,17 +157,17 @@ impl<A: Allocator + Copy + Clone> Runner<A> {
         self.config.force_mode.unwrap_or(RunnerMode::Dynarec)
     }
 
-    pub fn execute(&mut self, emu: &mut Emu<A>) {
+    pub async fn execute(&mut self, emu: &mut Emu<A>) {
         match self.config.force_mode {
             Some(RunnerMode::Interpreter) => loop {
-                let (result, _, _) = self.interpreter.run_instruction(emu);
+                let (result, _, _) = self.interpreter.run_instruction(emu).await;
                 match result {
                     InterpreterResult::None => {}
                     _ => return,
                 }
             },
             Some(RunnerMode::Dynarec) => {
-                run_step(emu, &mut self.dynarec);
+                run_step(emu, &mut self.dynarec).await;
             }
             None => loop {
                 if let Ok(Some(CompileActorResponse::Compiled(Ok((pc, block))))) =
@@ -175,7 +175,7 @@ impl<A: Allocator + Copy + Clone> Runner<A> {
                 {
                     tracing::info!("got compiled block: {}", hex(pc));
                     self.mode = RunnerMode::Dynarec;
-                    run_block(block, emu, false);
+                    run_block(block, emu, false).await;
                     emu.dynarec_cache.insert(pc, block);
                     continue;
                 }
@@ -186,12 +186,12 @@ impl<A: Allocator + Copy + Clone> Runner<A> {
                             self.mode = RunnerMode::Interpreter;
                             continue;
                         };
-                        run_block(block, emu, false);
+                        run_block(block, emu, false).await;
                         emu.dynarec_cache.insert(pc, block);
                         return;
                     }
                     RunnerMode::Interpreter => {
-                        let (result, pc, op) = self.interpreter.run_instruction(emu);
+                        let (result, pc, op) = self.interpreter.run_instruction(emu).await;
 
                         if self
                             .actor_handle
@@ -204,13 +204,13 @@ impl<A: Allocator + Copy + Clone> Runner<A> {
                             {
                                 tracing::info!("SYNC got compiled block: {}", hex(block));
                                 self.mode = RunnerMode::Dynarec;
-                                run_block(block, emu, false);
+                                run_block(block, emu, false).await;
                                 emu.dynarec_cache.insert(pc, block);
                                 continue;
                             }
                         } else if let Some(block) = emu.dynarec_cache.get(pc) {
                             self.mode = RunnerMode::Dynarec;
-                            run_block(block, emu, false);
+                            run_block(block, emu, false).await;
                             emu.dynarec_cache.insert(pc, block);
                             continue;
                         }
@@ -383,7 +383,7 @@ impl<A: Allocator + Copy + Clone> Runner<A> {
         }
     }
 
-    pub fn run_until_vblank_with(
+    pub async fn run_until_vblank_with(
         &mut self,
         emu: &mut Emu<A>,
         mut hook: impl FnMut(&Emu<A>) -> bool,
@@ -395,7 +395,7 @@ impl<A: Allocator + Copy + Clone> Runner<A> {
         let _span = tracing::info_span!("", frame = self.frame_idx).entered();
         let start = Instant::now();
         while !emu.consume_vblank_signal() {
-            self.execute(emu);
+            self.execute(emu).await;
             if hook(emu) {
                 break;
             }
@@ -425,8 +425,8 @@ impl<A: Allocator + Copy + Clone> Runner<A> {
         Some(start.elapsed())
     }
 
-    pub fn run_until_vblank(&mut self, emu: &mut Emu<A>) -> Option<Duration> {
-        self.run_until_vblank_with(emu, |_| false)
+    pub async fn run_until_vblank(&mut self, emu: &mut Emu<A>) -> Option<Duration> {
+        self.run_until_vblank_with(emu, |_| false).await
     }
 
     pub fn frame_time_limit(&self) -> Duration {

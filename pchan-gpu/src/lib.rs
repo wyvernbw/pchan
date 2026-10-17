@@ -794,6 +794,7 @@ impl<A: Allocator + Copy> Pass<A> {
                     });
                 }
                 DrawCallKind::BlitVram2Cpu(_blit) => todo!(),
+                DrawCallKind::Nop => {}
             },
             None => match draw_call.inner {
                 DrawCallKind::Rect(_) | DrawCallKind::Polygon(_) | DrawCallKind::Line(_) => {
@@ -814,6 +815,7 @@ impl<A: Allocator + Copy> Pass<A> {
                     });
                 }
                 DrawCallKind::BlitVram2Cpu(_blit) => todo!(),
+                DrawCallKind::Nop => {}
             },
         };
     }

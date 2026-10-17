@@ -33,7 +33,10 @@ pub struct DrawCall {
 }
 
 #[derive(Debug, Clone, Endecode)]
+#[endecode(alloc(default))]
 pub enum DrawCallKind {
+    #[endecode(alloc(default))]
+    Nop,
     Rect(DrawRect),
     Polygon(DrawPolygon),
     Line(DrawLine),

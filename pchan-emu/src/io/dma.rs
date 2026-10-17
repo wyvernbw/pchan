@@ -4,7 +4,7 @@ use core::{cmp, mem, slice};
 
 use crate::gpu::draw_call::DrawCallKind;
 use crate::gpu::{Gp0, GpuCmd};
-use crate::io::evque::{EvCtx, EventId, EventKind};
+use crate::io::evque::{EvCtx, EventId, EventKind, Task};
 use crate::io::irq::Irq;
 use crate::io::{CastIOFrom, CastIOInto, IOResult, UnhandledIO};
 use crate::memory::mb;
@@ -27,6 +27,7 @@ pub struct DmaState<A: Allocator> {
     dma6: DmaChannel,
 
     // events: Slab<DmaEvent>,
+    pending_transfer: Option<DmaEvent>,
     ongoing_transfer: Option<DmaEvent>,
 
     #[debug(skip)]
@@ -52,6 +53,7 @@ impl<A: Allocator + Copy> DmaState<A> {
             // queue: DmaQueue::default(),
             // events:           Slab::with_capacity(1024),
             debug_cdrom_data: Vec::new_in(alloc),
+            pending_transfer: None,
             ongoing_transfer: None,
             staging_buf: Vec::with_capacity_in(mb(1) / 4, alloc),
             alloc,
@@ -179,7 +181,7 @@ impl<A: Allocator + Copy> Emu<A> {
                 tracing::trace!("write at dma6chcr (otc chcr): {:#?}", chcr);
 
                 if chcr.raw_value() == 0x11000002 {
-                    self.dma_start_transfer(
+                    self.spawn_task_dma_start_transfer(
                         self.create_dma_event(self.dma.dma6, DmaTransportKind::Otc),
                     );
                     tracing::trace!("dma6 scheduled");
@@ -216,47 +218,64 @@ impl<A: Allocator + Copy> Emu<A> {
         }
     }
 
-    fn dma_start_transfer(&mut self, event: DmaEvent) {
-        match self.dma.ongoing_transfer {
-            Some(old) => {
-                tracing::debug!("dma stall: already transfering");
-                let _clock = old.cycles(self);
-                self.handle_dma_event(old);
-                // self.cpu.d_clock = clock as u32;
-                // self.run_io();
-                self.dma.ongoing_transfer = None;
-
-                become self.dma_start_transfer(event);
-            }
-            None => {
-                tracing::trace!("dma: schedule dma event: {:#?}", event);
-                self.dma.ongoing_transfer = Some(event);
-                self.evque
-                    .schedule(EventKind::DmaTransfer, EventId::default(), event.in_cycles);
-            }
-        };
+    fn spawn_task_dma_start_transfer(&mut self, event: DmaEvent) {
+        self.dma.pending_transfer = Some(event);
+        self.evque.spawn(Task::DmaStartTransfer);
     }
 
-    pub(crate) fn handle_ev_dma_transfer(&mut self, _: EvCtx) {
-        if let Some(transfer) = self.dma.ongoing_transfer.take() {
-            self.handle_dma_event(transfer);
+    pub(crate) async fn task_dma_start_transfer(&mut self) {
+        if let Some(transfer) = self.dma.pending_transfer.take() {
+            self.dma_start_transfer(transfer).await;
         }
     }
 
-    fn handle_dma_event(&mut self, event: DmaEvent) {
+    async fn dma_start_transfer(&mut self, event: DmaEvent) {
+        loop {
+            match self.dma.ongoing_transfer {
+                Some(old) => {
+                    tracing::debug!("dma stall: already transfering");
+                    let _clock = old.cycles(self);
+                    self.handle_dma_event(old).await;
+                    // self.cpu.d_clock = clock as u32;
+                    // self.run_io();
+                    self.dma.ongoing_transfer = None;
+                }
+                None => {
+                    self.dma_schedule_transfer(event);
+                    break;
+                }
+            };
+        }
+    }
+
+    fn dma_schedule_transfer(&mut self, event: DmaEvent) {
+        debug_assert!(self.dma.ongoing_transfer.is_none());
+        tracing::trace!("dma: schedule dma event: {:#?}", event);
+        self.dma.ongoing_transfer = Some(event);
+        self.evque
+            .schedule(EventKind::DmaTransfer, EventId::default(), event.in_cycles);
+    }
+
+    pub(crate) async fn handle_ev_dma_transfer(&mut self, _: EvCtx) {
+        if let Some(transfer) = self.dma.ongoing_transfer.take() {
+            self.handle_dma_event(transfer).await;
+        }
+    }
+
+    async fn handle_dma_event(&mut self, event: DmaEvent) {
         tracing::debug!("dma proc");
         match event.dma_t {
             DmaTransportKind::Otc => {
                 self.dma6_write_data(event);
             }
             DmaTransportKind::Gpu => {
-                self.dma2_write_data(event);
+                self.dma2_write_data(event).await;
             }
             DmaTransportKind::Cdrom => {
-                self.dma3_write_data(event);
+                self.dma3_write_data(event).await;
             }
             DmaTransportKind::Spu => {
-                self.dma4_write_data(event);
+                self.dma4_write_data(event).await;
             }
         }
     }
@@ -313,7 +332,7 @@ impl<A: Allocator + Copy> Emu<A> {
         }
     }
 
-    fn dma_write_data<T: Transfer>(&mut self, event: DmaEvent, transfer: &mut T) {
+    async fn dma_write_data<T: Transfer>(&mut self, event: DmaEvent, transfer: &mut T) {
         self.stats.dma_transfers_per_frame += 1;
 
         let init_chan = event.init_chan;
@@ -343,10 +362,10 @@ impl<A: Allocator + Copy> Emu<A> {
 
                     match direction {
                         TransferDir::DeviceToRam => {
-                            transfer.read(self, range);
+                            transfer.read(self, range).await;
                         }
                         TransferDir::RamToDevice => {
-                            transfer.write(self, range);
+                            transfer.write(self, range).await;
                         }
                     }
                     init_chan.advance_by(&mut addr, block_size);
@@ -393,8 +412,7 @@ impl<A: Allocator + Copy> Emu<A> {
                     if upcoming < clock {
                         current_event = Some(next_event);
                     } else {
-                        self.dma_start_transfer(next_event);
-
+                        self.dma_schedule_transfer(next_event);
                         break;
                     }
                 }
@@ -408,10 +426,10 @@ impl<A: Allocator + Copy> Emu<A> {
                 let range = init_chan.create_range(addr, word_count);
                 match direction {
                     TransferDir::DeviceToRam => {
-                        transfer.read(self, range);
+                        transfer.read(self, range).await;
                     }
                     TransferDir::RamToDevice => {
-                        transfer.write(self, range);
+                        transfer.write(self, range).await;
                     }
                 }
                 T::channel(self).set_complete();
@@ -431,7 +449,7 @@ impl<A: Allocator + Copy> Emu<A> {
                     tracing::trace!(header.next = %hex(header.next()), header.len = header.len());
                     let len = header.len();
                     let range = init_chan.create_range(addr + 4, u32::from(len));
-                    transfer.write(self, range);
+                    transfer.write(self, range).await;
                     visited.insert(addr).expect(
                         "bug: dma linked list traversal visited set capacity is too small.",
                     );
@@ -453,16 +471,16 @@ impl<A: Allocator + Copy> Emu<A> {
         }
     }
 
-    fn dma2_write_data(&mut self, event: DmaEvent) {
-        self.dma_write_data(event, &mut Dma2Gpu);
+    async fn dma2_write_data(&mut self, event: DmaEvent) {
+        self.dma_write_data(event, &mut Dma2Gpu).await;
     }
 
-    fn dma3_write_data(&mut self, event: DmaEvent) {
-        self.dma_write_data(event, &mut Dma3Cdrom);
+    async fn dma3_write_data(&mut self, event: DmaEvent) {
+        self.dma_write_data(event, &mut Dma3Cdrom).await;
     }
 
-    fn dma4_write_data(&mut self, event: DmaEvent) {
-        self.dma_write_data(event, &mut Dma4Spu);
+    async fn dma4_write_data(&mut self, event: DmaEvent) {
+        self.dma_write_data(event, &mut Dma4Spu).await;
     }
 
     fn dma6_write_data(&mut self, event: DmaEvent) {
@@ -500,9 +518,9 @@ trait Transfer {
     const TRANSPORT_KIND: DmaTransportKind;
 
     /// ram to device
-    fn write<A: Allocator + Copy>(&mut self, emu: &mut Emu<A>, slice: Range<u32>);
+    async fn write<A: Allocator + Copy>(&mut self, emu: &mut Emu<A>, slice: Range<u32>);
     /// device to ram
-    fn read<A: Allocator + Copy>(&mut self, emu: &mut Emu<A>, slice: Range<u32>);
+    async fn read<A: Allocator + Copy>(&mut self, emu: &mut Emu<A>, slice: Range<u32>);
     fn channel<A: Allocator>(emu: &mut Emu<A>) -> &mut DmaChannel;
 
     fn write_madr<T: Copy, A: Allocator>(emu: &mut Emu<A>, value: T) -> IOResult<()> {
@@ -523,7 +541,7 @@ trait Transfer {
             TransferState::StoppedCompleted => {}
             TransferState::StartBusy => {
                 let dma = *dma;
-                emu.dma_start_transfer(emu.create_dma_event(dma, Self::TRANSPORT_KIND));
+                emu.spawn_task_dma_start_transfer(emu.create_dma_event(dma, Self::TRANSPORT_KIND));
             }
         }
         Ok(())
@@ -535,7 +553,7 @@ struct Dma2Gpu;
 impl Transfer for Dma2Gpu {
     const TRANSPORT_KIND: DmaTransportKind = DmaTransportKind::Gpu;
 
-    fn write<A: Allocator + Copy>(&mut self, emu: &mut Emu<A>, range: Range<u32>) {
+    async fn write<A: Allocator + Copy>(&mut self, emu: &mut Emu<A>, range: Range<u32>) {
         let mut staging_buf = mem::replace(&mut emu.dma.staging_buf, Vec::new_in(emu.alloc));
         let slice = emu
             .fastmem_slice::<u32>(range.clone())
@@ -572,7 +590,7 @@ impl Transfer for Dma2Gpu {
                     let cmd = *cmd;
                     let data = mem::take(data);
                     emu.gpu.gpustat.set_ready_recv_cmd(true);
-                    emu.gpu_issue_draw_call(DrawCallKind::BlitCpu2Vram(cmd, data));
+                    emu.gpu_spawn_issue_draw_call(DrawCallKind::BlitCpu2Vram(cmd, data));
                     emu.gpu.gp0 = Gp0::WaitingForCmd;
                 }
                 _ => {
@@ -587,7 +605,7 @@ impl Transfer for Dma2Gpu {
         emu.dma.staging_buf = staging_buf;
     }
 
-    fn read<A: Allocator + Copy>(&mut self, emu: &mut Emu<A>, range: Range<u32>) {
+    async fn read<A: Allocator + Copy>(&mut self, emu: &mut Emu<A>, range: Range<u32>) {
         let mut fifo = mem::replace(&mut emu.gpu.gp0read_fifo, VecDeque::new_in(emu.alloc));
         let dest = emu
             .fastmem_slice_mut::<u16>(range)
@@ -621,11 +639,11 @@ struct Dma3Cdrom;
 impl Transfer for Dma3Cdrom {
     const TRANSPORT_KIND: DmaTransportKind = DmaTransportKind::Cdrom;
 
-    fn write<A: Allocator>(&mut self, _emu: &mut Emu<A>, _address: Range<u32>) {
+    async fn write<A: Allocator>(&mut self, _emu: &mut Emu<A>, _address: Range<u32>) {
         todo!()
     }
 
-    fn read<A: Allocator + Copy>(&mut self, emu: &mut Emu<A>, range: Range<u32>) {
+    async fn read<A: Allocator + Copy>(&mut self, emu: &mut Emu<A>, range: Range<u32>) {
         let mut fifo = mem::replace(&mut emu.cdrom.data_fifo, VecDeque::new_in(emu.alloc));
         let dest = emu
             .fastmem_slice_mut::<u8>(range)
@@ -662,7 +680,7 @@ struct Dma4Spu;
 impl Transfer for Dma4Spu {
     const TRANSPORT_KIND: DmaTransportKind = DmaTransportKind::Spu;
 
-    fn write<A: Allocator + Copy>(&mut self, emu: &mut Emu<A>, range: Range<u32>) {
+    async fn write<A: Allocator + Copy>(&mut self, emu: &mut Emu<A>, range: Range<u32>) {
         let current = emu.spu.ram_current;
         let mut mem = mem::replace(&mut emu.spu.mem, Box::new_in([], emu.alloc));
         let values = emu
@@ -675,7 +693,7 @@ impl Transfer for Dma4Spu {
         emu.spu.mem = mem;
     }
 
-    fn read<A: Allocator + Copy>(&mut self, emu: &mut Emu<A>, range: Range<u32>) {
+    async fn read<A: Allocator + Copy>(&mut self, emu: &mut Emu<A>, range: Range<u32>) {
         let current = emu.spu.ram_current;
         let spu_mem = mem::replace(&mut emu.spu.mem, Box::new_in([], emu.alloc));
         let ram = emu

@@ -31,7 +31,7 @@ macro_rules! trace_todo {
 
 impl<A: Allocator + Copy> Emu<A> {
     #[pchan_macros::instrument(level = "trace", "io", skip_all, fields(pc = %hex(self.cpu.pc)))]
-    pub fn run_io(&mut self) {
+    pub async fn run_io(&mut self) {
         #[cfg(feature = "amidog-tests")]
         {
             use crate::bootloader::AMIDOG_TESTS;
@@ -41,7 +41,7 @@ impl<A: Allocator + Copy> Emu<A> {
         let d_clock = u64::from(self.cpu.d_clock);
         self.cpu.vblank_timer = self.cpu.vblank_timer.wrapping_add(d_clock as u32);
         self.cpu.cycles = self.cpu.cycles.wrapping_add(d_clock);
-        self.evque_advance(d_clock);
+        self.evque_advance(d_clock).await;
 
         self.run_gpu();
         self.run_video_io(d_clock);

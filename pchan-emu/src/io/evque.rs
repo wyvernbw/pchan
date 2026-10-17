@@ -1,5 +1,5 @@
 use core::alloc::Allocator;
-use core::cmp;
+use core::{cmp, mem};
 
 use heapless::BinaryHeap;
 use heapless::binary_heap::Min;
@@ -27,12 +27,29 @@ pub enum EventKind {
     CdromIrq,
 }
 
+#[derive(Debug, Clone, Copy, Endecode, Default)]
+#[endecode(alloc(default))]
+pub enum Task {
+    #[default]
+    #[endecode(alloc(default))]
+    Nop,
+
+    GpuFlushDrawCalls,
+    GpuStartBlitCpuToVram,
+    GpuStartBlitVramToCpu,
+    GpuIssueDrawCall,
+
+    DmaStartTransfer,
+}
+
 /// `pchan` event queue
 #[derive(derive_more::Debug, Clone, Endecode)]
 pub struct Evque<A: Allocator> {
     clock: u64,
     #[debug(skip)]
     queue: Box<BinaryHeap<PchanEvent, Min, 512>, A>,
+    #[debug(skip)]
+    tasks: Vec<Task, A>,
 }
 
 new_key_type! {
@@ -40,6 +57,24 @@ new_key_type! {
 }
 
 impl<A: Allocator> Endecode<A> for EventId {
+    fn endecode(
+        &mut self,
+        sink: &mut impl pchan_encode::Stream,
+        alloc: A,
+    ) -> Result<(), pchan_encode::EndecodeError> {
+        self.0.endecode(sink, alloc)
+    }
+
+    fn size() -> Result<Option<usize>, pchan_encode::EndecodeError> {
+        <KeyData as Endecode<A>>::size()
+    }
+}
+
+new_key_type! {
+    pub struct TaskId;
+}
+
+impl<A: Allocator> Endecode<A> for TaskId {
     fn endecode(
         &mut self,
         sink: &mut impl pchan_encode::Stream,
@@ -74,11 +109,12 @@ pub struct PchanEvent {
     id:       EventId,
 }
 
-impl<A: Allocator> Allocate<A> for Evque<A> {
+impl<A: Allocator + Copy> Allocate<A> for Evque<A> {
     fn new_in(alloc: A) -> Self {
         Evque {
             clock: 0,
             queue: Box::new_in(BinaryHeap::new(), alloc),
+            tasks: Vec::with_capacity_in(512, alloc),
         }
     }
 }
@@ -104,7 +140,7 @@ impl PartialEq for PchanEvent {
 impl Eq for PchanEvent {}
 
 impl<A: Allocator + Copy> Emu<A> {
-    pub fn evque_advance(&mut self, d_clock: u64) {
+    pub async fn evque_advance(&mut self, d_clock: u64) {
         self.evque.clock = self.evque.clock.wrapping_add(d_clock);
         let clock = self.cpu.cycles;
         while let Some(ev) = self.evque.pop_next() {
@@ -131,7 +167,7 @@ impl<A: Allocator + Copy> Emu<A> {
                     self.handle_ev_spu_clock(ctx);
                 }
                 EventKind::DmaTransfer => {
-                    self.handle_ev_dma_transfer(ctx);
+                    self.handle_ev_dma_transfer(ctx).await;
                 }
                 EventKind::CdromResponse => {
                     self.handle_ev_cdrom_response(ctx);
@@ -140,6 +176,33 @@ impl<A: Allocator + Copy> Emu<A> {
                     self.handle_ev_cdrom_irq(ctx);
                 }
             };
+        }
+        let tasks = mem::replace(&mut self.evque.tasks, Vec::new_in(self.alloc));
+        for task in &tasks {
+            self.run_task(*task).await;
+        }
+        self.evque.tasks = tasks;
+        self.evque.tasks.clear();
+    }
+
+    async fn run_task(&mut self, task: Task) {
+        match task {
+            Task::Nop => {}
+            Task::GpuFlushDrawCalls => {
+                self.gpu.task_gpu_flush_draw_calls().await;
+            }
+            Task::GpuStartBlitCpuToVram => {
+                self.task_gpu_start_blit_cpu_to_vram().await;
+            }
+            Task::GpuStartBlitVramToCpu => {
+                self.task_gpu_start_blit_vram_to_cpu().await;
+            }
+            Task::GpuIssueDrawCall => {
+                self.task_gpu_issue_draw_call().await;
+            }
+            Task::DmaStartTransfer => {
+                self.task_dma_start_transfer().await;
+            }
         }
     }
 }
@@ -163,5 +226,11 @@ impl<A: Allocator> Evque<A> {
 
     pub fn schedule(&mut self, kind: EventKind, id: EventId, in_cycles: u64) {
         self.schedule_from(kind, id, self.clock, in_cycles);
+    }
+
+    pub fn spawn(&mut self, task: Task) {
+        self.tasks
+            .push_within_capacity(task)
+            .expect("task buf reallocation");
     }
 }

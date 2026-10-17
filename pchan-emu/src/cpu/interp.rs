@@ -79,13 +79,13 @@ impl Interpreter {
         debug_assert_eq!(self.delay_queue[1], DelaySlot::Nop);
     }
 
-    pub fn run_instruction<A: Allocator + Copy>(
+    pub async fn run_instruction<A: Allocator + Copy>(
         &mut self,
         emu: &mut Emu<A>,
     ) -> (InterpreterResult, u32, DecodedOp) {
         if !emu.cpu.pc.is_multiple_of(0x4) {
             emu.raise_exception(Exception::AdEl);
-            emu.run_io();
+            emu.run_io().await;
             return (
                 InterpreterResult::Exception,
                 emu.cpu.pc,
@@ -112,7 +112,7 @@ impl Interpreter {
         let delay_slot = emu.run_op(self, op.0, op.1);
         let d_clock = u64::from(op.1.cycles());
         emu.cpu.d_clock += d_clock as u32;
-        emu.run_io();
+        emu.run_io().await;
         emu.cpu.d_clock = 0;
         emu.cpu.drain_jump_queue();
         if in_delay_slot {
@@ -746,7 +746,9 @@ mod interp_tests {
 
         emu.write_many(0x0, &program([instr(rs.0, rt.0), OpCode::HALT]));
         let mut interp = Interpreter::default();
-        while let (InterpreterResult::None, _, _) = interp.run_instruction(&mut emu) {}
+        while let (InterpreterResult::None, _, _) = smol::block_on(interp.run_instruction(&mut emu))
+        {
+        }
 
         assert_eq_hex!(emu.cpu.hilo, expected);
         Ok(())

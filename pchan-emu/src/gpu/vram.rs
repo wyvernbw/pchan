@@ -6,11 +6,8 @@ use core::mem::transmute;
 use derive_more as d;
 use glam::prelude::U16Vec2;
 use pchan_encode::derive::Endecode;
-use pchan_utils::hex;
 
-use crate::gpu::{
-    DrawPixels, GpuCmd, GpuInfoCmd, GpuModel, GpuStatReg, GpuState, Vram, mask_bit, set_mask_bit,
-};
+use crate::gpu::{DrawPixels, GpuState, Vram, mask_bit, set_mask_bit};
 use crate::memory::kb;
 
 #[derive(Copy, PartialEq, PartialOrd, Ord, Eq, d::Mul, d::MulAssign, Endecode)]
@@ -87,10 +84,12 @@ impl VramCoord {
         self
     }
 
+    #[must_use]
     pub fn area(&self) -> usize {
         self.x as usize * self.y as usize
     }
 
+    #[must_use]
     pub fn as_u16vec2(&self) -> U16Vec2 {
         U16Vec2::new(self.x, self.y)
     }
@@ -169,6 +168,11 @@ impl VramCursor {
             .saturating_sub(self.start.as_u16vec2());
         usize::from(rect.x * rect.y)
     }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 impl<A: Allocator + Copy> GpuState<A> {
@@ -222,9 +226,9 @@ impl<A: Allocator + Copy> GpuState<A> {
         self.vram_write(coord, value);
     }
 
-    pub fn lock_vram(&mut self) -> &[u16] {
-        self.flush_draw_calls();
-        self.wait_for_render_result();
+    pub async fn lock_vram(&mut self) -> &[u16] {
+        self.task_gpu_flush_draw_calls().await;
+        self.wait_for_render_result().await;
         self.vram.as_slice()
     }
 }
