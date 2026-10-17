@@ -535,7 +535,6 @@ impl Renderer {
                 }
                 DrawCallMsg::Flush(flush) => {
                     self.update_hw_display_uniforms(&flush.display, flush.gpustat);
-                    self.upload_vram(&flush.vram.vram);
                     self.conn
                         .vram_out_chan
                         .0
