@@ -75,6 +75,8 @@ pub(crate) enum CommandStateV2 {
     ReadNInt3,
     ReadNInt1,
 
+    DemuteInt3,
+
     InitInt3,
     InitInt2,
 }
@@ -104,6 +106,11 @@ impl<A: Allocator> Emu<A> {
             // `ReadN` - Command 06h --> INT3(stat) --> INT1(stat) --> datablock
             0x06 => {
                 self.cdrom_continue_cmd(CommandStateV2::ReadNInt3);
+                self.cdrom_queue_response(NOP_TIMING);
+            }
+            // Demute - Command 0Ch --> INT3(stat)
+            0x0c => {
+                self.cdrom_continue_cmd(CommandStateV2::DemuteInt3);
                 self.cdrom_queue_response(NOP_TIMING);
             }
             // Setmode - Command 0Eh,mode --> INT3(stat)
@@ -280,6 +287,11 @@ impl<A: Allocator> Emu<A> {
             CommandStateV2::PauseInt2 => {
                 self.cdrom.drive.pause();
                 self.cdrom_send_response_v2(int2(status));
+                self.cdrom_end_cmd();
+            }
+
+            CommandStateV2::DemuteInt3 => {
+                self.cdrom_send_response_v2(int3(status));
                 self.cdrom_end_cmd();
             }
 
