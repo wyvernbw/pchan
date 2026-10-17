@@ -84,14 +84,12 @@ impl<A: Allocator + Copy> EmitCtx<'_, A> {
     }
 
     fn alloc_scratch_pair(&mut self) -> (u32, u32) {
-        const MAX_CURSOR: u8 = Cpu::SCRATCH_SIZE as u8 - 2;
-        if *self.scratch_cursor == MAX_CURSOR {
-            *self.scratch_cursor = 0;
+        let mut a = *self.scratch_cursor as usize;
+        if a + 2 > Cpu::SCRATCH_SIZE {
+            a = 0;
         }
-        let a = *self.scratch_cursor as usize;
         let b = a + 1;
-        *self.scratch_cursor =
-            ((*self.scratch_cursor + 2) as usize % (Cpu::SCRATCH_SIZE - 1)) as u8;
+        *self.scratch_cursor = ((a + 2) % (Cpu::SCRATCH_SIZE)) as u8;
         (
             (Cpu::SCRATCH_OFFSET + a * size_of::<u32>()) as u32,
             (Cpu::SCRATCH_OFFSET + b * size_of::<u32>()) as u32,
