@@ -49,8 +49,7 @@ impl<A: Allocator + Copy> Emu<A> {
 
         let mut d_clock = d_clock;
         while d_clock > 0 {
-            self.timers_advance_by_cpu(d_clock.min(u64::from(u16::MAX)) as u16);
-            self.run_timer_pipeline();
+            self.run_timers(d_clock.min(u64::from(u16::MAX)) as u16);
             d_clock = d_clock.saturating_sub(u64::from(u16::MAX));
         }
 
@@ -344,7 +343,7 @@ impl<A: Allocator + Copy> Emu<A> {
             .or_else(|_| self.sio_read_pure::<T>(address))
             // TODO: spu_read_pure
             .or_else(|_| self.dma_read(address))
-            .or_else(|_| self.timers_read(address))
+            // TODO: timers read_pure
             .or_else(|_| self.cache_ctrl_read::<T>(address))
             .or_else(|_| self.generic_read::<T>(address))
     }

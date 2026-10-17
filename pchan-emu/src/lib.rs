@@ -33,6 +33,7 @@
 #![feature(default_field_values)]
 #![feature(iter_array_chunks)]
 #![feature(vec_push_within_capacity)]
+#![feature(specialization)]
 // allow unused variables in tests to supress the setup tracing warnings
 #![cfg_attr(test, allow(unused_variables))]
 use core::alloc::Allocator;
@@ -134,6 +135,7 @@ impl<A: Allocator + Copy> Emu<A> {
             stats: Stats::default(),
             alloc,
         };
+        emu.timers_init();
         emu.handle_ev_spu_clock(io::evque::EvCtx::default());
         emu
     }

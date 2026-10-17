@@ -1479,8 +1479,7 @@ impl<A: Allocator + Copy> Emu<A> {
         let cycles_per_scanline = self.gpu.video_cycles_per_scanline();
         self.gpu.dp.video_cycle_in_scanline += advance_by;
         if self.gpu.dp.video_cycle_in_scanline < cycles_per_scanline {
-            // DONE: Timer 1 update
-            self.timers.trigger_hblank();
+            self.timers.trigger_hblank_end();
             return;
         }
         let scanlines_to_run = self.gpu.dp.video_cycle_in_scanline / cycles_per_scanline;
@@ -1490,12 +1489,12 @@ impl<A: Allocator + Copy> Emu<A> {
             let dp = &self.gpu.dp;
             let new_vblank = !dp.in_vblank() && dp.in_vblank_with(dp.current_scanline + 1);
 
-            // DONE: timer 1 update
-            self.timers.trigger_hblank();
-
             if new_vblank {
                 self.run_vblank();
             }
+
+            self.timers.trigger_hblank_start();
+            self.timers.trigger_hblank_end();
 
             self.gpu.dp.current_scanline += 1;
 
@@ -1504,6 +1503,10 @@ impl<A: Allocator + Copy> Emu<A> {
                 dp.current_scanline = 0;
                 self.gpu.flip_even_odd(None);
             }
+        }
+
+        if self.gpu.dp.in_hblank() {
+            self.timers.trigger_hblank_start();
         }
     }
 }
@@ -1537,15 +1540,15 @@ impl Display {
         self.range_end.y
     }
 
-    fn in_hblank(&self) -> bool {
+    pub(crate) fn in_hblank(&self) -> bool {
         !(self.h_start()..self.h_end()).contains(&self.video_cycle_in_scanline)
     }
 
-    fn in_vblank(&self) -> bool {
+    pub(crate) fn in_vblank(&self) -> bool {
         !(self.v_start()..self.v_end()).contains(&self.current_scanline)
     }
 
-    fn in_vblank_with(&self, line: u64) -> bool {
+    pub(crate) fn in_vblank_with(&self, line: u64) -> bool {
         !(self.v_start()..self.v_end()).contains(&line)
     }
 }
