@@ -4,7 +4,7 @@ use core::{cmp, mem, slice};
 
 use crate::gpu::draw_call::DrawCallKind;
 use crate::gpu::{Gp0, GpuCmd};
-use crate::io::evque::EventId;
+use crate::io::evque::{EvCtx, EventId, EventKind};
 use crate::io::irq::Irq;
 use crate::io::{CastIOFrom, CastIOInto, IOResult, UnhandledIO};
 use crate::memory::mb;
@@ -231,17 +231,16 @@ impl<A: Allocator + Copy> Emu<A> {
             None => {
                 tracing::trace!("dma: schedule dma event: {:#?}", event);
                 self.dma.ongoing_transfer = Some(event);
-                self.evque.schedule(
-                    |emu, _| {
-                        if let Some(transfer) = emu.dma.ongoing_transfer.take() {
-                            emu.handle_dma_event(transfer);
-                        }
-                    },
-                    EventId::default(),
-                    event.in_cycles,
-                );
+                self.evque
+                    .schedule(EventKind::DmaTransfer, EventId::default(), event.in_cycles);
             }
         };
+    }
+
+    pub(crate) fn handle_ev_dma_transfer(&mut self, _: EvCtx) {
+        if let Some(transfer) = self.dma.ongoing_transfer.take() {
+            self.handle_dma_event(transfer);
+        }
     }
 
     fn handle_dma_event(&mut self, event: DmaEvent) {

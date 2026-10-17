@@ -1,3 +1,4 @@
+#![feature(slice_iter_mut_as_mut_slice)]
 #![feature(allocator_ext)]
 #![no_std]
 
@@ -458,6 +459,27 @@ impl<A: Allocator + Clone, T: Endecode<A>, const N: usize> Endecode<A> for [T; N
             Some(size) => Ok(Some(size * N)),
             None => Ok(None),
         }
+    }
+}
+
+impl<T: Endecode<A>, A: Allocator + Clone> Endecode<A> for &mut [T] {
+    fn endecode(&mut self, sink: &mut impl Stream, alloc: A) -> Result<(), EndecodeError> {
+        let mut len = self.len() as u64;
+        sink.u64(&mut len)?;
+
+        if len > self.len() as u64 {
+            return Err(EndecodeError::Overflow(type_name::<&mut [T]>()));
+        }
+
+        for el in self.iter_mut() {
+            el.endecode(sink, alloc.clone())?;
+        }
+
+        Ok(())
+    }
+
+    fn size() -> Result<Option<usize>, EndecodeError> {
+        Ok(None)
     }
 }
 

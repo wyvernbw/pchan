@@ -23,6 +23,8 @@ use arbitrary_int::prelude::*;
 use bitbybit::{bitenum, bitfield};
 use pchan_utils::hex;
 
+use super::evque::EventKind;
+
 #[derive(derive_more::Debug, Clone, Endecode)]
 #[endecode(alloc(default))]
 pub struct CDRomState<A: Allocator> {
@@ -169,10 +171,10 @@ impl<A: Allocator> Emu<A> {
 
     fn cdrom_schedule_irq(&mut self) {
         self.evque
-            .schedule(Self::irq_trigger_cdrom, EventId::default(), 1000);
+            .schedule(EventKind::CdromIrq, EventId::default(), 1000);
     }
 
-    fn irq_trigger_cdrom(&mut self, _: EvCtx) {
+    pub(crate) fn handle_ev_cdrom_irq(&mut self, _: EvCtx) {
         self.irq_trigger(irq::Irq::Irq2CDRom);
     }
 

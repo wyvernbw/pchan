@@ -5,7 +5,7 @@ use crate::Emu;
 use crate::cpu::Cpu;
 use crate::io::cdrom::cdrom_format::{Bcd, CdromCursor, Mss};
 use crate::io::cdrom::{CDRomState, DriveStatus};
-use crate::io::evque::EventId;
+use crate::io::evque::{EvCtx, EventId, EventKind};
 use bitbybit::{bitenum, bitfield};
 use pchan_encode::derive::Endecode;
 use pchan_utils::hex;
@@ -181,13 +181,16 @@ impl<A: Allocator> Emu<A> {
     }
     fn cdrom_queue_response(&mut self, in_cycles: u32) {
         self.evque.schedule(
-            |emu, _| {
-                emu.cdrom_proc_cmd_response();
-            },
+            EventKind::CdromResponse,
             EventId::default(),
             u64::from(in_cycles),
         );
     }
+
+    pub(crate) fn handle_ev_cdrom_response(&mut self, _: EvCtx) {
+        self.cdrom_proc_cmd_response();
+    }
+
     #[allow(clippy::match_same_arms)]
     fn cdrom_proc_cmd_response(&mut self) {
         let status = self.cdrom.drive.status_code;

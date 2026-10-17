@@ -10,7 +10,7 @@ use heapless::Deque;
 use pchan_encode::derive::Endecode;
 use pchan_utils::hex;
 
-use crate::io::evque::{EvCtx, EventId, PchanEventFn};
+use crate::io::evque::{EvCtx, EventId, EventKind};
 use crate::io::irq::Irq;
 use crate::io::sio::joypad::Joypad;
 use crate::io::{CastIOFrom, CastIOInto, UnhandledIO};
@@ -46,11 +46,14 @@ pub enum SioEvent {
 }
 
 impl SioEvent {
-    fn to_callback<A: Allocator>(&self) -> PchanEventFn<Emu<A>> {
+    fn to_callback(&self) -> EventKind {
         match self {
-            SioEvent::Sio0ProcTx => Emu::<A>::handle_ev_sio0_tx_proc,
-            SioEvent::Sio0Irq => Emu::<A>::handle_ev_sio0_irq,
-            SioEvent::Sio0Ack => Emu::<A>::handle_ev_sio0_ack,
+            // SioEvent::Sio0ProcTx => Emu::<A>::handle_ev_sio0_tx_proc,
+            // SioEvent::Sio0Irq => Emu::<A>::handle_ev_sio0_irq,
+            // SioEvent::Sio0Ack => Emu::<A>::handle_ev_sio0_ack,
+            SioEvent::Sio0ProcTx => EventKind::Sio0ProcTx,
+            SioEvent::Sio0Irq => EventKind::Sio0Irq,
+            SioEvent::Sio0Ack => EventKind::Sio0Ack,
         }
     }
 }
@@ -126,7 +129,7 @@ impl<A: Allocator> Emu<A> {
                 let value = value as u8;
                 self.sio.sio0_tx_send(value);
                 self.evque
-                    .schedule(Self::handle_ev_sio0_transfer, EventId::default(), 250_000);
+                    .schedule(EventKind::Sio0Transfer, EventId::default(), 250_000);
                 Ok(())
             }
             // 1/4  SIO_DATA Serial Port Data (R/W)
@@ -282,23 +285,23 @@ impl<A: Allocator> Emu<A> {
             .schedule(ev.to_callback(), EventId::default(), in_cycles);
     }
 
-    fn handle_ev_sio0_tx_proc(&mut self, _: EvCtx) {
+    pub(crate) fn handle_ev_sio0_tx_proc(&mut self, _: EvCtx) {
         self.sio0_tx_proc();
     }
 
-    fn handle_ev_sio0_irq(&mut self, ctx: EvCtx) {
+    pub(crate) fn handle_ev_sio0_irq(&mut self, ctx: EvCtx) {
         self.sio.irq_latch = false;
         let cycles = self.sio.sio_cycles();
         self.irq_trigger(Irq::Irq7JoypadAndMemcard);
         self.sio_schedule_event_from(SioEvent::Sio0Ack, ctx.clock, cycles.into());
     }
 
-    fn handle_ev_sio0_ack(&mut self, _: EvCtx) {
+    pub(crate) fn handle_ev_sio0_ack(&mut self, _: EvCtx) {
         self.sio.sio0stat.set_dsr_in_lvl(false);
         tracing::trace!("pulse /ack");
     }
 
-    fn sio0_tx_proc(&mut self) {
+    pub fn sio0_tx_proc(&mut self) {
         let Some(value) = self.sio.sio0_tx_pop() else {
             return;
         };
@@ -355,7 +358,7 @@ impl<A: Allocator> Emu<A> {
         }
     }
 
-    fn handle_ev_sio0_transfer(&mut self, _: EvCtx) {
+    pub(crate) fn handle_ev_sio0_transfer(&mut self, _: EvCtx) {
         if let Some((ev, in_cycles)) = self.sio.sio0_run_transfer() {
             self.sio_schedule_event(ev, in_cycles);
         }

@@ -94,8 +94,7 @@ pub struct Emu<A: Allocator = Global> {
     pub cdrom:         CDRomState<A>,
     pub sio:           SioState,
     pub irq:           IrqState,
-    #[endecode(skip)]
-    pub evque:         Evque<Self, A>,
+    pub evque:         Evque<A>,
     #[endecode(skip)]
     pub tracy:         TracyClient,
     #[endecode(skip)]

@@ -14,7 +14,7 @@ use pchan_encode::derive::Endecode;
 use pchan_utils::hex;
 
 use crate::Emu;
-use crate::io::evque::{EvCtx, EventId};
+use crate::io::evque::{EvCtx, EventId, EventKind};
 use crate::io::{CastIOFrom, CastIOInto, IOResult, UnhandledIO};
 use crate::memory::kb;
 use crate::spu::adpcm::{ADPCMCurrent, ADPCMHeader, ADPCMRepeat, ADPCMSampleRate, ADPCMStart};
@@ -462,7 +462,7 @@ impl<A: Allocator> Emu<A> {
         self.clock();
         let last_clock = self.spu.clock_idx * SpuState::<A>::CLOCK_CYCLES;
         self.evque.schedule_from(
-            Self::handle_ev_spu_clock,
+            EventKind::SpuClock,
             EventId::default(),
             last_clock,
             SpuState::<A>::CLOCK_CYCLES,
