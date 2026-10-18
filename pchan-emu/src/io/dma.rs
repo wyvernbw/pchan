@@ -218,14 +218,14 @@ impl<A: Allocator + Copy> Emu<A> {
         }
     }
 
-    #[tracing::instrument]
+    #[tracing::instrument(skip(self))]
     fn spawn_task_dma_start_transfer(&mut self, event: DmaEvent) {
         self.dma.pending_transfers.push_back(event);
         tracing::debug!("spawning transfer: {event:?}");
         self.evque.spawn(Task::DmaStartTransfer);
     }
 
-    #[tracing::instrument]
+    #[tracing::instrument(skip_all)]
     pub(crate) async fn task_dma_start_transfer(&mut self) {
         if let Some(transfer) = self.dma.pending_transfers.pop_front() {
             tracing::info!("{transfer:#?}");

@@ -23,7 +23,7 @@ use tracing::{Instrument, Level, enabled};
 use crate::Emu;
 use crate::cpu::exceptions::Exception;
 use crate::cpu::ops::OpCode;
-use crate::cpu::reg_str;
+use crate::cpu::{Cpu, reg_str};
 use crate::dynarec_v2::emitters::{DecodedOp, DynarecOp, EmitCtx, EmitSummary};
 use crate::dynarec_v2::regalloc::{
     AllocResult, AllocResultStackless, Guest, Reg, RegAlloc, RegAllocError, RegAllocErrorStackless,
@@ -217,6 +217,7 @@ pub async fn run_block<A: Allocator + Copy>(
         emu.cpu.cop0.set_bd(false);
 
         debug_assert_eq!(emu.cpu.gpr[0], 0);
+        debug_assert_eq!(emu.cpu.gpr_shadow[0], 0);
     }
 }
 
@@ -291,7 +292,12 @@ impl<A: Allocator + Copy> Dynarec<A> {
         }
     }
     fn emit_writeback_free(asm: &mut Assembler<Reloc>, guest_reg: u8, host_reg: Reg) {
+        if guest_reg == 0 {
+            return;
+        }
+
         let offset = Emu::<A>::reg_offset(guest_reg) as u32;
+        let shadow_offset = Cpu::shadow_offset(guest_reg);
 
         if enabled!(Level::TRACE) {
             tracing::trace!("store: guest r{}", guest_reg);
@@ -307,7 +313,8 @@ impl<A: Allocator + Copy> Dynarec<A> {
             dynasm!(
                 asm
                 ; .arch aarch64
-                ; str W(host_reg), [x0, offset]
+                ; str W(host_reg), [x0, #offset]
+                ; str W(host_reg), [x0, #shadow_offset]
             )
         }
     }
@@ -520,11 +527,53 @@ impl<A: Allocator + Copy> Dynarec<A> {
             }
         }
     }
+
+    fn impl_emit_shadow_reg_load<T>(&mut self, guest_reg: u8, host_reg: &LoadedReg<T>) {
+        let offset = (Cpu::SHADOW_OFFSET + usize::from(guest_reg) * size_of::<u32>()) as u32;
+        match guest_reg == 0 {
+            true => {
+                #[cfg(target_arch = "aarch64")]
+                #[allow(clippy::useless_conversion)]
+                {
+                    dynasm!(
+                        self.asm
+                        ; .arch aarch64
+                        ; mov W(**host_reg), 0
+                    );
+                }
+            }
+            false => {
+                #[cfg(target_arch = "aarch64")]
+                #[allow(clippy::useless_conversion)]
+                {
+                    dynasm!(
+                        self.asm
+                        ; .arch aarch64
+                        ; add XSP(**host_reg), x0, #offset
+                        ; ldr W(**host_reg), [x0, offset]
+                    );
+                }
+            }
+        }
+    }
+
     pub fn emit_load_reg_stackless(&mut self, guest_reg: u8) -> LoadedReg<AllocResultStackless> {
         let host_reg = self.alloc_reg_stackless(guest_reg);
         match host_reg.result {
             Err(RegAllocErrorStackless::AlreadyAllocatedTo(_)) => {}
             _ => self.impl_emit_reg_load(guest_reg, &host_reg),
+        }
+        host_reg
+    }
+
+    pub fn emit_load_shadow_reg_stackless(
+        &mut self,
+        guest_reg: u8,
+    ) -> LoadedReg<AllocResultStackless> {
+        let host_reg = self.alloc_reg_stackless(guest_reg);
+        match host_reg.result {
+            Err(RegAllocErrorStackless::AlreadyAllocatedTo(_)) => {}
+            _ => self.impl_emit_shadow_reg_load(guest_reg, &host_reg),
         }
         host_reg
     }
@@ -652,30 +701,30 @@ impl<A: Allocator + Copy> Dynarec<A> {
             ; .arch aarch64
             ; str x0, [sp, #-16]!
         );
-        for reg in critical.iter_ones() {
-            let reg = reg as u8;
-            #[cfg(target_arch = "aarch64")]
-            dynasm!(
-                self.asm
-                ; .arch aarch64
-                ; str X(reg), [sp, #-16]!
-            );
-        }
+        // for reg in critical.iter_ones() {
+        //     let reg = reg as u8;
+        //     #[cfg(target_arch = "aarch64")]
+        //     dynasm!(
+        //         self.asm
+        //         ; .arch aarch64
+        //         ; str X(reg), [sp, #-16]!
+        //     );
+        // }
     }
 
     #[allow(clippy::useless_conversion)]
     fn emit_restore_critical_registers(&mut self) {
         let critical = (!self.reg_alloc.allocatable) & self.reg_alloc.volatile;
 
-        for reg in critical.iter_ones() {
-            let reg = reg as u8;
-            #[cfg(target_arch = "aarch64")]
-            dynasm!(
-                self.asm
-                ; .arch aarch64
-                ; ldr X(reg), [sp], #16
-            );
-        }
+        // for reg in critical.iter_ones() {
+        //     let reg = reg as u8;
+        //     #[cfg(target_arch = "aarch64")]
+        //     dynasm!(
+        //         self.asm
+        //         ; .arch aarch64
+        //         ; ldr X(reg), [sp], #16
+        //     );
+        // }
         #[cfg(target_arch = "aarch64")]
         dynasm!(
             self.asm

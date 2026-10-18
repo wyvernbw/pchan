@@ -97,6 +97,11 @@ impl<A: Allocator + Copy> EmitCtx<'_, A> {
     }
 }
 
+#[must_use]
+fn shadow(guest: u8) -> u32 {
+    (Cpu::SHADOW_OFFSET + usize::from(guest) * size_of::<u32>()) as u32
+}
+
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Boundary {
     #[default]
@@ -634,47 +639,36 @@ fn emit_store<A: Allocator + Copy>(
     imm: i16,
     func_call: impl Fn(&mut EmitCtx<A>) + 'static,
 ) -> EmitSummary {
-    let (s1, _) = ctx.alloc_scratch_pair();
-    let s1 = s1 as i32;
     ctx.dynarec.emit_load_temp_reg(rs, Reg::W(1));
     ctx.dynarec.emit_load_temp_reg(rt, Reg::W(2));
+    let cop0reg12 = Cpu::cop0_reg_offset(12) as u32;
 
     dynasm!(
         ctx.dynarec.asm
         ; .arch aarch64
+
+        // need to track caller saved registers in regalloc
+        // we have to store x0 since the function call will clobber it
+        // call to function
+        ;; ctx.dynarec.emit_writeback_all()
+        ;; ctx.dynarec.reg_alloc.dealloc_all()
+        ;; ctx.dynarec.emit_save_critical_registers()
         ;; ctx.dynarec.emit_add_imm16(EmitAddImm16Args { dest: Reg::W(1), base: Reg::W(1), offset: imm, temp: None })
-        // ; stp w1, w2, [sp, #-16]!
-        ; stp w1, w2, [x0, #s1]
+
+        ;; if ctx.delay_slot {
+            dynasm!(
+                ctx.dynarec.asm
+                ; .arch aarch64
+                ; ldr w3, [x0, #cop0reg12]
+                ; orr w3, w3, #0x80000000
+                ; str w3, [x0, #cop0reg12]
+            )
+        }
+
+        ;; func_call(&mut ctx)
+        ;; ctx.dynarec.emit_restore_critical_registers()
+
     );
-
-    ctx.schedule_in(1, None, move |mut ctx| {
-        dynasm!(
-            ctx.dynarec.asm
-            ; .arch aarch64
-            // need to track caller saved registers in regalloc
-            // we have to store x0 since the function call will clobber it
-            // call to function
-            ;; ctx.dynarec.emit_writeback_all()
-            ;; ctx.dynarec.reg_alloc.dealloc_all()
-            ;; ctx.dynarec.emit_save_critical_registers()
-
-            ;; if ctx.delay_slot {
-                dynasm!(
-                    ctx.dynarec.asm
-                    ; .arch aarch64
-                    ; ldr w1, [x0, #196]
-                    ; orr w1, w1, #0x80000000
-                    ; str w1, [x0, #196]
-                )
-            }
-
-            ; ldp w1, w2, [x0, #s1]
-            ;; func_call(&mut ctx)
-            ;; ctx.dynarec.emit_restore_critical_registers()
-
-        );
-        EmitSummary::default()
-    });
 
     EmitSummary::default()
 }
@@ -1026,56 +1020,61 @@ fn emit_load<const ALIGNED: bool, A: Allocator + Copy>(
     imm: i16,
     func_call: impl Fn(&mut EmitCtx<A>) + 'static,
 ) -> EmitSummary {
-    let s1 = ctx.alloc_scratch();
+    ctx.dynarec.cancel_next_write(rt);
     ctx.dynarec.emit_load_temp_reg(rs, Reg::W(1));
-    dynasm!(
-        ctx.dynarec.asm
-        ; .arch aarch64
-        ;; ctx.dynarec.emit_add_imm16(EmitAddImm16Args { dest: Reg::W(1), base: Reg::W(1), offset: imm, temp: None })
-        ; str w1, [x0, #s1]
-    );
 
-    ctx.schedule_in(1, Some(rt), move |mut ctx| {
-        if ALIGNED {
-            dynasm!(
-                ctx.dynarec.asm
-                ; .arch aarch64
-                // ; ldr w1, [sp], #16
-                ;; ctx.dynarec.emit_writeback_all()
-                ;; ctx.dynarec.reg_alloc.dealloc_all()
-                ;; ctx.dynarec.emit_save_critical_registers()
-                ; ldr w1, [x0, #s1]
-                ;; func_call(&mut ctx)
-                ; mov w1, w0
-                ;; ctx.dynarec.emit_restore_critical_registers()
-                ; str w1, [x0, #s1]
-            );
-        } else {
-            let rt = ctx.dynarec.emit_load_reg_stackless(rt);
+    match ALIGNED {
+        true => {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
                 ;; ctx.dynarec.emit_writeback_all()
                 ;; ctx.dynarec.reg_alloc.dealloc_all()
                 ;; ctx.dynarec.emit_save_critical_registers()
-                ; ldr w1, [x0, #s1]
-                ; mov w2, W(*rt)
+                ;; ctx.dynarec.emit_add_imm16(EmitAddImm16Args { dest: Reg::W(1), base: Reg::W(1), offset: imm, temp: None })
                 ;; func_call(&mut ctx)
                 ; mov w1, w0
                 ;; ctx.dynarec.emit_restore_critical_registers()
-                ; str w1, [x0, #s1]
             );
         }
+        false => {
+            let rta = ctx.dynarec.emit_load_shadow_reg_stackless(rt);
 
+            dynasm!(
+                ctx.dynarec.asm
+                ; .arch aarch64
+                ;; ctx.dynarec.emit_writeback_all()
+                ;; ctx.dynarec.reg_alloc.dealloc_all()
+                ;; ctx.dynarec.emit_save_critical_registers()
+                ;; ctx.dynarec.emit_add_imm16(EmitAddImm16Args { dest: Reg::W(1), base: Reg::W(1), offset: imm, temp: None })
+                ; mov w2, W(*rta)
+                ;; func_call(&mut ctx)
+                ; mov w1, w0
+                ;; ctx.dynarec.emit_restore_critical_registers()
+            );
+        }
+    }
+
+    // writeback to shadow register
+    if rt != 0 {
+        dynasm!(
+            ctx.dynarec.asm
+            ; .arch aarch64
+            ; str w1, [x0, #shadow(rt)]
+        );
+    }
+
+    // writeback to gpr
+    ctx.schedule_in(1, Some(rt), move |ctx| {
         if rt != 0 {
             let rta = ctx.dynarec.alloc_reg_stackless(rt);
             dynasm!(
                 ctx.dynarec.asm
-                ; ldr W(*rta), [x0, #s1]
+                ; .arch aarch64
+                ; ldr W(*rta), [x0, #shadow(rt)]
             );
             ctx.dynarec.mark_dirty(rt);
         }
-
         EmitSummary::default()
     });
 
@@ -1988,22 +1987,23 @@ fn test_lui(
 
 impl<A: Allocator + Copy> Dynarec<A> {
     pub fn emit_set_bt<const VALUE: bool>(&mut self) {
+        let cop0reg12 = Cpu::cop0_reg_offset(12) as u32;
         match VALUE {
             true => {
                 #[cfg(target_arch = "aarch64")]
                 dynasm!(
                     self.asm
-                    ; ldr w1, [x0, #196]
+                    ; ldr w1, [x0, #cop0reg12]
                     ; orr w1, w1, #0x40000000
-                    ; str w1, [x0, #192]
+                    ; str w1, [x0, #cop0reg12]
                 );
             }
             false => {
                 dynasm!(
                     self.asm
-                    ; ldr w1, [x0, #196]
+                    ; ldr w1, [x0, #cop0reg12]
                     ; and w1, w1, #0xbfffffff
-                    ; str w1, [x0, #192]
+                    ; str w1, [x0, #cop0reg12]
                 );
             }
         };

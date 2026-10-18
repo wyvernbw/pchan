@@ -27,6 +27,8 @@ pub struct Cpu {
     pub d_clock:      u32,
     pub hilo:         u64,
     pub scratch_buf:  [u32; Self::SCRATCH_SIZE],
+    // _padding:         [u8; 4],
+    pub gpr_shadow:   Regs<32, true>,
     pub cop0:         Cop0,
     pub cop2:         Cop2,
     pub cop1:         Cop1,
@@ -244,6 +246,7 @@ impl Cpu {
     pub const SCRATCH_OFFSET: usize = offset_of!(Cpu, scratch_buf);
     pub const SCRATCH_SIZE: usize = 8;
     pub const CLOCK: u32 = 33_868_800;
+    pub const SHADOW_OFFSET: usize = offset_of!(Self, gpr_shadow);
 
     #[must_use]
     pub const fn reg_offset(reg: u8) -> usize {
@@ -273,6 +276,11 @@ impl Cpu {
     #[must_use]
     pub const fn cop2_reg_offset(reg: u8) -> usize {
         offset_of!(Cpu, cop2) + offset_of!(Cop2, reg) + size_of::<u32>() * reg as usize
+    }
+
+    #[must_use]
+    pub(crate) fn shadow_offset(guest: u8) -> u32 {
+        (Cpu::SHADOW_OFFSET + usize::from(guest) * size_of::<u32>()) as u32
     }
 
     pub fn clear_registers(&mut self) {

@@ -105,8 +105,8 @@ in comparision with duckstation dynarec, fails:
   - [x] mtlo/mflo
   - [x] mthi/mflo
   - [x] mtlo/mfhi
-  - [ ] almost all of mem adv
-  - [ ] all of bra adv
+  - [x] almost all of mem adv
+  - [x] all of bra adv
 - not great
   - [x] break x/v
   - [x] syscall v
@@ -126,5 +126,5 @@ in comparision with duckstation dynarec, fails:
 
 - [x] fix gpu async blitting
 - [x] fix bra adv
-- [ ] add lwl/lwr load cancels
-- [ ] fix mem adv
+- [x] add lwl/lwr load cancels
+- [x] fix mem adv
