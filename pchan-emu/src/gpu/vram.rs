@@ -175,7 +175,7 @@ impl VramCursor {
     }
 }
 
-impl<A: Allocator + Copy> GpuState<A> {
+impl<A: Allocator> GpuState<A> {
     pub(crate) fn vram_write(&mut self, coord: VramCoord, value: u16) {
         let coord = coord.wrap();
         let addr = coord.x as usize + coord.y as usize * kb(1);
@@ -225,7 +225,9 @@ impl<A: Allocator + Copy> GpuState<A> {
         }
         self.vram_write(coord, value);
     }
+}
 
+impl<A: Allocator + Copy> GpuState<A> {
     pub async fn lock_vram(&mut self) -> &[u16] {
         self.task_gpu_flush_draw_calls().await;
         self.wait_for_render_result().await;

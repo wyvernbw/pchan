@@ -27,8 +27,8 @@ pub struct DmaState<A: Allocator> {
     dma6: DmaChannel,
 
     // events: Slab<DmaEvent>,
-    pending_transfer: Option<DmaEvent>,
-    ongoing_transfer: Option<DmaEvent>,
+    pending_transfers: VecDeque<DmaEvent, A>,
+    ongoing_transfer:  Option<DmaEvent>,
 
     #[debug(skip)]
     #[endecode(skip)]
@@ -53,7 +53,7 @@ impl<A: Allocator + Copy> DmaState<A> {
             // queue: DmaQueue::default(),
             // events:           Slab::with_capacity(1024),
             debug_cdrom_data: Vec::new_in(alloc),
-            pending_transfer: None,
+            pending_transfers: VecDeque::with_capacity_in(6, alloc),
             ongoing_transfer: None,
             staging_buf: Vec::with_capacity_in(mb(1) / 4, alloc),
             alloc,
@@ -218,13 +218,17 @@ impl<A: Allocator + Copy> Emu<A> {
         }
     }
 
+    #[tracing::instrument]
     fn spawn_task_dma_start_transfer(&mut self, event: DmaEvent) {
-        self.dma.pending_transfer = Some(event);
+        self.dma.pending_transfers.push_back(event);
+        tracing::debug!("spawning transfer: {event:?}");
         self.evque.spawn(Task::DmaStartTransfer);
     }
 
+    #[tracing::instrument]
     pub(crate) async fn task_dma_start_transfer(&mut self) {
-        if let Some(transfer) = self.dma.pending_transfer.take() {
+        if let Some(transfer) = self.dma.pending_transfers.pop_front() {
+            tracing::info!("{transfer:#?}");
             self.dma_start_transfer(transfer).await;
         }
     }
@@ -540,6 +544,7 @@ trait Transfer {
         match dma.chcr.transfer() {
             TransferState::StoppedCompleted => {}
             TransferState::StartBusy => {
+                dma.chcr.set_transfer(TransferState::StartBusy);
                 let dma = *dma;
                 emu.spawn_task_dma_start_transfer(emu.create_dma_event(dma, Self::TRANSPORT_KIND));
             }

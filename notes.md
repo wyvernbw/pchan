@@ -121,3 +121,10 @@ in comparision with duckstation dynarec, fails:
   - [x] multu hi
 - disastrous
   - [x] sltiu
+
+# Sun 18 Oct Todos
+
+- [x] fix gpu async blitting
+- [ ] fix bra adv
+- [ ] add lwl/lwr load cancels
+- [ ] fix mem adv
