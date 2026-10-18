@@ -2060,9 +2060,9 @@ impl DynarecOp for Jal {
         let new_pc = (self.imm26 << 2) + (ctx.pc & 0xf0000000);
         let return_address = ctx.pc + 0x8;
         ctx.dynarec.cancel_next_write(RA);
+        ctx.dynarec.emit_immediate_large(cpu::RA, return_address);
         ctx.schedule_in(1, Some(RA), move |ctx| {
             ctx.dynarec.emit_write_pc(Reg::W(3), new_pc);
-            ctx.dynarec.emit_immediate_large(cpu::RA, return_address);
 
             EmitSummary::pc_updated()
         });
@@ -2218,6 +2218,12 @@ impl DynarecOp for Jalr {
 
         let rd = self.rd;
         ctx.dynarec.cancel_next_write(rd);
+
+        let ret_address = ctx.pc + 0x8;
+        if rd != 0 {
+            ctx.dynarec.emit_immediate_large(rd, ret_address);
+        }
+
         // we know the delay slots runs at old pc + 4
         ctx.schedule_in(1, Some(rd), move |ctx| {
             #[cfg(target_arch = "aarch64")]
@@ -2228,11 +2234,6 @@ impl DynarecOp for Jalr {
                 ; str w1, [x0, Emu::<A>::PC_OFFSET as _]
                 ;; ctx.dynarec.emit_set_bd::<true>()
             );
-
-            let ret_address = ctx.pc + 0x8;
-            if rd != 0 {
-                ctx.dynarec.emit_immediate_large(rd, ret_address);
-            }
 
             EmitSummary::pc_updated()
         });
@@ -2506,23 +2507,24 @@ fn emit_branch_zero<A: Allocator + Copy>(
 
     let branch_dest = (ctx.pc + 0x4).wrapping_add_signed(ext::sign(imm) << 2);
     let write = if link { Some(RA) } else { None };
+
+    if link {
+        let return_dest = ctx.pc + 0x8;
+        let ra = ctx.dynarec.alloc_reg_stackless(RA);
+
+        #[cfg(target_arch = "aarch64")]
+        dynasm!(
+            ctx.dynarec.asm
+            ; .arch aarch64
+            ; movz w1, return_dest >> 16, LSL #16
+            ; movk w1, return_dest & 0x0000_ffff
+            ; mov W(*ra), w1
+        );
+
+        ctx.dynarec.mark_dirty(RA);
+    }
+
     ctx.schedule_in(1, write, move |mut ctx| {
-        if link {
-            let return_dest = ctx.pc + 0x8;
-            let ra = ctx.dynarec.alloc_reg_stackless(RA);
-
-            #[cfg(target_arch = "aarch64")]
-            dynasm!(
-                ctx.dynarec.asm
-                ; .arch aarch64
-                ; movz w1, return_dest >> 16, LSL #16
-                ; movk w1, return_dest & 0x0000_ffff
-                ; mov W(*ra), w1
-            );
-
-            ctx.dynarec.mark_dirty(RA);
-        }
-
         #[cfg(target_arch = "aarch64")]
         dynasm!(
             ctx.dynarec.asm
@@ -3343,9 +3345,8 @@ impl DynarecOp for Syscall {
             ;; ctx.dynarec.emit_writeback_all()
             ;; ctx.dynarec.reg_alloc.dealloc_all()
             ;; ctx.dynarec.emit_save_critical_registers()
-            ; mov w1, u32::from(ctx.delay_slot)
-            ; movz w2, u32::from(ctx.pc) >> 16, lsl #16
-            ; movk w2, u32::from(ctx.pc) & 0x0000_ffff
+            ; movz w1, u32::from(ctx.pc) >> 16, lsl #16
+            ; movk w1, u32::from(ctx.pc) & 0x0000_ffff
             ; ldr x3, <handle_syscall
             ; blr x3
             ; nop
@@ -3368,9 +3369,8 @@ impl DynarecOp for Brk {
             ;; ctx.dynarec.emit_writeback_all()
             ;; ctx.dynarec.reg_alloc.dealloc_all()
             ;; ctx.dynarec.emit_save_critical_registers()
-            ; mov w1, u32::from(ctx.delay_slot)
-            ; movz w2, u32::from(ctx.pc) >> 16, lsl #16
-            ; movk w2, u32::from(ctx.pc) & 0x0000_ffff
+            ; movz w1, u32::from(ctx.pc) >> 16, lsl #16
+            ; movk w1, u32::from(ctx.pc) & 0x0000_ffff
             ; ldr x3, <handle_break
             ; blr x3
             ;; ctx.dynarec.emit_restore_critical_registers()

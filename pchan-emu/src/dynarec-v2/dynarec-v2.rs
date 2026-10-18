@@ -539,7 +539,6 @@ impl<A: Allocator + Copy> Dynarec<A> {
                     dynasm!(
                         self.asm
                         ; .arch aarch64
-                        ; add XSP(**host_reg), x0, #offset
                         ; ldr W(**host_reg), [x0, offset]
                     );
                 }
@@ -968,6 +967,7 @@ pub async fn run_step<A: Allocator + Copy + Clone>(emu: &mut Emu<A>, dynarec: &m
     let block = match emu.dynarec_cache.get(pc) {
         None => {
             let (op_count, block) = fetch_and_compile_single_threaded(emu, dynarec).unwrap();
+            emu.dynarec_cache.insert(pc, block);
             emu.stats.blocks_compiled += 1;
             #[cfg(debug_assertions)]
             {
@@ -986,8 +986,6 @@ pub async fn run_step<A: Allocator + Copy + Clone>(emu: &mut Emu<A>, dynarec: &m
     };
     run_block(block, emu, false).await;
     emu.stats.blocks_ran += 1;
-
-    emu.dynarec_cache.insert(pc, block);
 }
 
 #[derive(strum::EnumCount, strum::EnumDiscriminants, strum::EnumIs)]
@@ -1072,7 +1070,7 @@ pub(crate) fn fetch_and_compile_single_threaded<A: Allocator + Copy>(
             if cache_boundary_check != 0 && cache_boundary_check.is_multiple_of(PAGE_SIZE2 as u32) {
                 lifetime = 1
             }
-            if op.is_boundary() {
+            if op.is_boundary() && lifetime == 2 {
                 lifetime = 1;
                 if op.is_hard_boundary() {
                     lifetime = 0;
@@ -1140,9 +1138,9 @@ pub(crate) fn fetch_and_compile_single_threaded<A: Allocator + Copy>(
 }
 
 const PAGE_COUNT2: usize = 0x10000;
-const PAGE_SIZE2: usize = kb(64 << 2);
-const RAM_PAGE_COUNT: usize = kb(2048 << 2) / PAGE_SIZE2;
-const BIOS_PAGE_COUNT: usize = kb(512 << 2) / PAGE_SIZE2;
+const PAGE_SIZE2: usize = kb(64 >> 2);
+const RAM_PAGE_COUNT: usize = kb(2048 >> 2) / PAGE_SIZE2;
+const BIOS_PAGE_COUNT: usize = kb(512 >> 2) / PAGE_SIZE2;
 const TOTAL_PAGE_COUNT: usize = RAM_PAGE_COUNT + BIOS_PAGE_COUNT;
 
 #[derive(derive_more::Debug, Clone)]

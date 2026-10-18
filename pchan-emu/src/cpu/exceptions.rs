@@ -108,21 +108,13 @@ impl<A: Allocator> Emu<A> {
         self.cpu.cop0.reg[12] = sr.raw_value();
     }
 
-    pub extern "C" fn handle_break(&mut self, _: bool, pc: u32) {
+    pub extern "C" fn handle_break(&mut self, pc: u32) {
         self.cpu.pc = pc;
         self.handle_exception(Exception::Break);
     }
 
-    pub extern "C" fn handle_syscall(&mut self, bd: bool, pc: u32) {
+    pub extern "C" fn handle_syscall(&mut self, pc: u32) {
         self.cpu.pc = pc;
-        if bd {
-            let cause = self.cpu.cop0.reg[13];
-            let cause = CauseRegister::new_with_raw_value(cause);
-            let cause = cause.with_bd(true);
-            self.cpu.cop0.reg[13] = cause.raw_value();
-
-            panic!("found bd!")
-        }
         self.handle_exception(Exception::Syscall);
     }
 
