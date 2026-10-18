@@ -639,7 +639,6 @@ fn emit_store<A: Allocator + Copy>(
 ) -> EmitSummary {
     ctx.dynarec.emit_load_temp_reg(rs, Reg::W(1));
     ctx.dynarec.emit_load_temp_reg(rt, Reg::W(2));
-    let cop0reg12 = Cpu::cop0_reg_offset(12) as u32;
 
     dynasm!(
         ctx.dynarec.asm
@@ -652,16 +651,6 @@ fn emit_store<A: Allocator + Copy>(
         ;; ctx.dynarec.reg_alloc.dealloc_all()
         ;; ctx.dynarec.emit_save_critical_registers()
         ;; ctx.dynarec.emit_add_imm16(EmitAddImm16Args { dest: Reg::W(1), base: Reg::W(1), offset: imm, temp: None })
-
-        ;; if ctx.delay_slot {
-            dynasm!(
-                ctx.dynarec.asm
-                ; .arch aarch64
-                ; ldr w3, [x0, #cop0reg12]
-                ; orr w3, w3, #0x80000000
-                ; str w3, [x0, #cop0reg12]
-            )
-        }
 
         ;; func_call(&mut ctx)
         ;; ctx.dynarec.emit_restore_critical_registers()
@@ -1985,23 +1974,46 @@ fn test_lui(
 
 impl<A: Allocator + Copy> Dynarec<A> {
     pub fn emit_set_bt<const VALUE: bool>(&mut self) {
-        let cop0reg12 = Cpu::cop0_reg_offset(12) as u32;
+        let cop0reg13 = Cpu::cop0_reg_offset(13) as u32;
         match VALUE {
             true => {
                 #[cfg(target_arch = "aarch64")]
                 dynasm!(
                     self.asm
-                    ; ldr w1, [x0, #cop0reg12]
+                    ; ldr w1, [x0, #cop0reg13]
                     ; orr w1, w1, #0x40000000
-                    ; str w1, [x0, #cop0reg12]
+                    ; str w1, [x0, #cop0reg13]
                 );
             }
             false => {
                 dynasm!(
                     self.asm
-                    ; ldr w1, [x0, #cop0reg12]
+                    ; ldr w1, [x0, #cop0reg13]
                     ; and w1, w1, #0xbfffffff
-                    ; str w1, [x0, #cop0reg12]
+                    ; str w1, [x0, #cop0reg13]
+                );
+            }
+        };
+    }
+
+    pub fn emit_set_bd<const VALUE: bool>(&mut self) {
+        let cop0reg13 = Cpu::cop0_reg_offset(13) as u32;
+        match VALUE {
+            true => {
+                #[cfg(target_arch = "aarch64")]
+                dynasm!(
+                    self.asm
+                    ; ldr w1, [x0, #cop0reg13]
+                    ; orr w1, w1, #0x80000000
+                    ; str w1, [x0, #cop0reg13]
+                );
+            }
+            false => {
+                dynasm!(
+                    self.asm
+                    ; ldr w1, [x0, #cop0reg13]
+                    ; and w1, w1, #0x7fffffff
+                    ; str w1, [x0, #cop0reg13]
                 );
             }
         };
@@ -2014,24 +2026,8 @@ impl DynarecOp for J {
         ctx.schedule_in(1, None, move |ctx| {
             ctx.dynarec.emit_write_pc(Reg::W(1), new_pc);
             ctx.dynarec.emit_set_bt::<true>();
+            ctx.dynarec.emit_set_bd::<true>();
 
-            // #[cfg(target_arch = "aarch64")]
-            // dynasm!(
-            //     ctx.dynarec.asm
-            //     ; ldr x3, ->jump // defined in prelude
-            //     ; str x0, [sp, #-16]!
-            //     ;; ctx.dynarec.emit_write_pc(Reg::W(1), new_pc)
-            //     ; blr x3
-            //     ; mov x3, x0
-            //     ; ldr x0, [sp], #16
-
-            //     ; cbz x3, >miss
-
-            //     ;; ctx.drain_schedule()
-            //     ;; ctx.dynarec.emit_block_epilogue(ctx.d_clock, None, false)
-            //     ; br x3
-            //     ; miss:
-            // );
             EmitSummary::pc_updated()
         });
         EmitSummary::default()
@@ -2132,6 +2128,7 @@ impl DynarecOp for Jr {
                 ; .arch aarch64
                 ; ldr w1, [x0, #s1]
                 ; str w1, [x0, Emu::<A>::PC_OFFSET as _]
+                ;; ctx.dynarec.emit_set_bd::<true>()
             );
 
             EmitSummary::pc_updated()
@@ -2229,6 +2226,7 @@ impl DynarecOp for Jalr {
                 ; .arch aarch64
                 ; ldr w1, [x0, #s1]
                 ; str w1, [x0, Emu::<A>::PC_OFFSET as _]
+                ;; ctx.dynarec.emit_set_bd::<true>()
             );
 
             let ret_address = ctx.pc + 0x8;
@@ -2313,6 +2311,7 @@ fn emit_branch<A: Allocator + Copy>(
             ; movk w3, branch_dest & 0x0000_ffff
             ;; selector(&mut ctx)
             ; str w2, [x0, Emu::<A>::PC_OFFSET as _]
+            ;; ctx.dynarec.emit_set_bd::<true>()
         );
 
         EmitSummary::pc_updated()
@@ -2537,6 +2536,7 @@ fn emit_branch_zero<A: Allocator + Copy>(
             ; movk w3, branch_dest & 0x0000_ffff
             ;; selector(&mut ctx)
             ; str w2, [x0, Emu::<A>::PC_OFFSET as _]
+            ;; ctx.dynarec.emit_set_bd::<true>()
         );
 
         EmitSummary::pc_updated()

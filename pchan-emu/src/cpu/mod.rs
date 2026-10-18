@@ -92,8 +92,8 @@ macro_rules! coprocessor_definition {
     };
 }
 
-coprocessor_definition!(Cop0, 32);
-coprocessor_definition!(Cop1, 32);
+coprocessor_definition!(Cop0, 32, unnamed);
+coprocessor_definition!(Cop1, 32, unnamed);
 coprocessor_definition!(Cop2, 64, unnamed);
 
 // bitfield! {
@@ -244,7 +244,7 @@ impl Cpu {
     pub const HILO_OFFSET: usize = offset_of!(Self, hilo);
     pub const D_CLOCK_OFFSET: usize = offset_of!(Self, d_clock);
     pub const SCRATCH_OFFSET: usize = offset_of!(Cpu, scratch_buf);
-    pub const SCRATCH_SIZE: usize = 8;
+    pub const SCRATCH_SIZE: usize = 12;
     pub const CLOCK: u32 = 33_868_800;
     pub const SHADOW_OFFSET: usize = offset_of!(Self, gpr_shadow);
 

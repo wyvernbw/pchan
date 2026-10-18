@@ -367,6 +367,7 @@ impl<A: Allocator + Copy> Dynarec<A> {
                     ; movz w25, d_clock >> 16 , LSL #16
                     ; movk w25, d_clock & 0x0000_FFFF
                     ; stp w24, w25, [x0, Emu::<A>::PC_OFFSET as _]
+                    ;; self.emit_set_bd::<false>()
                 )
             }
             None => {
@@ -377,6 +378,7 @@ impl<A: Allocator + Copy> Dynarec<A> {
                     ; movz w25, d_clock >> 16 , LSL #16
                     ; movk w25, d_clock & 0x0000_FFFF
                     ; str w25, [x0, Emu::<A>::D_CLOCK_OFFSET as _]
+                    ;; self.emit_set_bd::<false>()
                 )
             }
         };

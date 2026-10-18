@@ -80,7 +80,9 @@ impl<A: Allocator> Emu<A> {
             true => {
                 // bd is set, meaning pc was updated to the branch destination
                 // as such, we can simply update the TAR register to the current pc.
-                self.cpu.cop0.reg[6] = self.cpu.pc;
+                if cause.bt() {
+                    self.cpu.cop0.reg[6] = self.cpu.pc;
+                }
                 self.cpu.pc - 4
             }
         };
