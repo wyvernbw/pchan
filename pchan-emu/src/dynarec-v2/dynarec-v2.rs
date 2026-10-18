@@ -299,10 +299,6 @@ impl<A: Allocator + Copy> Dynarec<A> {
         let offset = Emu::<A>::reg_offset(guest_reg) as u32;
         let shadow_offset = Cpu::shadow_offset(guest_reg);
 
-        if enabled!(Level::TRACE) {
-            tracing::trace!("store: guest r{}", guest_reg);
-        }
-
         // emit writeback
         #[cfg(target_arch = "aarch64")]
         #[allow(clippy::useless_conversion)]
@@ -328,10 +324,6 @@ impl<A: Allocator + Copy> Dynarec<A> {
         assert!(gr1 != 0 && gr2 != 0, "cannot writeback to zero register");
 
         let offset = Emu::<A>::reg_offset(gr1) as u32;
-
-        if enabled!(Level::TRACE) {
-            tracing::trace!("store: guest ${} & ${} (pair)", reg_str(gr1), reg_str(gr2));
-        }
 
         #[cfg(target_arch = "aarch64")]
         dynasm!(
@@ -462,10 +454,6 @@ impl<A: Allocator + Copy> Dynarec<A> {
     }
     fn emit_load_temp_reg(&mut self, guest_reg: u8, host_reg: Reg) {
         debug_assert!(!self.reg_alloc.allocatable[host_reg.to_idx() as usize]);
-
-        if enabled!(Level::TRACE) {
-            tracing::trace!("load: guest r{} to temp reg {:?}", guest_reg, host_reg);
-        }
 
         if let Some(allocated) = self.reg_alloc.mapping[guest_reg as usize] {
             dynasm!(
@@ -1088,7 +1076,6 @@ pub(crate) fn fetch_and_compile_single_threaded<A: Allocator + Copy>(
                     lifetime = 0;
                 }
             }
-            tracing::trace!(?ret);
             ret
         })
         .for_each(|(op, address)| {
@@ -1127,7 +1114,6 @@ pub(crate) fn fetch_and_compile_single_threaded<A: Allocator + Copy>(
 
     // drain scheduler
     while let Some(emitter) = dynarec.scheduler.queue.pop() {
-        tracing::trace!("draining {:?}", emitter);
         let emitter_fn = &emitter.emitter;
         let summary = emitter_fn(EmitCtx {
             dynarec,

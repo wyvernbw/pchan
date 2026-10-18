@@ -91,7 +91,7 @@ pub struct GpuState<A: Allocator> {
     pub gp0:          Gp0,
     pub gp0read:      [u16; 2],
     pub gp0read_fifo: VecDeque<u16, A>,
-    pub gp0write:     Vec<u32, A>,
+    pub gp0write:     VecDeque<u32, A>,
     pub dp:           Display,
     /// GP0(0xe2) - Texture Window setting
     pub tex_window:   Gp0TexWindowCmd,
@@ -150,7 +150,7 @@ impl<A: Allocator + Copy> GpuState<A> {
             vblank_signal: false,
             vram_mutation_signal: false,
             alloc,
-            gp0write: Vec::with_capacity_in(256 * 256 * 2, alloc),
+            gp0write: VecDeque::with_capacity_in(256 * 256 * 2, alloc),
             pending_read: None,
             ongoing_read: None,
             pending_write: None,
@@ -339,18 +339,21 @@ impl<A: Allocator + Copy> Emu<A> {
         }
     }
 
+    pub(crate) fn gpu_gp0_drain_write_queue(&mut self) {
+        let mut data = mem::replace(&mut self.gpu.gp0write, VecDeque::new_in(self.alloc));
+        while let Some(word) = data.pop_front() {
+            self.gpu_gp0_cmd(GpuCmd::new_with_raw_value(word));
+        }
+        self.gpu.gp0write = data;
+    }
+
     pub(crate) async fn task_gpu_start_blit_cpu_to_vram(&mut self) {
         if let Some(blit) = self.gpu.pending_write.take() {
             self.gpu.task_gpu_flush_draw_calls().await;
             self.gpu.wait_for_render_result().await;
             self.gpu.gpustat.set_ready_recv_cmd(true);
-            let mut cursor = blit.cursor();
-            self.gpu.gp0 = Gp0::RunBlitCpuToVram(blit, cursor);
-
-            let data = mem::replace(&mut self.gpu.gp0write, Vec::new_in(self.alloc));
-            self.gpu.cpu_to_vram_blit_extend(blit, &mut cursor, &data);
-            self.gpu.gp0write = data;
-            self.gpu.gp0write.clear();
+            self.gpu.gp0 = Gp0::RunBlitCpuToVram(blit, blit.cursor());
+            self.gpu_gp0_drain_write_queue();
         }
     }
 
@@ -368,10 +371,10 @@ impl<A: Allocator + Copy> Emu<A> {
     #[pchan_macros::instrument(level = "trace", skip_all)]
     pub fn gpu_gp0_cmd(&mut self, cmd: GpuCmd) {
         let value = cmd.raw_value();
-        tracing::trace!(gp0cmd = %hex(cmd));
+        tracing::trace!(gp0=?self.gpu.gp0, gp0cmd = %hex(cmd));
         match mem::take(&mut self.gpu.gp0) {
             Gp0::Busy => {
-                self.gpu.gp0write.push(value);
+                self.gpu.gp0write.push_back(value);
             }
             Gp0::WaitingForCmd => {
                 self.gpu.gp0 = self.gpu_gp0reduce(cmd);
@@ -758,7 +761,8 @@ impl<A: Allocator> GpuState<A> {
         data: &[u32],
     ) {
         let data = data.iter().copied().flat_map(halfwords);
-        for (at, value) in cursor.iter().zip(data) {
+        for (value, at) in data.zip(cursor.iter()) {
+            tracing::trace!(?at, ?value);
             self.vram_draw(at, value);
         }
         match cursor.done() {

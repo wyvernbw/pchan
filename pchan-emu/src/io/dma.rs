@@ -559,6 +559,8 @@ impl Transfer for Dma2Gpu {
     const TRANSPORT_KIND: DmaTransportKind = DmaTransportKind::Gpu;
 
     async fn write<A: Allocator + Copy>(&mut self, emu: &mut Emu<A>, range: Range<u32>) {
+        emu.gpu_gp0_drain_write_queue();
+
         let mut staging_buf = mem::replace(&mut emu.dma.staging_buf, Vec::new_in(emu.alloc));
         let slice = emu
             .fastmem_slice::<u32>(range.clone())
