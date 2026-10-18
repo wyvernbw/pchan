@@ -125,6 +125,6 @@ in comparision with duckstation dynarec, fails:
 # Sun 18 Oct Todos
 
 - [x] fix gpu async blitting
-- [ ] fix bra adv
+- [x] fix bra adv
 - [ ] add lwl/lwr load cancels
 - [ ] fix mem adv

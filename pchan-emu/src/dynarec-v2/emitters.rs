@@ -302,11 +302,11 @@ impl DecodedOp {
                 (0x0, _, _, 0x2A) => Self::Slt(Slt::new(rd, rs, rt)),
                 (0x0, _, _, 0x2B) => Self::Sltu(Sltu::new(rd, rs, rt)),
                 (0x0, _, _, 0x2C..) => Self::illegal(),
-                (0x1, _, 0x0, _) => Self::Bltz(Bltz::new(rs, fields.imm16())),
-                (0x1, _, 0x1, _) => Self::Bgez(Bgez::new(rs, fields.imm16())),
                 (0x1, _, 0x10, _) => Self::Bltzal(Bltzal::new(rs, fields.imm16())),
                 (0x1, _, 0x11, _) => Self::Bgezal(Bgezal::new(rs, fields.imm16())),
                 // * TODO: bltz and bgez dupes * //
+                (0x1, _, rt, _) if rt & 1 == 0 => Self::Bltz(Bltz::new(rs, fields.imm16())),
+                (0x1, _, rt, _) if rt & 1 == 1 => Self::Bgez(Bgez::new(rs, fields.imm16())),
                 (0x2, _, _, _) => Self::J(J::new(fields.imm26().value())),
                 (0x3, _, _, _) => Self::Jal(Jal::new(fields.imm26().value())),
                 (0x4, _, _, _) => Self::Beq(Beq::new(rs, rt, fields.imm16())),
