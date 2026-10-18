@@ -30,7 +30,7 @@ pub struct CdromDrive {
     pub command_state: CommandState,
     pub cmd_state_v2:  CommandStateV2,
     #[endecode(skip)]
-    disc:              Option<Disc>,
+    pub(super) disc:   Option<Disc>,
     #[endecode(skip)]
     host_disc_err:     Option<std::io::Error>,
     #[endecode(skip)]

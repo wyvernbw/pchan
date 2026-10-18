@@ -15,6 +15,7 @@ use bitbybit::{bitenum, bitfield};
 use pchan_encode::derive::Endecode;
 use pchan_macros::{pchan_instrument_read, pchan_instrument_write};
 use pchan_utils::hex;
+use tracing::Level;
 
 #[derive(derive_more::Debug, Clone, Endecode)]
 pub struct DmaState<A: Allocator> {
@@ -228,7 +229,9 @@ impl<A: Allocator + Copy> Emu<A> {
     #[tracing::instrument(skip_all)]
     pub(crate) async fn task_dma_start_transfer(&mut self) {
         if let Some(transfer) = self.dma.pending_transfers.pop_front() {
-            tracing::info!("{transfer:#?}");
+            if tracing::enabled!(Level::DEBUG) {
+                tracing::debug!("{transfer:#?}");
+            }
             self.dma_start_transfer(transfer).await;
         }
     }

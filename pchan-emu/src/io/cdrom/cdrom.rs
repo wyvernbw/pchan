@@ -13,7 +13,7 @@ use alloc::collections::VecDeque;
 use pchan_encode::derive::Endecode;
 
 use crate::io::cdrom::cdrom_cmds::ResponseV2;
-use crate::io::cdrom::cdrom_drive::CdromDrive;
+use crate::io::cdrom::cdrom_drive::{CdromDrive, Disc};
 use crate::io::cdrom::cdrom_ver::CDRomVer;
 use crate::io::evque::{EvCtx, EventId};
 use crate::io::irq::{self};
@@ -442,5 +442,12 @@ impl<A: Allocator> CDRomState<A> {
     fn result_clear(&mut self) {
         self.result_fifo.clear();
         self.status.set_result_rready(false);
+    }
+
+    pub fn take_disc(&mut self) -> Option<Disc> {
+        self.drive.disc.take()
+    }
+    pub fn put_disc(&mut self, disc: Option<Disc>) {
+        self.drive.disc = disc;
     }
 }

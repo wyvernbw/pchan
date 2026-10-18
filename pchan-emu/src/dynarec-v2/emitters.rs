@@ -1,5 +1,5 @@
 use crate::cpu::{Cpu, RA};
-use crate::dynarec_v2::regalloc::{AllocResult, AllocResultStackless};
+use crate::dynarec_v2::regalloc::AllocResultStackless;
 #[cfg(test)]
 use crate::dynarec_v2::{CreateDynarecParams, run_step};
 use crate::dynarec_v2::{DynEmitter, Guest};
@@ -11,7 +11,7 @@ use core::num::NonZeroU8;
 use arbitrary_int::traits::Integer;
 use enum_dispatch::enum_dispatch;
 
-use pchan_utils::{default, hex};
+use pchan_utils::hex;
 #[cfg(test)]
 use rstest::rstest;
 use smallbox::SmallBox;
@@ -34,8 +34,6 @@ pub struct EmitCtx<'a, A: Allocator> {
     pub delay_slot:     bool,
     pub scratch_cursor: &'a mut u8,
 }
-
-const MAX_SCRATCH_REG: u8 = 3;
 
 fn cop_reg(cop: u8, reg: u8) -> u8 {
     match cop {

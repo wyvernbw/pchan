@@ -519,11 +519,13 @@ impl EmuContext {
 
         let bios_path = self.emu.boot.bios_path.clone();
         let alloc = self.emu.alloc;
+        let disc = self.emu.cdrom.take_disc();
         let mut new = Emu::new_in(alloc);
         new.set_bios_path(bios_path);
         new.load_bios(alloc).unwrap();
         new.cpu.jump_to_bios();
         new.tty.set_tracing();
+        new.cdrom.put_disc(disc);
 
         mem::swap(&mut new.gpu.conn, &mut self.emu.gpu.conn);
         new.spu.put_prod(self.emu.spu.take_prod());
