@@ -22,6 +22,7 @@ use super::cdrom_cmds::SetModeSectSize;
 #[derive(Default, derive_more::Debug, Endecode)]
 pub struct CdromDrive {
     pub cursor:        CdromCursor,
+    pub old_cursor:    CdromCursor,
     pub setloc_armed:  bool,
     pub status_code:   StatusCode,
     pub drive_status:  DriveStatus,
@@ -41,6 +42,7 @@ impl Clone for CdromDrive {
     fn clone(&self) -> Self {
         Self {
             cursor:          self.cursor,
+            old_cursor:      self.old_cursor,
             status_code:     self.status_code,
             drive_status:    self.drive_status.clone(),
             mode:            self.mode,
@@ -79,9 +81,9 @@ impl CdromDrive {
     where
         u8: const From<T>,
     {
+        self.old_cursor = self.cursor;
         self.cursor = CdromCursor::from_mss(mss);
         self.setloc_armed = true;
-        tracing::info!("setloc: lba={}", self.cursor.lba)
     }
 
     pub fn seek_to_cursor(&mut self) {
@@ -102,7 +104,6 @@ impl CdromDrive {
     }
 
     pub fn pause(&mut self) {
-        tracing::info!("pause drive");
         self.drive_state = DriveState::Idle;
         self.status_code.reset_state();
     }
@@ -115,7 +116,13 @@ impl CdromDrive {
         status.set_data_req(true);
         if let Some(disc) = &mut self.disc {
             // TODO: better reporting
-            tracing::info!("ReadN\t{}", self.cursor.to_mss::<u8>());
+            tracing::info!(
+                target: "cdrom",
+                "Data Sector\t{} lba={} size={}",
+                self.cursor.to_mss::<u8>(),
+                self.cursor.lba,
+                self.mode.sect_size().raw_value(),
+            );
 
             let bytes = match disc.readn::<SECTOR_USER_SIZE>(&mut self.cursor) {
                 Ok(res) => res,
@@ -154,6 +161,15 @@ impl CdromDrive {
             SetModeSpeed::Double => CYCLES_PER_BYTE_2X,
         };
         self.mode.sect_size().len() as u64 * mult
+    }
+
+    pub fn seek_time(&self, from_lba: u32, to_lba: u32) -> u64 {
+        let sect_diff = u64::from(to_lba.abs_diff(from_lba));
+        (sect_diff * u64::from(Cpu::CLOCK / 75)).max(u64::from(Cpu::CLOCK) / 75)
+    }
+
+    pub fn current_seek_time(&self) -> u64 {
+        self.seek_time(self.old_cursor.lba, self.cursor.lba)
     }
 }
 
@@ -216,14 +232,11 @@ impl StreamedDiskReader {
         cursor: &mut CdromCursor,
     ) -> std::io::Result<[u8; BYTES]> {
         let mut buf = [0u8; BYTES];
-        tracing::info!(readn_stream_pos = self.reader.stream_position().unwrap());
         self.reader.read_exact(&mut buf)?;
         let old_cursor = *cursor;
 
         cursor.lba += (BYTES / SECTOR_USER_SIZE) as u32;
         cursor.byte += (BYTES % SECTOR_USER_SIZE) as u32;
-
-        tracing::info!("lba={}->{}", old_cursor.lba, cursor.lba);
 
         Ok(buf)
     }

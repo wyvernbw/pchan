@@ -2,7 +2,7 @@ use core::alloc::Allocator;
 use core::iter;
 
 use crate::Emu;
-use crate::cpu::Cpu;
+use crate::cpu::{Cpu, cycles_to_ms};
 use crate::io::cdrom::cdrom_format::{Bcd, CdromCursor, Mss};
 use crate::io::cdrom::{CDRomState, DriveStatus};
 use crate::io::evque::{EvCtx, EventId, EventKind};
@@ -85,6 +85,7 @@ const NOP_TIMING: u32 = 0x000c4e1;
 const GETID_RES_2_TIMING: u32 = 0x0004a00;
 const INIT_TIMING: u32 = 0x0013cce;
 const PAUSE_2X_TIMING: u32 = 0x010bd93;
+const SEEK_TIME: u32 = Cpu::CLOCK / 75;
 
 impl<A: Allocator> Emu<A> {
     pub(super) fn cdrom_send_cmd_v2(&mut self, cmd: u8) {
@@ -100,11 +101,15 @@ impl<A: Allocator> Emu<A> {
                 let min = self.cdrom.get_param::<Bcd>();
                 let sec = self.cdrom.get_param::<Bcd>();
                 let sect = self.cdrom.get_param::<Bcd>();
-                self.cdrom_continue_cmd(CommandStateV2::SetlocInt3(Mss::new(min, sec, sect)));
+                let mss = Mss::new(min, sec, sect);
+                tracing::info!(target: "cdrom", "Setloc\t\t{}->{}", self.cdrom.drive.cursor.to_mss::<u8>(), mss);
+                self.cdrom_continue_cmd(CommandStateV2::SetlocInt3(mss));
                 self.cdrom_queue_response(NOP_TIMING);
             }
             // `ReadN` - Command 06h --> INT3(stat) --> INT1(stat) --> datablock
             0x06 => {
+                let seek_time = self.cdrom.drive.current_seek_time();
+                tracing::info!(target: "cdrom", "ReadN\t\t{} seek time: {}ms", self.cdrom.drive.cursor.to_mss::<u8>(), cycles_to_ms(seek_time));
                 self.cdrom_continue_cmd(CommandStateV2::ReadNInt3);
                 self.cdrom_queue_response(NOP_TIMING);
             }
@@ -115,12 +120,14 @@ impl<A: Allocator> Emu<A> {
             }
             // Setmode - Command 0Eh,mode --> INT3(stat)
             0x0e => {
+                tracing::info!(target: "cdrom", "Setmode\t\t{}", self.cdrom.drive.cursor.to_mss::<u8>());
                 let setmode = self.cdrom.get_param::<SetMode>();
                 self.cdrom_continue_cmd(CommandStateV2::SetModeInt3(setmode));
                 self.cdrom_queue_response(NOP_TIMING);
             }
             // Pause - Command 09h --> INT3(stat) --> INT2(stat)
             0x09 => {
+                tracing::info!(target: "cdrom", "Pause\t\t{}", self.cdrom.drive.cursor.to_mss::<u8>());
                 self.cdrom_continue_cmd(CommandStateV2::PauseInt3);
                 self.cdrom_queue_response(NOP_TIMING);
             }
@@ -131,6 +138,8 @@ impl<A: Allocator> Emu<A> {
             }
             // `SeekL` - Command 15h --> INT3(stat) --> INT2(stat)
             0x15 => {
+                let seek_time = self.cdrom.drive.current_seek_time();
+                tracing::info!(target: "cdrom", "SeekL\t\t{} seek time: {}ms", self.cdrom.drive.cursor.to_mss::<u8>(), cycles_to_ms(seek_time));
                 self.cdrom_continue_cmd(CommandStateV2::SeekLInt3);
                 self.cdrom_queue_response(NOP_TIMING);
             }
@@ -261,10 +270,10 @@ impl<A: Allocator> Emu<A> {
             }
 
             CommandStateV2::SeekLInt3 => {
-                const SEEK_TIME: u32 = Cpu::CLOCK / 75;
                 self.cdrom_send_response_v2(int3(status));
                 self.cdrom_continue_cmd(CommandStateV2::SeekLInt2);
-                self.cdrom_queue_response(SEEK_TIME);
+                let seek_time = self.cdrom.drive.current_seek_time();
+                self.cdrom_queue_response(seek_time as u32);
                 self.cdrom.drive.status_code.set_spindle_mot(true);
                 self.cdrom.drive.status_code.reset_state();
                 self.cdrom.drive.status_code.set_seek(true);
@@ -301,8 +310,15 @@ impl<A: Allocator> Emu<A> {
             CommandStateV2::ReadNInt3 => {
                 self.cdrom_send_response_v2(int3(status));
                 self.cdrom_continue_cmd(CommandStateV2::ReadNInt1);
-                let cycles_per_sector = self.cdrom.drive.sector_cycles();
-                self.cdrom_queue_response(cycles_per_sector as u32);
+
+                let mut cycles = self.cdrom.drive.sector_cycles();
+                let seek_time = self.cdrom.drive.current_seek_time();
+                if self.cdrom.drive.setloc_armed {
+                    cycles += seek_time;
+                }
+                self.cdrom.drive.seek_to_cursor();
+
+                self.cdrom_queue_response(cycles as u32);
             }
             CommandStateV2::ReadNInt1 => {
                 let cycles_per_sector = self.cdrom.drive.sector_cycles();
@@ -311,7 +327,6 @@ impl<A: Allocator> Emu<A> {
                 self.cdrom_queue_response(cycles_per_sector as u32);
 
                 self.cdrom.drive.status_code.set_spindle_mot(true);
-                self.cdrom.drive.seek_to_cursor();
                 self.cdrom
                     .drive
                     .request_data(&mut self.cdrom.status, &mut self.cdrom.data_fifo);

@@ -306,6 +306,11 @@ impl Cpu {
     }
 }
 
+#[must_use]
+pub fn cycles_to_ms(cycles: u64) -> u64 {
+    cycles * 1000 / u64::from(Cpu::CLOCK)
+}
+
 #[allow(clippy::derivable_impls)]
 impl Default for Cop1 {
     fn default() -> Self {

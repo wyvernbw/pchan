@@ -80,7 +80,7 @@ impl<A: Allocator> Emu<A> {
             }
 
             (0x1f801801, 0) => {
-                tracing::info!("send cmd: {}", hex(value));
+                tracing::debug!("send cmd: {}", hex(value));
                 self.cdrom_send_cmd_v2(value);
                 self.cdrom.param_clear();
                 Ok(())
@@ -95,7 +95,7 @@ impl<A: Allocator> Emu<A> {
 
             (0x1f801802, 0) => {
                 self.cdrom.param_push(value);
-                tracing::info!("param push: {}", hex(value));
+                tracing::debug!("param push: {}", hex(value));
                 Ok(())
             }
             (0x1f801802, 1) => {
@@ -140,7 +140,7 @@ impl<A: Allocator> Emu<A> {
             (0x1f801801, _) => match self
                 .cdrom
                 .pop_result()
-                .inspect(|value| tracing::info!("cdrom: return response {}", hex(*value)))
+                .inspect(|value| tracing::debug!("cdrom: return response {}", hex(*value)))
             {
                 Some(value) => Ok(value.io_from_u32()),
                 // technically this is not correct, see psx spx
@@ -415,7 +415,6 @@ impl<A: Allocator> CDRomState<A> {
     fn result_push(&mut self, result: u8) {
         match self.result_fifo.push_back(result) {
             Ok(()) => {
-                tracing::info!("cdrom.response: pushed {}", hex(result));
                 self.status.set_result_rready(true);
             }
             Err(result) => {
