@@ -97,6 +97,13 @@ above.
 
 - `0x800766b4`
 
+MK2 boots at `0x800809fc`.
+
+Start of block `0x8007667c` is roughly correct. Start of block `0x800766a4`,
+register state is wrong. It's wrong because a value is loaded from memory at
+`0x801345e3`, and instead of proper ram contents, there is "Gary Liddon BYC
+rules the world as caffeine boy" repeated for about 8kb, incredible.
+
 # psxtest_cpu
 
 in comparision with duckstation dynarec, fails:

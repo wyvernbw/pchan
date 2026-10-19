@@ -208,7 +208,7 @@ impl<A: Allocator> Emu<A> {
                     }
                     _ => 0xff,
                 };
-                tracing::info!(
+                tracing::debug!(
                     "sio0: recv {} (len={}, sio_stat.1={})",
                     hex(res),
                     og_len,
@@ -634,7 +634,7 @@ impl SioState {
     fn sio0_tx_send(&mut self, value: u8) {
         self.sio0stat.set_tx_idle(false);
         self.sio0stat.set_tx_not_full(false);
-        tracing::info!("sio: send {}", hex(value));
+        tracing::debug!("sio: send {}", hex(value));
         match self.sio0_tx {
             Sio0Tx::Idle | Sio0Tx::Queued(_) => {
                 self.sio0_tx = Sio0Tx::Queued(value);

@@ -1,7 +1,7 @@
 (provide
   run pause hard-reset frames frame block-on
   add-breakpoint del-breakpoint switch-breakpoint breakpoint
-  set-volume set-speed open-content
+  set-volume set-speed open-content dump-ram
   emu.readu32 emu.cpu.gpr
   u32
   emu.cpu.gpr.$zero emu.cpu.gpr.$at emu.cpu.gpr.$v0 emu.cpu.gpr.$v1
@@ -27,6 +27,7 @@
 (define (set-volume v) void)
 (define (set-speed v) void)
 (define (open-content #:optional v) void)
+(define (dump-ram path #:optional start #:optional end) void)
 (define (emu.readu32 address) void)
 (define (emu.cpu.gpr) void)
 (define (block-on) void)

@@ -738,7 +738,7 @@ impl<A: Allocator> GpuState<A> {
             return;
         }
         self.vram = Vram::Mapped(vram.vram);
-        tracing::info!("vram recv: #{}", vram.draw_idx)
+        tracing::debug!("vram recv: #{}", vram.draw_idx)
     }
 
     pub fn get_gpu_info_cmd(&self, cmd: GpuCmd) -> Option<GpuInfoCmd> {

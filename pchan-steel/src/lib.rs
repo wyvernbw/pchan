@@ -5,6 +5,7 @@ use core::mem;
 use core::num::ParseIntError;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::{fs, io};
 
 use kanal::{ReceiveError, SendError, Sender};
 use miette::Report;
@@ -12,6 +13,7 @@ use pchan_emu::Emu;
 use pchan_emu::cpu::{REG_STR, reg_str};
 use pchan_emu::debug::Breakpoint;
 use pchan_emu::io::UnhandledIO;
+use pchan_emu::memory::kb;
 use pchan_emu::run::{EmuSpeed, Runner};
 use pchan_utils::{AsyncChan, default, hex};
 use steel::gc::Gc;
@@ -63,6 +65,12 @@ pub enum Call {
     SetVolume(f32),
     SetSpeed(EmuSpeed),
     OpenContent(Option<PathBuf>, Sender<Result<(), PchanSteelErr>>),
+    DumpRam(
+        PathBuf,
+        Option<u32>,
+        Option<u32>,
+        Sender<Result<(), PchanSteelErr>>,
+    ),
 }
 
 #[derive(Debug, Clone)]
@@ -249,6 +257,17 @@ impl SteelCtx {
             })
         });
 
+        let c = conn.clone();
+        module.register_fn(
+            "dump-ram",
+            move |path: String, start: Option<u32>, end: Option<u32>| {
+                let (tx, rx) = kanal::bounded(0);
+                c.send_sync(Call::DumpRam(path.into(), start, end, tx))
+                    .steel()?;
+                rx.recv().steel()?.steel()
+            },
+        );
+
         engine.register_module(module);
         engine.run(r#"(require-builtin "pchan/emu")"#).unwrap();
 
@@ -298,6 +317,8 @@ pub enum PchanSteelErr {
     NegativeSpeedErr,
     #[error("failed to open content: {0}")]
     OpenContentError(Report),
+    #[error(transparent)]
+    IoError(#[from] io::Error),
 }
 
 impl From<PchanSteelErr> for SteelErr {
@@ -306,9 +327,8 @@ impl From<PchanSteelErr> for SteelErr {
             PchanSteelErr::SendError(_)
             | PchanSteelErr::ReceiveError(_)
             | PchanSteelErr::UnhandledEmuIO(_)
-            | PchanSteelErr::OpenContentError(_) => {
-                SteelErr::new(SteelErrorKind::Io, format!("{value}"))
-            }
+            | PchanSteelErr::OpenContentError(_)
+            | PchanSteelErr::IoError(_) => SteelErr::new(SteelErrorKind::Io, format!("{value}")),
             PchanSteelErr::UnknownGpr(_) | PchanSteelErr::ParseHexError(_) => {
                 SteelErr::new(SteelErrorKind::Parse, format!("{value}"))
             }
@@ -394,7 +414,7 @@ impl SteelExecutor {
             Call::HardReset => {
                 runner.frame_idx = 0;
 
-                emu.gpu.wait_for_render_result();
+                smol::block_on(emu.gpu.wait_for_render_result());
                 let bios_path = emu.boot.bios_path.clone();
                 let alloc = emu.alloc;
                 emu.gpu.reset_renderer();
@@ -458,6 +478,21 @@ impl SteelExecutor {
                 return ExecSummary {
                     open_content: Some((path, tx)),
                 };
+            }
+            Call::DumpRam(path, start, end, tx) => {
+                let start = start.unwrap_or(0x0) & 0x1fff_ffff;
+                let end = end.unwrap_or(kb(2).try_into().unwrap()) & 0x1fff_ffff;
+                let mem = match emu.fastmem_slice::<u8>(start..end) {
+                    Ok(mem) => mem,
+                    Err(err) => {
+                        eprintln!("dump out of bounds: {err}");
+                        tx.send(Err(err.into())).unwrap();
+                        return default();
+                    }
+                };
+                println!("{start}..{end}: dumping {} bytes", mem.len());
+                let res = fs::write(path, mem).map_err(PchanSteelErr::IoError);
+                tx.send(res).unwrap();
             }
         };
 

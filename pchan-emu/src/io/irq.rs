@@ -59,17 +59,6 @@ impl IrqState {
     pub fn irq_trigger(&mut self, irq: Irq) {
         let old_stat = self.i_stat;
         self.i_stat.set_irq_flag(irq as usize, true);
-
-        if irq != Irq::Irq0Vblank {
-            let mask = self.i_mask;
-            tracing::info!(
-                ?irq,
-                "{:010b} mask{:010b} -> {:010b}",
-                old_stat.irq_flags_combined(),
-                mask.irq_flags_combined(),
-                self.i_stat.irq_flags_combined()
-            );
-        }
     }
 }
 

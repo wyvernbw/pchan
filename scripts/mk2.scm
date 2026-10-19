@@ -6,6 +6,7 @@
   (set-speed 'unlimited)
   (set-volume 0.0)
   (block-on (frames 4825))
+  (dump-ram "mk2.bin" #x0 #x001fffff)
   (define crash (add-breakpoint #x800766b4 'x))
   (displayln "added breakpoint" crash)
   (block-on (breakpoint crash))

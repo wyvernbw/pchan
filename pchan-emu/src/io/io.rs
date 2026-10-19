@@ -4,6 +4,7 @@ use core::{any, mem, ptr};
 use pchan_utils::hex;
 
 use crate::Emu;
+use crate::bootloader::ExeHeader;
 use crate::memory::{Extend, GUEST_MEM_MAP, MEM_MAP};
 
 #[path = "./cdrom/cdrom.rs"]
@@ -47,11 +48,11 @@ impl<A: Allocator + Copy> Emu<A> {
         self.run_video_io(d_clock);
         self.run_sio_bdtimers(d_clock);
 
-        let mut d_clock = d_clock;
-        while d_clock > 0 {
-            self.run_timers(d_clock.min(u64::from(u16::MAX)) as u16);
-            d_clock = d_clock.saturating_sub(u64::from(u16::MAX));
-        }
+        // let mut d_clock = d_clock;
+        // while d_clock > 0 {
+        //     self.run_timers(d_clock.min(u64::from(u16::MAX)) as u16);
+        //     d_clock = d_clock.saturating_sub(u64::from(u16::MAX));
+        // }
 
         self.run_io_kernel_functions();
         self.run_exceptions_io();
@@ -64,34 +65,17 @@ impl<A: Allocator + Copy> Emu<A> {
             (0xa0, 0x3c) | (0xb0, 0x3d) => {
                 self.tty.putchar(self.cpu.gpr[4] as u8 as _);
             }
+            // exec
+            (0xa0, 0x43) => {
+                let exe_header_ptr = self.cpu.gpr[4];
+                let exe_header_buf = self
+                    .fastmem_slice::<u8>(exe_header_ptr..exe_header_ptr + 900)
+                    .unwrap();
+                let exe_header = ExeHeader::parse(exe_header_buf).unwrap();
+                panic!("execute called. running: {exe_header:#?}")
+            }
             (0xa0, 0xa1) => self.kernel_system_error(self.cpu.gpr[4] as u8, self.cpu.gpr[5]),
             _ => {}
-        }
-
-        #[cfg(feature = "debugger-ext")]
-        {
-            // TODO: make sure frames get popped when guest returns from function
-            if pc == 0xa0 || pc == 0xb0 || pc == 0xc0 {
-                use crate::cpu;
-                use crate::debug::KernelFrame;
-
-                self.dbg.kernel_fn_stack.push(KernelFrame::new(
-                    pc,
-                    self.cpu.gpr[9],
-                    self.cpu.gpr[usize::from(cpu::RA)],
-                    [
-                        self.cpu.gpr[4],
-                        self.cpu.gpr[5],
-                        self.cpu.gpr[6],
-                        self.cpu.gpr[7],
-                        self.cpu.gpr[usize::from(cpu::SP)],
-                    ],
-                ));
-                // FIXME: remove this
-                if self.dbg.kernel_fn_stack.len() > 5 {
-                    self.dbg.kernel_fn_stack.remove(0);
-                }
-            }
         }
     }
 
