@@ -176,7 +176,6 @@ impl CdromDrive {
         }
     }
 
-    #[tracing::instrument(skip(self), ret)]
     pub fn seek_time(&self, from_lba: u32, to_lba: u32) -> u64 {
         const T: f64 = 22_000.0;
         fn lba_to_track(x: u32) -> f64 {
@@ -189,7 +188,6 @@ impl CdromDrive {
 
         let current_track = lba_to_track(from_lba);
         let track_delta = f64::abs(lba_to_track(to_lba) - current_track);
-        tracing::info!(target: "cdrom", ?track_delta);
 
         let lba_diff = u32::abs_diff(from_lba, to_lba);
 
@@ -311,7 +309,6 @@ impl InMemoryDiskReader {
         cursor: &mut CdromCursor,
     ) -> std::io::Result<[u8; BYTES]> {
         let mut buf = [0u8; BYTES];
-        tracing::info!(readn_stream_pos = self.cursor);
 
         let buf_cursor = usize::try_from(self.cursor).unwrap();
         let src_end = cmp::min(buf_cursor + BYTES, self.buf.len());
@@ -324,8 +321,6 @@ impl InMemoryDiskReader {
 
         cursor.lba += (BYTES / SECTOR_USER_SIZE) as u32;
         cursor.byte += (BYTES % SECTOR_USER_SIZE) as u32;
-
-        tracing::info!("lba={}->{}", old_cursor.lba, cursor.lba);
 
         Ok(buf)
     }
