@@ -85,7 +85,7 @@ const NOP_TIMING: u32 = 0x000c4e1;
 const GETID_RES_2_TIMING: u32 = 0x0004a00;
 const INIT_TIMING: u32 = 0x0013cce;
 const PAUSE_2X_TIMING: u32 = 0x010bd93;
-const SEEK_TIME: u32 = Cpu::CLOCK / 75;
+const PAUSE_1X_TIMING: u32 = 0x021181c;
 
 impl<A: Allocator> Emu<A> {
     pub(super) fn cdrom_send_cmd_v2(&mut self, cmd: u8) {
@@ -178,7 +178,8 @@ impl<A: Allocator> Emu<A> {
                 self.cdrom_queue_response(INIT_TIMING);
             }
 
-            cmd => todo!("cdrom cmd not implemented: {}", hex(cmd)),
+            // cmd => todo!("cdrom cmd not implemented: {}", hex(cmd)),
+            _ => {}
         }
     }
     fn cdrom_end_cmd(&mut self) {
@@ -189,14 +190,18 @@ impl<A: Allocator> Emu<A> {
         self.cdrom.drive.cmd_state_v2 = state;
     }
     fn cdrom_queue_response(&mut self, in_cycles: u32) {
+        self.cdrom.ev_id = self.cdrom.ev_id.wrapping_add(1);
         self.evque.schedule(
-            EventKind::CdromResponse,
+            EventKind::CdromResponse(self.cdrom.ev_id),
             EventId::default(),
             u64::from(in_cycles),
         );
     }
 
-    pub(crate) fn handle_ev_cdrom_response(&mut self, _: EvCtx) {
+    pub(crate) fn handle_ev_cdrom_response(&mut self, _: EvCtx, id: u32) {
+        if id < self.cdrom.ev_id {
+            return;
+        }
         self.cdrom_proc_cmd_response();
     }
 
@@ -294,7 +299,14 @@ impl<A: Allocator> Emu<A> {
             CommandStateV2::PauseInt3 => {
                 self.cdrom_send_response_v2(int3(status));
                 self.cdrom_continue_cmd(CommandStateV2::PauseInt2);
-                self.cdrom_queue_response(PAUSE_2X_TIMING);
+                match self.cdrom.drive.mode.speed() {
+                    SetModeSpeed::Normal => {
+                        self.cdrom_queue_response(PAUSE_1X_TIMING);
+                    }
+                    SetModeSpeed::Double => {
+                        self.cdrom_queue_response(PAUSE_2X_TIMING);
+                    }
+                }
             }
             CommandStateV2::PauseInt2 => {
                 self.cdrom.drive.pause();
@@ -310,6 +322,7 @@ impl<A: Allocator> Emu<A> {
             CommandStateV2::ReadNInt3 => {
                 self.cdrom_send_response_v2(int3(status));
                 self.cdrom_continue_cmd(CommandStateV2::ReadNInt1);
+                self.cdrom.status.set_busy_status(false);
 
                 let mut cycles = self.cdrom.drive.sector_cycles();
                 let seek_time = self.cdrom.drive.current_seek_time();
@@ -326,7 +339,6 @@ impl<A: Allocator> Emu<A> {
                 self.cdrom_continue_cmd(CommandStateV2::ReadNInt1);
                 self.cdrom_queue_response(cycles_per_sector as u32);
 
-                self.cdrom.drive.status_code.set_spindle_mot(true);
                 self.cdrom
                     .drive
                     .request_data(&mut self.cdrom.status, &mut self.cdrom.data_fifo);
@@ -335,12 +347,13 @@ impl<A: Allocator> Emu<A> {
             CommandStateV2::InitInt3 => {
                 self.cdrom_send_response_v2(int3(status));
                 self.cdrom_continue_cmd(CommandStateV2::InitInt2);
-                self.cdrom_queue_response(GETID_RES_2_TIMING);
+                let spinup_time = self.cdrom.drive.spinup_time();
+                self.cdrom_queue_response(spinup_time as u32 + INIT_TIMING);
             }
             CommandStateV2::InitInt2 => {
                 self.cdrom.drive.mode = SetMode::new_with_raw_value(0x20);
                 self.cdrom.drive.status_code.reset_state();
-                self.cdrom.drive.status_code.set_spindle_mot(true);
+                self.cdrom.drive.spin_up();
                 self.cdrom.drive.cursor = CdromCursor::default();
                 self.cdrom_send_response_v2(int2(status));
                 self.cdrom_end_cmd();

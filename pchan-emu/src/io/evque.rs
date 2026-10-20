@@ -23,7 +23,7 @@ pub enum EventKind {
     // dma
     DmaTransfer,
     // cdrom
-    CdromResponse,
+    CdromResponse(u32),
     CdromIrq,
 }
 
@@ -169,8 +169,8 @@ impl<A: Allocator + Copy> Emu<A> {
                 EventKind::DmaTransfer => {
                     self.handle_ev_dma_transfer(ctx).await;
                 }
-                EventKind::CdromResponse => {
-                    self.handle_ev_cdrom_response(ctx);
+                EventKind::CdromResponse(id) => {
+                    self.handle_ev_cdrom_response(ctx, id);
                 }
                 EventKind::CdromIrq => {
                     self.handle_ev_cdrom_irq(ctx);

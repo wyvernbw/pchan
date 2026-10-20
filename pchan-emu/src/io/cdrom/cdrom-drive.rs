@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use smallvec::{SmallVec, smallvec};
 
 use crate::Emu;
-use crate::cpu::Cpu;
+use crate::cpu::{Cpu, cycles_to_ms};
 use crate::io::cdrom::cdrom_cmds::{CommandStateV2, SetMode, SetModeSpeed, StatusCode};
 use crate::io::cdrom::cdrom_format::{
     CdromCursor, CueFormat, CueFormatParseErr, Mss, SECTOR_USER_SIZE,
@@ -87,6 +87,7 @@ impl CdromDrive {
     }
 
     pub fn seek_to_cursor(&mut self) {
+        self.spin_up();
         self.setloc_armed = false;
         if let Some(disc) = &mut self.disc {
             let res = disc.seek(self.cursor);
@@ -155,6 +156,10 @@ impl CdromDrive {
         }
     }
 
+    pub(super) fn spin_up(&mut self) {
+        self.status_code.set_spindle_mot(true);
+    }
+
     pub fn sector_cycles(&self) -> u64 {
         let mult = match self.mode.speed() {
             SetModeSpeed::Normal => CYCLES_PER_BYTE,
@@ -163,9 +168,58 @@ impl CdromDrive {
         self.mode.sect_size().len() as u64 * mult
     }
 
+    pub fn spinup_time(&self) -> u64 {
+        if self.status_code.spindle_mot() {
+            0
+        } else {
+            u64::from(Cpu::CLOCK)
+        }
+    }
+
+    #[tracing::instrument(skip(self), ret)]
     pub fn seek_time(&self, from_lba: u32, to_lba: u32) -> u64 {
-        let sect_diff = u64::from(to_lba.abs_diff(from_lba));
-        (sect_diff * u64::from(Cpu::CLOCK / 75)).max(u64::from(Cpu::CLOCK) / 75)
+        const T: f64 = 22_000.0;
+        fn lba_to_track(x: u32) -> f64 {
+            (-9.0 * T + f64::sqrt(81.0 * T.powi(2) + 26.0 * T * f64::from(x))) / 13.0
+        }
+
+        fn sectors_per_track(t: u32) -> f64 {
+            13.0 * (f64::from(t) / 22_000.0) + 9.0
+        }
+
+        let current_track = lba_to_track(from_lba);
+        let track_delta = f64::abs(lba_to_track(to_lba) - current_track);
+        tracing::info!(target: "cdrom", ?track_delta);
+
+        let lba_diff = u32::abs_diff(from_lba, to_lba);
+
+        let mut cycles = 0u64;
+
+        if !self.status_code.spindle_mot() {
+            cycles += self.spinup_time();
+        }
+
+        if track_delta < 1. {
+            let reading_speed = match self.mode.speed() {
+                SetModeSpeed::Normal => Cpu::CLOCK / 75,
+                SetModeSpeed::Double => Cpu::CLOCK / 150,
+            };
+            if from_lba <= to_lba {
+                cycles += cmp::max(u64::from(lba_diff), 2) * u64::from(reading_speed);
+            } else {
+                let jump_to = from_lba.saturating_sub(sectors_per_track(from_lba) as u32);
+                cycles += u64::from(cmp::max(to_lba - jump_to, 1)) * u64::from(reading_speed);
+            }
+        } else {
+            const MAX_TIME: f64 = f64::from(Cpu::CLOCK) * 0.9;
+            const FIXED_COST: f64 = f64::from(Cpu::CLOCK) * 0.1;
+            const TIME_PER_TRACK: f64 = MAX_TIME / T;
+            // let sect_diff = u64::from(to_lba.abs_diff(from_lba));
+            // (sect_diff * u64::from(Cpu::CLOCK / 75)).max(u64::from(Cpu::CLOCK) / 75)
+            cycles += (FIXED_COST + track_delta * TIME_PER_TRACK) as u64
+        }
+
+        cycles
     }
 
     pub fn current_seek_time(&self) -> u64 {
@@ -227,16 +281,18 @@ impl StreamedDiskReader {
         Ok(())
     }
 
+    #[tracing::instrument(target = "cdrom", skip(self), err)]
     fn readn<const BYTES: usize>(
         &mut self,
         cursor: &mut CdromCursor,
     ) -> std::io::Result<[u8; BYTES]> {
         let mut buf = [0u8; BYTES];
         self.reader.read_exact(&mut buf)?;
-        let old_cursor = *cursor;
 
         cursor.lba += (BYTES / SECTOR_USER_SIZE) as u32;
         cursor.byte += (BYTES % SECTOR_USER_SIZE) as u32;
+        cursor.lba += cursor.byte / SECTOR_USER_SIZE as u32;
+        cursor.byte %= SECTOR_USER_SIZE as u32;
 
         Ok(buf)
     }

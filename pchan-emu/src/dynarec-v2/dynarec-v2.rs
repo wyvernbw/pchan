@@ -40,7 +40,7 @@ pub static BLOCKS_EXECUTED: AtomicU64 = AtomicU64::new(0);
 pub static CACHE_HITS: AtomicU64 = AtomicU64::new(0);
 pub static CACHE_MISSES: AtomicU64 = AtomicU64::new(0);
 
-static ASM_CAPACITY: usize = mb(4);
+static ASM_CAPACITY: usize = mb(8);
 
 pub fn cache_hitrate() -> f32 {
     let hits = CACHE_HITS.load(Ordering::Relaxed) as f32;

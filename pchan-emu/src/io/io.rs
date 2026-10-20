@@ -48,11 +48,11 @@ impl<A: Allocator + Copy> Emu<A> {
         self.run_video_io(d_clock);
         self.run_sio_bdtimers(d_clock);
 
-        // let mut d_clock = d_clock;
-        // while d_clock > 0 {
-        //     self.run_timers(d_clock.min(u64::from(u16::MAX)) as u16);
-        //     d_clock = d_clock.saturating_sub(u64::from(u16::MAX));
-        // }
+        let mut d_clock = d_clock;
+        while d_clock > 0 {
+            self.run_timers(d_clock.min(u64::from(u16::MAX)) as u16);
+            d_clock = d_clock.saturating_sub(u64::from(u16::MAX));
+        }
 
         self.run_io_kernel_functions();
         self.run_exceptions_io();

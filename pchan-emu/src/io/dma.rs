@@ -205,9 +205,6 @@ impl<A: Allocator + Copy> Emu<A> {
                 let old_irq_flags = irq_flags;
                 // writing 1 to irq flag resets it to 0
                 let irq_flags = irq_flags & !new_irq_flags;
-                tracing::info!(
-                    "write at dicr: dma_irq_flags: {old_irq_flags:08b} -> {irq_flags:08b}"
-                );
 
                 let new_dicr = new_dicr.with_combined_irq_flags(irq_flags);
 

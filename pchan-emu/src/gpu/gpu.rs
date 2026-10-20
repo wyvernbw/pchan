@@ -312,7 +312,6 @@ impl<A: Allocator + Copy> Emu<A> {
                 let cmd = Gp0SetDrawOffsetCmd::new_with_raw_value(cmd.raw_value());
                 opts.draw_offset.x = cmd.x_offset().as_();
                 opts.draw_offset.y = cmd.y_offset().as_();
-                tracing::info!("set draw offset: {:?}", opts.draw_offset);
 
                 Gp0::WaitingForCmd
             }
@@ -388,7 +387,6 @@ impl<A: Allocator + Copy> Emu<A> {
                     }
 
                     if !self.gpu.draw_calls_in_flight && draw_call.is_small() {
-                        tracing::info!("running blit on cpu");
                         assert!(
                             self.gpu.pending_write.is_none(),
                             "multiple pending write, a queue is required"

@@ -42,6 +42,7 @@ pub struct CDRomState<A: Allocator> {
     ver:           CDRomVer,
 
     drive: CdromDrive,
+    ev_id: u32,
 }
 
 #[derive(Default, derive_more::Debug, Clone, Endecode)]
