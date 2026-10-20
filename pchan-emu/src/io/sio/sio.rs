@@ -1,4 +1,5 @@
 pub mod joypad;
+pub mod memcard;
 
 use core::alloc::Allocator;
 use core::cmp;
@@ -13,6 +14,7 @@ use pchan_utils::hex;
 use crate::io::evque::{EvCtx, EventId, EventKind};
 use crate::io::irq::Irq;
 use crate::io::sio::joypad::Joypad;
+use crate::io::sio::memcard::Memcard;
 use crate::io::{CastIOFrom, CastIOInto, UnhandledIO};
 use crate::{Emu, trace_todo};
 
@@ -81,6 +83,7 @@ impl Ord for ScheduledSioEvent {
 pub enum PeripheralKind {
     #[endecode(alloc(default))]
     Joypad,
+    Memcard,
 }
 
 #[derive(derive_more::Debug, Clone, Default, Endecode)]
@@ -93,6 +96,7 @@ impl Sio0Ports {
     fn is_connected(&self, on_port: Sio0Port) -> bool {
         match self.selected {
             Some(PeripheralKind::Joypad) => self.port(on_port).joypad.connected,
+            Some(PeripheralKind::Memcard) => self.port(on_port).memcard.connected,
             None => false,
         }
     }
@@ -101,8 +105,9 @@ impl Sio0Ports {
 #[derive(Default, derive_more::Debug, Clone, Endecode)]
 #[non_exhaustive]
 pub struct PortState {
-    pub joypad: Joypad,
-    // TODO: memcard
+    pub joypad:  Joypad,
+    // DONE: memcard
+    pub memcard: Memcard,
 }
 
 pub enum TxWriteResult {
@@ -118,7 +123,7 @@ pub trait Peripheral {
 pub struct Sio0Rx(Deque<u8, 4>);
 
 impl<A: Allocator> Emu<A> {
-    #[pchan_macros::instrument(skip_all, fields(pc = %hex(self.cpu.pc)))]
+    #[pchan_macros::instrument(target = "sio", skip_all, fields(pc = %hex(self.cpu.pc)))]
     pub fn sio_write<T: Copy>(&mut self, address: u32, value: T) -> Result<(), UnhandledIO> {
         let address = address & 0x1fffffff;
         let value = value.io_into_u32();
@@ -173,7 +178,7 @@ impl<A: Allocator> Emu<A> {
         }
         // .inspect(|_| tracing::info!("w(sio): {}", hex(address)))
     }
-    #[pchan_macros::instrument(skip_all, fields(pc = %hex(self.cpu.pc)))]
+    #[pchan_macros::instrument(target = "sio", skip_all, fields(pc = %hex(self.cpu.pc)))]
     pub fn sio_read<T: Copy>(&mut self, address: u32) -> Result<T, UnhandledIO> {
         let address = address & 0x1fffffff;
         match address {
@@ -209,6 +214,7 @@ impl<A: Allocator> Emu<A> {
                     _ => 0xff,
                 };
                 tracing::debug!(
+                    target:"sio",
                     "sio0: recv {} (len={}, sio_stat.1={})",
                     hex(res),
                     og_len,
@@ -222,7 +228,7 @@ impl<A: Allocator> Emu<A> {
             0x1f801044 => {
                 // self.sio.sio0stat.set_dsr_in_lvl(false);
                 let empty = self.sio.sio0_rx.is_empty();
-                self.sio.sio0stat.with_rx_not_empty(!empty);
+                self.sio.sio0stat.set_rx_not_empty(!empty);
                 Ok(self.sio.sio0stat.io_from_u32())
             }
             _ => self.sio_read_pure(address),
@@ -318,6 +324,15 @@ impl<A: Allocator> Emu<A> {
                 }
                 Some(TxWriteResult::Ok)
             }
+            (None, 0x81) => {
+                tracing::info!(target:"sio", "select memcard");
+                self.sio0_select(PeripheralKind::Memcard);
+                let ctrl = self.sio.sio0ctrl;
+                if ctrl.rx_on() | ctrl.dtr_out_lvl() {
+                    self.sio.sio0_rx.push(HI_Z as u8);
+                }
+                Some(TxWriteResult::Ok)
+            }
             (None, _) => return,
             (Some(device), byte) => {
                 let port = self.sio.sio0ctrl.sio0_port();
@@ -325,6 +340,9 @@ impl<A: Allocator> Emu<A> {
                     let port = self.sio.view_serial_port(port);
                     match device {
                         PeripheralKind::Joypad => Some(port.port.joypad.on_tx_write(byte, port.rx)),
+                        PeripheralKind::Memcard => {
+                            Some(port.port.joypad.on_tx_write(byte, port.rx))
+                        }
                     }
                 } else {
                     None
@@ -349,9 +367,13 @@ impl<A: Allocator> Emu<A> {
                             }
                             self.sio.sio0stat.set_dsr_in_lvl(true);
                         }
+                    } else {
+                        self.sio.sio0ctrl.set_dtr_out_lvl(false);
+                        self.sio0_deselect();
                     }
                 }
                 TxWriteResult::TransferFinished => {
+                    self.sio.sio0ctrl.set_dtr_out_lvl(false);
                     self.sio0_deselect();
                 }
             }
@@ -634,7 +656,7 @@ impl SioState {
     fn sio0_tx_send(&mut self, value: u8) {
         self.sio0stat.set_tx_idle(false);
         self.sio0stat.set_tx_not_full(false);
-        tracing::debug!("sio: send {}", hex(value));
+        tracing::debug!(target:"sio", "sio: send {}", hex(value));
         match self.sio0_tx {
             Sio0Tx::Idle | Sio0Tx::Queued(_) => {
                 self.sio0_tx = Sio0Tx::Queued(value);
@@ -689,7 +711,6 @@ impl SioState {
             self.sio0_tx = Sio0Tx::Idle;
         }
 
-        tracing::trace!(ack=ctrl.ack(), port = ?self.sio0ctrl.sio0_port(), "/CS"=self.sio0ctrl.dtr_out_lvl(), rxen = ?usize::from(self.sio0ctrl.rx_on()));
         if ctrl.ack() {
             self.sio0stat.set_rx_par_err(false);
             self.sio0stat.set_irq(false);
@@ -705,10 +726,12 @@ impl SioState {
 
         self.sio0ctrl.set_ack(false);
         self.sio0ctrl.set_reset(false);
+
+        tracing::info!(target:"sio", ack=ctrl.ack(), port = ?self.sio0ctrl.sio0_port(), "/CS"=self.sio0ctrl.dtr_out_lvl(), rxen = ?usize::from(self.sio0ctrl.rx_on()));
     }
 
     fn read_sio0_ctrl(&self) -> SioCtrlReg {
-        tracing::trace!(port = ?self.sio0ctrl.sio0_port(), "/CS"=self.sio0ctrl.dtr_out_lvl(), rxen = ?usize::from(self.sio0ctrl.rx_on()));
+        tracing::info!(target:"sio", port = ?self.sio0ctrl.sio0_port(), "/CS"=self.sio0ctrl.dtr_out_lvl(), rxen = ?usize::from(self.sio0ctrl.rx_on()));
         self.sio0ctrl
     }
 
@@ -718,6 +741,7 @@ impl SioState {
         let selected = self.sio0ports.selected?;
         match selected {
             PeripheralKind::Joypad => port.joypad.connected.then_some(selected),
+            PeripheralKind::Memcard => port.memcard.connected.then_some(selected),
         }
     }
 
