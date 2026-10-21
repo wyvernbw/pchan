@@ -11,8 +11,11 @@ use crate::io::{CastIOFrom, CastIOInto, UnhandledIO};
 
 use super::irq::Irq;
 
+const TIMER_UPDATE_FREQUENCY: u64 = 1000;
+
 #[derive(Debug, Clone, Default, Endecode)]
 pub struct TimerState {
+    clock:       u64,
     pub timer_0: Timer<0>,
     pub timer_1: Timer<1>,
     pub timer_2: Timer<2>,
@@ -235,6 +238,13 @@ impl<A: Allocator> Emu<A> {
     }
 
     pub fn run_timers(&mut self, cycles: u16) {
+        self.timers.clock += u64::from(cycles);
+        if self.timers.clock < TIMER_UPDATE_FREQUENCY {
+            return;
+        }
+        self.timers.clock -= TIMER_UPDATE_FREQUENCY;
+        let cycles = TIMER_UPDATE_FREQUENCY as u16;
+
         // FIXME: add dotclock source
         if self.timers.timer_0.mode.source() {
             todo!()

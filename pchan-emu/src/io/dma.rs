@@ -1,5 +1,5 @@
 use core::alloc::Allocator;
-use core::ops::Range;
+use core::ops::{ControlFlow, Range};
 use core::{cmp, mem, slice};
 
 use crate::gpu::draw_call::DrawCallKind;
@@ -226,7 +226,8 @@ impl<A: Allocator + Copy> Emu<A> {
 
     #[tracing::instrument(skip_all)]
     pub(crate) async fn task_dma_start_transfer(&mut self) {
-        if let Some(transfer) = self.dma.pending_transfers.pop_front() {
+        if let Some(mut transfer) = self.dma.pending_transfers.pop_front() {
+            transfer.in_cycles = transfer.cycles(self).await;
             if tracing::enabled!(Level::DEBUG) {
                 tracing::debug!("{transfer:#?}");
             }
@@ -239,7 +240,7 @@ impl<A: Allocator + Copy> Emu<A> {
             match self.dma.ongoing_transfer {
                 Some(old) => {
                     tracing::debug!("dma stall: already transfering");
-                    let _clock = old.cycles(self);
+                    let _clock = old.cycles(self).await;
                     self.handle_dma_event(old).await;
                     // self.cpu.d_clock = clock as u32;
                     // self.run_io();
@@ -307,16 +308,12 @@ impl<A: Allocator + Copy> Emu<A> {
         dicr.set_master_irq(new_master_irq);
     }
 
+    /// creates a new `DmaEvent` with an uninitialized cycle count. time taken is calculate
+    /// automatically when the even starts in order to be able to use async.
     fn create_dma_event(&self, channel: DmaChannel, kind: DmaTransportKind) -> DmaEvent {
         match channel.chcr.sync_mode() {
-            SyncMode::Burst => DmaEvent {
-                in_cycles: channel.burst_cycles(kind),
-                init_chan: channel,
-                slice:     None,
-                dma_t:     kind,
-            },
             SyncMode::Slice => DmaEvent {
-                in_cycles: channel.slice_cycles(),
+                in_cycles: 0,
                 init_chan: channel,
                 slice:     Some(SliceTransferState {
                     addr: channel.madr.addr().as_u32(),
@@ -324,13 +321,7 @@ impl<A: Allocator + Copy> Emu<A> {
                 }),
                 dma_t:     kind,
             },
-            SyncMode::LinkedList => DmaEvent {
-                in_cycles: channel.linked_list_cycles(self),
-                init_chan: channel,
-                slice:     None,
-                dma_t:     kind,
-            },
-            SyncMode::Reserved => DmaEvent {
+            SyncMode::Burst | SyncMode::LinkedList | SyncMode::Reserved => DmaEvent {
                 in_cycles: 0,
                 init_chan: channel,
                 slice:     None,
@@ -443,33 +434,58 @@ impl<A: Allocator + Copy> Emu<A> {
                 self.dma_irq_raise_complete(idx);
             }
             SyncMode::LinkedList => {
-                let mut addr = init_chan.madr.addr().as_u32();
-                let mut visited = heapless::index_set::FnvIndexSet::<u32, 4096>::new();
-                loop {
-                    let header = self.read::<DmaNodeHeader>(addr);
-                    tracing::trace!(header.next = %hex(header.next()), header.len = header.len());
-                    let len = header.len();
-                    let range = init_chan.create_range(addr + 4, u32::from(len));
-                    transfer.write(self, range).await;
-                    let no_loop = visited.insert(addr).expect(
-                        "bug: dma linked list traversal visited set capacity is too small.",
-                    );
+                let mut finished = false;
+                self.traverse_linked_list_mut(
+                    &init_chan,
+                    async |emu, Address(addr), header, Looped(looped)| {
+                        let len = header.len();
+                        let range = init_chan.create_range(addr + 4, u32::from(len));
+                        transfer.write(emu, range).await;
 
-                    assert!(no_loop, "infinite linked list dma detected");
+                        if looped {
+                            let next_chan = DmaChannel {
+                                madr: init_chan.madr.with_addr(addr.as_()),
+                                ..init_chan
+                            };
+                            let will_take = emu.linked_list_cycles(&next_chan).await;
+                            emu.dma_schedule_transfer(DmaEvent {
+                                in_cycles: will_take,
+                                init_chan: next_chan,
+                                slice:     None,
+                                dma_t:     T::TRANSPORT_KIND,
+                            });
+                        }
 
-                    addr = header.next().as_u32();
+                        if header.is_end_marker() {
+                            finished = true;
+                        }
 
-                    if header.is_end_marker() {
-                        T::channel(self).madr.set_addr(DmaNodeHeader::END.as_());
-                        break;
-                    }
+                        ControlFlow::Continue(Address(header.next().as_()))
+                    },
+                )
+                .await;
+
+                if finished {
+                    T::channel(self).madr.set_addr(DmaNodeHeader::END.as_());
+                    T::channel(self).set_complete();
+                    self.dma_irq_raise_complete(idx);
+                    tracing::trace!("end gp0 linked list traversal");
                 }
-                T::channel(self).set_complete();
-                self.dma_irq_raise_complete(idx);
-                tracing::trace!("end gp0 linked list traversal");
             }
             SyncMode::Reserved => todo!(),
         }
+    }
+
+    async fn linked_list_cycles(&mut self, chan: &DmaChannel) -> u64 {
+        let mut words = 0;
+        self.traverse_linked_list_mut(chan, async |_, _, header, _| {
+            let len = header.len();
+            words += u64::from(len);
+
+            ControlFlow::Continue(Address(header.next().as_()))
+        })
+        .await;
+        words
     }
 
     async fn dma2_write_data(&mut self, event: DmaEvent) {
@@ -511,9 +527,41 @@ impl<A: Allocator + Copy> Emu<A> {
         self.dma.dma6.set_complete();
         self.dma_irq_raise_complete(6);
     }
+
+    async fn traverse_linked_list_mut(
+        &mut self,
+        chan: &DmaChannel,
+        mut func: impl AsyncFnMut(&mut Self, Address, DmaNodeHeader, Looped) -> ControlFlow<(), Address>,
+    ) {
+        let mut addr = chan.madr.addr().as_u32();
+        let mut visited = heapless::index_set::FnvIndexSet::<u32, 4096>::new();
+        loop {
+            let header = self.read::<DmaNodeHeader>(addr);
+            tracing::trace!(header.next = %hex(header.next()), header.len = header.len());
+
+            let looped = match visited.insert(addr) {
+                Ok(true) => false,
+                Err(_) | Ok(false) => true,
+            };
+
+            match func(self, Address(addr), header, Looped(looped)).await {
+                ControlFlow::Continue(new_addr) => addr = new_addr.0,
+                ControlFlow::Break(_) => return,
+            };
+
+            if header.is_end_marker() {
+                return;
+            }
+
+            if looped {
+                return;
+            }
+        }
+    }
 }
 
-impl<A: Allocator + Copy> Emu<A> {}
+struct Looped(bool);
+struct Address(u32);
 
 trait Transfer {
     const TRANSPORT_KIND: DmaTransportKind;
@@ -1033,12 +1081,12 @@ struct SliceTransferState {
 }
 
 impl DmaEvent {
-    fn cycles<A: Allocator>(&self, emu: &Emu<A>) -> u64 {
+    async fn cycles<A: Allocator + Copy>(&self, emu: &mut Emu<A>) -> u64 {
         let sync_mode = self.init_chan.chcr.sync_mode();
         match sync_mode {
             SyncMode::Burst => self.init_chan.burst_cycles(self.dma_t),
             SyncMode::Slice => self.init_chan.slice_cycles(),
-            SyncMode::LinkedList => self.init_chan.linked_list_cycles(emu),
+            SyncMode::LinkedList => emu.linked_list_cycles(&self.init_chan).await,
             SyncMode::Reserved => u64::MAX,
         }
     }
