@@ -23,8 +23,14 @@ cargo run -p pchan-dbg-v2 -- game.exe
 
 ## Status
 
-The current emulator includes the dynarec cpu and hardware rasterizer. Though
-not complete yet, they are enough to render the bios splash screen accurately.
+All games will have some graphical glitches because the gpu isn't done yet.
+Games I'm testing:
+- MK2: **playable**
+- Crash Bandicoot: **in-game**, 3d is broken (duh)
+- Ridge Racer: **intro** (cdrom issue)
+- Puzzle Bobble 2: **playable**, very broken graphically 
+- FF7: **no boot**
+- Silent Hill: **no boot**
 
 - [x] memory
   - [x] fastmem (bios and ram)
@@ -44,6 +50,7 @@ not complete yet, they are enough to render the bios splash screen accurately.
     - [x] rects (sprites)
     - [ ] lines
   - [ ] software renderer (not started)
+- [ ] gte
 - [ ] cdrom
   - [x] basic registers
   - [x] fifo
@@ -54,11 +61,11 @@ not complete yet, they are enough to render the bios splash screen accurately.
   - [x] audio thread 
   - [x] volume
   - [x] adsr envelope
-  - [ ] reverb
+  - [x] reverb
   - [ ] noise generator
 - [ ] sio
-  - [ ] input
-    - [ ] digital joypad
+  - [x] input
+    - [x] digital joypad
     - [ ] analog joypad
   - [ ] memcards
 
@@ -66,9 +73,10 @@ not complete yet, they are enough to render the bios splash screen accurately.
 
 - [x] reset vector
 - [x] tty output
-- [ ] psxtest cpu
+- [x] psxtest cpu
 - [x] shell
-- [ ] in-game
+- [x] in-game
+- [ ] good compatibility
 
 ### Time frame
 
