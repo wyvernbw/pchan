@@ -29,6 +29,7 @@ pchan-bind.workspace = true
 pchan-emu = { workspace = true, features = ["debugger-ext"] }
 pchan-encode.workspace = true
 pchan-gpu.workspace = true
+pchan-input = { version = "0.1.0", path = "../../pchan-input" }
 pchan-macros.workspace = true
 pchan-steel = { version = "0.1.0", path = "../../pchan-steel" }
 pchan-utils = { workspace = true, features = ["tracing-subscriber", "tracy", "tracy-enable"] }

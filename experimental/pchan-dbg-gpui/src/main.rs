@@ -37,7 +37,6 @@ use std::io::prelude::{Read, Write};
 use std::path::PathBuf;
 use std::time::Instant;
 
-use bumpalo::Bump;
 use gpui::prelude::*;
 use gpui::{AppContext, Render, *};
 use pchan_audio::AudioTask;
@@ -795,6 +794,7 @@ async fn emu_loop(appcx: AppCx, cx: &mut AsyncApp) {
 
         let deadline = emucx.update(cx, |emucx, cx| {
             surface.as_mut(cx).start_display_draw(&emucx.renderer);
+            emucx.input.drive_gamepads(&mut emucx.emu);
 
             let elapsed = emucx.runner.run_until_vblank_with(&mut emucx.emu, |emu| {
                 emucx.pc_history.push_overwrite(emu.cpu.pc);
@@ -1430,6 +1430,7 @@ pub struct EmuContext {
     start:              Instant,
     pc_history:         StaticRb<u32, 50>,
     content_path:       ContentPath,
+    input:              pchan_input::Input,
     alloc:              alloc::alloc::Global,
 }
 
@@ -1504,6 +1505,7 @@ impl EmuContext {
             alloc: alloc::alloc::Global,
             pc_history: StaticRb::default(),
             content_path: ContentPath::None,
+            input: pchan_input::Input::new(),
             save: false,
             load: false,
         })
