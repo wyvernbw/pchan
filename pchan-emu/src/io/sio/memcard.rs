@@ -1,7 +1,7 @@
 use pchan_encode::derive::Endecode;
 use pchan_utils::hex;
 
-use crate::io::sio::Peripheral;
+use crate::io::sio::{Peripheral, SioCtrlReg};
 
 #[derive(Default, derive_more::Debug, Clone, Endecode)]
 pub struct Memcard {
@@ -9,9 +9,17 @@ pub struct Memcard {
 }
 
 impl Peripheral for Memcard {
-    fn on_tx_write(&mut self, byte: u8, rx: &mut super::Sio0Rx) -> super::TxWriteResult {
+    fn on_tx_write(
+        &mut self,
+        byte: u8,
+        rx: &mut super::Sio0Rx,
+        ctrl: &mut SioCtrlReg,
+        irq: &mut bool,
+    ) -> super::TxWriteResult {
         tracing::info!("memcard recv: {}", hex(byte));
-        rx.push(0xff);
+        rx.send(0xff, ctrl, irq);
         super::TxWriteResult::TransferFinished
     }
+
+    fn deselect(&mut self) {}
 }

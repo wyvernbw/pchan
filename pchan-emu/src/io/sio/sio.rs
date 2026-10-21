@@ -11,14 +11,13 @@ use heapless::Deque;
 use pchan_encode::derive::Endecode;
 use pchan_utils::hex;
 
-use crate::io::evque::{EvCtx, EventId, EventKind};
+use crate::cpu::Cpu;
+use crate::io::evque::{EvCtx, EventId, EventKind, Evque};
 use crate::io::irq::Irq;
 use crate::io::sio::joypad::Joypad;
 use crate::io::sio::memcard::Memcard;
 use crate::io::{CastIOFrom, CastIOInto, UnhandledIO};
 use crate::{Emu, trace_todo};
-
-use super::irq;
 
 const HI_Z: u32 = u32::MAX;
 
@@ -35,6 +34,8 @@ pub struct SioState {
 
     sio0_rx: Sio0Rx,
     sio0_tx: Sio0Tx,
+
+    sio0_proc_tx_id: u64,
 
     pub sio0ports: Sio0Ports,
     irq_latch:     bool,
@@ -116,11 +117,21 @@ pub enum TxWriteResult {
 }
 
 pub trait Peripheral {
-    fn on_tx_write(&mut self, byte: u8, rx: &mut Sio0Rx) -> TxWriteResult;
+    fn on_tx_write(
+        &mut self,
+        byte: u8,
+        rx: &mut Sio0Rx,
+        ctrl: &mut SioCtrlReg,
+        irq_flag: &mut bool,
+    ) -> TxWriteResult;
+
+    fn deselect(&mut self);
 }
 
 #[derive(d::Deref, d::DerefMut, Debug, Default, Clone, Endecode)]
 pub struct Sio0Rx(Deque<u8, 4>);
+
+const BD_RATE: u32 = Cpu::CLOCK * 8 / 250_000;
 
 impl<A: Allocator> Emu<A> {
     #[pchan_macros::instrument(target = "sio", skip_all, fields(pc = %hex(self.cpu.pc)))]
@@ -134,7 +145,7 @@ impl<A: Allocator> Emu<A> {
                 let value = value as u8;
                 self.sio.sio0_tx_send(value);
                 self.evque
-                    .schedule(EventKind::Sio0Transfer, EventId::default(), 250_000);
+                    .schedule(EventKind::Sio0Transfer, EventId::default(), BD_RATE.into());
                 Ok(())
             }
             // 1/4  SIO_DATA Serial Port Data (R/W)
@@ -156,8 +167,8 @@ impl<A: Allocator> Emu<A> {
             0x1f80104a => {
                 self.sio
                     .write_sio0_ctrl(SioCtrlReg::new_with_raw_value(value.io_into_u32()));
-                if let Some((event, in_cycles)) = self.sio.sio0_run_transfer() {
-                    self.sio_schedule_event(event, in_cycles);
+                if self.sio.sio0_run_transfer() {
+                    self.sio.schedule_proc_tx(&mut self.evque);
                 }
                 Ok(())
             }
@@ -176,7 +187,7 @@ impl<A: Allocator> Emu<A> {
             0x1f80105c => trace_todo!("todo(sio): write to sio1 (serial port) internal"),
             _ => Err(UnhandledIO(address)),
         }
-        // .inspect(|_| tracing::info!("w(sio): {}", hex(address)))
+        // .inspect(|_| tracing::info!("w(sio): [{}]={}", hex(address), hex(value)))
     }
     #[pchan_macros::instrument(target = "sio", skip_all, fields(pc = %hex(self.cpu.pc)))]
     pub fn sio_read<T: Copy>(&mut self, address: u32) -> Result<T, UnhandledIO> {
@@ -291,7 +302,10 @@ impl<A: Allocator> Emu<A> {
             .schedule(ev.to_callback(), EventId::default(), in_cycles);
     }
 
-    pub(crate) fn handle_ev_sio0_tx_proc(&mut self, _: EvCtx) {
+    pub(crate) fn handle_ev_sio0_tx_proc(&mut self, ctx: EvCtx) {
+        if ctx.id < self.sio.sio0_proc_tx_id {
+            return;
+        };
         self.sio0_tx_proc();
     }
 
@@ -307,53 +321,71 @@ impl<A: Allocator> Emu<A> {
     }
 
     pub fn sio0_tx_proc(&mut self) {
-        let Some(value) = self.sio.sio0_tx_pop() else {
+        let Some(value) = self.sio.sio0_tx_pop(&mut self.evque) else {
+            self.sio.sio0stat.set_tx_idle(true);
             return;
         };
 
         debug_assert!(self.sio.sio0stat.tx_not_full(), "tx must be mid transfer");
 
+        let mut irq_flag = false;
         let tx_write_result: Option<TxWriteResult> = match (self.sio.sio0_selected_device(), value)
         {
             (None, 0x01) => {
                 self.sio0_select(PeripheralKind::Joypad);
-                let ctrl = self.sio.sio0ctrl;
-                if ctrl.rx_on() | ctrl.dtr_out_lvl() {
-                    self.sio.sio0_rx.push(HI_Z as u8);
+                if self.sio.sio0ctrl.rx_on() | self.sio.sio0ctrl.dtr_out_lvl() {
+                    self.sio.sio0_rx.push(0xFF);
                 }
                 Some(TxWriteResult::Ok)
             }
             (None, 0x81) => {
                 tracing::info!(target:"sio", "select memcard");
                 self.sio0_select(PeripheralKind::Memcard);
-                let ctrl = self.sio.sio0ctrl;
-                if ctrl.rx_on() | ctrl.dtr_out_lvl() {
-                    self.sio.sio0_rx.push(HI_Z as u8);
+                if self.sio.sio0ctrl.rx_on() | self.sio.sio0ctrl.dtr_out_lvl() {
+                    self.sio.sio0_rx.push(0xFF);
                 }
                 Some(TxWriteResult::Ok)
             }
-            (None, _) => return,
+            (None, byte) => todo!("sio0 select device w/ address byte {byte}"),
             (Some(device), byte) => {
                 let port = self.sio.sio0ctrl.sio0_port();
                 if self.sio.sio0ports.is_connected(port) {
                     let port = self.sio.view_serial_port(port);
                     match device {
-                        PeripheralKind::Joypad => Some(port.port.joypad.on_tx_write(byte, port.rx)),
-                        PeripheralKind::Memcard => {
-                            Some(port.port.joypad.on_tx_write(byte, port.rx))
-                        }
+                        PeripheralKind::Joypad => Some(port.port.joypad.on_tx_write(
+                            byte,
+                            port.rx,
+                            port.ctrl,
+                            &mut irq_flag,
+                        )),
+                        PeripheralKind::Memcard => Some(port.port.memcard.on_tx_write(
+                            byte,
+                            port.rx,
+                            port.ctrl,
+                            &mut irq_flag,
+                        )),
                     }
                 } else {
                     None
                 }
             }
         };
+
+        if irq_flag {
+            self.sio.sio0stat.set_irq(true);
+            self.sio_schedule_event(SioEvent::Sio0Irq, 100);
+        }
+
         let rx_empty = self.sio.sio0_rx.is_empty();
         self.sio.sio0stat.set_rx_not_empty(!rx_empty);
-        if let Some(tx_write_result) = tx_write_result {
-            match tx_write_result {
+        match tx_write_result {
+            None => {
+                if self.sio.sio0ctrl.rx_on() | self.sio.sio0ctrl.dtr_out_lvl() {
+                    self.sio.sio0_rx.push(0xFF);
+                }
+            }
+            Some(tx_write_result) => match tx_write_result {
                 TxWriteResult::Ok => {
-                    self.sio.sio0stat.set_tx_idle(true);
                     let port = self.sio.sio0ctrl.sio0_port();
                     if self.sio.sio0ports.is_connected(port) {
                         self.sio.sio0stat.set_dsr_in_lvl(true);
@@ -369,39 +401,26 @@ impl<A: Allocator> Emu<A> {
                     }
                 }
                 TxWriteResult::TransferFinished => {
-                    // self.sio.sio0ctrl.set_dtr_out_lvl(false);
-                    // self.sio0_deselect();
+                    self.sio.sio0_deselect();
                 }
-            }
+            },
         }
     }
 
     pub(crate) fn handle_ev_sio0_transfer(&mut self, _: EvCtx) {
-        if let Some((ev, in_cycles)) = self.sio.sio0_run_transfer() {
-            self.sio_schedule_event(ev, in_cycles);
+        if self.sio.sio0_run_transfer() {
+            self.sio.schedule_proc_tx(&mut self.evque);
         }
     }
 
     fn sio0_select(&mut self, device: PeripheralKind) {
         self.sio.sio0ports.selected = Some(device);
     }
-
-    fn sio0_deselect(&mut self) {
-        self.sio.sio0ports.selected = None;
-    }
-
-    fn sio0_rx_send(&mut self, value: u8) {
-        self.sio.sio0_rx.push(value);
-        let rx_len = 1usize << (self.sio.sio0ctrl.rx_irq_mode() as usize);
-        if self.sio.sio0_rx.len() == rx_len && self.sio.sio0ctrl.rx_irq_on() {
-            self.irq_trigger(irq::Irq::Irq7JoypadAndMemcard);
-            // self.irq_trigger(irq::Irq::Irq8Sio);
-        }
-    }
 }
 
 struct SerialPortViewMut<'a> {
     port: &'a mut PortState,
+    ctrl: &'a mut SioCtrlReg,
     rx:   &'a mut Sio0Rx,
 }
 
@@ -410,6 +429,7 @@ impl SioState {
         SerialPortViewMut {
             port: &mut self.sio0ports.ports[port as usize],
             rx:   &mut self.sio0_rx,
+            ctrl: &mut self.sio0ctrl,
         }
     }
 }
@@ -446,7 +466,7 @@ const fn sio_idx(addr: u32, base: u32, stride: u32) -> Option<usize> {
 /// (asserted) and cleared when it is high. Bits 4-6 and 8 are always zero. The
 /// number of bits actually used by the baud rate timer is probably affected by
 /// the reload factor set in `SIO_MODE`.
-#[bitfield(u32, debug, default = 0b001)]
+#[bitfield(u32, debug, default = 0b101)]
 #[derive(Endecode)]
 struct SioStatusReg {
     /// `SIO_STAT.0`
@@ -515,7 +535,8 @@ struct SioStatusReg {
 /// DSR (/ACK) interrupt.
 #[bitfield(u32, debug, default = 0x0)]
 #[derive(Endecode)]
-struct SioCtrlReg {
+#[must_use]
+pub struct SioCtrlReg {
     #[bit(0, rw)]
     tx_on:       bool,
     /// `SIO#_CTRL.bit2`
@@ -670,32 +691,46 @@ impl SioState {
         }
     }
 
-    fn sio0_run_transfer(&mut self) -> Option<(SioEvent, u64)> {
+    fn sio0_run_transfer(&mut self) -> bool {
         if self.sio0ctrl.tx_on() {
             match self.sio0_tx {
                 Sio0Tx::Queued(value) => {
                     self.sio0_tx = Sio0Tx::Transferring(value, None);
                     self.sio0stat.set_tx_not_full(true);
-                    return Some((SioEvent::Sio0ProcTx, 100));
+                    return true;
                 }
                 Sio0Tx::Idle | Sio0Tx::Transferring(_, _) => {}
             }
-        } else if let Sio0Tx::Transferring(_, Some(next)) = self.sio0_tx {
-            self.sio0_tx = Sio0Tx::Queued(next)
         }
-
-        None
+        false
     }
 
-    fn sio0_tx_pop(&mut self) -> Option<u8> {
+    fn schedule_proc_tx<A: Allocator>(&mut self, evque: &mut Evque<A>) {
+        self.sio0_proc_tx_id += 1;
+        evque.schedule(EventKind::Sio0ProcTx, self.sio0_proc_tx_id, BD_RATE.into());
+    }
+
+    fn sio0_stop_tx(&mut self) {
+        self.sio0_tx = Sio0Tx::Idle;
+        self.sio0stat.set_tx_not_full(true);
+        self.sio0stat.set_tx_idle(true);
+        self.sio0_proc_tx_id += 1;
+    }
+
+    fn sio0_tx_pop<A: Allocator>(&mut self, evque: &mut Evque<A>) -> Option<u8> {
         match self.sio0_tx {
-            Sio0Tx::Idle | Sio0Tx::Queued(_) => None,
+            Sio0Tx::Idle => None,
             Sio0Tx::Transferring(value, Some(next)) => {
                 self.sio0_tx = Sio0Tx::Transferring(next, None);
                 self.sio0stat.set_tx_not_full(true);
+                self.schedule_proc_tx(evque);
                 Some(value)
             }
             Sio0Tx::Transferring(value, None) => {
+                self.sio0_stop_tx();
+                Some(value)
+            }
+            Sio0Tx::Queued(value) => {
                 self.sio0_tx = Sio0Tx::Idle;
                 self.sio0stat.set_tx_not_full(true);
                 Some(value)
@@ -709,8 +744,8 @@ impl SioState {
         self.sio0ctrl = ctrl;
         let port = self.sio0ctrl.sio0_port();
         if old_port != port || !self.sio0ctrl.dtr_out_lvl() {
-            self.sio0ports.selected = None;
-            self.sio0_tx = Sio0Tx::Idle;
+            self.sio0_deselect();
+            self.sio0_stop_tx();
         }
 
         if ctrl.ack() {
@@ -722,7 +757,8 @@ impl SioState {
             self.sio0mode = SioModeReg::default();
             self.sio0stat = SioStatusReg::default();
             self.sio0ctrl = SioCtrlReg::default();
-            self.sio0_tx = Sio0Tx::Idle;
+            self.sio0_deselect();
+            self.sio0_stop_tx();
             self.sio0_rx.clear();
         }
 
@@ -735,7 +771,7 @@ impl SioState {
             port = ?self.sio0ctrl.sio0_port(),
             "/CS"=self.sio0ctrl.dtr_out_lvl(),
             rxen = ?usize::from(self.sio0ctrl.rx_on()),
-            "read"
+            "write"
         );
     }
 
@@ -746,7 +782,7 @@ impl SioState {
             port = ?self.sio0ctrl.sio0_port(),
             "/CS"=self.sio0ctrl.dtr_out_lvl(),
             rxen = ?usize::from(self.sio0ctrl.rx_on()),
-            "write"
+            "read"
         );
         self.sio0ctrl
     }
@@ -772,6 +808,14 @@ impl SioState {
 
         bd / 2
     }
+
+    fn sio0_deselect(&mut self) {
+        self.sio0ports.selected = None;
+        for port in &mut self.sio0ports.ports {
+            port.joypad.deselect();
+            port.memcard.deselect();
+        }
+    }
 }
 
 impl Sio0Ports {
@@ -792,5 +836,13 @@ impl Sio0Rx {
         }
         let res = self.push_back(value);
         debug_assert!(res.is_ok(), "cannot be full")
+    }
+
+    fn send(&mut self, value: u8, ctrl: &mut SioCtrlReg, irq_flag: &mut bool) {
+        self.push(value);
+        let rx_len = 1usize << (ctrl.rx_irq_mode() as usize);
+        if self.len() == rx_len && ctrl.rx_irq_on() {
+            *irq_flag = true;
+        }
     }
 }

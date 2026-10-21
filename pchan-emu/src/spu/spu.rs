@@ -13,13 +13,13 @@ use pchan_bind::{AudioProducer, BindAudioProducer};
 use pchan_encode::derive::Endecode;
 use pchan_utils::hex;
 
-use crate::Emu;
 use crate::io::evque::{EvCtx, EventId, EventKind};
 use crate::io::{CastIOFrom, CastIOInto, IOResult, UnhandledIO};
 use crate::memory::kb;
 use crate::spu::adpcm::{ADPCMCurrent, ADPCMHeader, ADPCMRepeat, ADPCMSampleRate, ADPCMStart};
 use crate::spu::adsr::{ADSRState, EnvelopePhase, apply_volume};
 use crate::spu::reverb::Reverb;
+use crate::{Emu, trace_todo};
 
 #[derive(derive_more::Debug, Endecode)]
 pub struct SpuState<A: Allocator> {
@@ -208,6 +208,8 @@ impl<A: Allocator> Emu<A> {
             0x1f801d98 => Ok(self.spu.reverb.on_off.lower().io_from_u32()),
             0x1f801d9a => Ok(self.spu.reverb.on_off.upper().io_from_u32()),
 
+            0x1f801da4 => trace_todo!(0, "w(spu): write at interrupt register"),
+
             0x1f801daa => Ok(self.spu.ctrl.io_from_u32()),
 
             0x1f801db8 => Ok(self.spu.adsr.main_l.internal[0].io_from_u32()),
@@ -364,6 +366,8 @@ impl<A: Allocator> Emu<A> {
                 self.spu.reverb.on_off.set_upper(value);
                 Ok(())
             }
+
+            0x1f801da4 => trace_todo!("w(spu): write at interrupt register"),
 
             0x1f801dc0..=0x1f801dfe => {
                 self.spu_reverb_write(address, value);

@@ -3,11 +3,13 @@ use core::{cmp, mem};
 
 use heapless::BinaryHeap;
 use heapless::binary_heap::Min;
+use pchan_encode::Allocate;
 use pchan_encode::derive::Endecode;
-use pchan_encode::{Allocate, Endecode};
-use slotmap::{KeyData, new_key_type};
 
 use crate::Emu;
+
+/// for compatiblity with older code
+pub type EventId = u64;
 
 #[derive(Debug, Clone, Copy, Endecode, Default)]
 pub enum EventKind {
@@ -52,51 +54,9 @@ pub struct Evque<A: Allocator> {
     tasks: Vec<Task, A>,
 }
 
-new_key_type! {
-    pub struct EventId;
-}
-
-impl<A: Allocator> Endecode<A> for EventId {
-    fn endecode(
-        &mut self,
-        sink: &mut impl pchan_encode::Stream,
-        alloc: A,
-    ) -> Result<(), pchan_encode::EndecodeError> {
-        self.0.endecode(sink, alloc)
-    }
-
-    fn size() -> Result<Option<usize>, pchan_encode::EndecodeError> {
-        <KeyData as Endecode<A>>::size()
-    }
-}
-
-new_key_type! {
-    pub struct TaskId;
-}
-
-impl<A: Allocator> Endecode<A> for TaskId {
-    fn endecode(
-        &mut self,
-        sink: &mut impl pchan_encode::Stream,
-        alloc: A,
-    ) -> Result<(), pchan_encode::EndecodeError> {
-        self.0.endecode(sink, alloc)
-    }
-
-    fn size() -> Result<Option<usize>, pchan_encode::EndecodeError> {
-        <KeyData as Endecode<A>>::size()
-    }
-}
-
-impl<A: Allocator> Allocate<A> for EventId {
-    fn new_in(_: A) -> Self {
-        Self::default()
-    }
-}
-
 #[derive(Default)]
 pub struct EvCtx {
-    pub id:        EventId,
+    pub id:        u64,
     pub clock:     u64,
     pub overshoot: u64,
 }
@@ -106,7 +66,7 @@ pub struct EvCtx {
 pub struct PchanEvent {
     at_cycle: u64,
     event:    EventKind,
-    id:       EventId,
+    id:       u64,
 }
 
 impl<A: Allocator + Copy> Allocate<A> for Evque<A> {
@@ -214,7 +174,7 @@ impl<A: Allocator> Evque<A> {
             _ => None,
         }
     }
-    pub fn schedule_from(&mut self, kind: EventKind, id: EventId, from_clock: u64, in_cycles: u64) {
+    pub fn schedule_from(&mut self, kind: EventKind, id: u64, from_clock: u64, in_cycles: u64) {
         let ev = PchanEvent {
             at_cycle: from_clock.wrapping_add(in_cycles),
             event: kind,
@@ -224,7 +184,7 @@ impl<A: Allocator> Evque<A> {
         debug_assert!(res.is_ok(), "evque is too small");
     }
 
-    pub fn schedule(&mut self, kind: EventKind, id: EventId, in_cycles: u64) {
+    pub fn schedule(&mut self, kind: EventKind, id: u64, in_cycles: u64) {
         self.schedule_from(kind, id, self.clock, in_cycles);
     }
 

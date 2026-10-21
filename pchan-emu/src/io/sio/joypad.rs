@@ -5,7 +5,7 @@ use pchan_bind::input::{InputEvent, PchanButton};
 use pchan_encode::derive::Endecode;
 
 use crate::Emu;
-use crate::io::sio::{Peripheral, Sio0Port, TxWriteResult};
+use crate::io::sio::{Peripheral, Sio0Port, SioCtrlReg, TxWriteResult};
 
 use super::Sio0Rx;
 
@@ -42,26 +42,38 @@ impl Joypad {
 }
 
 impl Peripheral for Joypad {
-    fn on_tx_write(&mut self, byte: u8, rx: &mut Sio0Rx) -> TxWriteResult {
+    fn on_tx_write(
+        &mut self,
+        byte: u8,
+        rx: &mut Sio0Rx,
+        ctrl: &mut SioCtrlReg,
+        irq: &mut bool,
+    ) -> TxWriteResult {
         match (&self.state, byte) {
-            (JoypadState::Idle, 0x42) => {
-                rx.push(self.id as u8);
-                self.state = JoypadState::WaitTap;
+            (JoypadState::Idle, cmd) => {
+                rx.send(self.id as u8, ctrl, irq);
+                match cmd {
+                    0x42 => {
+                        self.state = JoypadState::WaitTap;
+                    }
+                    _ => {
+                        self.state = JoypadState::Idle;
+                    }
+                }
                 TxWriteResult::Ok
             }
-            (JoypadState::Idle, _) => TxWriteResult::TransferFinished,
             (JoypadState::WaitTap, _) => {
-                rx.push(0x5a);
+                rx.send(0x5a, ctrl, irq);
                 self.state = JoypadState::WaitMot1;
                 TxWriteResult::Ok
             }
             (JoypadState::WaitMot1, _) => {
-                rx.push(self.switches.lower());
+                rx.send(self.switches.lower(), ctrl, irq);
                 self.state = JoypadState::WaitMot2;
                 TxWriteResult::Ok
             }
             (JoypadState::WaitMot2, _) => {
-                rx.push(self.switches.upper());
+                rx.send(self.switches.upper(), ctrl, irq);
                 match self.id {
                     ControllerId::DigitalPad => {
                         self.state = JoypadState::Idle;
@@ -70,6 +82,10 @@ impl Peripheral for Joypad {
                 }
             }
         }
+    }
+
+    fn deselect(&mut self) {
+        self.state = JoypadState::Idle;
     }
 }
 
