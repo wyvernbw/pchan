@@ -53,6 +53,7 @@ pub enum Irq {
     Irq5Timer1           = 0x5,
     Irq6Timer2           = 0x6,
     Irq7JoypadAndMemcard = 0x7,
+    Irq8Sio              = 0x8,
 }
 
 impl IrqState {

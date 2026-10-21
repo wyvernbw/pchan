@@ -44,7 +44,7 @@ pub struct SioState {
 pub enum SioEvent {
     Sio0ProcTx,
     Sio0Irq,
-    Sio0Ack,
+    Sio0PulseAck,
 }
 
 impl SioEvent {
@@ -55,7 +55,7 @@ impl SioEvent {
             // SioEvent::Sio0Ack => Emu::<A>::handle_ev_sio0_ack,
             SioEvent::Sio0ProcTx => EventKind::Sio0ProcTx,
             SioEvent::Sio0Irq => EventKind::Sio0Irq,
-            SioEvent::Sio0Ack => EventKind::Sio0Ack,
+            SioEvent::Sio0PulseAck => EventKind::Sio0Ack,
         }
     }
 }
@@ -295,11 +295,10 @@ impl<A: Allocator> Emu<A> {
         self.sio0_tx_proc();
     }
 
-    pub(crate) fn handle_ev_sio0_irq(&mut self, ctx: EvCtx) {
+    pub(crate) fn handle_ev_sio0_irq(&mut self, _: EvCtx) {
         self.sio.irq_latch = false;
-        let cycles = self.sio.sio_cycles();
         self.irq_trigger(Irq::Irq7JoypadAndMemcard);
-        self.sio_schedule_event_from(SioEvent::Sio0Ack, ctx.clock, cycles.into());
+        // self.irq_trigger(irq::Irq::Irq8Sio);
     }
 
     pub(crate) fn handle_ev_sio0_ack(&mut self, _: EvCtx) {
@@ -357,24 +356,21 @@ impl<A: Allocator> Emu<A> {
                     self.sio.sio0stat.set_tx_idle(true);
                     let port = self.sio.sio0ctrl.sio0_port();
                     if self.sio.sio0ports.is_connected(port) {
+                        self.sio.sio0stat.set_dsr_in_lvl(true);
+                        self.evque
+                            .schedule(EventKind::Sio0Ack, EventId::default(), 200);
                         if self.sio.sio0ctrl.dsr_irq_on() && self.sio.sio0ctrl.tx_on() {
-                            if !self.sio.sio0stat.dsr_in_lvl() {
-                                self.sio.sio0stat.set_irq(true);
-                            }
-                            if self.sio.sio0stat.irq() && !self.sio.irq_latch {
+                            self.sio.sio0stat.set_irq(true);
+                            if !self.sio.irq_latch {
                                 self.sio.irq_latch = true;
                                 self.sio_schedule_event(SioEvent::Sio0Irq, 100);
                             }
-                            self.sio.sio0stat.set_dsr_in_lvl(true);
                         }
-                    } else {
-                        self.sio.sio0ctrl.set_dtr_out_lvl(false);
-                        self.sio0_deselect();
                     }
                 }
                 TxWriteResult::TransferFinished => {
-                    self.sio.sio0ctrl.set_dtr_out_lvl(false);
-                    self.sio0_deselect();
+                    // self.sio.sio0ctrl.set_dtr_out_lvl(false);
+                    // self.sio0_deselect();
                 }
             }
         }
@@ -399,6 +395,7 @@ impl<A: Allocator> Emu<A> {
         let rx_len = 1usize << (self.sio.sio0ctrl.rx_irq_mode() as usize);
         if self.sio.sio0_rx.len() == rx_len && self.sio.sio0ctrl.rx_irq_on() {
             self.irq_trigger(irq::Irq::Irq7JoypadAndMemcard);
+            // self.irq_trigger(irq::Irq::Irq8Sio);
         }
     }
 }
@@ -475,7 +472,9 @@ struct SioStatusReg {
     sio1_cts_in_lvl:  bool,
 
     /// `SIO_STAT.7`
+    /// wired to `/ACK`
     #[bit(7, rw)]
+    #[doc(alias = "/ACK")]
     dsr_in_lvl: bool,
     /// `SIO_STAT.9`
     #[bit(9, rw)]
@@ -519,7 +518,10 @@ struct SioStatusReg {
 struct SioCtrlReg {
     #[bit(0, rw)]
     tx_on:       bool,
+    /// `SIO#_CTRL.bit2`
+    /// wired to `/CS`
     #[bit(1, rw)]
+    #[doc(alias = "/CS")]
     dtr_out_lvl: bool,
     #[bit(2, rw)]
     rx_on:       bool,
@@ -727,11 +729,25 @@ impl SioState {
         self.sio0ctrl.set_ack(false);
         self.sio0ctrl.set_reset(false);
 
-        tracing::info!(target:"sio", ack=ctrl.ack(), port = ?self.sio0ctrl.sio0_port(), "/CS"=self.sio0ctrl.dtr_out_lvl(), rxen = ?usize::from(self.sio0ctrl.rx_on()));
+        tracing::info!(
+            target:"sio",
+            ack=ctrl.ack(),
+            port = ?self.sio0ctrl.sio0_port(),
+            "/CS"=self.sio0ctrl.dtr_out_lvl(),
+            rxen = ?usize::from(self.sio0ctrl.rx_on()),
+            "read"
+        );
     }
 
     fn read_sio0_ctrl(&self) -> SioCtrlReg {
-        tracing::info!(target:"sio", port = ?self.sio0ctrl.sio0_port(), "/CS"=self.sio0ctrl.dtr_out_lvl(), rxen = ?usize::from(self.sio0ctrl.rx_on()));
+        tracing::debug!(
+            target:"sio",
+            ack=self.sio0ctrl.ack(),
+            port = ?self.sio0ctrl.sio0_port(),
+            "/CS"=self.sio0ctrl.dtr_out_lvl(),
+            rxen = ?usize::from(self.sio0ctrl.rx_on()),
+            "write"
+        );
         self.sio0ctrl
     }
 

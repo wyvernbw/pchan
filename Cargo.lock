@@ -6029,6 +6029,7 @@ dependencies = [
  "pchan-emu",
  "pchan-encode",
  "pchan-gpu",
+ "pchan-input",
  "pchan-macros",
  "pchan-steel",
  "pchan-utils",
@@ -6134,6 +6135,7 @@ dependencies = [
  "pchan-bind",
  "pchan-emu",
  "sdl2",
+ "tracing",
 ]
 
 [[package]]
