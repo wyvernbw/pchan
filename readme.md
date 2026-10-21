@@ -25,6 +25,7 @@ cargo run -p pchan-dbg-v2 -- game.exe
 
 All games will have some graphical glitches because the gpu isn't done yet.
 Games I'm testing:
+
 - MK2: **playable**
 - Crash Bandicoot: **in-game**, 3d is broken (duh)
 - Ridge Racer: **intro** (cdrom issue)
@@ -32,6 +33,7 @@ Games I'm testing:
 - FF7: **no boot**
 - Silent Hill: **no boot**
 
+Progress:
 - [x] memory
   - [x] fastmem (bios and ram)
   - [x] io interface
