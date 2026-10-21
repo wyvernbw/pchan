@@ -83,6 +83,9 @@ pub(crate) enum CommandStateV2 {
     GetTNInt3,
 
     GetTDInt3(Bcd),
+
+    StopInt3,
+    StopInt2,
 }
 
 const NOP_TIMING: u32 = 0x000c4e1;
@@ -117,6 +120,12 @@ impl<A: Allocator> Emu<A> {
                 self.cdrom_continue_cmd(CommandStateV2::ReadNInt3);
                 self.cdrom_queue_response(NOP_TIMING);
             }
+            // Stop - Command 08h --> INT3(stat) --> INT2(stat)
+            0x08 => {
+                self.cdrom_continue_cmd(CommandStateV2::StopInt3);
+                self.cdrom_queue_response(NOP_TIMING);
+            }
+
             // Demute - Command 0Ch --> INT3(stat)
             0x0c => {
                 self.cdrom_continue_cmd(CommandStateV2::DemuteInt3);
@@ -419,6 +428,39 @@ impl<A: Allocator> Emu<A> {
                     min.raw_value(),
                     sec.raw_value(),
                 ]));
+                self.cdrom_end_cmd();
+            }
+
+            CommandStateV2::StopInt3 => {
+                let cue_sheet = self
+                    .cdrom
+                    .drive
+                    .get_toc()
+                    .expect("todo: called GetTN without a disc. error int5");
+
+                // move drive head to start of first track
+                let start = cue_sheet.tracks[0].index_list[0].clone();
+                self.cdrom.drive.setloc(Mss {
+                    min:  start.min,
+                    sec:  start.second,
+                    sect: start.sect,
+                });
+                self.cdrom.drive.setloc_armed = true;
+                self.cdrom.drive.seek_to_cursor();
+
+                tracing::info!(target: "cdrom", "Stop");
+
+                // this command returns the status code with bit 5 already set to 0
+                self.cdrom.drive.status_code.set_read(false);
+                let status = self.cdrom.drive.status_code;
+
+                self.cdrom_send_response_v2(int3(status));
+                self.cdrom_continue_cmd(CommandStateV2::StopInt2);
+                self.cdrom_queue_response(Cpu::CLOCK * 9 / 10);
+            }
+            CommandStateV2::StopInt2 => {
+                self.cdrom.drive.status_code.set_spindle_mot(false);
+                self.cdrom_send_response_v2(int2(self.cdrom.drive.status_code));
                 self.cdrom_end_cmd();
             }
         }
