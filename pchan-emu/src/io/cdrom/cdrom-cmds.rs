@@ -79,6 +79,10 @@ pub(crate) enum CommandStateV2 {
 
     InitInt3,
     InitInt2,
+
+    GetTNInt3,
+
+    GetTDInt3(Bcd),
 }
 
 const NOP_TIMING: u32 = 0x000c4e1;
@@ -135,6 +139,17 @@ impl<A: Allocator> Emu<A> {
             0x0a => {
                 self.cdrom_continue_cmd(CommandStateV2::InitInt3);
                 self.cdrom_queue_response(INIT_TIMING);
+            }
+            // GetTN - Command 13h --> INT3(stat,first,last) ;BCD
+            0x13 => {
+                self.cdrom_continue_cmd(CommandStateV2::GetTNInt3);
+                self.cdrom_queue_response(NOP_TIMING);
+            }
+            // GetTD - Command 14h,track --> INT3(stat,mm,ss) ;BCD
+            0x14 => {
+                let n = self.cdrom.get_param::<Bcd>();
+                self.cdrom_continue_cmd(CommandStateV2::GetTDInt3(n));
+                self.cdrom_queue_response(NOP_TIMING);
             }
             // `SeekL` - Command 15h --> INT3(stat) --> INT2(stat)
             0x15 => {
@@ -356,6 +371,54 @@ impl<A: Allocator> Emu<A> {
                 self.cdrom.drive.spin_up();
                 self.cdrom.drive.cursor = CdromCursor::default();
                 self.cdrom_send_response_v2(int2(status));
+                self.cdrom_end_cmd();
+            }
+
+            CommandStateV2::GetTNInt3 => {
+                let cue_sheet = self
+                    .cdrom
+                    .drive
+                    .get_toc()
+                    .expect("todo: called GetTN without a disc. error int5");
+                let first = 1;
+                let last = cue_sheet.tracks.last().map_or(1, |track| track.number);
+
+                tracing::info!(target: "cdrom", "GetTN\t\t{first},{last}");
+
+                let first = Bcd::from_binary(first).raw_value();
+                let last = Bcd::from_binary(last).raw_value();
+
+                self.cdrom_send_response_v2(int3([status.raw_value(), first, last]));
+                self.cdrom_end_cmd();
+            }
+
+            CommandStateV2::GetTDInt3(n) => {
+                let cue_sheet = self
+                    .cdrom
+                    .drive
+                    .get_toc()
+                    .expect("todo: called GetTN without a disc. error int5");
+                let idx = n.unpack();
+
+                let track = if idx == 0 {
+                    cue_sheet.tracks.last().expect("todo: no tracks on disc")
+                } else {
+                    &cue_sheet.tracks[usize::from(idx) - 1]
+                };
+
+                let min = track.index_list[0].min;
+                let sec = track.index_list[0].second;
+
+                tracing::info!(target: "cdrom", "GetTD\t\t{min:02},{sec:02}");
+
+                let min = Bcd::from_binary(track.index_list[0].min);
+                let sec = Bcd::from_binary(track.index_list[0].second);
+
+                self.cdrom_send_response_v2(int3([
+                    status.raw_value(),
+                    min.raw_value(),
+                    sec.raw_value(),
+                ]));
                 self.cdrom_end_cmd();
             }
         }

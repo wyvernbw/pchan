@@ -7,6 +7,7 @@ use pchan_encode::Allocate;
 use pchan_encode::derive::Endecode;
 
 use crate::Emu;
+use crate::memory::mb;
 
 /// for compatiblity with older code
 pub type EventId = u64;
@@ -74,7 +75,7 @@ impl<A: Allocator + Copy> Allocate<A> for Evque<A> {
         Evque {
             clock: 0,
             queue: Box::new_in(BinaryHeap::new(), alloc),
-            tasks: Vec::with_capacity_in(512, alloc),
+            tasks: Vec::with_capacity_in(mb(1), alloc),
         }
     }
 }

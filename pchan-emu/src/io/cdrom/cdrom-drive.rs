@@ -12,7 +12,7 @@ use crate::Emu;
 use crate::cpu::{Cpu, cycles_to_ms};
 use crate::io::cdrom::cdrom_cmds::{CommandStateV2, SetMode, SetModeSpeed, StatusCode};
 use crate::io::cdrom::cdrom_format::{
-    CdromCursor, CueFormat, CueFormatParseErr, Mss, SECTOR_USER_SIZE,
+    CdromCursor, CueFormatParseErr, CueSheet, Mss, SECTOR_USER_SIZE,
 };
 use crate::io::cdrom::{CDRomStatusReg, DriveStatus};
 use crate::io::evque::EventId;
@@ -223,6 +223,10 @@ impl CdromDrive {
     pub fn current_seek_time(&self) -> u64 {
         self.seek_time(self.old_cursor.lba, self.cursor.lba)
     }
+
+    pub fn get_toc(&mut self) -> Option<&CueSheet> {
+        self.disc.as_mut().map(|disc| disc.get_toc())
+    }
 }
 
 impl CommandState {
@@ -328,7 +332,7 @@ impl InMemoryDiskReader {
 
 #[derive(derive_more::Debug)]
 pub enum Disc {
-    CueBin(CueFormat, DiscReader),
+    CueBin(CueSheet, DiscReader),
     Raw(DiscReader),
 }
 
@@ -336,7 +340,7 @@ impl Disc {
     pub fn seek(&mut self, to: CdromCursor) -> std::io::Result<()> {
         let (padding, reader) = match self {
             Disc::CueBin(cue_format, disc_reader) => (
-                u32::from(cue_format.index_list[0].second) * 75 * SECTOR_USER_SIZE as u32,
+                u32::from(cue_format.tracks[0].index_list[0].second) * 75 * SECTOR_USER_SIZE as u32,
                 disc_reader,
             ),
             Disc::Raw(disc_reader) => (0, disc_reader),
@@ -354,11 +358,20 @@ impl Disc {
             Disc::Raw(disc_reader) => disc_reader.readn(cursor),
         }
     }
+
+    pub fn get_toc(&mut self) -> &CueSheet {
+        match self {
+            Disc::CueBin(cue_format, _disc_reader) => cue_format,
+            Disc::Raw(_disc_reader) => {
+                todo!("read toc from raw cd data")
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
 pub enum OpenDiscFSM {
-    NeedBin(CueFormat),
+    NeedBin(CueSheet),
     Done,
 }
 
@@ -385,7 +398,7 @@ impl<A: Allocator + Copy> Emu<A> {
                 let mut buf = String::new();
                 let n = format.read_to_string(&mut buf)?;
                 let buf = &buf[..n];
-                let cue = buf.parse::<CueFormat>()?;
+                let cue = buf.parse::<CueSheet>()?;
                 Ok(OpenDiscFSM::NeedBin(cue))
             }
             _ => self
