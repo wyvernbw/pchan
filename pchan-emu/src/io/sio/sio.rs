@@ -329,6 +329,7 @@ impl<A: Allocator> Emu<A> {
         debug_assert!(self.sio.sio0stat.tx_not_full(), "tx must be mid transfer");
 
         let mut irq_flag = false;
+        let mut on_memcard = false;
         let tx_write_result: Option<TxWriteResult> = match (self.sio.sio0_selected_device(), value)
         {
             (None, 0x01) => {
@@ -340,6 +341,7 @@ impl<A: Allocator> Emu<A> {
             }
             (None, 0x81) => {
                 tracing::info!(target:"sio", "select memcard");
+                on_memcard = true;
                 self.sio0_select(PeripheralKind::Memcard);
                 if self.sio.sio0ctrl.rx_on() | self.sio.sio0ctrl.dtr_out_lvl() {
                     self.sio.sio0_rx.push(0xFF);
@@ -372,17 +374,17 @@ impl<A: Allocator> Emu<A> {
         };
 
         if irq_flag {
+            assert!(!on_memcard);
             self.sio.sio0stat.set_irq(true);
             self.sio_schedule_event(SioEvent::Sio0Irq, 100);
         }
 
         let rx_empty = self.sio.sio0_rx.is_empty();
         self.sio.sio0stat.set_rx_not_empty(!rx_empty);
+        self.sio.sio0stat.set_dsr_in_lvl(false);
         match tx_write_result {
             None => {
-                if self.sio.sio0ctrl.rx_on() | self.sio.sio0ctrl.dtr_out_lvl() {
-                    self.sio.sio0_rx.push(0xFF);
-                }
+                self.sio.sio0_deselect();
             }
             Some(tx_write_result) => match tx_write_result {
                 TxWriteResult::Ok => {
@@ -396,6 +398,7 @@ impl<A: Allocator> Emu<A> {
                             if !self.sio.irq_latch {
                                 self.sio.irq_latch = true;
                                 self.sio_schedule_event(SioEvent::Sio0Irq, 100);
+                                assert!(!on_memcard);
                             }
                         }
                     }
@@ -539,7 +542,7 @@ struct SioStatusReg {
 pub struct SioCtrlReg {
     #[bit(0, rw)]
     tx_on:       bool,
-    /// `SIO#_CTRL.bit2`
+    /// `SIO#_CTRL.bit1`
     /// wired to `/CS`
     #[bit(1, rw)]
     #[doc(alias = "/CS")]
@@ -839,10 +842,12 @@ impl Sio0Rx {
     }
 
     fn send(&mut self, value: u8, ctrl: &mut SioCtrlReg, irq_flag: &mut bool) {
-        self.push(value);
-        let rx_len = 1usize << (ctrl.rx_irq_mode() as usize);
-        if self.len() == rx_len && ctrl.rx_irq_on() {
-            *irq_flag = true;
+        if ctrl.rx_on() || ctrl.dtr_out_lvl() {
+            self.push(value);
+            let rx_len = 1usize << (ctrl.rx_irq_mode() as usize);
+            if self.len() == rx_len && ctrl.rx_irq_on() {
+                *irq_flag = true;
+            }
         }
     }
 }

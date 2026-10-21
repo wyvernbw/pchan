@@ -41,12 +41,8 @@ impl VramCoord {
     }
     #[must_use]
     pub fn wrap(mut self) -> Self {
-        if self.x >= 1024 {
-            self.x = 0;
-        }
-        if self.y >= 512 {
-            self.y = 0;
-        }
+        self.x %= 1024;
+        self.y %= 512;
         self
     }
 
@@ -139,7 +135,7 @@ impl VramCursor {
         if self.done() {
             return None;
         }
-        self.curr = self.curr.wrap();
+
         let curr = self.curr;
 
         self.curr.x += 1;
@@ -148,7 +144,7 @@ impl VramCursor {
             self.curr.y += 1;
         }
 
-        Some(curr)
+        Some(curr.wrap())
     }
 
     #[must_use]

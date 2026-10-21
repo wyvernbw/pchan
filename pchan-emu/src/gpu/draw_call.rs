@@ -691,6 +691,7 @@ pub struct Gp0HostBlit {
 }
 
 impl Gp0HostBlit {
+    #[must_use]
     pub fn cursor(&self) -> VramCursor {
         VramCursor::new(self.dest, self.dest + self.size)
     }

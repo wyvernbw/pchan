@@ -181,6 +181,7 @@ impl<A: Allocator> Emu<A> {
             0x1f801128 => Ok(self.timers.timer_2.target.io_from_u32()),
             _ => Err(UnhandledIO(address)),
         }
+        // .inspect(|value| tracing::debug!(target: "timers", "r({})={}", hex(address), hex(*value)))
     }
 
     pub fn timers_write<T: Copy>(&mut self, address: u32, value: T) -> Result<(), UnhandledIO> {
@@ -229,6 +230,7 @@ impl<A: Allocator> Emu<A> {
             }
             _ => return Err(UnhandledIO(address)),
         }
+        // tracing::debug!(target: "timers", "r({})={}", hex(address), hex(value));
         Ok(())
     }
 

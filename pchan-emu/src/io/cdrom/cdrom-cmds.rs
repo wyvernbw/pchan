@@ -178,8 +178,8 @@ impl<A: Allocator> Emu<A> {
                 self.cdrom_queue_response(INIT_TIMING);
             }
 
-            // cmd => todo!("cdrom cmd not implemented: {}", hex(cmd)),
-            _ => {}
+            cmd => todo!("cdrom cmd not implemented: {}", hex(cmd)),
+            // _ => {}
         }
     }
     fn cdrom_end_cmd(&mut self) {

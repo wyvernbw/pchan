@@ -468,6 +468,9 @@ impl<A: Allocator + Copy> Emu<A> {
                             self.gpu.task_gpu_flush_draw_calls().await;
                             self.gpu.wait_for_render_result().await;
                         });
+                        if tracing::enabled!(Level::TRACE) {
+                            tracing::trace!(pc = %hex(self.cpu.pc), "got vram back after flush: {cursor:?}");
+                        }
                         for dest in cursor.iter() {
                             let color = color >> 3u16;
                             let rgb5 = Rgb5::new_with_raw_value(0x0)
