@@ -137,6 +137,7 @@ impl<A: Allocator + Copy> Emu<A> {
             0x1f8010fc => trace_todo!(0x0, "todo(dma): read at dma otc fill value"),
             _ => Err(UnhandledIO(address)),
         }
+        .inspect(|v| tracing::debug!(target: "dma", "r({})={}", hex(address), hex(*v)))
     }
     #[pchan_instrument_write("dma:w")]
     pub fn dma_write<T: Copy>(&mut self, address: u32, value: T) -> IOResult<()> {
@@ -202,9 +203,9 @@ impl<A: Allocator + Copy> Emu<A> {
                 let irq_flags = dicr.combined_irq_flags();
                 let new_irq_flags = new_dicr.combined_irq_flags();
 
-                let old_irq_flags = irq_flags;
                 // writing 1 to irq flag resets it to 0
                 let irq_flags = irq_flags & !new_irq_flags;
+                tracing::info!("dma ack: {new_irq_flags:b}");
 
                 let new_dicr = new_dicr.with_combined_irq_flags(irq_flags);
 
@@ -288,11 +289,13 @@ impl<A: Allocator + Copy> Emu<A> {
         let dicr = &mut self.dma.dicr;
         if dicr.irq_mask(idx) && dicr.master_chan_irq() {
             dicr.set_irq_flag(idx, true);
+        } else {
+            tracing::info!("dma{idx} irq masked out on dma.dicr");
         }
         let old_master_irq = dicr.master_irq();
         self.update_dicr_master_irq_flag();
         let dicr = &mut self.dma.dicr;
-        if let (false, true) = (old_master_irq, dicr.master_irq()) {
+        if dicr.master_irq() {
             self.irq_trigger(Irq::Irq3Dma);
         }
     }
