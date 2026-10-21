@@ -444,27 +444,21 @@ impl<A: Allocator + Copy> Emu<A> {
             }
             SyncMode::LinkedList => {
                 let mut addr = init_chan.madr.addr().as_u32();
-                let mut visited = heapless::index_set::FnvIndexSet::<u32, 2048>::new();
-                let mut count = 0;
+                let mut visited = heapless::index_set::FnvIndexSet::<u32, 4096>::new();
                 loop {
-                    assert!(
-                        count < 1024 + 128,
-                        "infinite loop detected, dma n: {init_chan:#?}\ndpcr: {:#?}",
-                        self.dma.dpcr
-                    );
                     let header = self.read::<DmaNodeHeader>(addr);
                     tracing::trace!(header.next = %hex(header.next()), header.len = header.len());
                     let len = header.len();
                     let range = init_chan.create_range(addr + 4, u32::from(len));
                     transfer.write(self, range).await;
-                    visited.insert(addr).expect(
+                    let no_loop = visited.insert(addr).expect(
                         "bug: dma linked list traversal visited set capacity is too small.",
                     );
+
+                    assert!(no_loop, "infinite linked list dma detected");
+
                     addr = header.next().as_u32();
 
-                    // TODO: cycle detection
-
-                    count += 1;
                     if header.is_end_marker() {
                         T::channel(self).madr.set_addr(DmaNodeHeader::END.as_());
                         break;

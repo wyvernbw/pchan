@@ -75,7 +75,7 @@ impl<A: Allocator + Copy> Allocate<A> for Evque<A> {
         Evque {
             clock: 0,
             queue: Box::new_in(BinaryHeap::new(), alloc),
-            tasks: Vec::with_capacity_in(mb(1), alloc),
+            tasks: Vec::with_capacity_in(2048, alloc),
         }
     }
 }
@@ -138,11 +138,12 @@ impl<A: Allocator + Copy> Emu<A> {
                 }
             };
         }
-        let tasks = mem::replace(&mut self.evque.tasks, Vec::new_in(self.alloc));
-        for task in &tasks {
-            self.run_task(*task).await;
+        let mut i = 0;
+        while i < self.evque.tasks.len() {
+            let task = self.evque.tasks[i];
+            i += 1;
+            self.run_task(task).await;
         }
-        self.evque.tasks = tasks;
         self.evque.tasks.clear();
     }
 
