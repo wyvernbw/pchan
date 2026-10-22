@@ -2123,9 +2123,7 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
 name = "dynasm"
-version = "5.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fd358e74d2f8d71a11b7a2c51c67ad5df3de06003b0596875e47bc09126c894e"
+version = "0.0.0"
 dependencies = [
  "bitflags 2.13.2",
  "byteorder",
@@ -2138,9 +2136,7 @@ dependencies = [
 
 [[package]]
 name = "dynasmrt"
-version = "5.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6efe03f6bd356ae85eeea7ee14c2bf54e664a949d089d238364b5a99afbc4116"
+version = "0.0.0"
 dependencies = [
  "byteorder",
  "dynasm",

@@ -19,6 +19,8 @@ members = [
     "pchan-macros",
     "pchan-steel",
     "pchan-utils",
+    "dynasmrt",
+    "dynasm"
 ]
 
 [workspace.lints.clippy]
@@ -64,6 +66,8 @@ pchan-macros = { path = "./pchan-macros" }
 pchan-utils = { path = "./pchan-utils", default-features = false }
 pchan-encode = { path = "./pchan-encode" }
 pchan-encode-derive = { path = "./pchan-encode-derive" }
+dynasmrt = { path = "./dynasmrt" }
+dynasm = { path = "./dynasm" }
 smol = "2.0.2"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
