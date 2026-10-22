@@ -1,12 +1,11 @@
 //! This module implements some wrappers around Mmap/MmapMut to also support a cheap "empty" variant.
 // Unfortunately Memmap itself doesn't support a cheap zero-length variant
 
-use std::ops::{Deref, DerefMut};
 use std::io;
-
-use memmap2::{Mmap, MmapMut};
+use std::ops::{Deref, DerefMut};
 
 use crate::AssemblyOffset;
+use mmap_rs::{MmapMut, MmapOptions, UnsafeMmapFlags};
 
 /// A structure holding a buffer of executable memory. It also derefs to a `&[u8]`.
 /// This structure does not allocate when its size is 0.
@@ -15,7 +14,7 @@ pub struct ExecutableBuffer {
     // length of the buffer that has actually been written to
     length: usize,
     // backing buffer
-    buffer: Option<Mmap>
+    buffer: Option<MmapMut>,
 }
 
 /// ExecutableBuffer equivalent that holds a buffer of mutable memory instead of executable memory. It also derefs to a `&mut [u8]`.
@@ -25,7 +24,7 @@ pub struct MutableBuffer {
     // length of the buffer that has actually been written to
     length: usize,
     // backing buffer
-    buffer: Option<MmapMut>
+    buffer: Option<MmapMut>,
 }
 
 impl ExecutableBuffer {
@@ -47,17 +46,19 @@ impl ExecutableBuffer {
 
     /// Create a new executable buffer, backed by a buffer of size `size`.
     /// It will start with an initialized length of 0.
-    pub fn new(size: usize) -> io::Result<ExecutableBuffer> {
+    pub fn new(size: usize) -> Result<ExecutableBuffer, mmap_rs::Error> {
         let buffer = if size == 0 {
             None
         } else {
-            Some(MmapMut::map_anon(size)?.make_exec()?)
+            let buf = unsafe {
+                MmapOptions::new(size)?
+                    .with_unsafe_flags(UnsafeMmapFlags::JIT)
+                    .map_exec_mut()?
+            };
+            Some(buf)
         };
 
-        Ok(ExecutableBuffer {
-            length: 0,
-            buffer
-        })
+        Ok(ExecutableBuffer { length: 0, buffer })
     }
 
     /// Query the backing size of this executable buffer
@@ -65,61 +66,34 @@ impl ExecutableBuffer {
         self.buffer.as_ref().map(|b| b.len()).unwrap_or(0)
     }
 
-    /// Change this executable buffer into a mutable buffer.
-    pub fn make_mut(self) -> io::Result<MutableBuffer> {
-        let buffer = if let Some(map) = self.buffer {
-            Some(map.make_mut()?)
-        } else {
-            None
-        };
+    pub fn make_mut(&self) -> Result<(), mmap_rs::Error> {
+        if let Some(buf) = &self.buffer {
+            unsafe {
+                pthread_jit_write_protect_np(0);
+            }
+        }
+        Ok(())
+    }
 
-        Ok(MutableBuffer {
-            length: self.length,
-            buffer
-        })
+    pub fn make_exec(&self, from: usize) -> Result<(), mmap_rs::Error> {
+        if let Some(buf) = &self.buffer {
+            unsafe {
+                sys_icache_invalidate((buf.start() + from) as _, self.length.saturating_sub(from));
+                pthread_jit_write_protect_np(1);
+            }
+        }
+        Ok(())
+    }
+
+    pub fn set_len(&mut self, length: usize) {
+        self.length = length;
     }
 }
 
-impl MutableBuffer {
-    /// Create a new mutable buffer, backed by a buffer of size `size`.
-    /// It will start with an initialized length of 0.
-    pub fn new(size: usize) -> io::Result<MutableBuffer> {
-        let buffer = if size == 0 {
-            None
-        } else {
-            Some(MmapMut::map_anon(size)?)
-        };
-
-        Ok(MutableBuffer {
-            length: 0,
-            buffer
-        })
-    }
-
-    /// Query the backing size of this mutable buffer
-    pub fn size(&self) -> usize {
-        self.buffer.as_ref().map(|b| b.len()).unwrap_or(0)
-    }
-
-    /// Set the length of the usable part of this mutable buffer. The length
-    /// should not be set larger than the allocated size, otherwise methods can panic.
-    pub fn set_len(&mut self, length: usize) {
-        self.length = length
-    }
-
-    /// Change this mutable buffer into an executable buffer.
-    pub fn make_exec(self) -> io::Result<ExecutableBuffer> {
-        let buffer = if let Some(map) = self.buffer {
-            Some(map.make_exec()?)
-        } else {
-            None
-        };
-
-        Ok(ExecutableBuffer {
-            length: self.length,
-            buffer
-        })
-    }
+#[cfg(target_arch = "aarch64")]
+unsafe extern "C" {
+    pub fn pthread_jit_write_protect_np(enabled: libc::c_int);
+    pub fn sys_icache_invalidate(start: *mut libc::c_void, len: usize);
 }
 
 impl Deref for ExecutableBuffer {
@@ -132,20 +106,8 @@ impl Deref for ExecutableBuffer {
         }
     }
 }
-
-impl Deref for MutableBuffer {
-    type Target = [u8];
-    fn deref(&self) -> &[u8] {
-        if let Some(map) = &self.buffer {
-            &map[..self.length]
-        } else {
-            &[]
-        }
-    }
-}
-
-impl DerefMut for MutableBuffer {
-    fn deref_mut(&mut self) -> &mut [u8] {
+impl DerefMut for ExecutableBuffer {
+    fn deref_mut(&mut self) -> &mut Self::Target {
         if let Some(map) = &mut self.buffer {
             &mut map[..self.length]
         } else {

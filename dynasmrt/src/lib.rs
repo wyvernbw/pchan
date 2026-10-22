@@ -712,7 +712,7 @@ pub struct Assembler<R: Relocation> {
 
 impl<R: Relocation> Assembler<R> {
     /// Create a new, empty assembler, with initial allocation size `page_size`.
-    pub fn new() -> io::Result<Self> {
+    pub fn new() -> Result<Self, mmap_rs::Error> {
         Ok(Self {
             ops:     Vec::new(),
             memory:  MemoryManager::new(R::page_size())?,
@@ -725,7 +725,7 @@ impl<R: Relocation> Assembler<R> {
 
     /// Create a new, empty assembler, with a pre-allocated buffer of the specified capacity in bytes,
     /// and an initial allocation of `capacity.next_multiple_of(page_size)`.
-    pub fn new_with_capacity(capacity: usize) -> io::Result<Self> {
+    pub fn new_with_capacity(capacity: usize) -> Result<Self, mmap_rs::Error> {
         // Avoid panic or wraps on overflow.
         let memory_size =
             capacity
@@ -768,8 +768,8 @@ impl<R: Relocation> Assembler<R> {
 
         // swap out a buffer from base
         let mut lock = self.memory.write();
-        let buffer = mem::replace(&mut *lock, ExecutableBuffer::default());
-        let mut buffer = buffer
+        let mut buffer = mem::replace(&mut *lock, ExecutableBuffer::default());
+        buffer
             .make_mut()
             .expect("Could not swap buffer protection modes");
 
@@ -794,8 +794,8 @@ impl<R: Relocation> Assembler<R> {
         modifier.encode_relocs()?;
 
         // repack the buffer
-        let buffer = buffer
-            .make_exec()
+        buffer
+            .make_exec(0)
             .expect("Could not swap buffer protection modes");
         *lock = buffer;
 
