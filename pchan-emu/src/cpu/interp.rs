@@ -157,7 +157,7 @@ impl<A: Allocator + Copy> Emu<A> {
                 self.cpu.cop0.reg[idx] = value;
             }
             2 => {
-                self.cpu.cop2.reg[idx] = value;
+                self.cpu.gte.as_slice_mut()[idx] = value;
             }
             _ => panic!("invalid cop: {cop}"),
         }
@@ -166,8 +166,7 @@ impl<A: Allocator + Copy> Emu<A> {
         let idx = idx as usize;
         match cop {
             0 => self.cpu.cop0.reg[idx],
-            1 => self.cpu.cop1.reg[idx],
-            2 => self.cpu.cop2.reg[idx],
+            2 => self.cpu.gte.as_slice()[idx],
             _ => panic!("invalid cop: {cop}"),
         }
     }

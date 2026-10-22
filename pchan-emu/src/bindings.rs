@@ -8,6 +8,7 @@ use crate::Emu;
 #[derive(derive_more::Deref, derive_more::DerefMut)]
 pub struct NonNullRecv<T>(NonNull<T>);
 
+use crate::cpu::gte::GteBindings;
 use crate::memory::ext;
 impl<A: Allocator + Copy> Emu<A> {
     /// # Safety
@@ -118,9 +119,11 @@ pub(crate) struct ExternFnTable<A: Allocator> {
     handle_rfe:     unsafe extern "C" fn(&mut Emu<A>),
     handle_break:   unsafe extern "C" fn(&mut Emu<A>, pc: u32),
     cop0_set_cause: fn(&mut Emu<A>, u32),
+    pub(crate) gte: GteBindings<A>,
 }
 
 impl<A: Allocator + Copy> ExternFnTable<A> {
+    pub const OFFSET: u32 = offset_of!(Emu<A>, fn_table) as u32;
     pub const WRITE32V2: u32 =
         offset_of!(Self, write32v2) as u32 + offset_of!(Emu<A>, fn_table) as u32;
     pub const WRITE16V2: u32 =
@@ -177,6 +180,7 @@ impl<A: Allocator + Copy> ExternFnTable<A> {
             handle_rfe:     Emu::<A>::handle_rfe,
             handle_break:   Emu::<A>::handle_break,
             cop0_set_cause: Emu::<A>::cop0_set_cause,
+            gte:            GteBindings::new(),
         }
     }
 }

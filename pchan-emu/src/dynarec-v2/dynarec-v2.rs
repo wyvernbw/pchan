@@ -7,11 +7,7 @@ use core::time::Duration;
 use core::{cmp, iter};
 use derive_more as d;
 use dynasm::dynasm;
-#[cfg(target_arch = "aarch64")]
-use dynasmrt::relocations::Relocation;
-use dynasmrt::{
-    Assembler, AssemblyOffset, DynasmApi, DynasmError, DynasmLabelApi, ExecutableBuffer, Executor,
-};
+use dynasmrt::{Assembler, AssemblyOffset, DynasmApi, DynasmError, ExecutableBuffer, Executor};
 use heapless::binary_heap::Min;
 use pchan_utils::{default, hex, max_simd_elements};
 use smallbox::SmallBox;
@@ -20,17 +16,17 @@ use std::simd::Simd;
 use std::sync::RwLockReadGuard;
 use std::time::Instant;
 use thiserror::Error;
-use tracing::{Instrument, Level, enabled};
+use tracing::Instrument;
 
 use crate::Emu;
+use crate::cpu::Cpu;
 use crate::cpu::exceptions::Exception;
 use crate::cpu::ops::OpCode;
-use crate::cpu::{Cpu, reg_str};
 use crate::dynarec_v2::emitters::{DecodedOp, DynarecOp, EmitCtx, EmitSummary};
 use crate::dynarec_v2::regalloc::{
     AllocResult, AllocResultStackless, Guest, Reg, RegAlloc, RegAllocError, RegAllocErrorStackless,
 };
-use crate::memory::{kb, mb};
+use crate::memory::kb;
 
 pub mod emitters;
 pub mod regalloc;
@@ -647,43 +643,19 @@ impl<A: Allocator + Copy> Dynarec<A> {
         );
     }
 
-    /// critical registers are unallocatable volatile registers that must never
-    /// get trampled. this includes the platform registers on arm, and a few others.
-    /// also includes the first register x0.
+    /// just x0
     #[allow(clippy::useless_conversion)]
     fn emit_save_critical_registers(&mut self) {
-        let critical = (!self.reg_alloc.allocatable) & self.reg_alloc.volatile;
-
         #[cfg(target_arch = "aarch64")]
         dynasm!(
             self.asm
             ; .arch aarch64
             ; str x0, [sp, #-16]!
         );
-        // for reg in critical.iter_ones() {
-        //     let reg = reg as u8;
-        //     #[cfg(target_arch = "aarch64")]
-        //     dynasm!(
-        //         self.asm
-        //         ; .arch aarch64
-        //         ; str X(reg), [sp, #-16]!
-        //     );
-        // }
     }
 
     #[allow(clippy::useless_conversion)]
     fn emit_restore_critical_registers(&mut self) {
-        let critical = (!self.reg_alloc.allocatable) & self.reg_alloc.volatile;
-
-        // for reg in critical.iter_ones() {
-        //     let reg = reg as u8;
-        //     #[cfg(target_arch = "aarch64")]
-        //     dynasm!(
-        //         self.asm
-        //         ; .arch aarch64
-        //         ; ldr X(reg), [sp], #16
-        //     );
-        // }
         #[cfg(target_arch = "aarch64")]
         dynasm!(
             self.asm
@@ -1030,7 +1002,7 @@ pub(crate) fn fetch_and_compile_single_threaded<A: Allocator + Copy>(
     let mut op_count = 0;
     let mut last_address = initial_pc;
     let mut pc_updated = false;
-    let mut used_syscall = false;
+    let mut _used_syscall = false;
     emu.linear_fetch_no_decode()
         .zip((initial_pc..).step_by(0x4))
         .map_while(|(op, address)| {
@@ -1065,7 +1037,7 @@ pub(crate) fn fetch_and_compile_single_threaded<A: Allocator + Copy>(
                 scratch_cursor: &mut scratch_cursor,
             });
             pc_updated |= summary.pc_updated;
-            used_syscall |= summary.used_syscall;
+            _used_syscall |= summary.used_syscall;
             if let Some(pre_scheduled) = dynarec.pop_scheduled_at(address) {
                 // let cache_boundary_check = (pre_scheduled.pc.saturating_sub(0x4)) >> 2;
                 // let boundary = cache_boundary_check != 0
@@ -1102,7 +1074,7 @@ pub(crate) fn fetch_and_compile_single_threaded<A: Allocator + Copy>(
             scratch_cursor: &mut scratch_cursor,
         });
         pc_updated |= summary.pc_updated;
-        used_syscall |= summary.used_syscall;
+        _used_syscall |= summary.used_syscall;
     }
 
     let new_pc = match pc_updated {

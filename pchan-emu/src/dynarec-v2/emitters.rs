@@ -23,7 +23,7 @@ use crate::dynarec_v2::{Dynarec, LoadedReg, Reg};
 use crate::memory;
 use crate::memory::ext;
 use dynasm::dynasm;
-use dynasmrt::{DynasmApi, DynasmLabelApi};
+use dynasmrt::DynasmApi;
 
 use super::ScheduledEmitter;
 use core::alloc::Allocator;
@@ -3015,46 +3015,98 @@ impl DynarecOp for Slti {
     }
 }
 
+#[cfg(target_arch = "aarch64")]
 impl DynarecOp for Mfcn {
     #[allow(clippy::useless_conversion)]
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit<A: Allocator + Copy>(&self, mut ctx: EmitCtx<A>) -> EmitSummary {
         if self.rt == 0 {
             return EmitSummary::default();
         }
+
         ctx.dynarec.cancel_next_write(self.rt);
-        let rt = ctx.dynarec.alloc_reg_stackless(self.rt);
+        match self.cop {
+            0 => {
+                let rt = ctx.dynarec.alloc_reg_stackless(self.rt);
 
-        #[cfg(target_arch = "aarch64")]
-        dynasm!(
-            ctx.dynarec.asm
-            ; .arch aarch64
-            ; ldr W(*rt), [x0, Cpu::cop_reg_offset(self.cop, self.rd) as _]
-        );
+                dynasm!(
+                    ctx.dynarec.asm
+                    ; .arch aarch64
+                    ; ldr W(*rt), [x0, Cpu::cop_reg_offset(self.cop, self.rd) as _]
+                );
 
-        ctx.dynarec.mark_dirty(self.rt);
+                ctx.dynarec.mark_dirty(self.rt);
+            }
+            2 => {
+                let rta = ctx.dynarec.emit_load_shadow_reg_stackless(self.rt);
+                dynasm!(
+                    ctx.dynarec.asm
+                    ; .arch aarch64
+                    ; ldr W(*rta), [x0, Cpu::cop_reg_offset(self.cop, self.rd) as _]
+                );
 
+                let rt = self.rt;
+                // writeback to gpr
+                ctx.schedule_in(1, Some(rt), move |ctx| {
+                    let rta = ctx.dynarec.alloc_reg_stackless(rt);
+                    dynasm!(
+                        ctx.dynarec.asm
+                        ; .arch aarch64
+                        ; ldr W(*rta), [x0, #shadow(rt)]
+                    );
+                    ctx.dynarec.mark_dirty(rt);
+                    EmitSummary::default()
+                });
+            }
+            _ => todo!(),
+        }
         EmitSummary::default()
     }
 }
 
+#[cfg(target_arch = "aarch64")]
 impl DynarecOp for Cfcn {
     #[allow(clippy::useless_conversion)]
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit<A: Allocator + Copy>(&self, mut ctx: EmitCtx<A>) -> EmitSummary {
         if self.rt == 0 {
             return EmitSummary::default();
         }
+
         ctx.dynarec.cancel_next_write(self.rt);
-        let rt = ctx.dynarec.alloc_reg_stackless(self.rt);
+        match self.cop {
+            0 => {
+                let rt = ctx.dynarec.alloc_reg_stackless(self.rt);
 
-        #[cfg(target_arch = "aarch64")]
-        dynasm!(
-            ctx.dynarec.asm
-            ; .arch aarch64
-            ; ldr W(*rt), [x0, Cpu::cop_reg_offset(self.cop, self.rd + 32) as _]
-        );
+                dynasm!(
+                    ctx.dynarec.asm
+                    ; .arch aarch64
+                    ; ldr W(*rt), [x0, Cpu::cop_reg_offset(self.cop, self.rd + 32) as _]
+                );
 
-        ctx.dynarec.mark_dirty(self.rt);
+                ctx.dynarec.mark_dirty(self.rt);
+            }
+            2 => {
+                let rta = ctx.dynarec.emit_load_shadow_reg_stackless(self.rt);
+                dynasm!(
+                    ctx.dynarec.asm
+                    ; .arch aarch64
+                    ; ldr W(*rta), [x0, Cpu::cop_reg_offset(self.cop, self.rd + 32) as _]
+                );
 
+                let rt = self.rt;
+                // writeback to gpr
+                ctx.schedule_in(1, Some(rt), move |ctx| {
+                    let rta = ctx.dynarec.alloc_reg_stackless(rt);
+                    dynasm!(
+                        ctx.dynarec.asm
+                        ; .arch aarch64
+                        ; ldr W(*rta), [x0, #shadow(rt)]
+                    );
+                    ctx.dynarec.mark_dirty(rt);
+                    EmitSummary::default()
+                });
+            }
+            _ => todo!(),
+        }
         EmitSummary::default()
     }
 }
@@ -3425,7 +3477,7 @@ enum Hilo {
 }
 
 #[allow(clippy::useless_conversion)]
-fn emit_mthilo<A: Allocator + Copy>(rs: u8, mut ctx: EmitCtx<A>, hilo: Hilo) -> EmitSummary {
+fn emit_mthilo<A: Allocator + Copy>(rs: u8, ctx: EmitCtx<A>, hilo: Hilo) -> EmitSummary {
     let offset = match hilo {
         Hilo::Hi => Emu::<A>::HILO_OFFSET + size_of::<u32>(),
         Hilo::Lo => Emu::<A>::HILO_OFFSET,
@@ -3594,7 +3646,7 @@ fn test_lwcn(#[case] cop: u8, #[case] rt: u8, #[case] rs: u8) -> color_eyre::Res
     tracing::info!(?emu.cpu);
     match cop {
         0 => assert_eq!(emu.cpu.cop0.reg[rt as usize], 0xcafebabe),
-        2 => assert_eq!(emu.cpu.cop2.reg[rt as usize], 0xcafebabe),
+        2 => assert_eq!(emu.cpu.gte.data.as_slice_mut()[rt as usize], 0xcafebabe),
         _ => panic!("get out"),
     }
 

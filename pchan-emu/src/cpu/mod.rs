@@ -11,14 +11,17 @@ use pchan_utils::{array, hex};
 
 use crate::Emu;
 use crate::cpu::exceptions::CauseRegister;
+use crate::cpu::gte::Gte;
 use crate::cpu::ops::OpCode;
 
 #[cfg(test)]
 mod cpu_tests;
+#[path = "./gte/gte.rs"]
+pub mod gte;
 pub mod interp;
 pub mod ops;
 
-#[derive(Default, derive_more::Debug, Clone, Hash, Endecode)]
+#[derive(Default, derive_more::Debug, Clone, Endecode)]
 #[repr(C)]
 pub struct Cpu {
     pub gpr:          Regs<32, true>,
@@ -30,8 +33,7 @@ pub struct Cpu {
     // _padding:         [u8; 4],
     pub gpr_shadow:   Regs<32, true>,
     pub cop0:         Cop0,
-    pub cop2:         Cop2,
-    pub cop1:         Cop1,
+    pub gte:          Gte,
     pub vblank_timer: u32,
     pub cycles:       u64,
     pub jump_queue:   Option<u32>,
@@ -93,7 +95,6 @@ macro_rules! coprocessor_definition {
 }
 
 coprocessor_definition!(Cop0, 32, unnamed);
-coprocessor_definition!(Cop1, 32, unnamed);
 coprocessor_definition!(Cop2, 64, unnamed);
 
 // bitfield! {
@@ -257,7 +258,6 @@ impl Cpu {
     pub const fn cop_reg_offset(cop: u8, reg: u8) -> usize {
         match cop {
             0 => Self::cop0_reg_offset(reg),
-            1 => Self::cop1_reg_offset(reg),
             2 => Self::cop2_reg_offset(reg),
             _ => todo!(),
         }
@@ -269,13 +269,8 @@ impl Cpu {
     }
 
     #[must_use]
-    pub const fn cop1_reg_offset(reg: u8) -> usize {
-        offset_of!(Cpu, cop1) + offset_of!(Cop1, reg) + size_of::<u32>() * reg as usize
-    }
-
-    #[must_use]
     pub const fn cop2_reg_offset(reg: u8) -> usize {
-        offset_of!(Cpu, cop2) + offset_of!(Cop2, reg) + size_of::<u32>() * reg as usize
+        offset_of!(Cpu, gte) + offset_of!(Gte, data) + size_of::<u32>() * reg as usize
     }
 
     #[must_use]
@@ -309,13 +304,6 @@ impl Cpu {
 #[must_use]
 pub fn cycles_to_ms(cycles: u64) -> u64 {
     cycles * 1000 / u64::from(Cpu::CLOCK)
-}
-
-#[allow(clippy::derivable_impls)]
-impl Default for Cop1 {
-    fn default() -> Self {
-        Self { reg: Regs([0; 32]) }
-    }
 }
 
 #[allow(clippy::derivable_impls)]

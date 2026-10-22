@@ -370,7 +370,7 @@ fn test_mtcn(
     tracing::info!(?emu.cpu);
     match cop {
         0 => assert_eq!(emu.cpu.cop0.reg[rd as usize], 69),
-        2 => assert_eq!(emu.cpu.cop2.reg[rd as usize], 69),
+        2 => assert_eq!(emu.cpu.gte.data.as_slice_mut()[rd as usize], 69),
         _ => panic!("get out"),
     }
 }
@@ -427,7 +427,7 @@ fn test_ctcn(
     runner.execute(&mut emu);
     tracing::info!(?emu.cpu);
     match cop {
-        2 => assert_eq!(emu.cpu.cop2.reg[rd as usize + 32], 69),
+        2 => assert_eq!(emu.cpu.gte.ctrl.as_slice_mut()[rd as usize], 69),
         _ => panic!("get out"),
     }
 }
