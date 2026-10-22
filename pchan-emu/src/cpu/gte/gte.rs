@@ -2,7 +2,6 @@ use arbitrary_int::prelude::*;
 use bitbybit::{bitenum, bitfield};
 use core::alloc::Allocator;
 use core::mem::offset_of;
-use core::ops::Not;
 use core::simd::prelude::*;
 use core::{ptr, slice};
 use glam::prelude::*;
@@ -40,26 +39,26 @@ pub struct Gte {
 #[repr(C)]
 #[derive(Default, Debug, Endecode, Clone)]
 pub struct GteDataRegs {
-    vxyz0:    i16x3,
-    _vz0_pad: i16,
-    vxyz1:    i16x3,
-    _vz1_pad: i16,
-    vxyz2:    i16x3,
-    _vz2_pad: i16,
-    rgbc:     u8x4,
-    otz:      u16,
-    _otz_pad: u16,
-    ir0:      i16,
-    _ir0_pad: i16,
-
-    ir123:      i16x3,
-    _ir123_pad: i16,
-
+    vxyz0:     i16x3,
+    _vz0_pad:  i16,
+    vxyz1:     i16x3,
+    _vz1_pad:  i16,
+    vxyz2:     i16x3,
+    _vz2_pad:  i16,
+    rgbc:      u8x4,
+    otz:       u16,
+    _otz_pad:  u16,
+    ///   cop2r8     1xS16 IR0                   16bit Accumulator (Interpolate)
+    ir0:       i32,
+    ///   cop2r9-11  3xS16 IR1,IR2,IR3           16bit Accumulator (Vector)
+    irv:       i32x3,
     sxy_fifo:  [i16x2; 4],
-    sz_fifo:   [u16x2; 4],
+    sz_fifo:   [u32; 4],
     crgb_fifo: [u8x4; 3],
     res1:      U8Vec4,
+    ///   cop2r24    1xS32 MAC0                  32bit Maths Accumulators (Value)
     mac0:      i32,
+    ///   cop2r25-27 3xS32 MAC1,MAC2,MAC3        32bit Maths Accumulators (Vector)
     macv:      i32x3,
     irgb_orgb: [u32; 2],
     lzcs_lzcr: [i32; 2],
@@ -91,6 +90,7 @@ impl GteDataRegs {
 pub mod types {
     use super::*;
 
+    pub type i64x3 = Simd<i64, 3>;
     pub type i32x3 = Simd<i32, 3>;
     pub type i16x3 = Simd<i16, 3>;
 }
@@ -124,7 +124,7 @@ pub struct GteCtrlRegs {
     lc_mat:  [i16x3; 3],
     _lc_pad: i16,
     far_col: i32x3,
-    sof:     i32x2,
+    of:      i32x2,
 
     /// cop2r58 `BuggyU16` H
     /// Projection plane distance.
@@ -141,7 +141,40 @@ pub struct GteCtrlRegs {
     zsf4:      i16,
     _zsf4_pad: i16,
 
-    flag: u32,
+    flag: Flag,
+}
+
+/// # cop2r63 (cnt31) - FLAG - Returns any calculation errors.
+///
+/// ```md
+///  31   Error Flag (Bit30..23, and 18..13 ORed together) (Read only)
+///  30   MAC1 Result larger than 43 bits and positive
+///  29   MAC2 Result larger than 43 bits and positive
+///  28   MAC3 Result larger than 43 bits and positive
+///  27   MAC1 Result larger than 43 bits and negative
+///  26   MAC2 Result larger than 43 bits and negative
+///  25   MAC3 Result larger than 43 bits and negative
+///  24   IR1 saturated to +0000h..+7FFFh (lm=1) or to -8000h..+7FFFh (lm=0)
+///  23   IR2 saturated to +0000h..+7FFFh (lm=1) or to -8000h..+7FFFh (lm=0)
+///  22   IR3 saturated to +0000h..+7FFFh (lm=1) or to -8000h..+7FFFh (lm=0)
+///  21   Color-FIFO-R saturated to +00h..+FFh
+///  20   Color-FIFO-G saturated to +00h..+FFh
+///  19   Color-FIFO-B saturated to +00h..+FFh
+///  18   SZ3 or OTZ saturated to +0000h..+FFFFh
+///  17   Divide overflow. RTPS/RTPT division result saturated to max=1FFFFh
+///  16   MAC0 Result larger than 31 bits and positive
+///  15   MAC0 Result larger than 31 bits and negative
+///  14   SX2 saturated to -0400h..+03FFh
+///  13   SY2 saturated to -0400h..+03FFh
+///  12   IR0 saturated to +0000h..+1000h
+///  0-11 Not used (always zero) (Read only)
+/// ```
+#[repr(C)]
+#[bitfield(u20)]
+#[derive(Endecode, Debug, Default)]
+struct Flag {
+    #[bit(17, rw)]
+    divide_overflow: bool,
 }
 
 impl GteCtrlRegs {
@@ -342,22 +375,107 @@ impl Gte {
             )
         }
     }
+
+    fn advance_sz_fifo(&mut self) {
+        self.data.sz_fifo.rotate_left(1);
+    }
+
+    fn advance_sxy_fifo(&mut self) {
+        self.data.sxy_fifo.rotate_left(1);
+    }
+}
+
+impl GteCommandField {
+    fn saturate(self, value: impl Into<i64>) -> i16 {
+        match self.lm() {
+            SaturateMode::Signed => value.into().clamp(-0x8000, 0x7fff).as_i16(),
+            SaturateMode::Unsigned => value.into().clamp(0x0, 0x7fff).as_i16(),
+        }
+    }
+
+    fn saturate_vec<const N: usize, S: SimdInt<Cast<i64> = Simd<i64, N>>>(
+        self,
+        value: S,
+    ) -> Simd<i16, N>
+    where
+        S::Cast<i64>: Ord,
+    {
+        match self.lm() {
+            SaturateMode::Signed => value
+                .cast::<i64>()
+                .clamp(Simd::splat(-0x8000), Simd::splat(0x7fff))
+                .cast(),
+            SaturateMode::Unsigned => value
+                .cast::<i64>()
+                .clamp(Simd::splat(-0x0), Simd::splat(0x7fff))
+                .cast(),
+        }
+    }
 }
 
 impl<A: Allocator> Emu<A> {
-    fn gte_rtps(&mut self, cmd: GteCommandField) {
+    fn rtps(&mut self, cmd: GteCommandField, v: i16x3) {
         let gte = &mut self.cpu.gte;
         let rt = gte.ctrl.rt_mat;
         let tr = gte.ctrl.tr_vec;
-        let v0 = gte.data.vxyz0;
-        let mac = tr * i32x3::splat(0x1000)
-            + rt[0].cast::<i32>() * i32x3::splat(i32::from(v0[0]))
-            + rt[1].cast::<i32>() * i32x3::splat(i32::from(v0[1]))
-            + rt[2].cast::<i32>() * i32x3::splat(i32::from(v0[2]));
-        let mac = mac >> (i32::from(cmd.sf()) * 12);
-        gte.data.ir123 = mac.cast();
+        let mac = tr.cast::<i64>() * i64x3::splat(0x1000)
+            + rt[0].cast::<i64>() * i64x3::splat(i64::from(v[0]))
+            + rt[1].cast::<i64>() * i64x3::splat(i64::from(v[1]))
+            + rt[2].cast::<i64>() * i64x3::splat(i64::from(v[2]));
+        let mac = mac >> (i64::from(cmd.sf()) * 12);
 
-        let sz3 = mac[2] >> (u8::from(cmd.sf()).not() * 12);
+        gte.data.macv = mac.cast();
+        gte.data.irv = cmd.saturate_vec(mac).cast();
+
+        let sz3 = mac[2] >> (u8::from(!cmd.sf()) * 12);
+        let sz3 = sz3.clamp(0, 0xffff).as_u32();
+        gte.advance_sz_fifo();
+        gte.data.sz_fifo[3] = sz3;
+
+        let div = if sz3 == 0 {
+            0x1FFFF
+        } else {
+            match ((gte.ctrl.h.as_i64() * 0x20000 / sz3.as_i64()) + 1) / 2 {
+                div @ 0x0..=0x1ffff => div,
+                _ => {
+                    gte.ctrl.flag.set_divide_overflow(true);
+                    0x1ffff
+                }
+            }
+        };
+        let div = div.as_i32();
+
+        let mac0v = i64x3::splat(div.as_i64())
+            * i64x3::from_array([
+                gte.data.irv[0].as_i64(),
+                gte.data.irv[1].as_i64(),
+                gte.ctrl.dqa.as_i64(),
+            ])
+            + i64x3::from_array([
+                gte.ctrl.of[0].as_i64(),
+                gte.ctrl.of[1].as_i64(),
+                gte.ctrl.dqb.as_i64(),
+            ]);
+
+        let sxy2 = mac0v.resize::<2>(0) >> 16;
+        let sxy2 = sxy2.clamp(i64x2::splat(-0x400), i64x2::splat(0x3ff));
+        gte.advance_sxy_fifo();
+        gte.data.sxy_fifo[2] = sxy2.cast();
+
+        gte.data.mac0 = mac0v[2].as_i32();
+        let ir0 = gte.data.mac0 >> 12;
+        let ir0 = ir0.clamp(0, 0x1000);
+        gte.data.ir0 = ir0;
     }
-    fn gte_rtpt(&mut self, cmd: GteCommandField) {}
+
+    fn gte_rtps(&mut self, cmd: GteCommandField) {
+        let v0 = self.cpu.gte.data.vxyz0;
+        self.rtps(cmd, v0);
+    }
+
+    fn gte_rtpt(&mut self, cmd: GteCommandField) {
+        self.rtps(cmd, self.cpu.gte.data.vxyz0);
+        self.rtps(cmd, self.cpu.gte.data.vxyz1);
+        self.rtps(cmd, self.cpu.gte.data.vxyz2);
+    }
 }
