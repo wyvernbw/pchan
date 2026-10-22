@@ -38,6 +38,7 @@ use std::mem::offset_of;
 
 extern crate alloc;
 
+use crate::bindings::ExternFnTable;
 #[cfg(feature = "debugger-ext")]
 use crate::debug::DebuggerState;
 
@@ -74,33 +75,36 @@ pub mod spu;
 #[derive(derive_more::Debug, Clone, Endecode)]
 #[repr(C)]
 pub struct Emu<A: Allocator = Global> {
-    pub cpu:           Cpu,
+    pub cpu:             Cpu,
     #[debug(skip)]
     #[endecode(skip)]
-    pub dynarec_cache: DynCache<A>,
-    pub mem:           MemoryState<A>,
-    #[endecode(skip)]
-    pub boot:          BootloaderState<A>,
-    pub tty:           Tty<A>,
-    pub gpu:           GpuState<A>,
-    pub dma:           DmaState<A>,
-    pub timers:        TimerState,
+    pub(crate) fn_table: ExternFnTable<A>,
     #[debug(skip)]
-    pub spu:           SpuState<A>,
+    #[endecode(skip)]
+    pub dynarec_cache:   DynCache<A>,
+    pub mem:             MemoryState<A>,
+    #[endecode(skip)]
+    pub boot:            BootloaderState<A>,
+    pub tty:             Tty<A>,
+    pub gpu:             GpuState<A>,
+    pub dma:             DmaState<A>,
+    pub timers:          TimerState,
+    #[debug(skip)]
+    pub spu:             SpuState<A>,
     #[cfg(feature = "debugger-ext")]
     #[endecode(skip)]
-    pub dbg:           DebuggerState<A>,
-    pub cdrom:         CDRomState<A>,
-    pub sio:           SioState,
-    pub irq:           IrqState,
-    pub evque:         Evque<A>,
+    pub dbg:             DebuggerState<A>,
+    pub cdrom:           CDRomState<A>,
+    pub sio:             SioState,
+    pub irq:             IrqState,
+    pub evque:           Evque<A>,
     #[endecode(skip)]
-    pub tracy:         TracyClient,
+    pub tracy:           TracyClient,
     #[endecode(skip)]
-    pub stats:         Stats,
+    pub stats:           Stats,
     #[debug(skip)]
     #[endecode(skip)]
-    pub alloc:         A,
+    pub alloc:           A,
 }
 
 #[derive(Default, derive_more::Debug, Clone)]
@@ -114,6 +118,7 @@ impl<A: Allocator + Copy> Emu<A> {
     pub fn new_in(alloc: A) -> Self {
         let mut emu = Self {
             cpu: Cpu::new(),
+            fn_table: ExternFnTable::new(),
             dynarec_cache: DynCache::new(alloc),
             mem: MemoryState::new(alloc),
             boot: BootloaderState::new_in(alloc),

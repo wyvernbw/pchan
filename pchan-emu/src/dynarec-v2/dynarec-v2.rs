@@ -3,6 +3,7 @@ use core::alloc::Allocator;
 use core::cell::Cell;
 use core::mem::{MaybeUninit, transmute};
 use core::sync::atomic::{AtomicU64, Ordering};
+use core::time::Duration;
 use core::{cmp, iter};
 use derive_more as d;
 use dynasm::dynasm;
@@ -17,6 +18,7 @@ use smallbox::SmallBox;
 use smallvec::SmallVec;
 use std::simd::Simd;
 use std::sync::RwLockReadGuard;
+use std::time::Instant;
 use thiserror::Error;
 use tracing::{Instrument, Level, enabled};
 
@@ -34,18 +36,29 @@ pub mod emitters;
 pub mod regalloc;
 
 pub static INSTR_COMPILED: AtomicU64 = AtomicU64::new(0);
+pub static PRELUDE_INSTR_COMPILED: AtomicU64 = AtomicU64::new(0);
+pub static CACHE_CURSOR: AtomicU64 = AtomicU64::new(0);
 pub static INSTR_EXECUTED: AtomicU64 = AtomicU64::new(0);
 pub static BLOCKS_COMPILED: AtomicU64 = AtomicU64::new(0);
 pub static BLOCKS_EXECUTED: AtomicU64 = AtomicU64::new(0);
 pub static CACHE_HITS: AtomicU64 = AtomicU64::new(0);
 pub static CACHE_MISSES: AtomicU64 = AtomicU64::new(0);
 
-static ASM_CAPACITY: usize = mb(2);
+static ASM_CAPACITY: usize = kb(512);
 
 pub fn cache_hitrate() -> f32 {
     let hits = CACHE_HITS.load(Ordering::Relaxed) as f32;
     let misses = CACHE_MISSES.load(Ordering::Relaxed) as f32;
     hits / (hits + misses)
+}
+
+pub fn cache_occupancy() -> f32 {
+    let cache_cursor = CACHE_CURSOR.load(Ordering::Relaxed) as f32;
+    cache_cursor / (ASM_CAPACITY as f32)
+}
+
+pub fn prelude_instructions_compiled() -> u64 {
+    PRELUDE_INSTR_COMPILED.load(Ordering::Relaxed)
 }
 
 #[cfg(feature = "fetch-channel")]
@@ -81,6 +94,8 @@ pub struct Dynarec<A: Allocator> {
     pub(crate) scheduler: Box<Scheduler<A>, A>,
     #[debug(skip)]
     pub(crate) asm:       Assembler<Reloc>,
+
+    pub(crate) compile_time: Duration,
 }
 
 pub struct CreateDynarecParams<A: Allocator + Copy> {
@@ -134,6 +149,7 @@ impl<A: Allocator + Copy> Dynarec<A> {
             reg_alloc,
             scheduler,
             asm,
+            compile_time: Duration::ZERO,
         }
     }
 
@@ -230,53 +246,7 @@ pub(crate) enum FinalizeError {
 }
 
 impl<A: Allocator + Copy> Dynarec<A> {
-    #[cfg(target_arch = "aarch64")]
-    pub(crate) fn emit_globals<R: Relocation>(asm: &mut Assembler<R>) {
-        dynasm!(
-            asm
-            ; .arch aarch64
-            ; b >after_table
-
-            // -- function table --
-            ; write32v2:
-            ; .u64 Emu::<A>::write32v2 as *const () as _
-            ; write16v2:
-            ; .u64 Emu::<A>::write16v2 as *const () as _
-            ; write8v2:
-            ; .u64 Emu::<A>::write8v2 as *const () as _
-            ; ulwrite32:
-            ; .u64 Emu::<A>::ulwrite32 as *const () as _
-            ; urwrite32:
-            ; .u64 Emu::<A>::urwrite32 as *const () as _
-            ; readi8v2:
-            ; .u64 Emu::<A>::readi8v2 as *const () as _
-            ; readu8v2:
-            ; .u64 Emu::<A>::readu8v2 as *const () as _
-            ; readi16v2:
-            ; .u64 Emu::<A>::readi16v2 as *const () as _
-            ; readu16v2:
-            ; .u64 Emu::<A>::readu16v2 as *const () as _
-            ; read32v2:
-            ; .u64 Emu::<A>::read32v2 as *const () as _
-            ; ulread32:
-            ; .u64 Emu::<A>::ulread32 as *const () as _
-            ; urread32:
-            ; .u64 Emu::<A>::urread32 as *const () as _
-            ; handle_syscall:
-            ; .u64 Emu::<A>::handle_syscall as *const () as _
-            ; handle_rfe:
-            ; .u64 Emu::<A>::handle_rfe as *const () as _
-            ; handle_break:
-            ; .u64 Emu::<A>::handle_break as *const () as _
-            ; run_io:
-            ; .u64 Emu::<A>::ext_run_io as *const () as _
-            ; cop0_set_cause:
-            ; .u64 Emu::<A>::cop0_set_cause as *const () as _
-            ; after_table:
-        )
-    }
     pub(crate) fn emit_block_prelude(&mut self) {
-        Self::emit_globals(&mut self.asm);
         #[cfg(target_arch = "aarch64")]
         {
             dynasm!(
@@ -966,7 +936,9 @@ pub async fn run_step<A: Allocator + Copy + Clone>(emu: &mut Emu<A>, dynarec: &m
     let pc = emu.cpu.pc;
     let block = match emu.dynarec_cache.get(pc) {
         None => {
+            let now = Instant::now();
             let (op_count, block) = fetch_and_compile_single_threaded(emu, dynarec).unwrap();
+            dynarec.compile_time += now.elapsed();
             emu.dynarec_cache.insert(pc, block);
             emu.stats.blocks_compiled += 1;
             #[cfg(debug_assertions)]
@@ -1042,9 +1014,15 @@ pub(crate) fn fetch_and_compile_single_threaded<A: Allocator + Copy>(
             alloc:     emu.alloc,
         });
         start = dynarec.asm.offset();
+        PRELUDE_INSTR_COMPILED.store(0, Ordering::Relaxed);
     }
 
+    let before_prelude = dynarec.asm.offset();
     dynarec.emit_block_prelude();
+    let after_prelude = dynarec.asm.offset();
+    let prelude_count = after_prelude.0.saturating_sub(before_prelude.0);
+    PRELUDE_INSTR_COMPILED.fetch_add(prelude_count as u64, Ordering::Relaxed);
+
     let initial_pc = emu.cpu.pc;
     let mut lifetime = 2u8;
     let mut cycles = 0u32;
@@ -1133,6 +1111,8 @@ pub(crate) fn fetch_and_compile_single_threaded<A: Allocator + Copy>(
     };
     dynarec.emit_block_epilogue(cycles, new_pc, true);
     let fn_ptr = dynarec.commit(start)?;
+    let end = dynarec.asm.offset();
+    CACHE_CURSOR.store(end.0 as u64, Ordering::Relaxed);
 
     Ok((op_count, fn_ptr))
 }

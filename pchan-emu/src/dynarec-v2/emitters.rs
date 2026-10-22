@@ -1,3 +1,4 @@
+use crate::bindings::ExternFnTable;
 use crate::cpu::{Cpu, RA};
 use crate::dynarec_v2::regalloc::AllocResultStackless;
 #[cfg(test)]
@@ -664,10 +665,12 @@ impl DynarecOp for Sb {
     #[cfg(target_arch = "aarch64")]
     fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
         emit_store(ctx, self.rt, self.rs, self.imm16, move |ctx| {
+            use crate::bindings::ExternFnTable;
+
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
-                ; ldr x3, <write8v2
+                ; ldr x3, [x0, #ExternFnTable::<A>::WRITE8V2]
                 ; blr x3
             )
         })
@@ -685,7 +688,7 @@ impl DynarecOp for Sh {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
-                ; ldr x3, <write16v2
+                ; ldr x3, [x0, #ExternFnTable::<A>::WRITE16V2]
                 ; blr x3
             )
         })
@@ -702,7 +705,7 @@ impl DynarecOp for Sw {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
-                ; ldr x3, <write32v2
+                ; ldr x3, [x0, #ExternFnTable::<A>::WRITE32V2]
                 ; blr x3
             );
         })
@@ -794,7 +797,7 @@ impl DynarecOp for Swl {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
-                ; ldr x3, <ulwrite32
+                ; ldr x3, [x0, #ExternFnTable::<A>::ULWRITE32]
                 ; blr x3
             );
         })
@@ -812,7 +815,7 @@ impl DynarecOp for Swr {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
-                ; ldr x3, <urwrite32
+                ; ldr x3, [x0, #ExternFnTable::<A>::URWRITE32]
                 ; blr x3
             );
         })
@@ -1074,7 +1077,7 @@ impl DynarecOp for Lb {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
-                ; ldr x3, <readi8v2
+                ; ldr x3, [x0, #ExternFnTable::<A>::READI8V2]
                 ; blr x3
             );
         })
@@ -1093,7 +1096,7 @@ impl DynarecOp for Lbu {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
-                ; ldr x3, <readu8v2
+                ; ldr x3, [x0, #ExternFnTable::<A>::READU8V2]
                 ; blr x3
             );
         })
@@ -1112,7 +1115,7 @@ impl DynarecOp for Lh {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
-                ; ldr x3, <readi16v2
+                ; ldr x3, [x0, #ExternFnTable::<A>::READI16V2]
                 ; blr x3
             )
         })
@@ -1131,7 +1134,7 @@ impl DynarecOp for Lhu {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
-                ; ldr x3, <readu16v2
+                ; ldr x3, [x0, #ExternFnTable::<A>::READU16V2]
                 ; blr x3
             )
         })
@@ -1150,7 +1153,7 @@ impl DynarecOp for Lw {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
-                ; ldr x3, <read32v2
+                ; ldr x3, [x0, #ExternFnTable::<A>::READ32V2]
                 ; blr x3
             );
         })
@@ -1323,7 +1326,7 @@ impl DynarecOp for Lwl {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
-                ; ldr x3, <ulread32
+                ; ldr x3, [x0, #ExternFnTable::<A>::ULREAD32]
                 ; blr x3
             )
         })
@@ -1343,7 +1346,7 @@ impl DynarecOp for Lwr {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
-                ; ldr x3, <urread32
+                ; ldr x3, [x0, #ExternFnTable::<A>::URREAD32]
                 ; blr x3
             )
         })
@@ -2741,7 +2744,7 @@ impl DynarecOp for Mtcn {
                     dynasm!(
                         dynarec.asm
                         ; .arch aarch64
-                        ; ldr x3, <cop0_set_cause
+                        ; ldr x3, [x0, #ExternFnTable::<A>::COP0_SET_CAUSE]
                         ; blr x3
                     );
                 });
@@ -3347,7 +3350,7 @@ impl DynarecOp for Syscall {
             ;; ctx.dynarec.emit_save_critical_registers()
             ; movz w1, u32::from(ctx.pc) >> 16, lsl #16
             ; movk w1, u32::from(ctx.pc) & 0x0000_ffff
-            ; ldr x3, <handle_syscall
+            ; ldr x3, [x0, #ExternFnTable::<A>::HANDLE_SYSCALL]
             ; blr x3
             ; nop
             ;; ctx.dynarec.emit_restore_critical_registers()
@@ -3371,7 +3374,7 @@ impl DynarecOp for Brk {
             ;; ctx.dynarec.emit_save_critical_registers()
             ; movz w1, u32::from(ctx.pc) >> 16, lsl #16
             ; movk w1, u32::from(ctx.pc) & 0x0000_ffff
-            ; ldr x3, <handle_break
+            ; ldr x3, [x0, #ExternFnTable::<A>::HANDLE_BREAK]
             ; blr x3
             ;; ctx.dynarec.emit_restore_critical_registers()
         );
@@ -3388,7 +3391,7 @@ impl DynarecOp for Rfe {
                 dynarec.asm
                 ;; let saved = dynarec.emit_save_volatile_registers()
                 ;; dynarec.emit_writeback_all()
-                ; ldr x3, <handle_rfe
+                ; ldr x3, [x0, #ExternFnTable::<A>::HANDLE_RFE]
                 ; blr x3
                 ;; dynarec.emit_restore_saved_registers(saved.into_iter())
             )
@@ -3548,7 +3551,7 @@ impl DynarecOp for Lwcn {
                 ;; ctx.dynarec.reg_alloc.dealloc_all()
                 ;; ctx.dynarec.emit_save_critical_registers()
                 ; ldr w1, [x0, #s1]
-                ; ldr x3, <read32v2
+                ; ldr x3, [x0, #ExternFnTable::<A>::READ32V2]
                 ; blr x3
                 ; mov w1, w0
                 ;; ctx.dynarec.emit_restore_critical_registers()
@@ -3624,7 +3627,7 @@ impl DynarecOp for Swcn {
                     ;; ctx.dynarec.emit_writeback_all()
                     ;; ctx.dynarec.reg_alloc.dealloc_all()
                     ;; ctx.dynarec.emit_save_critical_registers()
-                    ; ldr x3, <write32v2
+                    ; ldr x3, [x0, #ExternFnTable::<A>::WRITE32V2]
                     ; blr x3
                     ;; ctx.dynarec.emit_restore_critical_registers()
 

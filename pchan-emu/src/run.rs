@@ -14,13 +14,13 @@ use pchan_bind::ringbuf::wrap::caching::Caching;
 use pchan_bind::ringbuf::{HeapRb, SharedRb};
 use pchan_utils::{Chan, hex};
 
-use crate::Emu;
 use crate::cpu::interp::{Interpreter, InterpreterResult};
 use crate::dynarec_v2::emitters::{DecodedOp, DynarecOp, EmitCtx};
 use crate::dynarec_v2::{
     CreateDynarecParams, Dynarec, PipelineCompileError, cache_hitrate, run_block, run_step,
 };
 use crate::memory::mb;
+use crate::{Emu, dynarec_v2};
 
 #[derive(derive_more::Debug)]
 pub struct Runner<A: Allocator> {
@@ -410,6 +410,7 @@ impl<A: Allocator + Copy + Clone> Runner<A> {
             }
         }
         self.frame_idx = self.frame_idx.wrapping_add(1);
+
         {
             emu.tracy.cache_hitrate(f64::from(cache_hitrate()));
             emu.tracy.dma_transfers(emu.stats.dma_transfers_per_frame);
@@ -421,7 +422,21 @@ impl<A: Allocator + Copy + Clone> Runner<A> {
             emu.tracy
                 .plot(tracy_client::plot_name!("blocks-executed"), bx as f64);
             emu.stats.dma_transfers_per_frame = 0;
+            emu.tracy.plot(
+                tracy_client::plot_name!("cache-occupancy"),
+                f64::from(dynarec_v2::cache_occupancy()),
+            );
+            emu.tracy.plot(
+                tracy_client::plot_name!("prelude-instructions"),
+                dynarec_v2::prelude_instructions_compiled() as f64,
+            );
+            emu.tracy.plot(
+                tracy_client::plot_name!("compile-time"),
+                self.dynarec.compile_time.as_millis() as f64,
+            );
+            self.dynarec.compile_time = Duration::ZERO;
         }
+
         Some(start.elapsed())
     }
 
