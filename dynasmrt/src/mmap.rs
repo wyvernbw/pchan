@@ -1,8 +1,7 @@
 //! This module implements some wrappers around Mmap/MmapMut to also support a cheap "empty" variant.
 // Unfortunately Memmap itself doesn't support a cheap zero-length variant
 
-use std::io;
-use std::ops::{Deref, DerefMut};
+use core::ops::{Deref, DerefMut};
 
 use crate::AssemblyOffset;
 use mmap_rs::{MmapMut, MmapOptions, UnsafeMmapFlags};
@@ -11,16 +10,6 @@ use mmap_rs::{MmapMut, MmapOptions, UnsafeMmapFlags};
 /// This structure does not allocate when its size is 0.
 #[derive(Debug, Default)]
 pub struct ExecutableBuffer {
-    // length of the buffer that has actually been written to
-    length: usize,
-    // backing buffer
-    buffer: Option<MmapMut>,
-}
-
-/// ExecutableBuffer equivalent that holds a buffer of mutable memory instead of executable memory. It also derefs to a `&mut [u8]`.
-/// This structure does not allocate when its size is 0.
-#[derive(Debug, Default)]
-pub struct MutableBuffer {
     // length of the buffer that has actually been written to
     length: usize,
     // backing buffer
@@ -41,7 +30,7 @@ impl ExecutableBuffer {
     /// The programmer is responsible for ensuring that pointers generated from this API do not
     /// outlive the `ExecutableBuffer`.
     pub fn ptr(&self, offset: AssemblyOffset) -> *const u8 {
-        &self[offset.0] as *const u8
+        &raw const self[offset.0]
     }
 
     /// Create a new executable buffer, backed by a buffer of size `size`.
@@ -67,7 +56,7 @@ impl ExecutableBuffer {
     }
 
     pub fn make_mut(&self) -> Result<(), mmap_rs::Error> {
-        if let Some(buf) = &self.buffer {
+        if let Some(_) = &self.buffer {
             unsafe {
                 pthread_jit_write_protect_np(0);
             }
@@ -93,7 +82,7 @@ impl ExecutableBuffer {
 #[cfg(target_arch = "aarch64")]
 unsafe extern "C" {
     pub fn pthread_jit_write_protect_np(enabled: libc::c_int);
-    pub fn sys_icache_invalidate(start: *mut libc::c_void, len: usize);
+    pub fn sys_icache_invalidate(start: *const libc::c_void, len: usize);
 }
 
 impl Deref for ExecutableBuffer {

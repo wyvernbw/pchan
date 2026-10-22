@@ -8,7 +8,6 @@ dhat-heap = ["dep:dhat"]
 
 [dependencies]
 async-fs = "2.2.0"
-bumpalo = { version = "3.20.3", features = ["allocator_api"] }
 core-foundation = "0.10.0"
 core-video = { version = "0.5.2", features = ["metal"] }
 # image = { version = "0.25.10", default-features = false }

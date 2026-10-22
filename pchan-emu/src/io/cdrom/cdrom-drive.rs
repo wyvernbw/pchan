@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use smallvec::{SmallVec, smallvec};
 
 use crate::Emu;
-use crate::cpu::{Cpu, cycles_to_ms};
+use crate::cpu::Cpu;
 use crate::io::cdrom::cdrom_cmds::{CommandStateV2, SetMode, SetModeSpeed, StatusCode};
 use crate::io::cdrom::cdrom_format::{
     CdromCursor, CueFormatParseErr, CueSheet, Mss, SECTOR_USER_SIZE,
@@ -320,8 +320,6 @@ impl InMemoryDiskReader {
         let dest_end = cmp::min(slice.len(), buf.len());
 
         buf[..dest_end].copy_from_slice(slice);
-
-        let old_cursor = *cursor;
 
         cursor.lba += (BYTES / SECTOR_USER_SIZE) as u32;
         cursor.byte += (BYTES % SECTOR_USER_SIZE) as u32;

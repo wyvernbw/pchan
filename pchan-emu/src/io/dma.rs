@@ -293,7 +293,6 @@ impl<A: Allocator + Copy> Emu<A> {
         } else {
             tracing::info!("dma{idx} irq masked out on dma.dicr");
         }
-        let old_master_irq = dicr.master_irq();
         self.update_dicr_master_irq_flag();
         let dicr = &mut self.dma.dicr;
         if dicr.master_irq() {

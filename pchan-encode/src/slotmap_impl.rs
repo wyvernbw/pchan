@@ -1,6 +1,6 @@
 use core::alloc::Allocator;
 
-use slotmap::{Key, KeyData, SlotMap};
+use slotmap::KeyData;
 
 use crate::{Allocate, Endecode};
 

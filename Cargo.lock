@@ -6057,7 +6057,6 @@ name = "pchan-dbg-gpui"
 version = "0.1.0"
 dependencies = [
  "async-fs",
- "bumpalo",
  "core-foundation 0.10.0",
  "core-video",
  "dhat",

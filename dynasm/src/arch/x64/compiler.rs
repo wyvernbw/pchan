@@ -15,8 +15,8 @@ use super::debug::format_opdata_list;
 use super::x64data::{Features, Flags, get_mnemnonic_data};
 use super::{Context, X86Mode};
 
-use std::mem::swap;
-use std::{iter, slice};
+use core::mem::swap;
+use core::{iter, slice};
 
 /*
  * Instruction encoding data formats

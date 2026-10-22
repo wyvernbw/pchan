@@ -14,7 +14,7 @@
 //!
 //! ## Enums
 //!
-//! There are enumerations of every RISC-V register family. 
+//! There are enumerations of every RISC-V register family.
 //! These enums implement the [`Register`] trait and their discriminant values match their numeric encoding in dynamic register literals.
 //!
 //! *Note: The presence of some registers listed here is purely what is encodable. Check the relevant architecture documentation to find what is architecturally valid.*
@@ -24,10 +24,13 @@
 //! This module contains handlers for error conditions in the case where a dynamically selected register is invalid, or a dynamically encoded immediate is out of range.
 //! These panic with a friendly error message if any of these conditions happen at runtime.
 
-use crate::relocations::{ArchitectureRelocationEncoding, Relocation, RelocationType, RelocationSize, RelocationKind, RelocationEncoding, ImpossibleRelocation, fits_signed_bitfield};
-use byteorder::{ByteOrder, LittleEndian};
-use std::convert::TryFrom;
 use crate::Register;
+use crate::relocations::{
+    ArchitectureRelocationEncoding, ImpossibleRelocation, Relocation, RelocationEncoding,
+    RelocationKind, RelocationSize, RelocationType, fits_signed_bitfield,
+};
+use byteorder::{ByteOrder, LittleEndian};
+use core::convert::TryFrom;
 
 #[derive(Debug, Clone, Copy)]
 #[allow(missing_docs)]
@@ -73,7 +76,7 @@ impl ArchitectureRelocationEncoding for RiscvRelocationEncoding {
             6 => Self::LO12S,
             7 => Self::SPLIT32,
             8 => Self::SPLIT32S,
-            n => panic!("Invalid complex relocation code {n} given for the current architecture")
+            n => panic!("Invalid complex relocation code {n} given for the current architecture"),
         }
     }
 }
@@ -111,16 +114,14 @@ impl Relocation for RiscvRelocation {
         match self.0.encoding {
             RelocationEncoding::Simple(s) => s.size(),
             RelocationEncoding::ArchSpecific(c) => match c {
-                RiscvRelocationEncoding::BC
-                | RiscvRelocationEncoding::JC => 2,
+                RiscvRelocationEncoding::BC | RiscvRelocationEncoding::JC => 2,
                 RiscvRelocationEncoding::B
                 | RiscvRelocationEncoding::J
                 | RiscvRelocationEncoding::HI20
                 | RiscvRelocationEncoding::LO12
                 | RiscvRelocationEncoding::LO12S => 4,
-                RiscvRelocationEncoding::SPLIT32
-                | RiscvRelocationEncoding::SPLIT32S => 8
-            }
+                RiscvRelocationEncoding::SPLIT32 | RiscvRelocationEncoding::SPLIT32S => 8,
+            },
         }
     }
     fn write_value(&self, buf: &mut [u8], value: isize) -> Result<(), ImpossibleRelocation> {
@@ -128,7 +129,7 @@ impl Relocation for RiscvRelocation {
             RelocationEncoding::Simple(s) => s.write_value(buf, value),
             RelocationEncoding::ArchSpecific(c) => {
                 // determine if the value fits
-                let value = i64::try_from(value).map_err(|_| ImpossibleRelocation { } )?;
+                let value = i64::try_from(value).map_err(|_| ImpossibleRelocation {})?;
 
                 let (bits, scaling) = c.bitsize();
                 let mask = (1i64 << scaling) - 1;
@@ -147,12 +148,12 @@ impl Relocation for RiscvRelocation {
                     | RiscvRelocationEncoding::SPLIT32
                     | RiscvRelocationEncoding::SPLIT32S => {
                         if value < -0x8000_0800 || value > 0x7FFF_F7FF {
-                            return Err(ImpossibleRelocation { } );  
+                            return Err(ImpossibleRelocation {});
                         }
-                    },
+                    }
                     _ => {
                         if !fits_signed_bitfield(value, bits) || (value & mask) != 0 {
-                            return Err(ImpossibleRelocation { } );
+                            return Err(ImpossibleRelocation {});
                         }
                     }
                 }
@@ -171,7 +172,7 @@ impl Relocation for RiscvRelocation {
                         instr |= ((val_cast >> 11) & 0x1) << 7;
 
                         LittleEndian::write_u32(buf, instr);
-                    },
+                    }
                     RiscvRelocationEncoding::J => {
                         let mut instr = LittleEndian::read_u32(buf);
                         instr &= 0x0000_0FFF;
@@ -182,7 +183,7 @@ impl Relocation for RiscvRelocation {
                         instr |= ((val_cast >> 12) & 0xFF) << 12;
 
                         LittleEndian::write_u32(buf, instr);
-                    },
+                    }
                     RiscvRelocationEncoding::BC => {
                         let mut instr = LittleEndian::read_u16(buf);
                         instr &= 0xE383;
@@ -194,7 +195,7 @@ impl Relocation for RiscvRelocation {
                         instr |= (((val_cast >> 5) & 0x1) as u16) << 2;
 
                         LittleEndian::write_u16(buf, instr);
-                    },
+                    }
                     RiscvRelocationEncoding::JC => {
                         let mut instr = LittleEndian::read_u16(buf);
                         instr &= 0xE003;
@@ -209,7 +210,7 @@ impl Relocation for RiscvRelocation {
                         instr |= (((val_cast >> 5) & 0x1) as u16) << 2;
 
                         LittleEndian::write_u16(buf, instr);
-                    },
+                    }
                     RiscvRelocationEncoding::HI20 => {
                         let mut instr = LittleEndian::read_u32(buf);
                         instr &= 0x0000_0FFF;
@@ -218,7 +219,7 @@ impl Relocation for RiscvRelocation {
                         instr |= val_round & 0xFFFF_F000;
 
                         LittleEndian::write_u32(buf, instr);
-                    },
+                    }
                     RiscvRelocationEncoding::LO12 => {
                         let mut instr = LittleEndian::read_u32(buf);
                         instr &= 0x000F_FFFF;
@@ -226,7 +227,7 @@ impl Relocation for RiscvRelocation {
                         instr |= (val_cast & 0xFFF) << 20;
 
                         LittleEndian::write_u32(buf, instr);
-                    },
+                    }
                     RiscvRelocationEncoding::LO12S => {
                         let mut instr = LittleEndian::read_u32(buf);
                         instr &= 0x01FF_F07F;
@@ -235,7 +236,7 @@ impl Relocation for RiscvRelocation {
                         instr |= ((val_cast >> 5) & 0x7F) << 25;
 
                         LittleEndian::write_u32(buf, instr);
-                    },
+                    }
                     RiscvRelocationEncoding::SPLIT32 => {
                         let mut instr1 = LittleEndian::read_u32(&buf[..4]);
                         let mut instr2 = LittleEndian::read_u32(&buf[4..]);
@@ -248,7 +249,7 @@ impl Relocation for RiscvRelocation {
 
                         LittleEndian::write_u32(&mut buf[..4], instr1);
                         LittleEndian::write_u32(&mut buf[4..], instr2);
-                    },
+                    }
                     RiscvRelocationEncoding::SPLIT32S => {
                         let mut instr1 = LittleEndian::read_u32(&buf[..4]);
                         let mut instr2 = LittleEndian::read_u32(&buf[4..]);
@@ -262,7 +263,7 @@ impl Relocation for RiscvRelocation {
 
                         LittleEndian::write_u32(&mut buf[..4], instr1);
                         LittleEndian::write_u32(&mut buf[4..], instr2);
-                    },
+                    }
                 }
 
                 Ok(())
@@ -285,7 +286,7 @@ impl Relocation for RiscvRelocation {
                         unpacked |= ((instr >> 25) & 0x3F) << 5;
                         unpacked |= ((instr >> 8) & 0xF) << 1;
                         unpacked |= ((instr >> 7) & 0x1) << 11;
-                    },
+                    }
                     RiscvRelocationEncoding::J => {
                         bits = 20;
                         let instr = LittleEndian::read_u32(buf);
@@ -294,7 +295,7 @@ impl Relocation for RiscvRelocation {
                         unpacked |= ((instr >> 21) & 0x3FF) << 1;
                         unpacked |= ((instr >> 20) & 0x1) << 11;
                         unpacked |= ((instr >> 12) & 0xFF) << 12;
-                    },
+                    }
                     RiscvRelocationEncoding::BC => {
                         bits = 9;
                         let instr = u32::from(LittleEndian::read_u16(buf));
@@ -304,7 +305,7 @@ impl Relocation for RiscvRelocation {
                         unpacked |= ((instr >> 5) & 0x3) << 6;
                         unpacked |= ((instr >> 3) & 0x3) << 1;
                         unpacked |= ((instr >> 2) & 0x1) << 5;
-                    },
+                    }
                     RiscvRelocationEncoding::JC => {
                         bits = 12;
                         let instr = u32::from(LittleEndian::read_u16(buf));
@@ -317,7 +318,7 @@ impl Relocation for RiscvRelocation {
                         unpacked |= ((instr >> 6) & 0x1) << 7;
                         unpacked |= ((instr >> 3) & 0x7) << 1;
                         unpacked |= ((instr >> 2) & 0x1) << 5;
-                    },
+                    }
                     RiscvRelocationEncoding::HI20 => {
                         bits = 32;
                         let instr = LittleEndian::read_u32(buf);
@@ -328,20 +329,20 @@ impl Relocation for RiscvRelocation {
                         // if this thing would get relocated. luckily, riscv only does
                         // relative relocations so this should never happen, and we
                         // should be fine with just returning the value without adjustment
-                    },
+                    }
                     RiscvRelocationEncoding::LO12 => {
                         bits = 12;
                         let instr = LittleEndian::read_u32(buf);
 
                         unpacked = (instr >> 20) & 0xFFF;
-                    },
+                    }
                     RiscvRelocationEncoding::LO12S => {
                         bits = 12;
                         let instr = LittleEndian::read_u32(buf);
 
                         unpacked = (instr >> 7) & 0x1F;
                         unpacked |= ((instr >> 25) & 0x7F) << 5;
-                    },
+                    }
                     RiscvRelocationEncoding::SPLIT32 => {
                         bits = 32;
                         let instr1 = LittleEndian::read_u32(&buf[..4]);
@@ -353,8 +354,7 @@ impl Relocation for RiscvRelocation {
                         // sign extend the lower part and then add them
                         lower = (lower ^ 0x800).wrapping_sub(0x800);
                         unpacked = unpacked.wrapping_add(lower)
-
-                    },
+                    }
                     RiscvRelocationEncoding::SPLIT32S => {
                         bits = 32;
                         let instr1 = LittleEndian::read_u32(&buf[..4]);
@@ -367,7 +367,7 @@ impl Relocation for RiscvRelocation {
                         // sign extend the lower part and then add them
                         lower = (lower ^ 0x800).wrapping_sub(0x800);
                         unpacked = unpacked.wrapping_add(lower)
-                    },
+                    }
                 }
 
                 // sign extension
@@ -425,20 +425,43 @@ pub fn invalid_register(register: u8) -> ! {
     panic!("Cannot assemble this RISC-V instruction. Register x{register} cannot be encoded.")
 }
 
-
 /// 4 or 8-byte general purpopse registers, where X0 is the zero register
 /// When using the RV32/64E profile, only the first 16 registers are valid
 #[allow(missing_docs)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RX {
-    X0 = 0x00, X1 = 0x01, X2 = 0x02, X3 = 0x03,
-    X4 = 0x04, X5 = 0x05, X6 = 0x06, X7 = 0x07,
-    X8 = 0x08, X9 = 0x09, X10= 0x0A, X11= 0x0B,
-    X12= 0x0C, X13= 0x0D, X14= 0x0E, X15= 0x0F,
-    X16= 0x10, X17= 0x11, X18= 0x12, X19= 0x13,
-    X20= 0x14, X21= 0x15, X22= 0x16, X23= 0x17,
-    X24= 0x18, X25= 0x19, X26= 0x1A, X27= 0x1B,
-    X28= 0x1C, X29= 0x1D, X30= 0x1E, X31= 0x1F,
+    X0  = 0x00,
+    X1  = 0x01,
+    X2  = 0x02,
+    X3  = 0x03,
+    X4  = 0x04,
+    X5  = 0x05,
+    X6  = 0x06,
+    X7  = 0x07,
+    X8  = 0x08,
+    X9  = 0x09,
+    X10 = 0x0A,
+    X11 = 0x0B,
+    X12 = 0x0C,
+    X13 = 0x0D,
+    X14 = 0x0E,
+    X15 = 0x0F,
+    X16 = 0x10,
+    X17 = 0x11,
+    X18 = 0x12,
+    X19 = 0x13,
+    X20 = 0x14,
+    X21 = 0x15,
+    X22 = 0x16,
+    X23 = 0x17,
+    X24 = 0x18,
+    X25 = 0x19,
+    X26 = 0x1A,
+    X27 = 0x1B,
+    X28 = 0x1C,
+    X29 = 0x1D,
+    X30 = 0x1E,
+    X31 = 0x1F,
 }
 reg_impls!(RX);
 
@@ -446,17 +469,40 @@ reg_impls!(RX);
 #[allow(missing_docs)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RF {
-    F0 = 0x00, F1 = 0x01, F2 = 0x02, F3 = 0x03,
-    F4 = 0x04, F5 = 0x05, F6 = 0x06, F7 = 0x07,
-    F8 = 0x08, F9 = 0x09, F10= 0x0A, F11= 0x0B,
-    F12= 0x0C, F13= 0x0D, F14= 0x0E, F15= 0x0F,
-    F16= 0x10, F17= 0x11, F18= 0x12, F19= 0x13,
-    F20= 0x14, F21= 0x15, F22= 0x16, F23= 0x17,
-    F24= 0x18, F25= 0x19, F26= 0x1A, F27= 0x1B,
-    F28= 0x1C, F29= 0x1D, F30= 0x1E, F31= 0x1F,
+    F0  = 0x00,
+    F1  = 0x01,
+    F2  = 0x02,
+    F3  = 0x03,
+    F4  = 0x04,
+    F5  = 0x05,
+    F6  = 0x06,
+    F7  = 0x07,
+    F8  = 0x08,
+    F9  = 0x09,
+    F10 = 0x0A,
+    F11 = 0x0B,
+    F12 = 0x0C,
+    F13 = 0x0D,
+    F14 = 0x0E,
+    F15 = 0x0F,
+    F16 = 0x10,
+    F17 = 0x11,
+    F18 = 0x12,
+    F19 = 0x13,
+    F20 = 0x14,
+    F21 = 0x15,
+    F22 = 0x16,
+    F23 = 0x17,
+    F24 = 0x18,
+    F25 = 0x19,
+    F26 = 0x1A,
+    F27 = 0x1B,
+    F28 = 0x1C,
+    F29 = 0x1D,
+    F30 = 0x1E,
+    F31 = 0x1F,
 }
 reg_impls!(RF);
-
 
 #[cfg(test)]
 mod tests {

@@ -3,6 +3,9 @@ name = "dynasm"
 description = "A plugin for assembling code at runtime. Combined with the runtime crate dynasmrt it can be used to write JIT compilers easily."
 edition = "2024"
 
+[lints]
+workspace = true
+
 [lib]
 name = "dynasm"
 proc-macro = true

@@ -11,6 +11,7 @@
 //! Additionally, the `dynasm_opmap` and `dynasm_extract` development features can be used to export two additional macros
 //! with matching names. These macros expand into instruction listing overviews and are normally only used for documentation purposes.
 
+extern crate alloc;
 extern crate proc_macro;
 
 use proc_macro_error3::proc_macro_error;
@@ -109,7 +110,7 @@ impl parse::Parse for Dynasm {
                 // collect all tokentrees till the next ;
                 let mut buffer = TokenStream::new();
                 while !(input.is_empty() || input.peek(Token![;])) {
-                    buffer.extend(std::iter::once(input.parse::<TokenTree>()?));
+                    buffer.extend(core::iter::once(input.parse::<TokenTree>()?));
                 }
                 // glue an extra ; on there
                 buffer.extend(quote! { ; });
@@ -300,7 +301,7 @@ impl ContextProvider {
         let span = Span::call_site().unstable();
 
         // and use the file that that was at as scope for resolving dynasm data
-        let id = span.source_file().path();
+        let id = PathBuf::from(span.file());
 
         self.guard.entry(id).or_insert_with(DynasmContext::new)
     }

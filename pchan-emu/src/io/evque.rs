@@ -1,5 +1,5 @@
 use core::alloc::Allocator;
-use core::{cmp, mem};
+use core::cmp;
 
 use heapless::BinaryHeap;
 use heapless::binary_heap::Min;
@@ -7,7 +7,6 @@ use pchan_encode::Allocate;
 use pchan_encode::derive::Endecode;
 
 use crate::Emu;
-use crate::memory::mb;
 
 /// for compatiblity with older code
 pub type EventId = u64;

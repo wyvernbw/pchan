@@ -1,7 +1,7 @@
-use super::riscvdata::{Command, Matcher, Relocation, Opdata, ISAFlags};
 use super::RiscVTarget;
+use super::riscvdata::{Command, ISAFlags, Matcher, Opdata, Relocation};
 
-use std::fmt::Write;
+use core::fmt::Write;
 
 #[cfg(feature = "dynasm_opmap")]
 pub fn create_opmap() -> String {
@@ -12,17 +12,23 @@ pub fn create_opmap() -> String {
     for mnemonic in mnemonics {
         // get the data for this mnemonic
         let data = super::riscvdata::get_mnemonic_data(mnemonic).unwrap();
-        let formats = data.into_iter()
+        let formats = data
+            .into_iter()
             .map(|x| format!("{} {}", format_opdata(mnemonic, x), format_features(x)))
             .map(|x| x.replace(">>> ", ""))
             .collect::<Vec<_>>();
 
         // push mnemonic name as title
-        write!(s, "### {}\n```insref\n{}\n```\n", mnemonic, formats.join("\n")).unwrap();
+        write!(
+            s,
+            "### {}\n```insref\n{}\n```\n",
+            mnemonic,
+            formats.join("\n")
+        )
+        .unwrap();
     }
     s
 }
-
 
 #[cfg(feature = "dynasm_extract")]
 pub fn extract_opmap() -> String {
@@ -35,38 +41,38 @@ pub fn extract_opmap() -> String {
         // get the data for this mnemonic
         let data = super::riscvdata::get_mnemonic_data(mnemonic).unwrap();
 
-        buf.extend(
-            data.into_iter()
-            .map(|x| extract_opdata(mnemonic, x))
-        );
+        buf.extend(data.into_iter().map(|x| extract_opdata(mnemonic, x)));
     }
 
     buf.join("\n")
 }
 
-
 pub fn format_opdata_list(name: &str, data: &[Opdata], target: RiscVTarget) -> String {
     let mut forms = Vec::new();
 
     for data in data {
-        if (target.is_64_bit() && !data.isa_flags.contains(ISAFlags::RV64)) || 
-           (target.is_32_bit() && !data.isa_flags.contains(ISAFlags::RV32)) {
-            continue
+        if (target.is_64_bit() && !data.isa_flags.contains(ISAFlags::RV64))
+            || (target.is_32_bit() && !data.isa_flags.contains(ISAFlags::RV32))
+        {
+            continue;
         }
 
-        forms.push(format!("{} {}", format_opdata(name, data), format_features(data)));
+        forms.push(format!(
+            "{} {}",
+            format_opdata(name, data),
+            format_features(data)
+        ));
     }
 
     forms.join("\n")
 }
-
 
 pub fn format_opdata(name: &str, data: &Opdata) -> String {
     let mut buf = format!(">>> {}", name);
 
     let (constraints, names) = match constraints_and_names(data) {
         Ok(o) => o,
-        Err(e) => panic!("Encountered a faulty op listing for {}: {}", name, e)
+        Err(e) => panic!("Encountered a faulty op listing for {}: {}", name, e),
     };
 
     let mut first = true;
@@ -81,11 +87,9 @@ pub fn format_opdata(name: &str, data: &Opdata) -> String {
         }
 
         let (arg_names, rest) = names.split_at(match matcher {
-            Matcher::RefOffset
-            | Matcher::RefLabel => 2,
-            Matcher::Lit(_)
-            | Matcher::Reg(_) => 0,
-            _ => 1
+            Matcher::RefOffset | Matcher::RefLabel => 2,
+            Matcher::Lit(_) | Matcher::Reg(_) => 0,
+            _ => 1,
         });
         names = rest;
 
@@ -126,7 +130,10 @@ pub fn format_opdata(name: &str, data: &Opdata) -> String {
 fn constraints_and_names(opdata: &Opdata) -> Result<(Option<String>, Vec<String>), &'static str> {
     let data = group_opdata(opdata)?;
     let constraints = format_constraints(&data);
-    let names = data.into_iter().map(|a| a.name.unwrap_or_else(|| "?".into())).collect();
+    let names = data
+        .into_iter()
+        .map(|a| a.name.unwrap_or_else(|| "?".into()))
+        .collect();
     Ok((constraints, names))
 }
 
@@ -138,11 +145,14 @@ fn group_opdata(opdata: &Opdata) -> Result<Vec<ArgWithCommands>, &'static str> {
         return Err("arg / command count mismatch");
     }
 
-    let mut args: Vec<_> = args.into_iter().map(|arg| ArgWithCommands {
-        arg,
-        commands: Vec::new(),
-        name: None
-    }).collect();
+    let mut args: Vec<_> = args
+        .into_iter()
+        .map(|arg| ArgWithCommands {
+            arg,
+            commands: Vec::new(),
+            name: None,
+        })
+        .collect();
 
     for (command, idx) in commands {
         args[idx].commands.push(command);
@@ -156,7 +166,6 @@ fn group_opdata(opdata: &Opdata) -> Result<Vec<ArgWithCommands>, &'static str> {
     Ok(args)
 }
 
-
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum FlatArgTy {
     Direct(bool), // boolean paramter is set to true if this one resulted from a memory reference
@@ -166,9 +175,9 @@ enum FlatArgTy {
 }
 
 struct ArgWithCommands {
-    pub arg: FlatArgTy,
+    pub arg:      FlatArgTy,
     pub commands: Vec<Command>,
-    pub name: Option<String>,
+    pub name:     Option<String>,
 }
 
 /// Take a matcher array and return a vector of the types of flat arg each should produce
@@ -177,24 +186,19 @@ fn flatten_matchers(matchers: &[Matcher]) -> Vec<FlatArgTy> {
 
     for matcher in matchers {
         match matcher {
-            Matcher::X
-            | Matcher::F
-            | Matcher::Ref => args.push(FlatArgTy::Direct(false)),
-            Matcher::Ident
-            |  Matcher::RefSp
-            | Matcher::Imm => args.push(FlatArgTy::Immediate),
+            Matcher::X | Matcher::F | Matcher::Ref => args.push(FlatArgTy::Direct(false)),
+            Matcher::Ident | Matcher::RefSp | Matcher::Imm => args.push(FlatArgTy::Immediate),
             Matcher::RefOffset => {
                 args.push(FlatArgTy::Direct(true));
                 args.push(FlatArgTy::Immediate);
-            },
+            }
             Matcher::RefLabel => {
                 args.push(FlatArgTy::Direct(true));
                 args.push(FlatArgTy::JumpTarget);
-            },
+            }
             Matcher::Offset => args.push(FlatArgTy::JumpTarget),
             Matcher::Xlist => args.push(FlatArgTy::Reglist),
-            Matcher::Lit(_)
-            | Matcher::Reg(_) => ()
+            Matcher::Lit(_) | Matcher::Reg(_) => (),
         }
     }
     args
@@ -210,12 +214,12 @@ fn group_commands(commands: &[Command]) -> (usize, Vec<(Command, usize)>) {
             Command::Next => {
                 cursor += 1;
                 continue;
-            },
+            }
             Command::Repeat => {
                 cursor -= 1;
                 continue;
-            },
-            _ => ()
+            }
+            _ => (),
         }
 
         command_idx.push((command.clone(), cursor));
@@ -234,7 +238,7 @@ fn group_commands(commands: &[Command]) -> (usize, Vec<(Command, usize)>) {
             | Command::FloatingPointImmediate(_)
             | Command::SPImm(_, _)
             | Command::Offset(_) => cursor += 1,
-            _ => ()
+            _ => (),
         }
     }
 
@@ -245,7 +249,7 @@ fn group_commands(commands: &[Command]) -> (usize, Vec<(Command, usize)>) {
 fn check_command_sanity(args: &[ArgWithCommands]) -> Result<(), &'static str> {
     for arg in args {
         if arg.commands.is_empty() {
-            return Err("Arg with no commands")
+            return Err("Arg with no commands");
         }
 
         for command in &arg.commands {
@@ -256,7 +260,9 @@ fn check_command_sanity(args: &[ArgWithCommands]) -> Result<(), &'static str> {
                 | Command::Rno02(_)
                 | Command::Rpop(_)
                 | Command::Rpops(_)
-                | Command::Rpops2(_) => arg.arg == FlatArgTy::Direct(false) || arg.arg == FlatArgTy::Direct(true),
+                | Command::Rpops2(_) => {
+                    arg.arg == FlatArgTy::Direct(false) || arg.arg == FlatArgTy::Direct(true)
+                }
                 Command::Rlist(_) => arg.arg == FlatArgTy::Reglist,
                 Command::RoundingMode(_)
                 | Command::FenceSpec(_)
@@ -273,8 +279,7 @@ fn check_command_sanity(args: &[ArgWithCommands]) -> Result<(), &'static str> {
                 | Command::BitRange(_, _, _)
                 | Command::RBitRange(_, _, _) => arg.arg == FlatArgTy::Immediate,
                 Command::Offset(_) => arg.arg == FlatArgTy::JumpTarget,
-                Command::Repeat
-                | Command::Next => unreachable!()
+                Command::Repeat | Command::Next => unreachable!(),
             };
 
             if !check {
@@ -289,14 +294,19 @@ fn check_command_sanity(args: &[ArgWithCommands]) -> Result<(), &'static str> {
 /// assign names to the args being used
 fn name_args(args: &mut [ArgWithCommands]) {
     // iirc no op uses more than 4 unconstrained literals / immediates
-    
+
     let mut reg_name_idx = 0;
     let imm_name_list = ["", "1", "2", "3"];
     let mut imm_name_idx = 0;
 
     // if this is a memory instruction
-    let reg_name_list = if args.iter().any(|arg| arg.arg == FlatArgTy::Direct(true)) &&
-       args.iter().filter(|arg| arg.arg == FlatArgTy::Direct(false)).count() == 1 {
+    let reg_name_list = if args.iter().any(|arg| arg.arg == FlatArgTy::Direct(true))
+        && args
+            .iter()
+            .filter(|arg| arg.arg == FlatArgTy::Direct(false))
+            .count()
+            == 1
+    {
         ["v", "v", "v", "v"]
     } else {
         ["d", "s1", "s2", "s3"]
@@ -311,21 +321,23 @@ fn name_args(args: &mut [ArgWithCommands]) {
                 | Command::Rno02(_)
                 | Command::Rpop(_)
                 | Command::Rpops(_)
-                | Command::Rpops2(_) => if is_offset {
-                    arg.name = Some("b".to_string())
-                } else {
-                    arg.name = Some(reg_name_list[reg_name_idx].to_string());
-                    reg_name_idx += 1;
-                },
-                _ => unreachable!()
+                | Command::Rpops2(_) => {
+                    if is_offset {
+                        arg.name = Some("b".to_string())
+                    } else {
+                        arg.name = Some(reg_name_list[reg_name_idx].to_string());
+                        reg_name_idx += 1;
+                    }
+                }
+                _ => unreachable!(),
             },
             FlatArgTy::Reglist => match &arg.commands[0] {
                 Command::Rlist(_) => arg.name = None,
-                _ => unreachable!()
-            }
+                _ => unreachable!(),
+            },
             FlatArgTy::JumpTarget => match &arg.commands[0] {
                 Command::Offset(_) => arg.name = Some("<offset>".to_string()),
-                _ => unreachable!()
+                _ => unreachable!(),
             },
             FlatArgTy::Immediate => match &arg.commands[0] {
                 Command::RoundingMode(_) => arg.name = Some("<rounding mode>".to_string()),
@@ -334,7 +346,7 @@ fn name_args(args: &mut [ArgWithCommands]) {
                 Command::FloatingPointImmediate(_) => {
                     arg.name = Some(format!("fimm{}", imm_name_list[imm_name_idx]));
                     imm_name_idx += 1;
-                },
+                }
                 Command::SPImm(_, true) => arg.name = Some("nspimm".to_string()),
                 Command::SPImm(_, false) => arg.name = Some("spimm".to_string()),
                 Command::UImm(_, _)
@@ -343,15 +355,13 @@ fn name_args(args: &mut [ArgWithCommands]) {
                 | Command::UImmRange(_, _) => {
                     arg.name = Some(format!("uimm{}", imm_name_list[imm_name_idx]));
                     imm_name_idx += 1;
-                },
-                Command::SImm(_, _)
-                | Command::BigImm(_)
-                | Command::SImmNo0(_, _) => {
+                }
+                Command::SImm(_, _) | Command::BigImm(_) | Command::SImmNo0(_, _) => {
                     arg.name = Some(format!("simm{}", imm_name_list[imm_name_idx]));
                     imm_name_idx += 1;
-                },
-                _ => unreachable!()
-            }
+                }
+                _ => unreachable!(),
+            },
         }
     }
 }
@@ -372,7 +382,7 @@ fn format_constraints(args: &[ArgWithCommands]) -> Option<String> {
         None
     } else {
         let len = constraints.len();
-        Some(format!(" ({})", &constraints[0 .. len - 2]))
+        Some(format!(" ({})", &constraints[0..len - 2]))
     }
 }
 
@@ -384,52 +394,166 @@ fn emit_constraints(name: &str, prev_name: &str, commands: &[Command], buf: &mut
             Command::Rno02(_) => write!(buf, "{} cannot be 0 or 2", name),
             Command::Rpop(_) => write!(buf, "{} is 8-15", name),
             Command::Rpops(_) => write!(buf, "{} is 8, 9, or 18-23", name),
-            Command::Rpops2(_) => write!(buf, "{} is 8, 9, or 18-23, {} != {}", name, name, prev_name),
+            Command::Rpops2(_) => {
+                write!(buf, "{} is 8, 9, or 18-23, {} != {}", name, name, prev_name)
+            }
 
-            Command::FloatingPointImmediate(_) => write!(buf, "{} is a floating point immediate", name),
-            Command::SPImm(_, true) => write!(buf, "{} = -(round_up(reglist_space, 16) + [0|16|32|48])", name),
-            Command::SPImm(_, false) => write!(buf, "{} = round_up(reglist_space, 16) + [0|16|32|48]", name),
-            Command::UImm(bits, 0) if *bits > 12 => write!(buf, "{} <= {:#X}", name, (1u32 << bits) - 1),
+            Command::FloatingPointImmediate(_) => {
+                write!(buf, "{} is a floating point immediate", name)
+            }
+            Command::SPImm(_, true) => write!(
+                buf,
+                "{} = -(round_up(reglist_space, 16) + [0|16|32|48])",
+                name
+            ),
+            Command::SPImm(_, false) => {
+                write!(buf, "{} = round_up(reglist_space, 16) + [0|16|32|48]", name)
+            }
+            Command::UImm(bits, 0) if *bits > 12 => {
+                write!(buf, "{} <= {:#X}", name, (1u32 << bits) - 1)
+            }
             Command::UImm(bits, 0) => write!(buf, "{} <= {:#X}", name, (1u32 << bits) - 1),
-            Command::UImm(bits, scale) if *bits > 12 => write!(buf, "{} <= {:#X}, {} = {:#X} * N", name, (1u32 << bits) - (1u32 << scale), name, 1u32 << scale),
-            Command::UImm(bits, scale) => write!(buf, "{} <= {}, {} = {} * N", name, (1u32 << bits) - (1u32 << scale), name, 1u32 << scale),
-            Command::SImm(bits, 0) if *bits > 12 => write!(buf, "-{:#X} <= {} <= {:#X}", (1u32 << (bits - 1)), name, (1u32 << (bits - 1)) - 1),
-            Command::SImm(bits, 0) => write!(buf, "-{} <= {} <= {}", (1u32 << (bits - 1)), name, (1u32 << (bits - 1)) - 1),
-            Command::SImm(bits, scale) if *bits > 12 => write!(buf, "-{:#X} <= {} <= {:#X}, {} = {:#X} * N", 1u32 << (bits - 1), name, (1u32 << (bits - 1)) - (1u32 << scale), name, 1u32 << scale),
-            Command::SImm(bits, scale) => write!(buf, "-{} <= {} <= {}, {} = {} * N", 1u32 << (bits - 1), name, (1u32 << (bits - 1)) - (1u32 << scale), name, 1u32 << scale),
-            Command::BigImm(bits) => write!(buf, "-{:#X} <= {} <= {:#X}", (1u64 << (bits - 1)), name, (1u64 << (bits - 1)) - 1),
+            Command::UImm(bits, scale) if *bits > 12 => write!(
+                buf,
+                "{} <= {:#X}, {} = {:#X} * N",
+                name,
+                (1u32 << bits) - (1u32 << scale),
+                name,
+                1u32 << scale
+            ),
+            Command::UImm(bits, scale) => write!(
+                buf,
+                "{} <= {}, {} = {} * N",
+                name,
+                (1u32 << bits) - (1u32 << scale),
+                name,
+                1u32 << scale
+            ),
+            Command::SImm(bits, 0) if *bits > 12 => write!(
+                buf,
+                "-{:#X} <= {} <= {:#X}",
+                (1u32 << (bits - 1)),
+                name,
+                (1u32 << (bits - 1)) - 1
+            ),
+            Command::SImm(bits, 0) => write!(
+                buf,
+                "-{} <= {} <= {}",
+                (1u32 << (bits - 1)),
+                name,
+                (1u32 << (bits - 1)) - 1
+            ),
+            Command::SImm(bits, scale) if *bits > 12 => write!(
+                buf,
+                "-{:#X} <= {} <= {:#X}, {} = {:#X} * N",
+                1u32 << (bits - 1),
+                name,
+                (1u32 << (bits - 1)) - (1u32 << scale),
+                name,
+                1u32 << scale
+            ),
+            Command::SImm(bits, scale) => write!(
+                buf,
+                "-{} <= {} <= {}, {} = {} * N",
+                1u32 << (bits - 1),
+                name,
+                (1u32 << (bits - 1)) - (1u32 << scale),
+                name,
+                1u32 << scale
+            ),
+            Command::BigImm(bits) => write!(
+                buf,
+                "-{:#X} <= {} <= {:#X}",
+                (1u64 << (bits - 1)),
+                name,
+                (1u64 << (bits - 1)) - 1
+            ),
 
             Command::UImmNo0(bits, 0) => write!(buf, "1 <= {} <= {}", name, (1u32 << bits) - 1),
-            Command::UImmNo0(bits, scale) => write!(buf, "1 <= {} <= {}, {} = {} * N", name, (1u32 << bits) - (1u32 << scale), name, 1u32 << scale),
-            Command::SImmNo0(bits, 0) if *bits > 12  => write!(buf, "-{:#X} <= {} <= {:#X}, {} != 0", (1u32 << (bits - 1)), name, (1u32 << (bits - 1)) - 1, name),
-            Command::SImmNo0(bits, 0) => write!(buf, "-{} <= {} <= {}, {} != 0", (1u32 << (bits - 1)), name, (1u32 << (bits - 1)) - 1, name),
-            Command::SImmNo0(bits, scale) if *bits > 12  => write!(buf, "-{:#X} <= {} <= {:#X}, {} != 0, {} = {:#X} * N", 1u32 << (bits - 1), name, (1u32 << (bits - 1)) - (1u32 << scale), name, name, 1u32 << scale),
-            Command::SImmNo0(bits, scale) => write!(buf, "-{} <= {} <= {}, {} != 0, {} = {} * N", 1u32 << (bits - 1), name, (1u32 << (bits - 1)) - (1u32 << scale), name, name, 1u32 << scale),
+            Command::UImmNo0(bits, scale) => write!(
+                buf,
+                "1 <= {} <= {}, {} = {} * N",
+                name,
+                (1u32 << bits) - (1u32 << scale),
+                name,
+                1u32 << scale
+            ),
+            Command::SImmNo0(bits, 0) if *bits > 12 => write!(
+                buf,
+                "-{:#X} <= {} <= {:#X}, {} != 0",
+                (1u32 << (bits - 1)),
+                name,
+                (1u32 << (bits - 1)) - 1,
+                name
+            ),
+            Command::SImmNo0(bits, 0) => write!(
+                buf,
+                "-{} <= {} <= {}, {} != 0",
+                (1u32 << (bits - 1)),
+                name,
+                (1u32 << (bits - 1)) - 1,
+                name
+            ),
+            Command::SImmNo0(bits, scale) if *bits > 12 => write!(
+                buf,
+                "-{:#X} <= {} <= {:#X}, {} != 0, {} = {:#X} * N",
+                1u32 << (bits - 1),
+                name,
+                (1u32 << (bits - 1)) - (1u32 << scale),
+                name,
+                name,
+                1u32 << scale
+            ),
+            Command::SImmNo0(bits, scale) => write!(
+                buf,
+                "-{} <= {} <= {}, {} != 0, {} = {} * N",
+                1u32 << (bits - 1),
+                name,
+                (1u32 << (bits - 1)) - (1u32 << scale),
+                name,
+                name,
+                1u32 << scale
+            ),
             Command::UImmOdd(bits, 0) => write!(buf, "{} <= {}", name, (1u32 << bits) - 1),
-            Command::UImmOdd(bits, scale) => write!(buf, "{} <= {} <= {}, {} = {} * N + {}", (1u32 << scale) - 1, name, (1u32 << bits) - 1, name, 1u32 << scale, (1u32 << scale) - 1),
+            Command::UImmOdd(bits, scale) => write!(
+                buf,
+                "{} <= {} <= {}, {} = {} * N + {}",
+                (1u32 << scale) - 1,
+                name,
+                (1u32 << bits) - 1,
+                name,
+                1u32 << scale,
+                (1u32 << scale) - 1
+            ),
             Command::UImmRange(min, max) => write!(buf, "{} <= {} <= {}", min, name, max),
 
             Command::Offset(Relocation::B) => write!(buf, "offset is 11 bit, 2-byte aligned"),
             Command::Offset(Relocation::J) => write!(buf, "offset is 19 bits, 2-byte aligned"),
             Command::Offset(Relocation::BC) => write!(buf, "offset is 8 bits, 2-byte aligned"),
             Command::Offset(Relocation::JC) => write!(buf, "offset is 11 bits, 2-byte aligned"),
-            Command::Offset(Relocation::HI20) => write!(buf, "offset is the 20 highest bits of a 32-bit offset"),
-            Command::Offset(Relocation::LO12)
-            | Command::Offset(Relocation::LO12S) => write!(buf, "offset is the 12 lowest bits of a 32-bit offset"),
-            Command::Offset(Relocation::SPLIT32)
-            | Command::Offset(Relocation::SPLIT32S) => write!(buf, "offset is 32 bits"),
+            Command::Offset(Relocation::HI20) => {
+                write!(buf, "offset is the 20 highest bits of a 32-bit offset")
+            }
+            Command::Offset(Relocation::LO12) | Command::Offset(Relocation::LO12S) => {
+                write!(buf, "offset is the 12 lowest bits of a 32-bit offset")
+            }
+            Command::Offset(Relocation::SPLIT32) | Command::Offset(Relocation::SPLIT32S) => {
+                write!(buf, "offset is 32 bits")
+            }
 
-            _ => continue
-        }.unwrap();
+            _ => continue,
+        }
+        .unwrap();
 
         write!(buf, ", ").unwrap();
         break;
     }
 }
 
-
 pub fn format_features(data: &Opdata) -> String {
-    let start = if data.isa_flags.contains(ISAFlags::RV32) && !data.isa_flags.contains(ISAFlags::RV64) {
+    let start = if data.isa_flags.contains(ISAFlags::RV32)
+        && !data.isa_flags.contains(ISAFlags::RV64)
+    {
         "RV32"
     } else if data.isa_flags.contains(ISAFlags::RV64) && !data.isa_flags.contains(ISAFlags::RV32) {
         "RV64"
@@ -447,8 +571,6 @@ pub fn format_features(data: &Opdata) -> String {
 
     format!("({})", items.join(" or "))
 }
-
-
 
 #[cfg(feature = "dynasm_extract")]
 pub fn extract_opdata(name: &str, data: &Opdata) -> String {
@@ -484,11 +606,9 @@ pub fn extract_opdata(name: &str, data: &Opdata) -> String {
         }
 
         arg_idx += match matcher {
-            Matcher::RefOffset
-            | Matcher::RefLabel => 2,
-            Matcher::Lit(_)
-            | Matcher::Reg(_) => 0,
-            _ => 1
+            Matcher::RefOffset | Matcher::RefLabel => 2,
+            Matcher::Lit(_) | Matcher::Reg(_) => 0,
+            _ => 1,
         };
     }
 
@@ -498,7 +618,6 @@ pub fn extract_opdata(name: &str, data: &Opdata) -> String {
 
     buf
 }
-
 
 #[cfg(feature = "dynasm_extract")]
 fn extract_arch_flags(data: &Opdata) -> String {
@@ -523,7 +642,6 @@ fn extract_arch_flags(data: &Opdata) -> String {
     format!("[{}]\t[{}]", isa_entries.join(", "), ext_sets.join(", "))
 }
 
-
 #[cfg(feature = "dynasm_extract")]
 fn extract_constraints(args: &[ArgWithCommands]) -> Vec<String> {
     let mut constraints = Vec::new();
@@ -546,25 +664,61 @@ fn extract_constraints(args: &[ArgWithCommands]) -> Vec<String> {
                 Command::SPImm(_, true) => format!("StackAdjustImmediate(True)"),
                 Command::SPImm(_, false) => format!("StackAdjustImmediate(False)"),
 
-                Command::UImm(bits, scale) => format!("Range(0, {}, {})", 1u32 << bits, 1u32 << scale),
-                Command::SImm(bits, scale) => format!("Range(-{}, {}, {})", 1u32 << (bits - 1), 1u32 << (bits - 1), 1u32 << scale),
-                Command::BigImm(bits) => format!("Range(-{}, {}, 1)", 1u64 << (bits - 1), 1u64 << (bits - 1)),
-                Command::UImmNo0(bits, scale) => format!("RangeNon0(0, {}, {})", 1u32 << bits, 1u32 << scale),
-                Command::SImmNo0(bits, scale) => format!("RangeNon0(-{}, {}, {})", 1u32 << (bits - 1), 1u32 << (bits - 1), 1u32 << scale),
-                Command::UImmOdd(bits, scale) => format!("Range({}, {}, {})", (1u32 << scale) - 1, 1u32 << bits, 1u32 << scale),
+                Command::UImm(bits, scale) => {
+                    format!("Range(0, {}, {})", 1u32 << bits, 1u32 << scale)
+                }
+                Command::SImm(bits, scale) => format!(
+                    "Range(-{}, {}, {})",
+                    1u32 << (bits - 1),
+                    1u32 << (bits - 1),
+                    1u32 << scale
+                ),
+                Command::BigImm(bits) => {
+                    format!("Range(-{}, {}, 1)", 1u64 << (bits - 1), 1u64 << (bits - 1))
+                }
+                Command::UImmNo0(bits, scale) => {
+                    format!("RangeNon0(0, {}, {})", 1u32 << bits, 1u32 << scale)
+                }
+                Command::SImmNo0(bits, scale) => format!(
+                    "RangeNon0(-{}, {}, {})",
+                    1u32 << (bits - 1),
+                    1u32 << (bits - 1),
+                    1u32 << scale
+                ),
+                Command::UImmOdd(bits, scale) => format!(
+                    "Range({}, {}, {})",
+                    (1u32 << scale) - 1,
+                    1u32 << bits,
+                    1u32 << scale
+                ),
                 Command::UImmRange(min, max) => format!("Range({}, {}, 1)", min, max + 1),
 
-                Command::Offset(Relocation::B) => format!("Range(-{}, {}, {})", 1u32 << 11, 1u32 << 11, 2),
-                Command::Offset(Relocation::J) => format!("Range(-{}, {}, {})", 1u32 << 19, 1u32 << 19, 2),
-                Command::Offset(Relocation::BC) => format!("Range(-{}, {}, {})", 1u32 << 8, 1u32 << 8, 2),
-                Command::Offset(Relocation::JC) => format!("Range(-{}, {}, {})", 1u32 << 11, 1u32 << 11, 2),
-                Command::Offset(Relocation::HI20) => format!("Range(-{}, {}, {})", 1u32 << 31, (1u32 << 31) - 0x800, 1 << 12),
-                Command::Offset(Relocation::LO12)
-                | Command::Offset(Relocation::LO12S) => format!("Range(-{}, {}, 1)", 1u32 << 11, 1u32 << 11),
-                Command::Offset(Relocation::SPLIT32)
-                | Command::Offset(Relocation::SPLIT32S) => format!("Range(-{}, {}, 1)", 1u32 << 31, (1u32 << 31) - 0x800),
+                Command::Offset(Relocation::B) => {
+                    format!("Range(-{}, {}, {})", 1u32 << 11, 1u32 << 11, 2)
+                }
+                Command::Offset(Relocation::J) => {
+                    format!("Range(-{}, {}, {})", 1u32 << 19, 1u32 << 19, 2)
+                }
+                Command::Offset(Relocation::BC) => {
+                    format!("Range(-{}, {}, {})", 1u32 << 8, 1u32 << 8, 2)
+                }
+                Command::Offset(Relocation::JC) => {
+                    format!("Range(-{}, {}, {})", 1u32 << 11, 1u32 << 11, 2)
+                }
+                Command::Offset(Relocation::HI20) => format!(
+                    "Range(-{}, {}, {})",
+                    1u32 << 31,
+                    (1u32 << 31) - 0x800,
+                    1 << 12
+                ),
+                Command::Offset(Relocation::LO12) | Command::Offset(Relocation::LO12S) => {
+                    format!("Range(-{}, {}, 1)", 1u32 << 11, 1u32 << 11)
+                }
+                Command::Offset(Relocation::SPLIT32) | Command::Offset(Relocation::SPLIT32S) => {
+                    format!("Range(-{}, {}, 1)", 1u32 << 31, (1u32 << 31) - 0x800)
+                }
 
-                _ => continue
+                _ => continue,
             };
             constraints.push(format!("{}: {}", i, constraint));
 

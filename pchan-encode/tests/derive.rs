@@ -161,7 +161,7 @@ enum TestEnum<A: Allocator> {
     Baz(#[endecode(alloc(bounds = "copy"))] Foo<A>),
     #[endecode(alloc(default))]
     Fourth {
-        #[endecode(alloc(with = new_in))]
+        #[endecode(alloc(with = Foo::new_in))]
         thing: Foo<A>,
     },
 }
@@ -301,11 +301,4 @@ fn test_vram() {
     decode_in_place(&mut b, sink.bytes(), Global).unwrap();
 
     assert_eq!(a.buf, b.buf)
-}
-
-#[derive(Endecode, Debug, d::PartialEq, Eq, Default)]
-enum TestEnumGeneric2<T> {
-    #[default]
-    Foo,
-    Bar(T),
 }

@@ -1,10 +1,8 @@
 use core::alloc::Allocator;
 
-use arbitrary_int::prelude::*;
 use bitbybit::bitenum;
 use derive_more as d;
 use pchan_encode::derive::Endecode;
-use pchan_utils::hex;
 
 use crate::Emu;
 use crate::io::{CastIOFrom, CastIOInto, UnhandledIO};

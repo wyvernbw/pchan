@@ -1,9 +1,10 @@
 #![allow(clippy::upper_case_acronyms)]
-#![warn(missing_docs)]
 
 //! This crate provides runtime support for dynasm-rs. It contains traits that document the interface used by the dynasm proc_macro to generate code,
 //! Assemblers that implement these traits, and relocation models for the various supported architectures. Additionally, it also provides the tools
 //! to write your own Assemblers using these components.
+
+extern crate alloc;
 
 pub mod cache_control;
 pub mod components;
@@ -40,10 +41,12 @@ use crate::components::{
 };
 use crate::relocations::Relocation;
 
-use std::fmt::{self, Debug};
-use std::hash::Hash;
-use std::sync::{Arc, RwLock, RwLockReadGuard};
-use std::{error, io, mem};
+use alloc::sync::Arc;
+use core::fmt::{self, Debug};
+use core::hash::Hash;
+use core::{error, mem};
+use std::io;
+use std::sync::{RwLock, RwLockReadGuard};
 
 /// This macro takes a *const pointer from the source operand, and then casts it to the desired return type.
 /// this allows it to be used as an easy shorthand for passing pointers as dynasm immediate arguments.
@@ -554,11 +557,11 @@ impl<R: Relocation> VecAssembler<R> {
     pub fn take(&mut self) -> Result<Vec<u8>, DynasmError> {
         self.commit()?;
         self.labels.clear();
-        Ok(std::mem::take(&mut self.ops))
+        Ok(core::mem::take(&mut self.ops))
     }
 
     /// Equivalent of take, but instead of allocating a new vector it simply provides a draining iterator over the internal contents.
-    pub fn drain<'a>(&'a mut self) -> Result<impl Iterator<Item = u8> + 'a, DynasmError> {
+    pub fn drain(&mut self) -> Result<impl Iterator<Item = u8> + '_, DynasmError> {
         self.commit()?;
         self.labels.clear();
         Ok(self.ops.drain(..))

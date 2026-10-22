@@ -1,5 +1,5 @@
 //! This file contains parsing helpers used by multiple parsing backends
-use std::convert::TryInto;
+use core::convert::TryInto;
 use syn::ext::IdentExt;
 use syn::parse;
 

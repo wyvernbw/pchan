@@ -348,7 +348,10 @@ impl<A: Allocator> Emu<A> {
                 }
                 Some(TxWriteResult::Ok)
             }
-            (None, byte) => todo!("sio0 select device w/ address byte {byte}"),
+            (None, byte) => {
+                tracing::warn!("not yet implemented: sio0 select device w/ address byte {byte}");
+                None
+            }
             (Some(device), byte) => {
                 let port = self.sio.sio0ctrl.sio0_port();
                 if self.sio.sio0ports.is_connected(port) {

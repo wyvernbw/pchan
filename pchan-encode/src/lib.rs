@@ -1,3 +1,4 @@
+#![feature(portable_simd)]
 #![feature(slice_iter_mut_as_mut_slice)]
 #![feature(allocator_ext)]
 #![no_std]
@@ -19,6 +20,8 @@ mod smallvec_impl;
 use core::alloc::Allocator;
 use core::any::type_name;
 use core::marker::PhantomData;
+use core::simd::SimdElement;
+use core::simd::prelude::Simd;
 use core::str::Utf8Error;
 
 pub mod derive {
@@ -580,6 +583,19 @@ impl_tuple!((0 T1), (1 T2), (2 T3), (3 T4), (4 T5), (5 T6));
 impl_tuple!((0 T1), (1 T2), (2 T3), (3 T4), (4 T5), (5 T6), (6 T7));
 impl_tuple!((0 T1), (1 T2), (2 T3), (3 T4), (4 T5), (5 T6), (6 T7), (7 T8));
 impl_tuple!((0 T1), (1 T2), (2 T3), (3 T4), (4 T5), (5 T6), (6 T7), (7 T8), (8 T9));
+
+impl<A: Allocator + Clone, T: SimdElement + Endecode<A>, const N: usize> Endecode<A>
+    for Simd<T, N>
+{
+    fn endecode(&mut self, sink: &mut impl Stream, alloc: A) -> Result<(), EndecodeError> {
+        let arr = self.as_mut_array();
+        arr.endecode(sink, alloc)
+    }
+
+    fn size() -> Result<Option<usize>, EndecodeError> {
+        Ok(Some(size_of::<Self>()))
+    }
+}
 
 pub fn encode<I: IntoEncoderSink, T: Endecode<A>, A: Allocator>(
     value: &mut T,

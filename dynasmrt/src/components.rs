@@ -1,13 +1,14 @@
 //! This module provides several reusable compoments for implementing assemblers
 
-use std::collections::BTreeMap;
+use alloc::collections::BTreeMap;
+use alloc::sync::Arc;
+use core::mem;
 use std::collections::hash_map::Entry;
-use std::sync::{Arc, RwLock, RwLockWriteGuard};
-use std::{io, mem};
+use std::sync::{RwLock, RwLockWriteGuard};
 
 use fnv::FnvHashMap;
 
-use crate::mmap::{ExecutableBuffer, MutableBuffer};
+use crate::mmap::ExecutableBuffer;
 use crate::relocations::{ImpossibleRelocation, Relocation, RelocationKind, RelocationSize};
 use crate::{AssemblyOffset, DynamicLabel, DynasmError, DynasmLabelApi, LabelKind, cache_control};
 
@@ -107,7 +108,7 @@ impl MemoryManager {
 
     /// Commits the data from `new` into the managed memory, calling `f` when the buffer is moved to fix anything
     /// that relies on the address of the buffer
-    pub fn commit<F>(&mut self, new: &mut Vec<u8>, f: F)
+    pub fn commit<F>(&mut self, new: &mut Vec<u8>, _f: F)
     where
         F: FnOnce(&mut [u8], usize, usize),
     {
@@ -327,7 +328,7 @@ impl<R: Relocation> PatchLoc<R> {
     /// Returns a range that covers the entire relocation in its assembling buffer
     /// `buf_offset` is a value that is subtracted from this range when the buffer you want to slice
     /// with this range is only a part of a bigger buffer.
-    pub fn range(&self, buf_offset: usize) -> std::ops::Range<usize> {
+    pub fn range(&self, buf_offset: usize) -> core::ops::Range<usize> {
         let field_offset = self.location.0 - buf_offset - self.field_offset as usize;
         field_offset..field_offset + self.relocation.size()
     }

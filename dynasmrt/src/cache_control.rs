@@ -31,21 +31,21 @@ pub fn synchronize_icache(slice: &[u8]) {
     }
     #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
     {
-        unsafe extern "C" {
-            pub fn sys_icache_invalidate(start: *const std::ffi::c_void, size: usize);
-        }
         unsafe {
-            sys_icache_invalidate(slice.as_ptr() as *const std::ffi::c_void, slice.len());
+            use crate::mmap::sys_icache_invalidate;
+
+            sys_icache_invalidate(slice.as_ptr().cast::<core::ffi::c_void>(), slice.len());
         }
     }
 }
 
 #[cfg(target_arch = "aarch64")]
+#[allow(dead_code)]
 mod aarch64 {
     use std::arch::asm;
 
     /// return the cache line sizes as reported by the processor as a tuple of (dcache, icache)
-    fn get_cacheline_sizes() -> (usize, usize) {
+    pub(crate) fn get_cacheline_sizes() -> (usize, usize) {
         let ctr_el0: usize;
 
         // safety: we're just reading a system register (ctr_cl0) that can always be read

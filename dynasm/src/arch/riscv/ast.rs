@@ -4,22 +4,22 @@
 //! * General purpose registers, either denoted as x0-x31 or by specific names
 //! * floating point registers, denoted as f0-f31 or by specific names
 //! * vector registers, denoted as v0-v31
-use proc_macro2::Span;
-use crate::common::JumpTarget;
 use super::riscvdata::Opdata;
+use crate::common::JumpTarget;
+use proc_macro2::Span;
 
-use std::fmt;
-
+use core::fmt;
 
 /// A generic register reference. Can be either a static RegId or a dynamic register from a family
 #[derive(Debug, Clone)]
 pub enum Register {
     Static(RegId),
-    Dynamic(RegFamily, syn::Expr)
+    Dynamic(RegFamily, syn::Expr),
 }
 
 /// Unique identifiers for a specific register
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[rustfmt::skip]
 pub enum RegId {
     // regular registers
     X0 = 0x00, X1 = 0x01, X2 = 0x02, X3 = 0x03, // zero, ra, sp, gp
@@ -56,8 +56,8 @@ pub enum RegId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RegFamily {
     INTEGER = 0,
-    FP = 1,
-    VECTOR = 2,
+    FP      = 1,
+    VECTOR  = 2,
 }
 
 impl RegId {
@@ -92,7 +92,7 @@ impl Register {
     pub fn code(&self) -> Option<u8> {
         match self {
             Register::Static(code) => Some(code.code()),
-            Register::Dynamic(_, _) => None
+            Register::Dynamic(_, _) => None,
         }
     }
 
@@ -100,7 +100,7 @@ impl Register {
     pub fn family(&self) -> RegFamily {
         match self {
             Register::Static(code) => code.family(),
-            Register::Dynamic(family, _) => *family
+            Register::Dynamic(family, _) => *family,
         }
     }
 
@@ -108,7 +108,7 @@ impl Register {
     pub fn is_dynamic(&self) -> bool {
         match self {
             Register::Static(_) => false,
-            Register::Dynamic(_, _) => true
+            Register::Dynamic(_, _) => true,
         }
     }
 
@@ -116,20 +116,18 @@ impl Register {
     pub fn as_id(&self) -> Option<RegId> {
         match self {
             Register::Static(id) => Some(*id),
-            Register::Dynamic(_, _) => None
+            Register::Dynamic(_, _) => None,
         }
     }
 }
-
 
 #[derive(Debug)]
 pub enum RegListCount {
     Static(u8),
     Dynamic(syn::Expr),
     Single(Register),
-    Double(Register, Register)
+    Double(Register, Register),
 }
-
 
 /// A RISC-V parsed instruction.
 /// These are fairly simple. the format is "op" [ . "opext" ]* [ arg [ , arg ]* ]
@@ -146,34 +144,34 @@ pub enum RegListCount {
 pub enum RawArg {
     // An immediate, or potentially an identifier
     Immediate {
-        value: syn::Expr
+        value: syn::Expr,
     },
     // A label
     JumpTarget {
-        jump: JumpTarget
+        jump: JumpTarget,
     },
     // A register
     Register {
         span: Span,
-        reg: Register
+        reg:  Register,
     },
     // A memory reference
     Reference {
-        span: Span,
+        span:   Span,
         offset: Option<syn::Expr>,
-        base: Register,
+        base:   Register,
     },
     // A pc-relative reference
     LabelReference {
         span: Span,
         jump: JumpTarget,
-        base: Register
+        base: Register,
     },
     // A register list. These only happen with a single family of instructions in the Zcmp extension
     RegisterList {
-        span: Span,
+        span:  Span,
         first: Register, // this should always be ra
-        count: RegListCount
+        count: RegListCount,
     },
 }
 
@@ -182,37 +180,27 @@ pub enum RawArg {
 pub struct ParsedInstruction {
     pub name: String,
     pub span: Span,
-    pub args: Vec<RawArg>
+    pub args: Vec<RawArg>,
 }
 
 #[derive(Debug)]
 pub enum RegListFlat {
     Static(u8),
-    Dynamic(syn::Expr)
+    Dynamic(syn::Expr),
 }
 
 #[derive(Debug)]
 pub enum FlatArg {
-    Immediate {
-        value: syn::Expr
-    },
-    JumpTarget {
-        jump: JumpTarget
-    },
-    Register {
-        span: Span,
-        reg: Register
-    },
-    RegisterList {
-        span: Span,
-        count: RegListFlat
-    },
-    Default
+    Immediate { value: syn::Expr },
+    JumpTarget { jump: JumpTarget },
+    Register { span: Span, reg: Register },
+    RegisterList { span: Span, count: RegListFlat },
+    Default,
 }
 
 /// The result of finding a match for an instruction
 #[derive(Debug)]
 pub struct MatchData {
     pub data: &'static Opdata,
-    pub args: Vec<FlatArg>
+    pub args: Vec<FlatArg>,
 }

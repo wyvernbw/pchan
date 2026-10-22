@@ -58,7 +58,6 @@ pub enum Irq {
 
 impl IrqState {
     pub fn irq_trigger(&mut self, irq: Irq) {
-        let old_stat = self.i_stat;
         if irq != Irq::Irq0Vblank {
             let masked_out = !self.i_mask.irq_flag(irq as usize);
             tracing::debug!(target: "irq", "interrupt {irq:?}, masked_out={masked_out}")
