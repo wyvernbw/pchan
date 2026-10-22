@@ -2,12 +2,10 @@ use arbitrary_int::prelude::*;
 use bitbybit::{bitenum, bitfield};
 use core::alloc::Allocator;
 use core::mem::offset_of;
-use core::ops::Mul;
 use core::simd::prelude::*;
 use core::{ptr, slice};
 use glam::prelude::*;
 use pchan_encode::derive::Endecode;
-use std::simd::SimdElement;
 
 use crate::Emu;
 use crate::bindings::ExternFnTable;
@@ -65,6 +63,23 @@ pub struct GteDataRegs {
     irgb_orgb: [u32; 2],
     lzcs_lzcr: [i32; 2],
 }
+
+const _: () = const {
+    assert!(offset_of!(GteDataRegs, vxyz0) == 0);
+    assert!(offset_of!(GteDataRegs, vxyz1) == 2 * 4);
+    assert!(offset_of!(GteDataRegs, vxyz2) == 4 * 4);
+    assert!(offset_of!(GteDataRegs, rgbc) == 6 * 4);
+    assert!(offset_of!(GteDataRegs, otz) == 7 * 4);
+    assert!(offset_of!(GteDataRegs, ir0) == 8 * 4);
+    assert!(offset_of!(GteDataRegs, irv) == 9 * 4);
+    assert!(offset_of!(GteDataRegs, sxy_fifo) == 12 * 4);
+    assert!(offset_of!(GteDataRegs, sz_fifo) == 16 * 4);
+    assert!(offset_of!(GteDataRegs, crgb_fifo) == 20 * 4);
+    assert!(offset_of!(GteDataRegs, mac0) == 24 * 4);
+    assert!(offset_of!(GteDataRegs, macv) == 25 * 4);
+    assert!(offset_of!(GteDataRegs, irgb_orgb) == 28 * 4);
+    assert!(offset_of!(GteDataRegs, lzcs_lzcr) == 30 * 4);
+};
 
 impl GteDataRegs {
     #[must_use]
@@ -146,6 +161,22 @@ pub struct GteCtrlRegs {
     flag: Flag,
 }
 
+const _: () = const {
+    assert!(offset_of!(GteCtrlRegs, rt_mat) == 0);
+    assert!(offset_of!(GteCtrlRegs, tr_vec) == 5 * 4);
+    assert!(offset_of!(GteCtrlRegs, ls_mat) == 8 * 4);
+    assert!(offset_of!(GteCtrlRegs, bg_col) == 13 * 4);
+    assert!(offset_of!(GteCtrlRegs, lc_mat) == 16 * 4);
+    assert!(offset_of!(GteCtrlRegs, far_col) == 21 * 4);
+    assert!(offset_of!(GteCtrlRegs, of) == 24 * 4);
+    assert!(offset_of!(GteCtrlRegs, h) == 26 * 4);
+    assert!(offset_of!(GteCtrlRegs, dqa) == 27 * 4);
+    assert!(offset_of!(GteCtrlRegs, dqb) == 28 * 4);
+    assert!(offset_of!(GteCtrlRegs, zsf3) == 29 * 4);
+    assert!(offset_of!(GteCtrlRegs, zsf4) == 30 * 4);
+    assert!(offset_of!(GteCtrlRegs, flag) == 31 * 4);
+};
+
 /// # cop2r63 (cnt31) - FLAG - Returns any calculation errors.
 ///
 /// ```md
@@ -216,6 +247,7 @@ impl GteCtrlRegs {
 ///  0-5    Real GTE Command Number (00h..3Fh) (used by hardware)
 /// ```
 #[bitfield(u32)]
+#[must_use]
 pub struct GteCommandField {
     #[bits(0..=5, r)]
     cmd:           Option<GteCmd>,
@@ -351,6 +383,7 @@ pub struct GteBindings<A: Allocator> {
     ncdt:  GteFn<A>,
     avsz3: GteFn<A>,
     avsz4: GteFn<A>,
+    mvmva: GteFn<A>,
 }
 
 impl<A: Allocator + Copy> GteBindings<A> {
@@ -366,6 +399,7 @@ impl<A: Allocator + Copy> GteBindings<A> {
     pub const NCDT: u32 = offset_of!(Self, ncdt) as u32 + Self::OFFSET;
     pub const AVSZ3: u32 = offset_of!(Self, avsz3) as u32 + Self::OFFSET;
     pub const AVSZ4: u32 = offset_of!(Self, avsz4) as u32 + Self::OFFSET;
+    pub const MVMVA: u32 = offset_of!(Self, mvmva) as u32 + Self::OFFSET;
 
     pub(crate) const fn new() -> Self {
         Self {
@@ -380,6 +414,7 @@ impl<A: Allocator + Copy> GteBindings<A> {
             ncdt:  Emu::gte_ncdt,
             avsz3: Emu::gte_avsz3,
             avsz4: Emu::gte_avsz3,
+            mvmva: Emu::gte_mvmva,
         }
     }
 }
@@ -639,6 +674,47 @@ impl<A: Allocator> Emu<A> {
         gte.data.mac0 = gte.ctrl.zsf4.as_i32() * (sz[0] + sz[1] + sz[2] + sz[3]).as_i32();
         gte.data.otz = (gte.data.mac0 / 0x1000).clamp(0, 0xffff).as_u16();
     }
+
+    /// Multiply vector by matrix and vector addition.
+    /// ```plain
+    ///   Mx = matrix specified by mx  ;RT/LLM/LCM - Rotation, light or color matrix
+    ///   Vx = vector specified by v   ;V0, V1, V2, or [IR1,IR2,IR3]
+    ///   Tx = translation vector specified by cv  ;TR or BK or Bugged/FC, or None
+    /// ```
+    /// Calculation:
+    /// ```plain
+    ///   MAC1 = (Tx1*1000h + Mx11*Vx1 + Mx12*Vx2 + Mx13*Vx3) SAR (sf*12)
+    ///   MAC2 = (Tx2*1000h + Mx21*Vx1 + Mx22*Vx2 + Mx23*Vx3) SAR (sf*12)
+    ///   MAC3 = (Tx3*1000h + Mx31*Vx1 + Mx32*Vx2 + Mx33*Vx3) SAR (sf*12)
+    ///   [IR1,IR2,IR3] = [MAC1,MAC2,MAC3]
+    /// ```
+    fn gte_mvmva(&mut self, cmd: GteCommandField) {
+        let gte = &mut self.cpu.gte;
+        let shift = i64::from(cmd.sf()) * 12;
+        let mx = match cmd.mvmva_mul_mat() {
+            MVMVAMultiplyMat::Rotation => gte.ctrl.rt_mat,
+            MVMVAMultiplyMat::Light => gte.ctrl.ls_mat,
+            MVMVAMultiplyMat::Color => gte.ctrl.lc_mat,
+            MVMVAMultiplyMat::Reserved => return,
+        };
+        let vx = match cmd.mvmva_mul_vec() {
+            MVMVAMultiplyVec::V0 => gte.data.vxyz0,
+            MVMVAMultiplyVec::V1 => gte.data.vxyz1,
+            MVMVAMultiplyVec::V2 => gte.data.vxyz2,
+            MVMVAMultiplyVec::IRLong => gte.data.irv.cast(),
+        };
+        let tx = match cmd.mvmva_tr_vec() {
+            MVMVATranslationVec::TR => gte.ctrl.tr_vec,
+            MVMVATranslationVec::BK => gte.ctrl.bg_col,
+            MVMVATranslationVec::FCBugged => gte.ctrl.far_col,
+            MVMVATranslationVec::None => i32x3::splat(0),
+        };
+
+        let res = (tx.cast::<i64>() * i64x3::splat(0x1000) + matmul3x3v(mx, vx)) >> shift;
+        // TODO: flags
+        gte.data.macv = res.cast();
+        gte.data.irv = cmd.saturate_vec(res).cast();
+    }
 }
 
 /// holy shit
@@ -675,7 +751,7 @@ impl<A: Allocator + Copy> Emu<A> {
             GteCmd::Op => trace_todo!("{cmd:?}"),
             GteCmd::Dpcs => trace_todo!("{cmd:?}"),
             GteCmd::Intpl => trace_todo!("{cmd:?}"),
-            GteCmd::Mvmva => trace_todo!("{cmd:?}"),
+            GteCmd::Mvmva => Some(GteBindings::<A>::MVMVA),
             GteCmd::Ncds => Some(GteBindings::<A>::NCDS),
             GteCmd::Cdp => trace_todo!("{cmd:?}"),
             GteCmd::Ncdt => Some(GteBindings::<A>::NCDT),
