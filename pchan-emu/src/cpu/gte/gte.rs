@@ -214,7 +214,7 @@ impl GteCtrlRegs {
 ///  0-5    Real GTE Command Number (00h..3Fh) (used by hardware)
 /// ```
 #[bitfield(u32)]
-struct GteCommandField {
+pub struct GteCommandField {
     #[bits(0..=5, r)]
     cmd:           Option<GteCmd>,
     #[bit(10, r)]
@@ -262,7 +262,7 @@ enum MVMVAMultiplyMat {
     Reserved,
 }
 
-const C: GteCommandField = GteCommandField::new_with_raw_value(0x02280030);
+const C: GteCommandField = GteCommandField::new_with_raw_value(0x03400006);
 const fn test() {
     const N: Result<GteCmd, UInt<u8, 6>> = C.cmd();
 }
@@ -307,6 +307,7 @@ const fn test() {
 ///   3Fh  NCCT   39  Normal Color Color triple vector
 /// ```
 #[bitenum(u6)]
+#[derive(Debug)]
 enum GteCmd {
     Rtps  = 0x01,
     Nclip = 0x06,
@@ -332,19 +333,27 @@ enum GteCmd {
     Ncct  = 0x3f,
 }
 
+type GteFn<A: Allocator> = fn(&mut Emu<A>, GteCommandField);
+
 #[repr(C)]
 #[derive(Debug, Clone)]
 pub struct GteBindings<A: Allocator> {
-    rtpt: fn(&mut Emu<A>, cmd: GteCommandField),
+    rtpt:  GteFn<A>,
+    rtps:  GteFn<A>,
+    nclip: GteFn<A>,
 }
 
 impl<A: Allocator + Copy> GteBindings<A> {
     pub const OFFSET: u32 = ExternFnTable::<A>::OFFSET + offset_of!(ExternFnTable<A>, gte) as u32;
     pub const RTPT: u32 = offset_of!(Self, rtpt) as u32 + Self::OFFSET;
+    pub const RTPS: u32 = offset_of!(Self, rtps) as u32 + Self::OFFSET;
+    pub const NCLIP: u32 = offset_of!(Self, nclip) as u32 + Self::OFFSET;
 
     pub(crate) const fn new() -> Self {
         Self {
-            rtpt: Emu::gte_rtpt,
+            rtpt:  Emu::gte_rtpt,
+            rtps:  Emu::gte_rtps,
+            nclip: Emu::gte_nclip,
         }
     }
 }
@@ -414,6 +423,15 @@ impl GteCommandField {
 }
 
 impl<A: Allocator> Emu<A> {
+    /// ```plain
+    /// IR1 = MAC1 = (TRX*1000h + RT11*VX0 + RT12*VY0 + RT13*VZ0) SAR (sf*12)
+    /// IR2 = MAC2 = (TRY*1000h + RT21*VX0 + RT22*VY0 + RT23*VZ0) SAR (sf*12)
+    /// IR3 = MAC3 = (TRZ*1000h + RT31*VX0 + RT32*VY0 + RT33*VZ0) SAR (sf*12)
+    /// SZ3 = MAC3 SAR ((1-sf)*12)                           ;ScreenZ FIFO 0..+FFFFh
+    /// MAC0=(((H*20000h/SZ3)+1)/2)*IR1+OFX, SX2=MAC0/10000h ;ScrX FIFO -400h..+3FFh
+    /// MAC0=(((H*20000h/SZ3)+1)/2)*IR2+OFY, SY2=MAC0/10000h ;ScrY FIFO -400h..+3FFh
+    /// MAC0=(((H*20000h/SZ3)+1)/2)*DQA+DQB, IR0=MAC0/1000h  ;Depth cueing 0..+1000h
+    /// ```
     fn rtps(&mut self, cmd: GteCommandField, v: i16x3) {
         let gte = &mut self.cpu.gte;
         let rt = gte.ctrl.rt_mat;
@@ -477,5 +495,55 @@ impl<A: Allocator> Emu<A> {
         self.rtps(cmd, self.cpu.gte.data.vxyz0);
         self.rtps(cmd, self.cpu.gte.data.vxyz1);
         self.rtps(cmd, self.cpu.gte.data.vxyz2);
+    }
+
+    /// ```plain
+    /// MAC0 =   SX0*SY1 + SX1*SY2 + SX2*SY0 - SX0*SY2 - SX1*SY0 - SX2*SY1
+    /// ```
+    fn gte_nclip(&mut self, _: GteCommandField) {
+        let gte = &mut self.cpu.gte;
+        let sxy = gte.data.sxy_fifo.map(|sxy| sxy.cast::<i64>());
+        let v0 = sxy[0];
+        let v1 = sxy[1];
+        let v2 = sxy[2];
+        let cross = (v1[0] - v0[0]) * (v2[1] - v0[1]) - (v1[1] - v0[1]) * (v2[0] - v0[0]);
+        // TODO: flags
+        gte.data.mac0 = cross.as_i32();
+    }
+}
+
+impl<A: Allocator + Copy> Emu<A> {
+    pub(crate) fn gte_function(cmd: GteCommandField) -> Option<u32> {
+        let cmd = cmd.cmd().ok()?;
+        macro_rules! trace_todo {
+            ($tt:tt) => {{
+                tracing::warn!("not yet implemented: gte2 cmd {cmd:?}");
+                None
+            }};
+        }
+        match cmd {
+            GteCmd::Rtps => Some(GteBindings::<A>::RTPS),
+            GteCmd::Nclip => Some(GteBindings::<A>::NCLIP),
+            GteCmd::Op => trace_todo!("{cmd:?}"),
+            GteCmd::Dpcs => trace_todo!("{cmd:?}"),
+            GteCmd::Intpl => trace_todo!("{cmd:?}"),
+            GteCmd::Mvmva => trace_todo!("{cmd:?}"),
+            GteCmd::Ncds => trace_todo!("{cmd:?}"),
+            GteCmd::Cdp => trace_todo!("{cmd:?}"),
+            GteCmd::Ncdt => trace_todo!("{cmd:?}"),
+            GteCmd::Nccs => trace_todo!("{cmd:?}"),
+            GteCmd::Cc => trace_todo!("{cmd:?}"),
+            GteCmd::Ncs => trace_todo!("{cmd:?}"),
+            GteCmd::Nct => trace_todo!("{cmd:?}"),
+            GteCmd::Sqr => trace_todo!("{cmd:?}"),
+            GteCmd::Dcpl => trace_todo!("{cmd:?}"),
+            GteCmd::Dpct => trace_todo!("{cmd:?}"),
+            GteCmd::Avsz3 => trace_todo!("{cmd:?}"),
+            GteCmd::Avsz4 => trace_todo!("{cmd:?}"),
+            GteCmd::Rtpt => Some(GteBindings::<A>::RTPT),
+            GteCmd::Gpf => trace_todo!("{cmd:?}"),
+            GteCmd::Gpl => trace_todo!("{cmd:?}"),
+            GteCmd::Ncct => trace_todo!("{cmd:?}"),
+        }
     }
 }

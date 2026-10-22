@@ -12,7 +12,7 @@ use core::num::NonZeroU8;
 use arbitrary_int::traits::Integer;
 use enum_dispatch::enum_dispatch;
 
-use pchan_utils::hex;
+use pchan_utils::{default, hex};
 #[cfg(test)]
 use rstest::rstest;
 use smallbox::SmallBox;
@@ -218,6 +218,7 @@ pub enum DecodedOp {
     Cfcn(Cfcn),
     Mtcn(Mtcn),
     Ctcn(Ctcn),
+    CopNCmd(CopNCmd),
     Lb(Lb),
     Lbu(Lbu),
     Lh(Lh),
@@ -339,12 +340,7 @@ impl DecodedOp {
                     n => unimplemented!("ctc{n}"),
                 },
                 (0x10..=0x13, 0x10..=0x1F, _, _) => {
-                    tracing::warn!(
-                        "not yet implemented: cop{} imm25 {}",
-                        fields.cop(),
-                        hex(fields.imm26().value())
-                    );
-                    DecodedOp::Nop(Nop)
+                    Self::CopNCmd(CopNCmd::new(fields.cop().as_u8(), fields.imm26().as_u32()))
                 }
                 (0x14..=0x1F, _, _, _) => Self::illegal(),
                 (0x20, _, _, _) => Self::Lb(Lb::new(rt, rs, fields.imm16())),
@@ -2784,6 +2780,38 @@ impl DynarecOp for Ctcn {
             ; str W(*rt), [x0, Cpu::cop_reg_offset(self.cop, self.rd + 32) as _]
         );
 
+        EmitSummary::default()
+    }
+}
+
+impl DynarecOp for CopNCmd {
+    fn cycles(&self) -> u16 {
+        10
+    }
+
+    #[allow(clippy::useless_conversion)]
+    fn emit<A: Allocator + Copy>(&self, mut ctx: EmitCtx<A>) -> EmitSummary {
+        if self.cop == 2 {
+            use crate::cpu::gte::GteCommandField;
+
+            let cmd = GteCommandField::new_with_raw_value(self.imm26);
+            let Some(func) = Emu::<A>::gte_function(cmd) else {
+                return default();
+            };
+
+            let cmd_raw = cmd.raw_value();
+            emit_call(&mut ctx, |dynarec| {
+                #[cfg(target_arch = "aarch64")]
+                dynasm!(
+                    dynarec.asm
+                    ; .arch aarch64
+                    ; ldr x3, [x0, #func]
+                    ; movz w1, cmd_raw >> 16, lsl #16
+                    ; movk w1, cmd_raw & 0x0000_ffff
+                    ; blr x3
+                )
+            });
+        }
         EmitSummary::default()
     }
 }

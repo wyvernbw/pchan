@@ -605,6 +605,7 @@ impl<A: Allocator + Copy> Emu<A> {
                 let value = self.read::<u32>(address);
                 Some(DelaySlot::SetReg { value, reg: lw.rt })
             }
+            DecodedOp::CopNCmd(cop_ncmd) => todo!(),
         };
         self.cpu.gpr[0] = 0;
         res

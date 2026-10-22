@@ -387,11 +387,19 @@ pub struct Mtcn {
 
 #[derive(Encode, Debug, Clone, Copy, Hash, PartialEq, Eq, d::Display)]
 #[encode(opcode = 0x10, rs = 0x06, funct = 0x00, cop = self.cop)]
-#[display("Ctc{} ${}, $r{}", self.cop, reg_str(self.rt), self.rd)]
+#[display("ctc{} ${}, $r{}", self.cop, reg_str(self.rt), self.rd)]
 pub struct Ctcn {
     pub cop: u8,
     pub rt:  u8,
     pub rd:  u8,
+}
+
+#[derive(Encode, Debug, Clone, Copy, Hash, PartialEq, Eq, d::Display)]
+#[encode(opcode = 0x10, funct = 0x00, cop = self.cop)]
+#[display("cop{} {}", self.cop, hex(self.imm26))]
+pub struct CopNCmd {
+    pub cop:   u8,
+    pub imm26: u32,
 }
 
 #[derive(Encode, Debug, Clone, Copy, Hash, PartialEq, Eq, d::Display)]
