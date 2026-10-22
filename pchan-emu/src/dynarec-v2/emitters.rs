@@ -3684,37 +3684,33 @@ fn test_lwcn(#[case] cop: u8, #[case] rt: u8, #[case] rs: u8) -> color_eyre::Res
 impl DynarecOp for Swcn {
     #[allow(clippy::useless_conversion)]
     fn emit<A: Allocator + Copy>(&self, mut ctx: EmitCtx<A>) -> EmitSummary {
-        // FIXME: with gte nopped out, this helps games boot
-        // remove once fixed.
-        if false {
-            let s1 = ctx.alloc_scratch();
-            let Self { cop, rt, rs, imm16 } = *self;
-            ctx.dynarec.emit_load_temp_reg(rs, Reg::W(1));
+        let s1 = ctx.alloc_scratch();
+        let Self { cop, rt, rs, imm16 } = *self;
+        ctx.dynarec.emit_load_temp_reg(rs, Reg::W(1));
 
+        dynasm!(
+            ctx.dynarec.asm
+            ; .arch aarch64
+            ;; ctx.dynarec.emit_add_imm16(EmitAddImm16Args { dest: Reg::W(1), base: Reg::W(1), offset: imm16, temp: None })
+            ; str w1, [x0, #s1]
+        );
+
+        ctx.schedule_in(1, None, move |ctx| {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
-                ;; ctx.dynarec.emit_add_imm16(EmitAddImm16Args { dest: Reg::W(1), base: Reg::W(1), offset: imm16, temp: None })
-                ; str w1, [x0, #s1]
+                ; ldr w1, [x0, #s1]
+                ; ldr w2, [x0, Cpu::cop_reg_offset(cop, rt) as _]
+                ;; ctx.dynarec.emit_writeback_all()
+                ;; ctx.dynarec.reg_alloc.dealloc_all()
+                ;; ctx.dynarec.emit_save_critical_registers()
+                ; ldr x3, [x0, #ExternFnTable::<A>::WRITE32V2]
+                ; blr x3
+                ;; ctx.dynarec.emit_restore_critical_registers()
+
             );
-
-            ctx.schedule_in(1, None, move |ctx| {
-                dynasm!(
-                    ctx.dynarec.asm
-                    ; .arch aarch64
-                    ; ldr w1, [x0, #s1]
-                    ; ldr w2, [x0, Cpu::cop_reg_offset(cop, rt) as _]
-                    ;; ctx.dynarec.emit_writeback_all()
-                    ;; ctx.dynarec.reg_alloc.dealloc_all()
-                    ;; ctx.dynarec.emit_save_critical_registers()
-                    ; ldr x3, [x0, #ExternFnTable::<A>::WRITE32V2]
-                    ; blr x3
-                    ;; ctx.dynarec.emit_restore_critical_registers()
-
-                );
-                EmitSummary::default()
-            });
-        }
+            EmitSummary::default()
+        });
 
         EmitSummary::default()
     }

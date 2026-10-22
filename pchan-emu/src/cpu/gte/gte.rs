@@ -349,6 +349,8 @@ pub struct GteBindings<A: Allocator> {
     ncct:  GteFn<A>,
     ncds:  GteFn<A>,
     ncdt:  GteFn<A>,
+    avsz3: GteFn<A>,
+    avsz4: GteFn<A>,
 }
 
 impl<A: Allocator + Copy> GteBindings<A> {
@@ -362,6 +364,8 @@ impl<A: Allocator + Copy> GteBindings<A> {
     pub const NCCT: u32 = offset_of!(Self, ncct) as u32 + Self::OFFSET;
     pub const NCDS: u32 = offset_of!(Self, ncds) as u32 + Self::OFFSET;
     pub const NCDT: u32 = offset_of!(Self, ncdt) as u32 + Self::OFFSET;
+    pub const AVSZ3: u32 = offset_of!(Self, avsz3) as u32 + Self::OFFSET;
+    pub const AVSZ4: u32 = offset_of!(Self, avsz4) as u32 + Self::OFFSET;
 
     pub(crate) const fn new() -> Self {
         Self {
@@ -374,6 +378,8 @@ impl<A: Allocator + Copy> GteBindings<A> {
             ncct:  Emu::gte_ncct,
             ncds:  Emu::gte_ncds,
             ncdt:  Emu::gte_ncdt,
+            avsz3: Emu::gte_avsz3,
+            avsz4: Emu::gte_avsz3,
         }
     }
 }
@@ -613,6 +619,26 @@ impl<A: Allocator> Emu<A> {
         self.ncxx::<NCDT>(cmd, self.cpu.gte.data.vxyz1);
         self.ncxx::<NCDT>(cmd, self.cpu.gte.data.vxyz2);
     }
+    /// ```plain
+    /// MAC0 =  ZSF3*(SZ1+SZ2+SZ3)       ;for AVSZ3
+    /// OTZ  =  MAC0/1000h               ;for both (saturated to 0..FFFFh)
+    /// ```
+    fn gte_avsz3(&mut self, _: GteCommandField) {
+        let gte = &mut self.cpu.gte;
+        let sz = gte.data.sz_fifo;
+        gte.data.mac0 = gte.ctrl.zsf3.as_i32() * (sz[1] + sz[2] + sz[3]).as_i32();
+        gte.data.otz = (gte.data.mac0 / 0x1000).clamp(0, 0xffff).as_u16();
+    }
+    /// ```plain
+    /// MAC0 =  ZSF4*(SZ0+SZ1+SZ2+SZ3)   ;for AVSZ4
+    /// OTZ  =  MAC0/1000h               ;for both (saturated to 0..FFFFh)
+    /// ```
+    fn gte_avsz4(&mut self, _: GteCommandField) {
+        let gte = &mut self.cpu.gte;
+        let sz = gte.data.sz_fifo;
+        gte.data.mac0 = gte.ctrl.zsf4.as_i32() * (sz[0] + sz[1] + sz[2] + sz[3]).as_i32();
+        gte.data.otz = (gte.data.mac0 / 0x1000).clamp(0, 0xffff).as_u16();
+    }
 }
 
 /// holy shit
@@ -660,8 +686,8 @@ impl<A: Allocator + Copy> Emu<A> {
             GteCmd::Sqr => trace_todo!("{cmd:?}"),
             GteCmd::Dcpl => trace_todo!("{cmd:?}"),
             GteCmd::Dpct => trace_todo!("{cmd:?}"),
-            GteCmd::Avsz3 => trace_todo!("{cmd:?}"),
-            GteCmd::Avsz4 => trace_todo!("{cmd:?}"),
+            GteCmd::Avsz3 => Some(GteBindings::<A>::AVSZ3),
+            GteCmd::Avsz4 => Some(GteBindings::<A>::AVSZ4),
             GteCmd::Rtpt => Some(GteBindings::<A>::RTPT),
             GteCmd::Gpf => trace_todo!("{cmd:?}"),
             GteCmd::Gpl => trace_todo!("{cmd:?}"),
