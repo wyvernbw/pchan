@@ -2,10 +2,12 @@ use arbitrary_int::prelude::*;
 use bitbybit::{bitenum, bitfield};
 use core::alloc::Allocator;
 use core::mem::offset_of;
+use core::ops::Mul;
 use core::simd::prelude::*;
 use core::{ptr, slice};
 use glam::prelude::*;
 use pchan_encode::derive::Endecode;
+use std::simd::SimdElement;
 
 use crate::Emu;
 use crate::bindings::ExternFnTable;
@@ -262,8 +264,8 @@ enum MVMVAMultiplyMat {
     Reserved,
 }
 
-const C: GteCommandField = GteCommandField::new_with_raw_value(0x03400006);
 const fn test() {
+    const C: GteCommandField = GteCommandField::new_with_raw_value(0x03400006);
     const N: Result<GteCmd, UInt<u8, 6>> = C.cmd();
 }
 
@@ -307,7 +309,7 @@ const fn test() {
 ///   3Fh  NCCT   39  Normal Color Color triple vector
 /// ```
 #[bitenum(u6)]
-#[derive(Debug)]
+#[derive(PartialEq, Eq, Debug)]
 enum GteCmd {
     Rtps  = 0x01,
     Nclip = 0x06,
@@ -333,7 +335,7 @@ enum GteCmd {
     Ncct  = 0x3f,
 }
 
-type GteFn<A: Allocator> = fn(&mut Emu<A>, GteCommandField);
+type GteFn<A> = fn(&mut Emu<A>, GteCommandField);
 
 #[repr(C)]
 #[derive(Debug, Clone)]
@@ -341,6 +343,12 @@ pub struct GteBindings<A: Allocator> {
     rtpt:  GteFn<A>,
     rtps:  GteFn<A>,
     nclip: GteFn<A>,
+    ncs:   GteFn<A>,
+    nct:   GteFn<A>,
+    nccs:  GteFn<A>,
+    ncct:  GteFn<A>,
+    ncds:  GteFn<A>,
+    ncdt:  GteFn<A>,
 }
 
 impl<A: Allocator + Copy> GteBindings<A> {
@@ -348,12 +356,24 @@ impl<A: Allocator + Copy> GteBindings<A> {
     pub const RTPT: u32 = offset_of!(Self, rtpt) as u32 + Self::OFFSET;
     pub const RTPS: u32 = offset_of!(Self, rtps) as u32 + Self::OFFSET;
     pub const NCLIP: u32 = offset_of!(Self, nclip) as u32 + Self::OFFSET;
+    pub const NCS: u32 = offset_of!(Self, ncs) as u32 + Self::OFFSET;
+    pub const NCT: u32 = offset_of!(Self, nct) as u32 + Self::OFFSET;
+    pub const NCCS: u32 = offset_of!(Self, nccs) as u32 + Self::OFFSET;
+    pub const NCCT: u32 = offset_of!(Self, ncct) as u32 + Self::OFFSET;
+    pub const NCDS: u32 = offset_of!(Self, ncds) as u32 + Self::OFFSET;
+    pub const NCDT: u32 = offset_of!(Self, ncdt) as u32 + Self::OFFSET;
 
     pub(crate) const fn new() -> Self {
         Self {
             rtpt:  Emu::gte_rtpt,
             rtps:  Emu::gte_rtps,
             nclip: Emu::gte_nclip,
+            ncs:   Emu::gte_ncs,
+            nct:   Emu::gte_nct,
+            nccs:  Emu::gte_nccs,
+            ncct:  Emu::gte_ncct,
+            ncds:  Emu::gte_ncds,
+            ncdt:  Emu::gte_ncdt,
         }
     }
 }
@@ -391,6 +411,10 @@ impl Gte {
 
     fn advance_sxy_fifo(&mut self) {
         self.data.sxy_fifo.rotate_left(1);
+    }
+
+    fn advance_crgb_fifo(&mut self) {
+        self.data.crgb_fifo.rotate_left(1);
     }
 }
 
@@ -510,6 +534,104 @@ impl<A: Allocator> Emu<A> {
         // TODO: flags
         gte.data.mac0 = cross.as_i32();
     }
+
+    /// ```plain
+    /// [IR1,IR2,IR3] = [MAC1,MAC2,MAC3] = (LLM*V0) SAR (sf*12)
+    /// [IR1,IR2,IR3] = [MAC1,MAC2,MAC3] = (BK*1000h + LCM*IR) SAR (sf*12)
+    /// [MAC1,MAC2,MAC3] = [R*IR1,G*IR2,B*IR3] SHL 4          ;<--- for NCDx/NCCx
+    /// [MAC1,MAC2,MAC3] = MAC+(FC-MAC)*IR0                   ;<--- for NCDx only
+    /// [MAC1,MAC2,MAC3] = [MAC1,MAC2,MAC3] SAR (sf*12)       ;<--- for NCDx/NCCx
+    /// Color FIFO = [MAC1/16,MAC2/16,MAC3/16,CODE], [IR1,IR2,IR3] = [MAC1,MAC2,MAC3]
+    /// ````
+    fn ncxx<const C: u8>(&mut self, cmd: GteCommandField, v: i16x3) {
+        let gte = &mut self.cpu.gte;
+        let shift = i64::from(cmd.sf()) * 12;
+        let macv = matmul3x3v(gte.ctrl.ls_mat, v) >> shift;
+        // TODO: flags
+        gte.data.macv = macv.cast();
+        gte.data.irv = cmd.saturate_vec(macv).cast();
+
+        let lcmxir = matmul3x3v(gte.ctrl.lc_mat, gte.data.irv.cast::<i16>());
+        let macv = (gte.ctrl.bg_col.cast::<i64>() * i64x3::splat(0x1000) + lcmxir) >> shift;
+        gte.data.macv = macv.cast();
+        gte.data.irv = cmd.saturate_vec(macv).cast();
+
+        let cmd_kind: GteCmd = const {
+            match GteCmd::new_with_raw_value(u6::new(C)) {
+                Ok(cmd_n) => cmd_n,
+                Err(_) => panic!("not a proper gtecmd"),
+            }
+        };
+
+        let rgb = gte.data.rgbc.resize::<3>(0);
+        let macv = (rgb.cast::<i32>() * gte.data.irv) << 4;
+        gte.data.macv = macv;
+
+        if matches!(cmd_kind, GteCmd::Ncds | GteCmd::Ncdt) {
+            let macv =
+                gte.data.macv + (gte.ctrl.far_col - gte.data.macv) * i32x3::splat(gte.data.ir0);
+            gte.data.macv = macv;
+        }
+
+        gte.data.macv >>= i32x3::splat(shift as i32);
+
+        let color = (gte.data.macv >> 4)
+            .cast::<u8>()
+            .resize::<4>(gte.data.rgbc[3]);
+        gte.advance_crgb_fifo();
+        gte.data.crgb_fifo[2] = color;
+        gte.data.irv = cmd.saturate_vec(gte.data.macv).cast();
+    }
+
+    fn gte_ncs(&mut self, cmd: GteCommandField) {
+        const NCS: u8 = GteCmd::Ncs.raw_value().value();
+        self.ncxx::<NCS>(cmd, self.cpu.gte.data.vxyz0);
+    }
+    fn gte_nct(&mut self, cmd: GteCommandField) {
+        const NCT: u8 = GteCmd::Nct.raw_value().value();
+        self.ncxx::<NCT>(cmd, self.cpu.gte.data.vxyz0);
+        self.ncxx::<NCT>(cmd, self.cpu.gte.data.vxyz1);
+        self.ncxx::<NCT>(cmd, self.cpu.gte.data.vxyz2);
+    }
+    fn gte_nccs(&mut self, cmd: GteCommandField) {
+        const NCCS: u8 = GteCmd::Nccs.raw_value().value();
+        self.ncxx::<NCCS>(cmd, self.cpu.gte.data.vxyz0);
+    }
+    fn gte_ncct(&mut self, cmd: GteCommandField) {
+        const NCCT: u8 = GteCmd::Ncct.raw_value().value();
+        self.ncxx::<NCCT>(cmd, self.cpu.gte.data.vxyz0);
+        self.ncxx::<NCCT>(cmd, self.cpu.gte.data.vxyz1);
+        self.ncxx::<NCCT>(cmd, self.cpu.gte.data.vxyz2);
+    }
+    fn gte_ncds(&mut self, cmd: GteCommandField) {
+        const NCDS: u8 = GteCmd::Ncds.raw_value().value();
+        self.ncxx::<NCDS>(cmd, self.cpu.gte.data.vxyz0);
+    }
+    fn gte_ncdt(&mut self, cmd: GteCommandField) {
+        const NCDT: u8 = GteCmd::Ncdt.raw_value().value();
+        self.ncxx::<NCDT>(cmd, self.cpu.gte.data.vxyz0);
+        self.ncxx::<NCDT>(cmd, self.cpu.gte.data.vxyz1);
+        self.ncxx::<NCDT>(cmd, self.cpu.gte.data.vxyz2);
+    }
+}
+
+/// holy shit
+fn matmul3x3v<S>(mat: [S; 3], v: S) -> i64x3
+where
+    S: SimdInt<Cast<i64> = Simd<i64, 3>>,
+{
+    let mat = mat.map(|col| col.cast::<i64>());
+    let v = v.cast::<i64>();
+    let rowm = [
+        Simd::from_array([mat[0][0], mat[1][0], mat[2][0]]),
+        Simd::from_array([mat[0][1], mat[1][1], mat[2][1]]),
+        Simd::from_array([mat[0][2], mat[1][2], mat[2][2]]),
+    ];
+    Simd::from_array([
+        (rowm[0] * v).reduce_sum(),
+        (rowm[1] * v).reduce_sum(),
+        (rowm[2] * v).reduce_sum(),
+    ])
 }
 
 impl<A: Allocator + Copy> Emu<A> {
@@ -528,13 +650,13 @@ impl<A: Allocator + Copy> Emu<A> {
             GteCmd::Dpcs => trace_todo!("{cmd:?}"),
             GteCmd::Intpl => trace_todo!("{cmd:?}"),
             GteCmd::Mvmva => trace_todo!("{cmd:?}"),
-            GteCmd::Ncds => trace_todo!("{cmd:?}"),
+            GteCmd::Ncds => Some(GteBindings::<A>::NCDS),
             GteCmd::Cdp => trace_todo!("{cmd:?}"),
-            GteCmd::Ncdt => trace_todo!("{cmd:?}"),
-            GteCmd::Nccs => trace_todo!("{cmd:?}"),
+            GteCmd::Ncdt => Some(GteBindings::<A>::NCDT),
+            GteCmd::Nccs => Some(GteBindings::<A>::NCCS),
             GteCmd::Cc => trace_todo!("{cmd:?}"),
-            GteCmd::Ncs => trace_todo!("{cmd:?}"),
-            GteCmd::Nct => trace_todo!("{cmd:?}"),
+            GteCmd::Ncs => Some(GteBindings::<A>::NCS),
+            GteCmd::Nct => Some(GteBindings::<A>::NCT),
             GteCmd::Sqr => trace_todo!("{cmd:?}"),
             GteCmd::Dcpl => trace_todo!("{cmd:?}"),
             GteCmd::Dpct => trace_todo!("{cmd:?}"),
@@ -543,7 +665,7 @@ impl<A: Allocator + Copy> Emu<A> {
             GteCmd::Rtpt => Some(GteBindings::<A>::RTPT),
             GteCmd::Gpf => trace_todo!("{cmd:?}"),
             GteCmd::Gpl => trace_todo!("{cmd:?}"),
-            GteCmd::Ncct => trace_todo!("{cmd:?}"),
+            GteCmd::Ncct => Some(GteBindings::<A>::NCCT),
         }
     }
 }

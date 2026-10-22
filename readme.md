@@ -53,6 +53,9 @@ Progress:
     - [ ] lines
   - [ ] software renderer (not started)
 - [ ] gte
+  - [ ] gte commands implementation: 45% done
+  - [ ] gte correctness
+  - [ ] load delays
 - [ ] cdrom
   - [x] basic registers
   - [x] fifo
