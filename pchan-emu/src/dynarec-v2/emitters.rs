@@ -627,6 +627,18 @@ fn emit_call<A: Allocator + Copy>(ctx: &mut EmitCtx<A>, emitter: impl Fn(&mut Dy
     );
 }
 
+#[cfg(target_arch = "aarch64")]
+fn emit_call_fn_0_arg<A: Allocator + Copy>(ctx: &mut EmitCtx<A>, offset: u32) {
+    emit_call(ctx, |dynarec| {
+        dynasm!(
+            dynarec.asm
+            ; .arch aarch64
+            ; ldr x3, [x0, #offset]
+            ; blr x3
+        );
+    });
+}
+
 #[allow(clippy::useless_conversion)]
 fn emit_store<A: Allocator + Copy>(
     mut ctx: EmitCtx<A>,
@@ -2763,6 +2775,34 @@ fn emit_move_to_cop<A: Allocator + Copy>(
                     dynarec.asm
                     ; .arch aarch64
                     ; ldr x3, [x0, #GteBindings::<A>::WRITE_SXYP]
+                    ; blr x3
+                );
+            });
+        }
+        // gte irgb register
+        (2, 28) => {
+            let rt = ctx.dynarec.emit_load_reg_stackless(rt);
+            emit_call(&mut ctx, |dynarec| {
+                #[cfg(target_arch = "aarch64")]
+                dynasm!(
+                    dynarec.asm
+                    ; .arch aarch64
+                    ; mov w1, W(*rt)
+                    ; ldr x3, [x0, #GteBindings::<A>::WRITE_IRGB]
+                    ; blr x3
+                );
+            });
+        }
+        // gte lzcs register
+        (2, 30) => {
+            let rt = ctx.dynarec.emit_load_reg_stackless(rt);
+            emit_call(&mut ctx, |dynarec| {
+                #[cfg(target_arch = "aarch64")]
+                dynasm!(
+                    dynarec.asm
+                    ; .arch aarch64
+                    ; mov w1, W(*rt)
+                    ; ldr x3, [x0, #GteBindings::<A>::WRITE_LZCS]
                     ; blr x3
                 );
             });

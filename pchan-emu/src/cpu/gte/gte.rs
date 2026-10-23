@@ -10,6 +10,7 @@ use std::simd::SimdElement;
 
 use crate::Emu;
 use crate::bindings::ExternFnTable;
+use crate::gpu::vram::Rgb5;
 
 #[repr(C)]
 #[derive(Default, Debug, Endecode, Clone)]
@@ -211,7 +212,7 @@ const _: () = const {
 struct Flag {
     #[bits(28..=30, rw)]
     macv_ovf_pos:    u3,
-    #[bits(28..=30, rw)]
+    #[bits(25..=27, rw)]
     macv_ovf_neg:    u3,
     #[bits(22..=24, rw)]
     irv_sat:         u3,
@@ -401,6 +402,8 @@ pub struct GteBindings<A: Allocator> {
     mvmva: GteFn<A>,
 
     write_sxyp: fn(&mut Emu<A>),
+    write_irgb: fn(&mut Emu<A>, u32),
+    write_lzcs: fn(&mut Emu<A>, i32),
 }
 
 impl<A: Allocator + Copy> GteBindings<A> {
@@ -418,6 +421,8 @@ impl<A: Allocator + Copy> GteBindings<A> {
     pub const AVSZ4: u32 = offset_of!(Self, avsz4) as u32 + Self::OFFSET;
     pub const MVMVA: u32 = offset_of!(Self, mvmva) as u32 + Self::OFFSET;
     pub const WRITE_SXYP: u32 = offset_of!(Self, write_sxyp) as u32 + Self::OFFSET;
+    pub const WRITE_IRGB: u32 = offset_of!(Self, write_irgb) as u32 + Self::OFFSET;
+    pub const WRITE_LZCS: u32 = offset_of!(Self, write_lzcs) as u32 + Self::OFFSET;
 
     pub(crate) const fn new() -> Self {
         Self {
@@ -435,6 +440,8 @@ impl<A: Allocator + Copy> GteBindings<A> {
             mvmva: Emu::gte_mvmva,
 
             write_sxyp: Emu::gte_write_sxyp,
+            write_irgb: Emu::gte_write_irgb,
+            write_lzcs: Emu::gte_write_lzcs,
         }
     }
 }
@@ -483,6 +490,11 @@ impl Gte {
         self.ctrl.flag = Flag::default();
     }
 
+    fn shift_macv(&mut self, macv: i64x3, sf: bool) -> i32x3 {
+        self.cast_macv(macv);
+        (macv >> (i64::from(sf) * 12)).cast()
+    }
+
     fn cast_macv(&mut self, macv: i64x3) -> i32x3 {
         let ovf_pos = macv.simd_gt(i64x3::splat(1 << 43));
         let ovf_neg = macv.simd_lt(i64x3::splat(-1 << 43));
@@ -490,10 +502,10 @@ impl Gte {
         let old_ovf_neg = self.ctrl.flag.macv_ovf_neg();
         self.ctrl
             .flag
-            .set_macv_ovf_pos(old_ovf_pos | ovf_pos.to_bitmask().as_());
+            .set_macv_ovf_pos(old_ovf_pos | ovf_pos.to_bitmask().as_::<u3>().reverse_bits());
         self.ctrl
             .flag
-            .set_macv_ovf_neg(old_ovf_neg | ovf_neg.to_bitmask().as_());
+            .set_macv_ovf_neg(old_ovf_neg | ovf_neg.to_bitmask().as_::<u3>().reverse_bits());
         macv.cast()
     }
 
@@ -515,14 +527,28 @@ impl Gte {
         new_ir0 as i32
     }
 
-    fn sat_irv(&mut self, irv: i64x3, cmd: GteCommandField) -> i16x3 {
-        let new_irv = match cmd.lm() {
-            SaturateMode::Signed => irv.simd_clamp(Simd::splat(-0x8000), Simd::splat(0x7fff)),
-            SaturateMode::Unsigned => irv.simd_clamp(Simd::splat(-0x0), Simd::splat(0x7fff)),
+    fn sat_irv<S: SimdInt<Cast<i64> = Simd<i64, 3>>>(
+        &mut self,
+        irv: S,
+        cmd: GteCommandField,
+    ) -> i16x3 {
+        let irv = irv.cast::<i64>();
+        let new_irv = match (cmd.cmd(), cmd.lm()) {
+            (Ok(GteCmd::Rtps | GteCmd::Rtpt), lm) => {
+                let (min, max) = match lm {
+                    SaturateMode::Signed => (-0x8000, 0x7fff),
+                    SaturateMode::Unsigned => (0x0, 0x7fff),
+                };
+                let min = i64x3::from_array([min, min, -0x8000]);
+                let max = i64x3::splat(max);
+                irv.simd_clamp(min, max)
+            }
+            (_, SaturateMode::Signed) => irv.simd_clamp(Simd::splat(-0x8000), Simd::splat(0x7fff)),
+            (_, SaturateMode::Unsigned) => irv.simd_clamp(Simd::splat(-0x0), Simd::splat(0x7fff)),
         };
-        let sat_flags = new_irv.simd_ne(irv).to_bitmask();
+        let sat_flags = new_irv.simd_ne(irv).to_bitmask().as_::<u3>().reverse_bits();
         let old_sat_flags = self.ctrl.flag.irv_sat();
-        self.ctrl.flag.set_irv_sat(old_sat_flags | sat_flags.as_());
+        self.ctrl.flag.set_irv_sat(old_sat_flags | sat_flags);
         new_irv.cast()
     }
 }
@@ -567,16 +593,15 @@ impl<A: Allocator> Emu<A> {
     /// ```
     fn rtps(&mut self, cmd: GteCommandField, v: i16x3) {
         let gte = &mut self.cpu.gte;
-        gte.clear_flag();
 
         let mac = {
             let rt = gte.ctrl.rt_mat;
             let tr = gte.ctrl.tr_vec;
             let mac = tr.cast::<i64>() * i64x3::splat(0x1000) + matmul3x3v(rt, v);
-            mac >> (i64::from(cmd.sf()) * 12)
+            gte.shift_macv(mac, cmd.sf())
         };
 
-        gte.data.macv = gte.cast_macv(mac);
+        gte.data.macv = mac;
         gte.data.irv = gte.sat_irv(mac, cmd).cast();
 
         let sz3 = mac[2] >> (u8::from(!cmd.sf()) * 12);
@@ -584,16 +609,11 @@ impl<A: Allocator> Emu<A> {
         gte.advance_sz_fifo();
         gte.data.sz_fifo[3] = sz3;
 
-        let div = if sz3 == 0 {
-            0x1FFFF
+        let div = if u32::from(gte.ctrl.h) >= sz3 * 2 {
+            gte.ctrl.flag.set_divide_overflow(true);
+            0x1ffff
         } else {
-            match ((gte.ctrl.h.as_i64() * 0x20000 / sz3.as_i64()) + 1) / 2 {
-                div @ 0x0..=0x1ffff => div,
-                _ => {
-                    gte.ctrl.flag.set_divide_overflow(true);
-                    0x1ffff
-                }
-            }
+            ((i64::from(gte.ctrl.h) * 0x20000 / i64::from(sz3)) + 1) as i32 / 2
         };
         let div = div.as_i32();
 
@@ -613,6 +633,7 @@ impl<A: Allocator> Emu<A> {
         let sxy2 = sxy2.simd_clamp(i64x2::splat(-0x400), i64x2::splat(0x3ff));
         gte.advance_sxy_fifo();
         gte.data.sxy_fifo[2] = sxy2.cast();
+        gte.data.sxy_fifo[3] = gte.data.sxy_fifo[2];
 
         let mac0 = mac0v[2];
         gte.data.mac0 = gte.cast_mac0(mac0);
@@ -620,11 +641,13 @@ impl<A: Allocator> Emu<A> {
     }
 
     fn gte_rtps(&mut self, cmd: GteCommandField) {
+        self.cpu.gte.clear_flag();
         let v0 = self.cpu.gte.data.vxyz0;
         self.rtps(cmd, v0);
     }
 
     fn gte_rtpt(&mut self, cmd: GteCommandField) {
+        self.cpu.gte.clear_flag();
         self.rtps(cmd, self.cpu.gte.data.vxyz0);
         self.rtps(cmd, self.cpu.gte.data.vxyz1);
         self.rtps(cmd, self.cpu.gte.data.vxyz2);
@@ -642,8 +665,7 @@ impl<A: Allocator> Emu<A> {
         let v1 = sxy[1];
         let v2 = sxy[2];
         let cross = (v1[0] - v0[0]) * (v2[1] - v0[1]) - (v1[1] - v0[1]) * (v2[0] - v0[0]);
-        // TODO: flags
-        gte.data.mac0 = cross.as_i32();
+        gte.data.mac0 = gte.cast_mac0(cross);
     }
 
     /// ```plain
@@ -656,16 +678,17 @@ impl<A: Allocator> Emu<A> {
     /// ````
     fn ncxx<const C: u8>(&mut self, cmd: GteCommandField, v: i16x3) {
         let gte = &mut self.cpu.gte;
-        gte.clear_flag();
         let shift = i64::from(cmd.sf()) * 12;
-        let macv = matmul3x3v(gte.ctrl.ls_mat, v) >> shift;
-        // TODO: flags
-        gte.data.macv = gte.cast_macv(macv.cast());
+        let macv = gte.shift_macv(matmul3x3v(gte.ctrl.ls_mat, v), cmd.sf());
+        gte.data.macv = macv;
         gte.data.irv = gte.sat_irv(macv, cmd).cast();
 
         let lcmxir = matmul3x3v(gte.ctrl.lc_mat, gte.data.irv.cast::<i16>());
-        let macv = (gte.ctrl.bg_col.cast::<i64>() * i64x3::splat(0x1000) + lcmxir) >> shift;
-        gte.data.macv = gte.cast_macv(macv);
+        let macv = gte.shift_macv(
+            gte.ctrl.bg_col.cast::<i64>() * i64x3::splat(0x1000) + lcmxir,
+            cmd.sf(),
+        );
+        gte.data.macv = macv;
         gte.data.irv = gte.sat_irv(macv, cmd).cast();
 
         let cmd_kind: GteCmd = const {
@@ -709,30 +732,36 @@ impl<A: Allocator> Emu<A> {
 
     fn gte_ncs(&mut self, cmd: GteCommandField) {
         const NCS: u8 = GteCmd::Ncs.raw_value().value();
+        self.cpu.gte.clear_flag();
         self.ncxx::<NCS>(cmd, self.cpu.gte.data.vxyz0);
     }
     fn gte_nct(&mut self, cmd: GteCommandField) {
         const NCT: u8 = GteCmd::Nct.raw_value().value();
+        self.cpu.gte.clear_flag();
         self.ncxx::<NCT>(cmd, self.cpu.gte.data.vxyz0);
         self.ncxx::<NCT>(cmd, self.cpu.gte.data.vxyz1);
         self.ncxx::<NCT>(cmd, self.cpu.gte.data.vxyz2);
     }
     fn gte_nccs(&mut self, cmd: GteCommandField) {
         const NCCS: u8 = GteCmd::Nccs.raw_value().value();
+        self.cpu.gte.clear_flag();
         self.ncxx::<NCCS>(cmd, self.cpu.gte.data.vxyz0);
     }
     fn gte_ncct(&mut self, cmd: GteCommandField) {
         const NCCT: u8 = GteCmd::Ncct.raw_value().value();
+        self.cpu.gte.clear_flag();
         self.ncxx::<NCCT>(cmd, self.cpu.gte.data.vxyz0);
         self.ncxx::<NCCT>(cmd, self.cpu.gte.data.vxyz1);
         self.ncxx::<NCCT>(cmd, self.cpu.gte.data.vxyz2);
     }
     fn gte_ncds(&mut self, cmd: GteCommandField) {
         const NCDS: u8 = GteCmd::Ncds.raw_value().value();
+        self.cpu.gte.clear_flag();
         self.ncxx::<NCDS>(cmd, self.cpu.gte.data.vxyz0);
     }
     fn gte_ncdt(&mut self, cmd: GteCommandField) {
         const NCDT: u8 = GteCmd::Ncdt.raw_value().value();
+        self.cpu.gte.clear_flag();
         self.ncxx::<NCDT>(cmd, self.cpu.gte.data.vxyz0);
         self.ncxx::<NCDT>(cmd, self.cpu.gte.data.vxyz1);
         self.ncxx::<NCDT>(cmd, self.cpu.gte.data.vxyz2);
@@ -748,7 +777,7 @@ impl<A: Allocator> Emu<A> {
         let mac0 = gte.ctrl.zsf3.as_i64() * (sz[1] + sz[2] + sz[3]).as_i64();
         // TODO: flags
         gte.data.mac0 = gte.cast_mac0(mac0);
-        gte.data.otz = (mac0 / 0x1000).clamp(0, 0xffff).as_u16();
+        gte.data.otz = (mac0 >> 12).clamp(0, 0xffff).as_u16();
     }
     /// ```plain
     /// MAC0 =  ZSF4*(SZ0+SZ1+SZ2+SZ3)   ;for AVSZ4
@@ -761,7 +790,7 @@ impl<A: Allocator> Emu<A> {
         let mac0 = gte.ctrl.zsf4.as_i64() * (sz[0] + sz[1] + sz[2] + sz[3]).as_i64();
         // TODO: flags
         gte.data.mac0 = gte.cast_mac0(mac0);
-        gte.data.otz = (mac0 / 0x1000).clamp(0, 0xffff).as_u16();
+        gte.data.otz = (mac0 >> 12).clamp(0, 0xffff).as_u16();
     }
 
     /// Multiply vector by matrix and vector addition.
@@ -809,6 +838,24 @@ impl<A: Allocator> Emu<A> {
     fn gte_write_sxyp(&mut self) {
         self.cpu.gte.advance_sxy_fifo();
     }
+
+    fn gte_write_irgb(&mut self, value: u32) {
+        let value = value.as_u16();
+        self.cpu.gte.data.irgb_orgb[0] = u32::from(value);
+        let rgb = Rgb5::new_with_raw_value(value.as_u16());
+        self.cpu.gte.data.irgb_orgb[1] =
+            u32::from_ne_bytes([rgb.r().value(), rgb.g().value(), rgb.b().value(), 0]);
+    }
+
+    fn gte_write_lzcs(&mut self, value: i32) {
+        let gte = &mut self.cpu.gte;
+        let cnt = match value {
+            ..0 => value.leading_ones(),
+            0.. => value.leading_zeros(),
+        };
+        gte.data.lzcs_lzcr[0] = value;
+        gte.data.lzcs_lzcr[1] = cnt as i32;
+    }
 }
 
 /// mat is row major, v is a column vector, returns a column vector
@@ -837,7 +884,7 @@ impl<A: Allocator + Copy> Emu<A> {
     pub(crate) fn gte_function(cmd: GteCommandField) -> Option<u32> {
         let cmd = cmd.cmd().ok()?;
         macro_rules! trace_todo {
-            ($tt:tt) => {{
+            () => {{
                 tracing::warn!("not yet implemented: gte2 cmd {cmd:?}");
                 None
             }};
@@ -845,25 +892,25 @@ impl<A: Allocator + Copy> Emu<A> {
         match cmd {
             GteCmd::Rtps => Some(GteBindings::<A>::RTPS),
             GteCmd::Nclip => Some(GteBindings::<A>::NCLIP),
-            GteCmd::Op => trace_todo!("{cmd:?}"),
-            GteCmd::Dpcs => trace_todo!("{cmd:?}"),
-            GteCmd::Intpl => trace_todo!("{cmd:?}"),
+            GteCmd::Op => trace_todo!(),
+            GteCmd::Dpcs => trace_todo!(),
+            GteCmd::Intpl => trace_todo!(),
             GteCmd::Mvmva => Some(GteBindings::<A>::MVMVA),
             GteCmd::Ncds => Some(GteBindings::<A>::NCDS),
-            GteCmd::Cdp => trace_todo!("{cmd:?}"),
+            GteCmd::Cdp => trace_todo!(),
             GteCmd::Ncdt => Some(GteBindings::<A>::NCDT),
             GteCmd::Nccs => Some(GteBindings::<A>::NCCS),
-            GteCmd::Cc => trace_todo!("{cmd:?}"),
+            GteCmd::Cc => trace_todo!(),
             GteCmd::Ncs => Some(GteBindings::<A>::NCS),
             GteCmd::Nct => Some(GteBindings::<A>::NCT),
-            GteCmd::Sqr => trace_todo!("{cmd:?}"),
-            GteCmd::Dcpl => trace_todo!("{cmd:?}"),
-            GteCmd::Dpct => trace_todo!("{cmd:?}"),
+            GteCmd::Sqr => trace_todo!(),
+            GteCmd::Dcpl => trace_todo!(),
+            GteCmd::Dpct => trace_todo!(),
             GteCmd::Avsz3 => Some(GteBindings::<A>::AVSZ3),
             GteCmd::Avsz4 => Some(GteBindings::<A>::AVSZ4),
             GteCmd::Rtpt => Some(GteBindings::<A>::RTPT),
-            GteCmd::Gpf => trace_todo!("{cmd:?}"),
-            GteCmd::Gpl => trace_todo!("{cmd:?}"),
+            GteCmd::Gpf => trace_todo!(),
+            GteCmd::Gpl => trace_todo!(),
             GteCmd::Ncct => Some(GteBindings::<A>::NCCT),
         }
     }
