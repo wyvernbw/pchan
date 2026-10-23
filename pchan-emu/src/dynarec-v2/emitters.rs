@@ -1,4 +1,5 @@
 use crate::bindings::ExternFnTable;
+use crate::cpu::gte::GteBindings;
 use crate::cpu::{Cpu, RA};
 use crate::dynarec_v2::regalloc::AllocResultStackless;
 #[cfg(test)]
@@ -2715,6 +2716,71 @@ fn test_branch_zero(
     Ok(())
 }
 
+#[repr(u8)]
+#[derive(Clone, Copy)]
+enum CopRegisterKind {
+    Data,
+    Ctrl,
+}
+#[derive(Copy, Clone)]
+struct CopMove {
+    cop:  u8,
+    rd:   u8,
+    rt:   u8,
+    kind: CopRegisterKind,
+}
+#[allow(clippy::useless_conversion)]
+fn emit_move_to_cop<A: Allocator + Copy>(
+    mut ctx: EmitCtx<A>,
+    CopMove { cop, rd, rt, kind }: CopMove,
+) {
+    let reg = rd + (kind as u8) * 32;
+    match (cop, reg) {
+        // N/A
+        (0, 0..=2) => {
+            tracing::warn!("move to invalid cop0 register {}", rd);
+        }
+        // read only
+        (0, 6 | 8 | 14 | 15) => {}
+        // cause reg
+        (0, 13) => {
+            ctx.dynarec.emit_load_temp_reg(rt, Reg::W(1));
+            emit_call(&mut ctx, |dynarec| {
+                #[cfg(target_arch = "aarch64")]
+                dynasm!(
+                    dynarec.asm
+                    ; .arch aarch64
+                    ; ldr x3, [x0, #ExternFnTable::<A>::COP0_SET_CAUSE]
+                    ; blr x3
+                );
+            });
+        }
+        // gte screen z fifo mirror register "SXYP"
+        (2, 15) => {
+            emit_call(&mut ctx, |dynarec| {
+                #[cfg(target_arch = "aarch64")]
+                dynasm!(
+                    dynarec.asm
+                    ; .arch aarch64
+                    ; ldr x3, [x0, #GteBindings::<A>::WRITE_SXYP]
+                    ; blr x3
+                );
+            });
+        }
+        (0 | 2, _) => {
+            let rt = ctx.dynarec.emit_load_reg_stackless(rt);
+
+            #[cfg(target_arch = "aarch64")]
+            dynasm!(
+                ctx.dynarec.asm
+                ; .arch aarch64
+                ; str W(*rt), [x0, Cpu::cop_reg_offset(cop, reg) as _]
+            );
+        }
+        _ => {}
+    }
+}
+
 impl DynarecOp for Mtcn {
     fn cycles(&self) -> u16 {
         match self.cop {
@@ -2724,41 +2790,17 @@ impl DynarecOp for Mtcn {
         }
     }
     #[allow(clippy::useless_conversion)]
-    fn emit<A: Allocator + Copy>(&self, mut ctx: EmitCtx<A>) -> EmitSummary {
-        match (self.cop, self.rd) {
-            // N/A
-            (0, 0..=2) => {
-                tracing::warn!("move to invalid cop0 register {}", self.rd);
-            }
-            // read only
-            (0, 6 | 8 | 14 | 15) => {}
-            // cause reg
-            (0, 13) => {
-                ctx.dynarec.emit_load_temp_reg(self.rt, Reg::W(1));
-                emit_call(&mut ctx, |dynarec| {
-                    #[cfg(target_arch = "aarch64")]
-                    dynasm!(
-                        dynarec.asm
-                        ; .arch aarch64
-                        ; ldr x3, [x0, #ExternFnTable::<A>::COP0_SET_CAUSE]
-                        ; blr x3
-                    );
-                });
-            }
-            (0 | 2, _) => {
-                let rt = ctx.dynarec.emit_load_reg_stackless(self.rt);
-
-                #[cfg(target_arch = "aarch64")]
-                dynasm!(
-                    ctx.dynarec.asm
-                    ; .arch aarch64
-                    ; str W(*rt), [x0, Cpu::cop_reg_offset(self.cop, self.rd) as _]
-                );
-            }
-            _ => {}
-        }
-
-        EmitSummary::default()
+    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+        emit_move_to_cop(
+            ctx,
+            CopMove {
+                cop:  self.cop,
+                rd:   self.rd,
+                rt:   self.rt,
+                kind: CopRegisterKind::Data,
+            },
+        );
+        default()
     }
 }
 
@@ -2772,20 +2814,16 @@ impl DynarecOp for Ctcn {
     }
     #[allow(clippy::useless_conversion)]
     fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
-        if self.cop != 0 && self.cop != 2 {
-            return default();
-        }
-
-        let rt = ctx.dynarec.emit_load_reg_stackless(self.rt);
-
-        #[cfg(target_arch = "aarch64")]
-        dynasm!(
-            ctx.dynarec.asm
-            ; .arch aarch64
-            ; str W(*rt), [x0, Cpu::cop_reg_offset(self.cop, self.rd + 32) as _]
+        emit_move_to_cop(
+            ctx,
+            CopMove {
+                cop:  self.cop,
+                rd:   self.rd,
+                rt:   self.rt,
+                kind: CopRegisterKind::Ctrl,
+            },
         );
-
-        EmitSummary::default()
+        default()
     }
 }
 
@@ -3048,99 +3086,97 @@ impl DynarecOp for Slti {
     }
 }
 
+#[allow(clippy::useless_conversion)]
 #[cfg(target_arch = "aarch64")]
-impl DynarecOp for Mfcn {
-    #[allow(clippy::useless_conversion)]
-    fn emit<A: Allocator + Copy>(&self, mut ctx: EmitCtx<A>) -> EmitSummary {
-        if self.rt == 0 {
-            return EmitSummary::default();
+fn emit_move_from_cop<A: Allocator + Copy>(
+    mut ctx: EmitCtx<A>,
+    CopMove { cop, rd, rt, kind }: CopMove,
+) {
+    if rt == 0 {
+        return;
+    }
+
+    ctx.dynarec.cancel_next_write(rt);
+
+    let reg = (kind as u8) * 32 + rd;
+
+    match (cop, reg) {
+        (0, _) => {
+            let rta = ctx.dynarec.alloc_reg_stackless(rt);
+
+            dynasm!(
+                ctx.dynarec.asm
+                ; .arch aarch64
+                ; ldr W(*rta), [x0, Cpu::cop_reg_offset(cop, reg) as _]
+            );
+
+            ctx.dynarec.mark_dirty(rt);
         }
+        // gte screen z fifo mirror register "SXYP"
+        (2, 15) => {
+            emit_move_to_cop(
+                ctx,
+                CopMove {
+                    cop,
+                    rd: 14,
+                    rt,
+                    kind,
+                },
+            );
+        }
+        (2, _) => {
+            let rta = ctx.dynarec.emit_load_shadow_reg_stackless(rt);
+            dynasm!(
+                ctx.dynarec.asm
+                ; .arch aarch64
+                ; ldr W(*rta), [x0, Cpu::cop_reg_offset(cop, reg) as _]
+            );
 
-        ctx.dynarec.cancel_next_write(self.rt);
-        match self.cop {
-            0 => {
-                let rt = ctx.dynarec.alloc_reg_stackless(self.rt);
-
+            // writeback to gpr
+            ctx.schedule_in(1, Some(rt), move |ctx| {
+                let rta = ctx.dynarec.alloc_reg_stackless(rt);
                 dynasm!(
                     ctx.dynarec.asm
                     ; .arch aarch64
-                    ; ldr W(*rt), [x0, Cpu::cop_reg_offset(self.cop, self.rd) as _]
+                    ; ldr W(*rta), [x0, #shadow(rt)]
                 );
-
-                ctx.dynarec.mark_dirty(self.rt);
-            }
-            2 => {
-                let rta = ctx.dynarec.emit_load_shadow_reg_stackless(self.rt);
-                dynasm!(
-                    ctx.dynarec.asm
-                    ; .arch aarch64
-                    ; ldr W(*rta), [x0, Cpu::cop_reg_offset(self.cop, self.rd) as _]
-                );
-
-                let rt = self.rt;
-                // writeback to gpr
-                ctx.schedule_in(1, Some(rt), move |ctx| {
-                    let rta = ctx.dynarec.alloc_reg_stackless(rt);
-                    dynasm!(
-                        ctx.dynarec.asm
-                        ; .arch aarch64
-                        ; ldr W(*rta), [x0, #shadow(rt)]
-                    );
-                    ctx.dynarec.mark_dirty(rt);
-                    EmitSummary::default()
-                });
-            }
-            _ => todo!(),
+                ctx.dynarec.mark_dirty(rt);
+                EmitSummary::default()
+            });
         }
-        EmitSummary::default()
+        _ => todo!(),
     }
 }
 
-#[cfg(target_arch = "aarch64")]
+impl DynarecOp for Mfcn {
+    #[allow(clippy::useless_conversion)]
+    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+        emit_move_from_cop(
+            ctx,
+            CopMove {
+                cop:  self.cop,
+                rd:   self.rd,
+                rt:   self.rt,
+                kind: CopRegisterKind::Data,
+            },
+        );
+        default()
+    }
+}
+
 impl DynarecOp for Cfcn {
     #[allow(clippy::useless_conversion)]
-    fn emit<A: Allocator + Copy>(&self, mut ctx: EmitCtx<A>) -> EmitSummary {
-        if self.rt == 0 {
-            return EmitSummary::default();
-        }
-
-        ctx.dynarec.cancel_next_write(self.rt);
-        match self.cop {
-            0 => {
-                let rt = ctx.dynarec.alloc_reg_stackless(self.rt);
-
-                dynasm!(
-                    ctx.dynarec.asm
-                    ; .arch aarch64
-                    ; ldr W(*rt), [x0, Cpu::cop_reg_offset(self.cop, self.rd + 32) as _]
-                );
-
-                ctx.dynarec.mark_dirty(self.rt);
-            }
-            2 => {
-                let rta = ctx.dynarec.emit_load_shadow_reg_stackless(self.rt);
-                dynasm!(
-                    ctx.dynarec.asm
-                    ; .arch aarch64
-                    ; ldr W(*rta), [x0, Cpu::cop_reg_offset(self.cop, self.rd + 32) as _]
-                );
-
-                let rt = self.rt;
-                // writeback to gpr
-                ctx.schedule_in(1, Some(rt), move |ctx| {
-                    let rta = ctx.dynarec.alloc_reg_stackless(rt);
-                    dynasm!(
-                        ctx.dynarec.asm
-                        ; .arch aarch64
-                        ; ldr W(*rta), [x0, #shadow(rt)]
-                    );
-                    ctx.dynarec.mark_dirty(rt);
-                    EmitSummary::default()
-                });
-            }
-            _ => todo!(),
-        }
-        EmitSummary::default()
+    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+        emit_move_from_cop(
+            ctx,
+            CopMove {
+                cop:  self.cop,
+                rd:   self.rd,
+                rt:   self.rt,
+                kind: CopRegisterKind::Ctrl,
+            },
+        );
+        default()
     }
 }
 

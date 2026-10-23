@@ -387,6 +387,8 @@ pub struct GteBindings<A: Allocator> {
     avsz3: GteFn<A>,
     avsz4: GteFn<A>,
     mvmva: GteFn<A>,
+
+    write_sxyp: fn(&mut Emu<A>),
 }
 
 impl<A: Allocator + Copy> GteBindings<A> {
@@ -403,6 +405,7 @@ impl<A: Allocator + Copy> GteBindings<A> {
     pub const AVSZ3: u32 = offset_of!(Self, avsz3) as u32 + Self::OFFSET;
     pub const AVSZ4: u32 = offset_of!(Self, avsz4) as u32 + Self::OFFSET;
     pub const MVMVA: u32 = offset_of!(Self, mvmva) as u32 + Self::OFFSET;
+    pub const WRITE_SXYP: u32 = offset_of!(Self, write_sxyp) as u32 + Self::OFFSET;
 
     pub(crate) const fn new() -> Self {
         Self {
@@ -418,6 +421,8 @@ impl<A: Allocator + Copy> GteBindings<A> {
             avsz3: Emu::gte_avsz3,
             avsz4: Emu::gte_avsz4,
             mvmva: Emu::gte_mvmva,
+
+            write_sxyp: Emu::gte_write_sxyp,
         }
     }
 }
@@ -744,6 +749,10 @@ impl<A: Allocator> Emu<A> {
         // TODO: flags
         gte.data.macv = res.cast();
         gte.data.irv = cmd.saturate_vec(res).cast();
+    }
+
+    fn gte_write_sxyp(&mut self) {
+        self.cpu.gte.advance_sxy_fifo();
     }
 }
 
