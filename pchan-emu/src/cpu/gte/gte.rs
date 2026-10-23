@@ -206,11 +206,23 @@ const _: () = const {
 ///  0-11 Not used (always zero) (Read only)
 /// ```
 #[repr(C)]
-#[bitfield(u20)]
+#[bitfield(u32)]
 #[derive(Endecode, Debug, Default)]
 struct Flag {
+    #[bits(28..=30, rw)]
+    macv_ovf_pos:    u3,
+    #[bits(28..=30, rw)]
+    macv_ovf_neg:    u3,
+    #[bits(22..=24, rw)]
+    irv_sat:         u3,
     #[bit(17, rw)]
     divide_overflow: bool,
+    #[bit(16, rw)]
+    mac0_ovf_pos:    bool,
+    #[bit(15, rw)]
+    mac0_ovf_neg:    bool,
+    #[bit(12, rw)]
+    ir0_sat:         bool,
 }
 
 impl GteCtrlRegs {
@@ -470,6 +482,49 @@ impl Gte {
     fn clear_flag(&mut self) {
         self.ctrl.flag = Flag::default();
     }
+
+    fn cast_macv(&mut self, macv: i64x3) -> i32x3 {
+        let ovf_pos = macv.simd_gt(i64x3::splat(1 << 43));
+        let ovf_neg = macv.simd_lt(i64x3::splat(-1 << 43));
+        let old_ovf_pos = self.ctrl.flag.macv_ovf_pos();
+        let old_ovf_neg = self.ctrl.flag.macv_ovf_neg();
+        self.ctrl
+            .flag
+            .set_macv_ovf_pos(old_ovf_pos | ovf_pos.to_bitmask().as_());
+        self.ctrl
+            .flag
+            .set_macv_ovf_neg(old_ovf_neg | ovf_neg.to_bitmask().as_());
+        macv.cast()
+    }
+
+    fn cast_mac0(&mut self, mac0: i64) -> i32 {
+        let ovf_pos = mac0 > i64::from(i32::MAX);
+        let ovf_neg = mac0 < i64::from(i32::MIN);
+        let old_ovf_pos = self.ctrl.flag.mac0_ovf_pos();
+        let old_ovf_neg = self.ctrl.flag.mac0_ovf_neg();
+        self.ctrl.flag.set_mac0_ovf_pos(old_ovf_pos | ovf_pos);
+        self.ctrl.flag.set_mac0_ovf_neg(old_ovf_neg | ovf_neg);
+        mac0 as i32
+    }
+
+    fn sat_ir0(&mut self, ir0: i64) -> i32 {
+        let new_ir0 = ir0.clamp(0, 0x1000);
+        let flag = new_ir0 != ir0;
+        let old_flag = self.ctrl.flag.ir0_sat();
+        self.ctrl.flag.set_ir0_sat(flag | old_flag);
+        new_ir0 as i32
+    }
+
+    fn sat_irv(&mut self, irv: i64x3, cmd: GteCommandField) -> i16x3 {
+        let new_irv = match cmd.lm() {
+            SaturateMode::Signed => irv.clamp(Simd::splat(-0x8000), Simd::splat(0x7fff)),
+            SaturateMode::Unsigned => irv.clamp(Simd::splat(-0x0), Simd::splat(0x7fff)),
+        };
+        let sat_flags = new_irv.simd_ne(irv).to_bitmask();
+        let old_sat_flags = self.ctrl.flag.irv_sat();
+        self.ctrl.flag.set_irv_sat(old_sat_flags | sat_flags.as_());
+        new_irv.cast()
+    }
 }
 
 impl GteCommandField {
@@ -521,8 +576,8 @@ impl<A: Allocator> Emu<A> {
             mac >> (i64::from(cmd.sf()) * 12)
         };
 
-        gte.data.macv = mac.cast();
-        gte.data.irv = cmd.saturate_vec(mac).cast();
+        gte.data.macv = gte.cast_macv(mac);
+        gte.data.irv = gte.sat_irv(mac, cmd).cast();
 
         let sz3 = mac[2] >> (u8::from(!cmd.sf()) * 12);
         let sz3 = sz3.clamp(0, 0xffff).as_u32();
@@ -559,10 +614,9 @@ impl<A: Allocator> Emu<A> {
         gte.advance_sxy_fifo();
         gte.data.sxy_fifo[2] = sxy2.cast();
 
-        gte.data.mac0 = mac0v[2].as_i32();
-        let ir0 = gte.data.mac0 >> 12;
-        let ir0 = ir0.clamp(0, 0x1000);
-        gte.data.ir0 = ir0;
+        let mac0 = mac0v[2];
+        gte.data.mac0 = gte.cast_mac0(mac0);
+        gte.data.ir0 = gte.sat_ir0(mac0 >> 12);
     }
 
     fn gte_rtps(&mut self, cmd: GteCommandField) {
@@ -606,13 +660,13 @@ impl<A: Allocator> Emu<A> {
         let shift = i64::from(cmd.sf()) * 12;
         let macv = matmul3x3v(gte.ctrl.ls_mat, v) >> shift;
         // TODO: flags
-        gte.data.macv = macv.cast();
-        gte.data.irv = cmd.saturate_vec(macv).cast();
+        gte.data.macv = gte.cast_macv(macv.cast());
+        gte.data.irv = gte.sat_irv(macv, cmd).cast();
 
         let lcmxir = matmul3x3v(gte.ctrl.lc_mat, gte.data.irv.cast::<i16>());
         let macv = (gte.ctrl.bg_col.cast::<i64>() * i64x3::splat(0x1000) + lcmxir) >> shift;
-        gte.data.macv = macv.cast();
-        gte.data.irv = cmd.saturate_vec(macv).cast();
+        gte.data.macv = gte.cast_macv(macv);
+        gte.data.irv = gte.sat_irv(macv, cmd).cast();
 
         let cmd_kind: GteCmd = const {
             match GteCmd::new_with_raw_value(u6::new(C)) {
@@ -631,9 +685,10 @@ impl<A: Allocator> Emu<A> {
         }
 
         if matches!(cmd_kind, GteCmd::Ncds | GteCmd::Ncdt) {
-            let macv =
-                gte.data.macv + (gte.ctrl.far_col - gte.data.macv) * i32x3::splat(gte.data.ir0);
-            gte.data.macv = macv;
+            let macv = gte.data.macv.cast::<i64>();
+            let macv = macv
+                + (gte.ctrl.far_col.cast::<i64>() - macv) * i64x3::splat(i64::from(gte.data.ir0));
+            gte.data.macv = gte.cast_macv(macv);
         }
 
         if matches!(
@@ -692,8 +747,8 @@ impl<A: Allocator> Emu<A> {
         let sz = gte.data.sz_fifo;
         let mac0 = gte.ctrl.zsf3.as_i64() * (sz[1] + sz[2] + sz[3]).as_i64();
         // TODO: flags
-        gte.data.mac0 = mac0.as_i32();
-        gte.data.otz = (gte.data.mac0 / 0x1000).clamp(0, 0xffff).as_u16();
+        gte.data.mac0 = gte.cast_mac0(mac0);
+        gte.data.otz = (mac0 / 0x1000).clamp(0, 0xffff).as_u16();
     }
     /// ```plain
     /// MAC0 =  ZSF4*(SZ0+SZ1+SZ2+SZ3)   ;for AVSZ4
@@ -705,8 +760,8 @@ impl<A: Allocator> Emu<A> {
         let sz = gte.data.sz_fifo;
         let mac0 = gte.ctrl.zsf4.as_i64() * (sz[0] + sz[1] + sz[2] + sz[3]).as_i64();
         // TODO: flags
-        gte.data.mac0 = mac0.as_i32();
-        gte.data.otz = (gte.data.mac0 / 0x1000).clamp(0, 0xffff).as_u16();
+        gte.data.mac0 = gte.cast_mac0(mac0);
+        gte.data.otz = (mac0 / 0x1000).clamp(0, 0xffff).as_u16();
     }
 
     /// Multiply vector by matrix and vector addition.
@@ -745,10 +800,10 @@ impl<A: Allocator> Emu<A> {
             MVMVATranslationVec::None => i32x3::splat(0),
         };
 
-        let res = (tx.cast::<i64>() * i64x3::splat(0x1000) + matmul3x3v(mx, vx)) >> shift;
+        let macv = (tx.cast::<i64>() * i64x3::splat(0x1000) + matmul3x3v(mx, vx)) >> shift;
         // TODO: flags
-        gte.data.macv = res.cast();
-        gte.data.irv = cmd.saturate_vec(res).cast();
+        gte.data.macv = gte.cast_macv(macv);
+        gte.data.irv = gte.sat_irv(macv, cmd).cast();
     }
 
     fn gte_write_sxyp(&mut self) {
