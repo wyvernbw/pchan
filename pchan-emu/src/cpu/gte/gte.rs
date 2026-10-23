@@ -6,6 +6,7 @@ use core::simd::prelude::*;
 use core::{ptr, slice};
 use glam::prelude::*;
 use pchan_encode::derive::Endecode;
+use std::simd::SimdElement;
 
 use crate::Emu;
 use crate::bindings::ExternFnTable;
@@ -79,6 +80,7 @@ const _: () = const {
     assert!(offset_of!(GteDataRegs, macv) == 25 * 4);
     assert!(offset_of!(GteDataRegs, irgb_orgb) == 28 * 4);
     assert!(offset_of!(GteDataRegs, lzcs_lzcr) == 30 * 4);
+    assert!(size_of::<GteDataRegs>() == 32 * 4);
 };
 
 impl GteDataRegs {
@@ -175,6 +177,7 @@ const _: () = const {
     assert!(offset_of!(GteCtrlRegs, zsf3) == 29 * 4);
     assert!(offset_of!(GteCtrlRegs, zsf4) == 30 * 4);
     assert!(offset_of!(GteCtrlRegs, flag) == 31 * 4);
+    assert!(size_of::<GteCtrlRegs>() == 32 * 4);
 };
 
 /// # cop2r63 (cnt31) - FLAG - Returns any calculation errors.
@@ -506,13 +509,12 @@ impl<A: Allocator> Emu<A> {
         let gte = &mut self.cpu.gte;
         gte.clear_flag();
 
-        let rt = gte.ctrl.rt_mat;
-        let tr = gte.ctrl.tr_vec;
-        let mac = tr.cast::<i64>() * i64x3::splat(0x1000)
-            + rt[0].cast::<i64>() * i64x3::splat(i64::from(v[0]))
-            + rt[1].cast::<i64>() * i64x3::splat(i64::from(v[1]))
-            + rt[2].cast::<i64>() * i64x3::splat(i64::from(v[2]));
-        let mac = mac >> (i64::from(cmd.sf()) * 12);
+        let mac = {
+            let rt = gte.ctrl.rt_mat;
+            let tr = gte.ctrl.tr_vec;
+            let mac = tr.cast::<i64>() * i64x3::splat(0x1000) + matmul3x3v(rt, v);
+            mac >> (i64::from(cmd.sf()) * 12)
+        };
 
         gte.data.macv = mac.cast();
         gte.data.irv = cmd.saturate_vec(mac).cast();
@@ -745,23 +747,26 @@ impl<A: Allocator> Emu<A> {
     }
 }
 
-/// holy shit
+/// mat is row major, v is a column vector, returns a column vector
 fn matmul3x3v<S>(mat: [S; 3], v: S) -> i64x3
 where
     S: SimdInt<Cast<i64> = Simd<i64, 3>>,
 {
-    let mat = mat.map(|col| col.cast::<i64>());
+    let mat = mat.map(|row| row.cast::<i64>());
     let v = v.cast::<i64>();
-    let rowm = [
+    Simd::from_array([
+        (mat[0] * v).reduce_sum(),
+        (mat[1] * v).reduce_sum(),
+        (mat[2] * v).reduce_sum(),
+    ])
+}
+
+fn transpose3x3<T: SimdElement>(mat: [Simd<T, 3>; 3]) -> [Simd<T, 3>; 3] {
+    [
         Simd::from_array([mat[0][0], mat[1][0], mat[2][0]]),
         Simd::from_array([mat[0][1], mat[1][1], mat[2][1]]),
         Simd::from_array([mat[0][2], mat[1][2], mat[2][2]]),
-    ];
-    Simd::from_array([
-        (rowm[0] * v).reduce_sum(),
-        (rowm[1] * v).reduce_sum(),
-        (rowm[2] * v).reduce_sum(),
-    ])
+    ]
 }
 
 impl<A: Allocator + Copy> Emu<A> {

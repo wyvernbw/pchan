@@ -53,9 +53,10 @@ Progress:
     - [ ] lines
   - [ ] software renderer (not started)
 - [ ] gte
-  - [ ] gte commands implementation: 45% done
+  - [ ] gte commands implementation: 55% done
   - [ ] gte correctness
   - [ ] load delays
+  - [ ] fifo mirror registers and move-on-write 
 - [ ] cdrom
   - [x] basic registers
   - [x] fifo
