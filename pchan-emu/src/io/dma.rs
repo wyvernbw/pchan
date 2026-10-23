@@ -29,7 +29,7 @@ pub struct DmaState<A: Allocator> {
 
     // events: Slab<DmaEvent>,
     pending_transfers: VecDeque<DmaEvent, A>,
-    ongoing_transfer:  Option<DmaEvent>,
+    ongoing_transfers: VecDeque<DmaEvent, A>,
 
     #[debug(skip)]
     #[endecode(skip)]
@@ -55,7 +55,7 @@ impl<A: Allocator + Copy> DmaState<A> {
             // events:           Slab::with_capacity(1024),
             debug_cdrom_data: Vec::new_in(alloc),
             pending_transfers: VecDeque::with_capacity_in(6, alloc),
-            ongoing_transfer: None,
+            ongoing_transfers: VecDeque::with_capacity_in(6, alloc),
             staging_buf: Vec::with_capacity_in(mb(1) / 4, alloc),
             alloc,
         }
@@ -236,35 +236,30 @@ impl<A: Allocator + Copy> Emu<A> {
     }
 
     async fn dma_start_transfer(&mut self, event: DmaEvent) {
-        loop {
-            match self.dma.ongoing_transfer {
-                Some(old) => {
-                    tracing::debug!("dma stall: already transfering");
-                    let _clock = old.cycles(self).await;
-                    self.handle_dma_event(old).await;
-                    // self.cpu.d_clock = clock as u32;
-                    // self.run_io();
-                    self.dma.ongoing_transfer = None;
-                }
-                None => {
-                    self.dma_schedule_transfer(event);
-                    break;
-                }
-            };
+        let n = self.dma.ongoing_transfers.len();
+        for _ in 0..n {
+            if let Some(old) = self.dma.ongoing_transfers.pop_front() {
+                tracing::debug!("dma stall: already transfering");
+                let _clock = old.cycles(self).await;
+                self.handle_dma_event(old).await;
+            }
         }
+        self.dma_schedule_transfer(event);
     }
 
     fn dma_schedule_transfer(&mut self, event: DmaEvent) {
-        debug_assert!(self.dma.ongoing_transfer.is_none());
         tracing::trace!("dma: schedule dma event: {:#?}", event);
-        self.dma.ongoing_transfer = Some(event);
+        self.dma.ongoing_transfers.push_back(event);
         self.evque
             .schedule(EventKind::DmaTransfer, EventId::default(), event.in_cycles);
     }
 
     pub(crate) async fn handle_ev_dma_transfer(&mut self, _: EvCtx) {
-        if let Some(transfer) = self.dma.ongoing_transfer.take() {
-            self.handle_dma_event(transfer).await;
+        let n = self.dma.ongoing_transfers.len();
+        for _ in 0..n {
+            if let Some(transfer) = self.dma.ongoing_transfers.pop_front() {
+                self.handle_dma_event(transfer).await;
+            }
         }
     }
 
