@@ -517,8 +517,8 @@ impl Gte {
 
     fn sat_irv(&mut self, irv: i64x3, cmd: GteCommandField) -> i16x3 {
         let new_irv = match cmd.lm() {
-            SaturateMode::Signed => irv.clamp(Simd::splat(-0x8000), Simd::splat(0x7fff)),
-            SaturateMode::Unsigned => irv.clamp(Simd::splat(-0x0), Simd::splat(0x7fff)),
+            SaturateMode::Signed => irv.simd_clamp(Simd::splat(-0x8000), Simd::splat(0x7fff)),
+            SaturateMode::Unsigned => irv.simd_clamp(Simd::splat(-0x0), Simd::splat(0x7fff)),
         };
         let sat_flags = new_irv.simd_ne(irv).to_bitmask();
         let old_sat_flags = self.ctrl.flag.irv_sat();
@@ -545,11 +545,11 @@ impl GteCommandField {
         match self.lm() {
             SaturateMode::Signed => value
                 .cast::<i64>()
-                .clamp(Simd::splat(-0x8000), Simd::splat(0x7fff))
+                .simd_clamp(Simd::splat(-0x8000), Simd::splat(0x7fff))
                 .cast(),
             SaturateMode::Unsigned => value
                 .cast::<i64>()
-                .clamp(Simd::splat(-0x0), Simd::splat(0x7fff))
+                .simd_clamp(Simd::splat(-0x0), Simd::splat(0x7fff))
                 .cast(),
         }
     }
@@ -610,7 +610,7 @@ impl<A: Allocator> Emu<A> {
             ]);
 
         let sxy2 = mac0v.resize::<2>(0) >> 16;
-        let sxy2 = sxy2.clamp(i64x2::splat(-0x400), i64x2::splat(0x3ff));
+        let sxy2 = sxy2.simd_clamp(i64x2::splat(-0x400), i64x2::splat(0x3ff));
         gte.advance_sxy_fifo();
         gte.data.sxy_fifo[2] = sxy2.cast();
 
@@ -699,7 +699,7 @@ impl<A: Allocator> Emu<A> {
         }
 
         let color = (gte.data.macv >> 4)
-            .clamp(i32x3::splat(0), i32x3::splat(255))
+            .simd_clamp(i32x3::splat(0), i32x3::splat(255))
             .cast::<u8>()
             .resize::<4>(gte.data.rgbc[3]);
         gte.advance_crgb_fifo();
