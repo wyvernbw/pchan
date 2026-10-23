@@ -413,7 +413,7 @@ impl<A: Allocator + Copy> GteBindings<A> {
             ncds:  Emu::gte_ncds,
             ncdt:  Emu::gte_ncdt,
             avsz3: Emu::gte_avsz3,
-            avsz4: Emu::gte_avsz3,
+            avsz4: Emu::gte_avsz4,
             mvmva: Emu::gte_mvmva,
         }
     }
@@ -452,10 +452,15 @@ impl Gte {
 
     fn advance_sxy_fifo(&mut self) {
         self.data.sxy_fifo.rotate_left(1);
+        self.data.sxy_fifo[3] = self.data.sxy_fifo[2];
     }
 
     fn advance_crgb_fifo(&mut self) {
         self.data.crgb_fifo.rotate_left(1);
+    }
+
+    fn clear_flag(&mut self) {
+        self.ctrl.flag = Flag::default();
     }
 }
 
@@ -499,6 +504,8 @@ impl<A: Allocator> Emu<A> {
     /// ```
     fn rtps(&mut self, cmd: GteCommandField, v: i16x3) {
         let gte = &mut self.cpu.gte;
+        gte.clear_flag();
+
         let rt = gte.ctrl.rt_mat;
         let tr = gte.ctrl.tr_vec;
         let mac = tr.cast::<i64>() * i64x3::splat(0x1000)
@@ -567,6 +574,8 @@ impl<A: Allocator> Emu<A> {
     /// ```
     fn gte_nclip(&mut self, _: GteCommandField) {
         let gte = &mut self.cpu.gte;
+        gte.clear_flag();
+
         let sxy = gte.data.sxy_fifo.map(|sxy| sxy.cast::<i64>());
         let v0 = sxy[0];
         let v1 = sxy[1];
@@ -586,6 +595,7 @@ impl<A: Allocator> Emu<A> {
     /// ````
     fn ncxx<const C: u8>(&mut self, cmd: GteCommandField, v: i16x3) {
         let gte = &mut self.cpu.gte;
+        gte.clear_flag();
         let shift = i64::from(cmd.sf()) * 12;
         let macv = matmul3x3v(gte.ctrl.ls_mat, v) >> shift;
         // TODO: flags
@@ -604,9 +614,14 @@ impl<A: Allocator> Emu<A> {
             }
         };
 
-        let rgb = gte.data.rgbc.resize::<3>(0);
-        let macv = (rgb.cast::<i32>() * gte.data.irv) << 4;
-        gte.data.macv = macv;
+        if matches!(
+            cmd_kind,
+            GteCmd::Ncds | GteCmd::Ncdt | GteCmd::Nccs | GteCmd::Ncct
+        ) {
+            let rgb = gte.data.rgbc.resize::<3>(0);
+            let macv = (rgb.cast::<i32>() * gte.data.irv) << 4;
+            gte.data.macv = macv;
+        }
 
         if matches!(cmd_kind, GteCmd::Ncds | GteCmd::Ncdt) {
             let macv =
@@ -614,9 +629,15 @@ impl<A: Allocator> Emu<A> {
             gte.data.macv = macv;
         }
 
-        gte.data.macv >>= i32x3::splat(shift as i32);
+        if matches!(
+            cmd_kind,
+            GteCmd::Ncds | GteCmd::Ncdt | GteCmd::Nccs | GteCmd::Ncct
+        ) {
+            gte.data.macv >>= i32x3::splat(shift as i32);
+        }
 
         let color = (gte.data.macv >> 4)
+            .clamp(i32x3::splat(0), i32x3::splat(255))
             .cast::<u8>()
             .resize::<4>(gte.data.rgbc[3]);
         gte.advance_crgb_fifo();
@@ -660,8 +681,11 @@ impl<A: Allocator> Emu<A> {
     /// ```
     fn gte_avsz3(&mut self, _: GteCommandField) {
         let gte = &mut self.cpu.gte;
+        gte.clear_flag();
         let sz = gte.data.sz_fifo;
-        gte.data.mac0 = gte.ctrl.zsf3.as_i32() * (sz[1] + sz[2] + sz[3]).as_i32();
+        let mac0 = gte.ctrl.zsf3.as_i64() * (sz[1] + sz[2] + sz[3]).as_i64();
+        // TODO: flags
+        gte.data.mac0 = mac0.as_i32();
         gte.data.otz = (gte.data.mac0 / 0x1000).clamp(0, 0xffff).as_u16();
     }
     /// ```plain
@@ -670,8 +694,11 @@ impl<A: Allocator> Emu<A> {
     /// ```
     fn gte_avsz4(&mut self, _: GteCommandField) {
         let gte = &mut self.cpu.gte;
+        gte.clear_flag();
         let sz = gte.data.sz_fifo;
-        gte.data.mac0 = gte.ctrl.zsf4.as_i32() * (sz[0] + sz[1] + sz[2] + sz[3]).as_i32();
+        let mac0 = gte.ctrl.zsf4.as_i64() * (sz[0] + sz[1] + sz[2] + sz[3]).as_i64();
+        // TODO: flags
+        gte.data.mac0 = mac0.as_i32();
         gte.data.otz = (gte.data.mac0 / 0x1000).clamp(0, 0xffff).as_u16();
     }
 
@@ -690,6 +717,7 @@ impl<A: Allocator> Emu<A> {
     /// ```
     fn gte_mvmva(&mut self, cmd: GteCommandField) {
         let gte = &mut self.cpu.gte;
+        gte.clear_flag();
         let shift = i64::from(cmd.sf()) * 12;
         let mx = match cmd.mvmva_mul_mat() {
             MVMVAMultiplyMat::Rotation => gte.ctrl.rt_mat,

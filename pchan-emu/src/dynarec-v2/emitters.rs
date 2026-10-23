@@ -2745,7 +2745,7 @@ impl DynarecOp for Mtcn {
                     );
                 });
             }
-            _ => {
+            (0 | 2, _) => {
                 let rt = ctx.dynarec.emit_load_reg_stackless(self.rt);
 
                 #[cfg(target_arch = "aarch64")]
@@ -2755,6 +2755,7 @@ impl DynarecOp for Mtcn {
                     ; str W(*rt), [x0, Cpu::cop_reg_offset(self.cop, self.rd) as _]
                 );
             }
+            _ => {}
         }
 
         EmitSummary::default()
@@ -2771,6 +2772,10 @@ impl DynarecOp for Ctcn {
     }
     #[allow(clippy::useless_conversion)]
     fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+        if self.cop != 0 && self.cop != 2 {
+            return default();
+        }
+
         let rt = ctx.dynarec.emit_load_reg_stackless(self.rt);
 
         #[cfg(target_arch = "aarch64")]
@@ -3612,6 +3617,10 @@ fn test_0x8004f454_move_in_jump_delay() -> color_eyre::Result<()> {
 impl DynarecOp for Lwcn {
     #[allow(clippy::useless_conversion)]
     fn emit<A: Allocator + Copy>(&self, mut ctx: EmitCtx<A>) -> EmitSummary {
+        if self.cop != 2 && self.cop != 0 {
+            return default();
+        }
+
         let s1 = ctx.alloc_scratch();
         ctx.dynarec.emit_load_temp_reg(self.rs, Reg::W(1));
         dynasm!(
@@ -3684,6 +3693,9 @@ fn test_lwcn(#[case] cop: u8, #[case] rt: u8, #[case] rs: u8) -> color_eyre::Res
 impl DynarecOp for Swcn {
     #[allow(clippy::useless_conversion)]
     fn emit<A: Allocator + Copy>(&self, mut ctx: EmitCtx<A>) -> EmitSummary {
+        if self.cop != 2 && self.cop != 0 {
+            return default();
+        }
         let s1 = ctx.alloc_scratch();
         let Self { cop, rt, rs, imm16 } = *self;
         ctx.dynarec.emit_load_temp_reg(rs, Reg::W(1));
