@@ -202,7 +202,12 @@ fn wrap2(x: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
     return a + (x - a) % r;
 }
 
-fn get_color(in: VertexOutput) -> u32 {
+struct Color {
+    packed: u32,
+    transparent: bool
+}
+
+fn get_color(in: VertexOutput) -> Color {
     var in_color = in.color;
     var set_mask = get_set_mask(in.flags);
     let textured = get_textured(in.flags);
@@ -243,7 +248,7 @@ fn get_color(in: VertexOutput) -> u32 {
         tex_color = rgb5_split_color(tex_color_packed);
 
         if all(tex_color.rgb == vec3(0.0)) {
-            return 0;
+            return Color(0, true);
         }
 
         // TODO: modulation and other effects
@@ -265,11 +270,11 @@ fn get_color(in: VertexOutput) -> u32 {
     }
 
     if any(in_color.rgb > vec3(1.0)) || any(in_color.rgb < vec3(0.0)) {
-        return pack_color(vec4(1.0, 0.0, 0.0, 1.0));
+        return Color(pack_color(vec4(1.0, 0.0, 0.0, 1.0)), false);
     }
 
     let color_packed = pack_color(in_color);
-    return color_packed;
+    return Color(color_packed, false);
 }
 
 const DITHER: array<array<i32, 4>, 4> = array(
@@ -297,13 +302,13 @@ fn fs_main(in: VertexOutput) -> @location(0) u32 {
     }
 
     var color = get_color(in);
-    if color == 0 {
+    if color.transparent {
         discard;
     }
 
     if pbw {
-        color = rgb5_set_stp(color);
+        color.packed = rgb5_set_stp(color.packed);
     }
 
-    return color;
+    return color.packed;
 }
