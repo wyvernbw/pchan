@@ -167,7 +167,6 @@ impl DigitalSwitches {
     }
     pub fn set_state(&mut self, code: PchanButton, state: ButtonState) {
         match code {
-            // TODO: all buttons
             PchanButton::DpadDown => self.set_dpad_down(state),
             PchanButton::DpadUp => self.set_dpad_up(state),
             PchanButton::DpadLeft => self.set_dpad_left(state),
@@ -176,7 +175,14 @@ impl DigitalSwitches {
             PchanButton::X => self.set_x(state),
             PchanButton::Circle => self.set_circle(state),
             PchanButton::Square => self.set_square(state),
-            _ => {}
+            PchanButton::Select => self.set_select(state),
+            PchanButton::L3 => self.set_l3(state),
+            PchanButton::R3 => self.set_r3(state),
+            PchanButton::Start => self.set_start(state),
+            PchanButton::L2 => self.set_l2(state),
+            PchanButton::R2 => self.set_r2(state),
+            PchanButton::L1 => self.set_l1(state),
+            PchanButton::R1 => self.set_r1(state),
         }
     }
 }
