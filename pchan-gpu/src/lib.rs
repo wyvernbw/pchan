@@ -19,6 +19,7 @@ pub(crate) mod render_pass;
 use alloc::sync::Arc;
 use core::alloc::Allocator;
 use core::num::NonZeroU64;
+use core::ops::Range;
 use core::{mem, ptr};
 use std::mem::offset_of;
 use std::sync::Mutex;
@@ -579,7 +580,7 @@ impl Renderer {
                     pass.add_draw_call(draw_call);
                 }
                 DrawCallMsg::Flush(flush_msg) => {
-                    pass.flush_scene();
+                    pass.flush_geometry();
                     return SubmissionResult::Flush(flush_msg);
                 }
                 DrawCallMsg::UpdateDisplay(display, gpustat) => {
@@ -669,7 +670,7 @@ enum SubmissionResult<A: Allocator> {
 
 #[derive(derive_more::Debug)]
 enum Command<A: Allocator> {
-    DrawScene(Scene<A>),
+    DrawGeometry(GeometryDraw<A>),
     VramToVramBlit {
         blit: Gp0VramBlit,
         gpustat: GpuStatReg,
@@ -681,20 +682,52 @@ enum Command<A: Allocator> {
     },
 }
 
+struct GeometryDraw<A: Allocator> {
+    batches: Vec<BatchedGeometryDraw, A>,
+    scene: Scene<A>,
+    dp: HWDisplayUniforms,
+}
+
+#[derive(derive_more::Debug)]
+struct BatchedGeometryDraw {
+    kind: BatchedGeometryDrawKind,
+    span: Range<u32>,
+}
+
+#[derive(derive_more::Debug)]
+enum BatchedGeometryDrawKind {
+    OpaqueOnly,
+    TransparentAndOpaque,
+}
+
 #[derive(derive_more::Debug)]
 pub(crate) struct Pass<A: Allocator> {
     cmds: Vec<Command<A>, A>,
-    scene_builder: Option<Scene<A>>,
-    vertex_buf_cursor: u64,
+    geometry_builder: Option<GeometryBuilder<A>>,
+    vertex_buf_cursor: u32,
     #[debug(skip)]
     alloc: A,
 }
 
+#[derive(derive_more::Debug)]
+struct GeometryBuilder<A: Allocator> {
+    builder: BatchedGeometryDraw,
+    batches: Vec<BatchedGeometryDraw, A>,
+    scene: Scene<A>,
+    aabbs: Vec<Aabb, A>,
+    dp: HWDisplayUniforms,
+}
+
 impl<A: Allocator + Copy> Scene<A> {
-    fn from_draw_call(at: u64, draw_call: DrawCall, alloc: A) -> Option<Self> {
+    fn empty(at: u32, alloc: A) -> Self {
+        Self {
+            vertex_buf: Vec::with_capacity_in(512, alloc),
+            vertex_buf_start: at,
+        }
+    }
+    fn from_draw_call(at: u32, draw_call: DrawCall, alloc: A) -> Option<Self> {
         let mut scene = Scene {
             vertex_buf: Vec::new_in(alloc),
-            hw_display: HWDisplayUniforms::from_hw(&draw_call.display, draw_call.gpustat),
             vertex_buf_start: at,
         };
         match draw_call.inner {
@@ -727,12 +760,171 @@ impl<A: Allocator + Copy> Scene<A> {
     }
 }
 
+impl From<&DrawCall> for BatchedGeometryDrawKind {
+    fn from(value: &DrawCall) -> Self {
+        match value.inner.is_transparent() {
+            true => BatchedGeometryDrawKind::TransparentAndOpaque,
+            false => BatchedGeometryDrawKind::OpaqueOnly,
+        }
+    }
+}
+
+impl BatchedGeometryDraw {
+    fn new(start: u32, kind: BatchedGeometryDrawKind) -> Self {
+        BatchedGeometryDraw {
+            kind,
+            span: start..start,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Aabb {
+    min: I16Vec2,
+    max: I16Vec2,
+}
+
+impl Aabb {
+    fn void() -> Self {
+        Self {
+            min: I16Vec2::MAX,
+            max: I16Vec2::MIN,
+        }
+    }
+    fn new(origin: I16Vec2, size: I16Vec2) -> Self {
+        debug_assert!(size.cmpge(I16Vec2::ZERO).all(), "negative size");
+        let max = origin + size;
+        Self { min: origin, max }
+    }
+    fn grow_to_include(self, pos: I16Vec2) -> Self {
+        let min = self.min.min(pos);
+        let max = self.max.max(pos);
+        Self { min, max }
+    }
+    fn intersects(self, o: Aabb) -> bool {
+        self.min.cmple(o.max).all() && o.min.cmple(self.max).all()
+    }
+    fn bounding_box_of(draw_call: &DrawCall) -> Option<Self> {
+        match &draw_call.inner {
+            DrawCallKind::Rect(draw_rect) => match draw_rect.header.size() {
+                RectSize::VarSize => Some(Aabb::new(
+                    draw_rect.vertex1.as_i16vec2(),
+                    draw_rect.var_size.map_or(I16Vec2::ZERO, |c| c.as_i16vec2()),
+                )),
+                RectSize::SinglePixel => {
+                    Some(Aabb::new(draw_rect.vertex1.as_i16vec2(), i16vec2(1, 1)))
+                }
+                RectSize::Sprite8x8 => {
+                    Some(Aabb::new(draw_rect.vertex1.as_i16vec2(), i16vec2(8, 8)))
+                }
+                RectSize::Sprite16x16 => {
+                    Some(Aabb::new(draw_rect.vertex1.as_i16vec2(), i16vec2(16, 16)))
+                }
+            },
+            DrawCallKind::Polygon(draw_polygon) => Some(
+                draw_polygon
+                    .attrs
+                    .iter()
+                    .fold(Aabb::void(), |aabb, attr| aabb.grow_to_include(attr.vertex)),
+            ),
+            DrawCallKind::Line(draw_line) => {
+                let aabb = draw_line
+                    .attrs
+                    .iter()
+                    .fold(Aabb::void(), |aabb, attr| aabb.grow_to_include(attr.vertex));
+                Some(aabb)
+            }
+            _ => None,
+        }
+    }
+}
+
+impl<A: Allocator + Copy> GeometryBuilder<A> {
+    fn new(start: u32, dp: HWDisplayUniforms, alloc: A) -> Self {
+        Self {
+            builder: BatchedGeometryDraw::new(start, BatchedGeometryDrawKind::OpaqueOnly),
+            batches: Vec::with_capacity_in(16, alloc),
+            scene: Scene::empty(start, alloc),
+            aabbs: Vec::with_capacity_in(512, alloc),
+            dp,
+        }
+    }
+    fn add_draw_call(&mut self, draw_call: DrawCall) {
+        match self.builder.kind {
+            BatchedGeometryDrawKind::OpaqueOnly => {
+                if draw_call.inner.is_transparent() {
+                    self.begin_transparent();
+                    return self.add_draw_call(draw_call);
+                }
+            }
+            BatchedGeometryDrawKind::TransparentAndOpaque => {
+                // check for overlapping geometry in transparent pass
+                if let Some(aabb) = Aabb::bounding_box_of(&draw_call)
+                    && self.aabbs.iter().any(|other| aabb.intersects(*other))
+                {
+                    self.begin_transparent();
+                    return self.add_draw_call(draw_call);
+                }
+            }
+        };
+        match draw_call.inner {
+            DrawCallKind::Rect(draw_rect) => {
+                let len = self
+                    .scene
+                    .add_draw_rect_draw_call(
+                        &draw_rect,
+                        draw_call.gpustat,
+                        &draw_call.draw_reg,
+                        draw_call.tex_window,
+                    )
+                    .unwrap();
+                let end = len as u32 + self.scene.vertex_buf_start;
+                self.builder.span.end = end;
+            }
+            DrawCallKind::Polygon(draw_polygon) => {
+                let len = self.scene.add_draw_polygon_draw_call(
+                    &draw_polygon,
+                    draw_call.gpustat,
+                    &draw_call.draw_reg,
+                    draw_call.tex_window,
+                );
+                let end = len as u32 + self.scene.vertex_buf_start;
+                self.builder.span.end = end;
+            }
+            DrawCallKind::Line(_) => {
+                tracing::warn!("todo: DrawCallKind::Line");
+            }
+            _ => {}
+        }
+    }
+
+    fn begin_transparent(&mut self) {
+        self.flush_batch();
+        self.builder.kind = BatchedGeometryDrawKind::TransparentAndOpaque;
+    }
+
+    fn flush_batch(&mut self) {
+        if self.builder.span.is_empty() {
+            self.builder.kind = BatchedGeometryDrawKind::OpaqueOnly;
+            self.aabbs.clear();
+            return;
+        }
+        let end = self.builder.span.end;
+        let draw = mem::replace(
+            &mut self.builder,
+            BatchedGeometryDraw::new(end, BatchedGeometryDrawKind::OpaqueOnly),
+        );
+        self.batches.push(draw);
+        self.aabbs.clear();
+    }
+}
+
 impl<A: Allocator + Copy> Pass<A> {
     pub fn empty(alloc: A) -> Self {
         let cmds = Vec::new_in(alloc);
         Pass {
             cmds,
-            scene_builder: None,
+            geometry_builder: None,
             alloc,
             vertex_buf_cursor: 0,
         }
@@ -742,7 +934,7 @@ impl<A: Allocator + Copy> Pass<A> {
         let cmds = Vec::new_in(alloc);
         Pass {
             cmds,
-            scene_builder: None,
+            geometry_builder: None,
             alloc,
             vertex_buf_cursor: 0,
         }
@@ -754,38 +946,20 @@ impl<A: Allocator + Copy> Pass<A> {
     }
 
     pub fn add_draw_call(&mut self, draw_call: DrawCall) {
-        match &mut self.scene_builder {
-            Some(scene) => match draw_call.inner {
-                DrawCallKind::Rect(draw_rect) => {
-                    scene
-                        .add_draw_rect_draw_call(
-                            &draw_rect,
-                            draw_call.gpustat,
-                            &draw_call.draw_reg,
-                            draw_call.tex_window,
-                        )
-                        .unwrap();
-                }
-                DrawCallKind::Polygon(draw_polygon) => {
-                    scene.add_draw_polygon_draw_call(
-                        &draw_polygon,
-                        draw_call.gpustat,
-                        &draw_call.draw_reg,
-                        draw_call.tex_window,
-                    );
-                }
-                DrawCallKind::Line(_) => {
-                    tracing::warn!("todo: DrawCallKind::Line");
+        match &mut self.geometry_builder {
+            Some(builder) => match draw_call.inner {
+                DrawCallKind::Rect(_) | DrawCallKind::Polygon(_) | DrawCallKind::Line(_) => {
+                    builder.add_draw_call(draw_call);
                 }
                 DrawCallKind::BlitVram2Vram(gp0_vram_blit) => {
-                    self.flush_scene();
+                    self.flush_geometry();
                     self.cmds.push(Command::VramToVramBlit {
                         blit: gp0_vram_blit,
                         gpustat: draw_call.gpustat,
                     });
                 }
                 DrawCallKind::BlitCpu2Vram(gp0_host_blit, data) => {
-                    self.flush_scene();
+                    self.flush_geometry();
                     self.cmds.push(Command::CpuToVramBlit {
                         blit: gp0_host_blit,
                         gpustat: draw_call.gpustat,
@@ -797,8 +971,11 @@ impl<A: Allocator + Copy> Pass<A> {
             },
             None => match draw_call.inner {
                 DrawCallKind::Rect(_) | DrawCallKind::Polygon(_) | DrawCallKind::Line(_) => {
-                    self.scene_builder =
-                        Scene::from_draw_call(self.vertex_buf_cursor, draw_call, self.alloc);
+                    let dp = HWDisplayUniforms::from_hw(&draw_call.display, draw_call.gpustat);
+                    let mut geometry_builder =
+                        GeometryBuilder::new(self.vertex_buf_cursor, dp, self.alloc);
+                    geometry_builder.add_draw_call(draw_call);
+                    self.geometry_builder = Some(geometry_builder);
                 }
                 DrawCallKind::BlitVram2Vram(blit) => {
                     self.cmds.push(Command::VramToVramBlit {
@@ -819,10 +996,15 @@ impl<A: Allocator + Copy> Pass<A> {
         };
     }
 
-    fn flush_scene(&mut self) {
-        if let Some(scene) = self.scene_builder.take() {
-            self.vertex_buf_cursor += scene.vertex_bytes().len() as u64;
-            self.cmds.push(Command::DrawScene(scene));
+    fn flush_geometry(&mut self) {
+        if let Some(mut geom) = self.geometry_builder.take() {
+            geom.flush_batch();
+            self.vertex_buf_cursor += geom.scene.vertex_bytes().len() as u32;
+            self.cmds.push(Command::DrawGeometry(GeometryDraw {
+                batches: geom.batches,
+                scene: geom.scene,
+                dp: geom.dp,
+            }));
         }
     }
 }
@@ -986,8 +1168,7 @@ impl Flags {
 #[derive(derive_more::Debug, Clone)]
 pub struct Scene<A: Allocator> {
     vertex_buf: Vec<Vertex, A>,
-    vertex_buf_start: u64,
-    hw_display: HWDisplayUniforms,
+    vertex_buf_start: u32,
 }
 
 impl From<VramCoord> for Vertex {
@@ -1111,7 +1292,7 @@ impl<A: Allocator> Scene<A> {
         gpustat: GpuStatReg,
         draw_reg: &GpuInternalDrawReg,
         tex_window: Gp0TexWindowCmd,
-    ) -> Result<(), DrawRectError> {
+    ) -> Result<usize, DrawRectError> {
         let rgb = draw_rect.header.rgb().to_ne_bytes();
         let color_mode = match draw_rect.header.textured() {
             true => gpustat.texpage_colors(),
@@ -1150,7 +1331,7 @@ impl<A: Allocator> Scene<A> {
         };
         let vertices = triangulate_quad(&quad.vertices());
         self.vertex_buf.extend(vertices);
-        Ok(())
+        Ok(self.vertex_bytes().len())
     }
 
     fn add_draw_polygon_draw_call(
@@ -1159,7 +1340,7 @@ impl<A: Allocator> Scene<A> {
         gpustat: GpuStatReg,
         draw_reg: &GpuInternalDrawReg,
         tex_window: Gp0TexWindowCmd,
-    ) {
+    ) -> usize {
         let header = draw_polygon.header;
         let clut = draw_polygon.clut;
         let texpage = draw_polygon.texpage;
@@ -1218,6 +1399,7 @@ impl<A: Allocator> Scene<A> {
                 self.vertex_buf.extend_from_slice(&vertices);
             }
         };
+        self.vertex_bytes().len()
     }
 }
 

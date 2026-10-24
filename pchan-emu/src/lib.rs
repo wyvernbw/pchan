@@ -172,7 +172,7 @@ impl<A: Allocator> Emu<A> {
 impl Emu<Global> {
     #[must_use]
     pub fn new() -> Self {
-        Emu::new_in(std::alloc::Global)
+        Emu::new_in(alloc::alloc::Global)
     }
 }
 

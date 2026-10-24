@@ -1,10 +1,10 @@
+use alloc::alloc::Global;
 use alloc::sync::Arc;
 use core::alloc::Allocator;
 use core::num::NonZeroU16;
 use core::sync::atomic::{AtomicU32, Ordering};
 use core::time::Duration;
 use dynasmrt::DynasmApi;
-use std::alloc::Global;
 use std::time::Instant;
 
 use kanal::Sender;

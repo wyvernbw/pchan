@@ -4,7 +4,7 @@ use core::alloc::Allocator;
 use core::iter;
 use core::mem::transmute;
 use derive_more as d;
-use glam::prelude::U16Vec2;
+use glam::prelude::{I16Vec2, U16Vec2};
 use pchan_encode::derive::Endecode;
 
 use crate::gpu::{DrawPixels, GpuState, Vram, mask_bit, set_mask_bit};
@@ -88,6 +88,11 @@ impl VramCoord {
     #[must_use]
     pub fn as_u16vec2(&self) -> U16Vec2 {
         U16Vec2::new(self.x, self.y)
+    }
+
+    #[must_use]
+    pub fn as_i16vec2(&self) -> I16Vec2 {
+        I16Vec2::new(self.x as i16, self.y as i16)
     }
 }
 

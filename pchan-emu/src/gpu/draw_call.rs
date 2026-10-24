@@ -51,6 +51,21 @@ impl Default for DrawCallKind {
     }
 }
 
+impl DrawCallKind {
+    #[must_use]
+    pub fn is_transparent(&self) -> bool {
+        match self {
+            DrawCallKind::Rect(draw_rect) => draw_rect.header.semi_transparent(),
+            DrawCallKind::Polygon(draw_polygon) => draw_polygon.header.semi_transparent(),
+            DrawCallKind::Line(draw_line) => draw_line.header.semi_transparent(),
+            DrawCallKind::Nop
+            | DrawCallKind::BlitVram2Vram(_)
+            | DrawCallKind::BlitCpu2Vram(_, _)
+            | DrawCallKind::BlitVram2Cpu(_) => false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Endecode)]
 pub enum DrawRectDecoder {
     Header {
@@ -543,10 +558,10 @@ fn draw_polygon_decode_goraud_untextured_triangle() {
 
 #[derive(Debug, Clone, Endecode, Default)]
 pub struct DrawLine {
-    header: DrawLineHeader,
+    pub header: DrawLineHeader,
     // most lines are 2 vertices, for poly-lines
     // we do a heap allocation
-    attrs:  SmallVec<[DrawLineAttribute; 2]>,
+    pub attrs:  SmallVec<[DrawLineAttribute; 2]>,
 }
 
 /// ```md
@@ -574,8 +589,8 @@ pub struct DrawLineHeader {
 #[derive(Debug, Clone, Endecode, Default)]
 #[endecode(alloc(default))]
 pub struct DrawLineAttribute {
-    color:  Option<u32>,
-    vertex: I16Vec2,
+    pub color:  Option<u32>,
+    pub vertex: I16Vec2,
 }
 
 #[derive(Debug, Clone, Default, Endecode)]

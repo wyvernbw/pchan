@@ -3,7 +3,7 @@ use core::num::NonZeroU64;
 use core::{mem, ptr, slice};
 use std::sync::MutexGuard;
 
-use crate::{BlitUniforms, Command, Pass, Renderer, Scene};
+use crate::{BatchedGeometryDraw, BlitUniforms, Command, Pass, Renderer, Scene, Vertex};
 use pchan_emu::gpu::GpuStatReg;
 use pchan_emu::gpu::draw_call::{Gp0HostBlit, Gp0VramBlit};
 use pchan_utils::tracy;
@@ -53,7 +53,7 @@ impl Renderer {
     }
 }
 
-#[derive(Debug)]
+#[derive(derive_more::Debug)]
 pub struct RenderPass<'a, A: Allocator> {
     encoder: CommandEncoder,
     belt: MutexGuard<'a, StagingBelt>,
@@ -69,9 +69,13 @@ impl<A: Allocator + Copy> RenderPass<'_, A> {
         let pass = self.pass.take();
         for cmd in &pass.cmds {
             match cmd {
-                Command::DrawScene(scene) => {
-                    tracing::info!("- scene");
-                    self.draw_scene(scene);
+                Command::DrawGeometry(geom) => {
+                    tracing::debug!("- geometry:");
+                    self.start_scene(&geom.scene);
+                    for batch in &geom.batches {
+                        tracing::debug!("\t- batch: {}..{}", batch.span.start, batch.span.end);
+                        self.draw_batch(batch, &geom.scene);
+                    }
                 }
                 Command::VramToVramBlit { blit, gpustat } => {
                     self.vram_blit(blit, *gpustat);
@@ -135,24 +139,29 @@ impl<A: Allocator + Copy> RenderPass<'_, A> {
         }
     }
 
-    fn draw_scene(&mut self, scene: &Scene<A>) {
-        let vertex_count = scene.vertex_buf.len();
+    fn start_scene(&mut self, scene: &Scene<A>) {
         let vertex_start = scene.vertex_buf_start;
         let vertex_buf = scene.vertex_bytes();
-        let vertex_end = vertex_start + vertex_buf.len() as u64;
+        let vertex_end = vertex_start + vertex_buf.len() as u32;
+        debug_assert!(vertex_start < vertex_end);
 
         if let Some(size) = NonZeroU64::new(vertex_buf.len() as u64) {
             let mut view = self.belt.write_buffer(
                 &mut self.encoder,
                 &self.renderer.vertex_buf,
-                vertex_start,
+                vertex_start.into(),
                 size,
             );
             view.copy_from_slice(vertex_buf);
-        } else {
-            return;
         }
-        debug_assert!(vertex_start < vertex_end);
+    }
+
+    fn draw_batch(&mut self, batch: &BatchedGeometryDraw, scene: &Scene<A>) {
+        let vertex_count = scene.vertex_buf.len();
+        let byte_start = batch.span.start;
+        let byte_end = batch.span.end;
+        let vertex_start = byte_start / size_of::<Vertex>() as u32;
+        let vertex_end = byte_end / size_of::<Vertex>() as u32;
 
         let mut render_pass = self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: None,
@@ -170,16 +179,16 @@ impl<A: Allocator + Copy> RenderPass<'_, A> {
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        tracing::info!(
+        tracing::debug!(
             "\tvertex range: {}..{} ({})",
-            vertex_start,
-            vertex_end,
+            byte_start,
+            byte_end,
             vertex_count
         );
         render_pass.set_pipeline(&self.renderer.render_pipeline);
         render_pass.set_bind_group(0, &self.renderer.render_bind_group, &[]);
-        render_pass.set_vertex_buffer(0, self.renderer.vertex_buf.slice(vertex_start..vertex_end));
-        render_pass.draw(0..vertex_count as u32, 0..1);
+        render_pass.set_vertex_buffer(0, self.renderer.vertex_buf.slice(..));
+        render_pass.draw(vertex_start..vertex_end, 0..1);
 
         drop(render_pass);
 
