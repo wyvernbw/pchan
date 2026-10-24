@@ -216,12 +216,16 @@ struct Flag {
     macv_ovf_neg:    u3,
     #[bits(22..=24, rw)]
     irv_sat:         u3,
+    #[bit(18, rw)]
+    sz3_otz_sat:     bool,
     #[bit(17, rw)]
     divide_overflow: bool,
     #[bit(16, rw)]
     mac0_ovf_pos:    bool,
     #[bit(15, rw)]
     mac0_ovf_neg:    bool,
+    #[bits(13..=14, rw)]
+    sxy2_sat:        u2,
     #[bit(12, rw)]
     ir0_sat:         bool,
 }
@@ -491,8 +495,7 @@ impl Gte {
     }
 
     fn shift_macv(&mut self, macv: i64x3, sf: bool) -> i32x3 {
-        self.cast_macv(macv);
-        (macv >> (i64::from(sf) * 12)).cast()
+        self.cast_macv(macv >> (i64::from(sf) * 12))
     }
 
     fn cast_macv(&mut self, macv: i64x3) -> i32x3 {
@@ -551,6 +554,23 @@ impl Gte {
         self.ctrl.flag.set_irv_sat(old_sat_flags | sat_flags);
         new_irv.cast()
     }
+
+    fn sat_sxy(&mut self, sxy: i64x2) -> i16x2 {
+        let new_sxy = sxy.simd_clamp(i64x2::splat(-0x400), i64x2::splat(0x3ff));
+        let old_sat_flags = self.ctrl.flag.sxy2_sat();
+        let new_sat_flags = new_sxy.simd_ne(sxy).to_bitmask().as_::<u2>().reverse_bits();
+        self.ctrl.flag.set_sxy2_sat(old_sat_flags | new_sat_flags);
+        new_sxy.cast()
+    }
+
+    fn sat_sz3_otz(&mut self, x: impl Into<i64>) -> u32 {
+        let x = x.into();
+        let new_x = x.clamp(0, 0xffff);
+        let new_flag = x != new_x;
+        let old_flag = self.ctrl.flag.sz3_otz_sat();
+        self.ctrl.flag.set_sz3_otz_sat(old_flag | new_flag);
+        new_x.cast_unsigned().truncate()
+    }
 }
 
 impl GteCommandField {
@@ -605,7 +625,7 @@ impl<A: Allocator> Emu<A> {
         gte.data.irv = gte.sat_irv(mac, cmd).cast();
 
         let sz3 = mac[2] >> (u8::from(!cmd.sf()) * 12);
-        let sz3 = sz3.clamp(0, 0xffff).as_u32();
+        let sz3 = gte.sat_sz3_otz(sz3);
         gte.advance_sz_fifo();
         gte.data.sz_fifo[3] = sz3;
 
@@ -615,7 +635,6 @@ impl<A: Allocator> Emu<A> {
         } else {
             ((i64::from(gte.ctrl.h) * 0x20000 / i64::from(sz3)) + 1) as i32 / 2
         };
-        let div = div.as_i32();
 
         let mac0v = i64x3::splat(div.as_i64())
             * i64x3::from_array([
@@ -630,9 +649,8 @@ impl<A: Allocator> Emu<A> {
             ]);
 
         let sxy2 = mac0v.resize::<2>(0) >> 16;
-        let sxy2 = sxy2.simd_clamp(i64x2::splat(-0x400), i64x2::splat(0x3ff));
         gte.advance_sxy_fifo();
-        gte.data.sxy_fifo[2] = sxy2.cast();
+        gte.data.sxy_fifo[2] = gte.sat_sxy(sxy2);
         gte.data.sxy_fifo[3] = gte.data.sxy_fifo[2];
 
         let mac0 = mac0v[2];
@@ -809,12 +827,12 @@ impl<A: Allocator> Emu<A> {
     fn gte_mvmva(&mut self, cmd: GteCommandField) {
         let gte = &mut self.cpu.gte;
         gte.clear_flag();
-        let shift = i64::from(cmd.sf()) * 12;
+
         let mx = match cmd.mvmva_mul_mat() {
             MVMVAMultiplyMat::Rotation => gte.ctrl.rt_mat,
             MVMVAMultiplyMat::Light => gte.ctrl.ls_mat,
             MVMVAMultiplyMat::Color => gte.ctrl.lc_mat,
-            MVMVAMultiplyMat::Reserved => return,
+            MVMVAMultiplyMat::Reserved => todo!("mvmva: mx reserved"),
         };
         let vx = match cmd.mvmva_mul_vec() {
             MVMVAMultiplyVec::V0 => gte.data.vxyz0,
@@ -829,9 +847,9 @@ impl<A: Allocator> Emu<A> {
             MVMVATranslationVec::None => i32x3::splat(0),
         };
 
-        let macv = (tx.cast::<i64>() * i64x3::splat(0x1000) + matmul3x3v(mx, vx)) >> shift;
-        // TODO: flags
-        gte.data.macv = gte.cast_macv(macv);
+        let macv = (tx.cast::<i64>() << 12) + matmul3x3v(mx, vx);
+        let macv = gte.shift_macv(macv, cmd.sf());
+        gte.data.macv = macv;
         gte.data.irv = gte.sat_irv(macv, cmd).cast();
     }
 

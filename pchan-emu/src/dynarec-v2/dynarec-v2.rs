@@ -1002,7 +1002,7 @@ pub(crate) fn fetch_and_compile_single_threaded<A: Allocator + Copy>(
     let mut op_count = 0;
     let mut last_address = initial_pc;
     let mut pc_updated = false;
-    let mut _used_syscall = false;
+    let mut used_mtc2 = false;
     emu.linear_fetch_no_decode()
         .zip((initial_pc..).step_by(0x4))
         .map_while(|(op, address)| {
@@ -1037,7 +1037,7 @@ pub(crate) fn fetch_and_compile_single_threaded<A: Allocator + Copy>(
                 scratch_cursor: &mut scratch_cursor,
             });
             pc_updated |= summary.pc_updated;
-            _used_syscall |= summary.used_syscall;
+            used_mtc2 |= summary.used_mtc2;
             if let Some(pre_scheduled) = dynarec.pop_scheduled_at(address) {
                 // let cache_boundary_check = (pre_scheduled.pc.saturating_sub(0x4)) >> 2;
                 // let boundary = cache_boundary_check != 0
@@ -1074,7 +1074,7 @@ pub(crate) fn fetch_and_compile_single_threaded<A: Allocator + Copy>(
             scratch_cursor: &mut scratch_cursor,
         });
         pc_updated |= summary.pc_updated;
-        _used_syscall |= summary.used_syscall;
+        used_mtc2 |= summary.used_mtc2;
     }
 
     let new_pc = match pc_updated {
@@ -1084,6 +1084,15 @@ pub(crate) fn fetch_and_compile_single_threaded<A: Allocator + Copy>(
     dynarec.emit_block_epilogue(cycles, new_pc, true);
     let fn_ptr = dynarec.commit(start)?;
     let end = dynarec.asm.offset();
+    #[cfg(debug_assertions)]
+    {
+        if used_mtc2 {
+            let reader = dynarec.asm.reader();
+            let exec_buf = reader.lock();
+            let exec_buf = &exec_buf[start.0..end.0];
+            std::fs::write(format!("/tmp/mtc2-dump/{}.bin", hex(initial_pc)), exec_buf).unwrap();
+        }
+    }
     CACHE_CURSOR.store(end.0 as u64, Ordering::Relaxed);
 
     Ok((op_count, fn_ptr))
@@ -1236,7 +1245,7 @@ impl<A: Allocator> DynCache<A> {
 
 #[cfg(test)]
 mod tests {
-    use std::alloc::Global;
+    use alloc::alloc::Global;
 
     use pchan_utils::setup_tracing;
 

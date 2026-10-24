@@ -13,7 +13,7 @@ use core::num::NonZeroU8;
 use arbitrary_int::traits::Integer;
 use enum_dispatch::enum_dispatch;
 
-use pchan_utils::{default, hex};
+use pchan_utils::default;
 #[cfg(test)]
 use rstest::rstest;
 use smallbox::SmallBox;
@@ -112,23 +112,17 @@ pub enum Boundary {
 
 #[derive(Debug, Default)]
 pub struct EmitSummary {
-    pub pc_updated:   bool,
-    pub used_syscall: bool,
+    pub pc_updated: bool,
+    pub used_mtc2:  bool,
 }
 
 impl EmitSummary {
     #[must_use]
     pub fn pc_updated() -> Self {
         Self {
-            pc_updated:   true,
-            used_syscall: false,
+            pc_updated: true,
+            ..default()
         }
-    }
-
-    #[must_use]
-    pub fn used_syscall(mut self) -> Self {
-        self.used_syscall = true;
-        self
     }
 }
 
@@ -2731,8 +2725,8 @@ fn test_branch_zero(
 #[repr(u8)]
 #[derive(Clone, Copy)]
 enum CopRegisterKind {
-    Data,
-    Ctrl,
+    Data = 0,
+    Ctrl = 1,
 }
 #[derive(Copy, Clone)]
 struct CopMove {
@@ -2742,10 +2736,11 @@ struct CopMove {
     kind: CopRegisterKind,
 }
 #[allow(clippy::useless_conversion)]
+#[must_use]
 fn emit_move_to_cop<A: Allocator + Copy>(
     mut ctx: EmitCtx<A>,
     CopMove { cop, rd, rt, kind }: CopMove,
-) {
+) -> EmitSummary {
     let reg = rd + (kind as u8) * 32;
     match (cop, reg) {
         // N/A
@@ -2814,11 +2809,22 @@ fn emit_move_to_cop<A: Allocator + Copy>(
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
+                ; nop
                 ; str W(*rt), [x0, Cpu::cop_reg_offset(cop, reg) as _]
+                ; nop
             );
         }
         _ => {}
     }
+
+    if cop == 2 {
+        return EmitSummary {
+            pc_updated: false,
+            used_mtc2:  true,
+        };
+    }
+
+    default()
 }
 
 impl DynarecOp for Mtcn {
@@ -2839,8 +2845,7 @@ impl DynarecOp for Mtcn {
                 rt:   self.rt,
                 kind: CopRegisterKind::Data,
             },
-        );
-        default()
+        )
     }
 }
 
@@ -2862,8 +2867,7 @@ impl DynarecOp for Ctcn {
                 rt:   self.rt,
                 kind: CopRegisterKind::Ctrl,
             },
-        );
-        default()
+        )
     }
 }
 
@@ -3165,12 +3169,20 @@ fn emit_move_from_cop<A: Allocator + Copy>(
             );
         }
         (2, _) => {
-            let rta = ctx.dynarec.emit_load_shadow_reg_stackless(rt);
+            let rta = ctx.dynarec.alloc_reg_stackless(rt);
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
                 ; ldr W(*rta), [x0, Cpu::cop_reg_offset(cop, reg) as _]
             );
+
+            if rt != 0 {
+                dynasm!(
+                    ctx.dynarec.asm
+                    ; .arch aarch64
+                    ; str W(*rta), [x0, #shadow(rt)]
+                );
+            }
 
             // writeback to gpr
             ctx.schedule_in(1, Some(rt), move |ctx| {
@@ -3398,7 +3410,7 @@ pub fn test_mul_div(
 ) -> color_eyre::Result<()> {
     use crate::Emu;
     use crate::cpu::program;
-    use pchan_utils::setup_tracing;
+    use pchan_utils::{hex, setup_tracing};
 
     setup_tracing();
     let mut emu = Emu::default();
@@ -3478,7 +3490,7 @@ pub fn test_mfhilo(
 ) -> color_eyre::Result<()> {
     use crate::Emu;
     use crate::cpu::program;
-    use pchan_utils::setup_tracing;
+    use pchan_utils::{hex, setup_tracing};
 
     setup_tracing();
     let mut emu = Emu::default();
@@ -3517,7 +3529,7 @@ impl DynarecOp for Syscall {
             ;; ctx.dynarec.emit_restore_critical_registers()
         );
 
-        EmitSummary::pc_updated().used_syscall()
+        EmitSummary::pc_updated()
     }
 }
 
@@ -3897,4 +3909,40 @@ fn test_bltzal_bgezal() {
         assert_eq_hex!(emu.cpu["$ra"], 0xc);
         assert_eq_hex!(emu.cpu.pc, 0x408);
     }
+}
+
+#[cfg(test)]
+#[rstest]
+fn test_gte_register_moves() {
+    use crate::Emu;
+    use crate::cpu::program;
+    use assert_hex::*;
+    use pchan_utils::setup_tracing;
+
+    setup_tracing();
+
+    let mut emu = Emu::default();
+    emu.cpu.pc = 0x0;
+    emu.set_reg(8, 0xc31b9378);
+    emu.set_reg(9, 0x7fffffff);
+    #[rustfmt::skip]
+    emu.write_many(
+        0x0,
+        &program([
+            mtcn(2, 8, 0),
+            mtcn(2, 9, 1),
+            nop(),
+            nop(),
+            mfcn(2, 10, 0),
+            mfcn(2, 11, 1),
+            nop(),
+            nop(),
+            OpCode::HALT
+        ]),
+    );
+    let mut dynarec = Dynarec::new(CreateDynarecParams::default());
+    smol::block_on(run_step(&mut emu, &mut dynarec));
+    tracing::info!(?emu.cpu);
+    assert_eq_hex!(emu.cpu.gpr[10], 0xc31b9378);
+    assert_eq_hex!(emu.cpu.gpr[11], 0x7fffffff);
 }
