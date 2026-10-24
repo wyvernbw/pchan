@@ -68,7 +68,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 
     let pos = vec2<i32>(vec2<i32>(in.position) + vec2(in.draw_offset.x, in.draw_offset.y));
     out.clip_position = vec4<f32>(f32(pos.x) / 512.0 - 1.0, f32(512 - pos.y) / 256.0 - 1.0, 0.0, 1.0);
-    out.vram_position = vec2<f32>(vec2<i32>(in.position) + in.draw_offset);
+    out.vram_position = vec2<f32>(pos);
     out.color_mode = color_mode;
     out.flags = in.flags;
     out.gpustat = in.gpustat;
@@ -120,7 +120,7 @@ fn pack_color(color: vec4<f32>) -> u32 {
     let b = u32(color.b * 31.0);
     var c =  r | (g << 5u) | (b << 10u);
     if color.a > 0.0 {
-        rgb5_set_stp(c);
+        c = rgb5_set_stp(c);
     }
     return c;
 }
@@ -215,6 +215,7 @@ fn get_color(in: VertexOutput) -> Color {
 
     var tex_color_packed: u32;
     var tex_color: vec4<f32>;
+    var has_stp = true;
 
     if textured {
         switch in.color_mode {
@@ -245,18 +246,39 @@ fn get_color(in: VertexOutput) -> Color {
                 tex_color_packed = read_16bit(texcoord);
             }
         }
+        has_stp = get_flag(tex_color_packed, 15);
         tex_color = rgb5_split_color(tex_color_packed);
 
         if all(tex_color.rgb == vec3(0.0)) {
             return Color(0, true);
         }
 
-        // TODO: modulation and other effects
         if get_modulation(in.flags) {
             in_color = tex_color * in.color * 2.0;
         } else {
             in_color = tex_color;
         }
+    }
+
+    has_stp = has_stp && get_stp_on(in.flags);
+    if has_stp {
+        let mode = get_semi_transparency(in.flags);
+        let fbf = rgb5_split_color(read_16bit(in.vram_position));
+        switch mode {
+            case 0, default: {
+                in_color = (in_color+fbf) * 0.5;
+            }
+            case 1: {
+                in_color += fbf;
+            }
+            case 2: {
+                in_color = fbf-in_color;
+            }
+            case 3: {
+                in_color = fbf + in_color * 0.25;
+            }
+        }
+        in_color = clamp(in_color, vec4(0.0), vec4(1.0));
     }
     
     if get_dither(in.flags) {

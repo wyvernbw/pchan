@@ -697,7 +697,7 @@ struct BatchedGeometryDraw {
 #[derive(derive_more::Debug)]
 enum BatchedGeometryDrawKind {
     OpaqueOnly,
-    TransparentAndOpaque,
+    Transparent,
 }
 
 #[derive(derive_more::Debug)]
@@ -763,7 +763,7 @@ impl<A: Allocator + Copy> Scene<A> {
 impl From<&DrawCall> for BatchedGeometryDrawKind {
     fn from(value: &DrawCall) -> Self {
         match value.inner.is_transparent() {
-            true => BatchedGeometryDrawKind::TransparentAndOpaque,
+            true => BatchedGeometryDrawKind::Transparent,
             false => BatchedGeometryDrawKind::OpaqueOnly,
         }
     }
@@ -802,7 +802,7 @@ impl Aabb {
         Self { min, max }
     }
     fn intersects(self, o: Aabb) -> bool {
-        self.min.cmple(o.max).all() && o.min.cmple(self.max).all()
+        self.min.cmplt(o.max).all() && o.min.cmplt(self.max).all()
     }
     fn bounding_box_of(draw_call: &DrawCall) -> Option<Self> {
         match &draw_call.inner {
@@ -857,13 +857,16 @@ impl<A: Allocator + Copy> GeometryBuilder<A> {
                     return self.add_draw_call(draw_call);
                 }
             }
-            BatchedGeometryDrawKind::TransparentAndOpaque => {
+            BatchedGeometryDrawKind::Transparent => {
                 // check for overlapping geometry in transparent pass
-                if let Some(aabb) = Aabb::bounding_box_of(&draw_call)
-                    && self.aabbs.iter().any(|other| aabb.intersects(*other))
-                {
-                    self.begin_transparent();
-                    return self.add_draw_call(draw_call);
+                if let Some(aabb) = Aabb::bounding_box_of(&draw_call) {
+                    if draw_call.inner.is_transparent() {
+                        if self.aabbs.iter().any(|other| aabb.intersects(*other)) {
+                            self.begin_transparent();
+                            return self.add_draw_call(draw_call);
+                        }
+                    }
+                    self.aabbs.push(aabb);
                 }
             }
         };
@@ -900,7 +903,7 @@ impl<A: Allocator + Copy> GeometryBuilder<A> {
 
     fn begin_transparent(&mut self) {
         self.flush_batch();
-        self.builder.kind = BatchedGeometryDrawKind::TransparentAndOpaque;
+        self.builder.kind = BatchedGeometryDrawKind::Transparent;
     }
 
     fn flush_batch(&mut self) {

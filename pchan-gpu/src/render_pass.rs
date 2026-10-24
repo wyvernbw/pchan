@@ -70,7 +70,7 @@ impl<A: Allocator + Copy> RenderPass<'_, A> {
         for cmd in &pass.cmds {
             match cmd {
                 Command::DrawGeometry(geom) => {
-                    tracing::debug!("- geometry:");
+                    tracing::debug!("- geometry ({} batches):", geom.batches.len());
                     self.start_scene(&geom.scene);
                     for batch in &geom.batches {
                         tracing::debug!("\t- batch: {}..{}", batch.span.start, batch.span.end);
@@ -179,12 +179,6 @@ impl<A: Allocator + Copy> RenderPass<'_, A> {
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        tracing::debug!(
-            "\tvertex range: {}..{} ({})",
-            byte_start,
-            byte_end,
-            vertex_count
-        );
         render_pass.set_pipeline(&self.renderer.render_pipeline);
         render_pass.set_bind_group(0, &self.renderer.render_bind_group, &[]);
         render_pass.set_vertex_buffer(0, self.renderer.vertex_buf.slice(..));
