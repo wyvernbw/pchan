@@ -8,7 +8,7 @@ extern crate alloc;
 
 use alloc::alloc::Global;
 use alloc::slice;
-use arbitrary_int::prelude::Integer;
+use arbitrary_int::prelude::*;
 use blink_alloc::BlinkAlloc;
 pub use glam;
 use pchan_emu::gpu::vram::{IVramCoord, VramCoord};
@@ -965,6 +965,12 @@ struct Flags {
     draw_pixels: DrawPixels,
     #[bit(3, rw)]
     textured: bool,
+    #[bit(4, rw)]
+    modulation: bool,
+    #[bits(5..=6, rw)]
+    semi_transparency: u2,
+    #[bit(7, rw)]
+    stp_on: bool,
 }
 
 impl Flags {
@@ -973,6 +979,7 @@ impl Flags {
             .with_set_mask(gpustat.set_mask())
             .with_dither(gpustat.dither())
             .with_draw_pixels(gpustat.draw_pixels())
+            .with_semi_transparency(gpustat.semi_transparency())
     }
 }
 
@@ -1105,13 +1112,16 @@ impl<A: Allocator> Scene<A> {
         draw_reg: &GpuInternalDrawReg,
         tex_window: Gp0TexWindowCmd,
     ) -> Result<(), DrawRectError> {
-        let rgb = draw_rect.color.rgb().to_ne_bytes();
-        let color_mode = match draw_rect.color.textured() {
+        let rgb = draw_rect.header.rgb().to_ne_bytes();
+        let color_mode = match draw_rect.header.textured() {
             true => gpustat.texpage_colors(),
             false => TextureColorMode::C24BitDirect,
         };
         let color = U8Vec3::from_array(rgb);
         let uv = draw_rect.uv.unwrap_or_default();
+        let flags = Flags::from_gpustat(gpustat)
+            .with_textured(draw_rect.header.textured())
+            .with_stp_on(draw_rect.header.semi_transparent());
         let top_left = Vertex::new(VertexSpec {
             pos: i16vec2(draw_rect.vertex1.x as i16, draw_rect.vertex1.y as i16),
             color,
@@ -1119,7 +1129,7 @@ impl<A: Allocator> Scene<A> {
             uv: uv.uv,
             clut: uv.extra_as_clut(),
             texpage_base: gpustat.texpage_base(),
-            flags: Flags::from_gpustat(gpustat).with_textured(draw_rect.color.textured()),
+            flags,
             draw_area_top_left: draw_reg.draw_area_top_left,
             draw_area_bottom_right: draw_reg.draw_area_bottom_right,
             draw_offset: draw_reg.draw_offset,
@@ -1127,7 +1137,7 @@ impl<A: Allocator> Scene<A> {
             tex_window,
         });
 
-        let quad: Quad = match (draw_rect.color.size(), draw_rect.var_size) {
+        let quad: Quad = match (draw_rect.header.size(), draw_rect.var_size) {
             (RectSize::VarSize, None) => return Err(DrawRectError::MissingVarSize),
             (RectSize::VarSize, Some(size)) => {
                 Quad::new_with_topleft_and_size(top_left, u16vec2(size.x, size.y))
@@ -1162,6 +1172,8 @@ impl<A: Allocator> Scene<A> {
             false => TextureColorMode::C15BitDirect,
         };
         let flags = Flags::from_gpustat(gpustat)
+            .with_modulation(header.modulation())
+            .with_stp_on(header.semi_transparent())
             .with_dither(gpustat.dither() && (header.modulation() || header.goraud()))
             .with_textured(header.textured());
         let mut vertices = draw_polygon

@@ -113,7 +113,6 @@ pub enum Boundary {
 #[derive(Debug, Default)]
 pub struct EmitSummary {
     pub pc_updated: bool,
-    pub used_mtc2:  bool,
 }
 
 impl EmitSummary {
@@ -2736,7 +2735,6 @@ struct CopMove {
     kind: CopRegisterKind,
 }
 #[allow(clippy::useless_conversion)]
-#[must_use]
 fn emit_move_to_cop<A: Allocator + Copy>(
     mut ctx: EmitCtx<A>,
     CopMove { cop, rd, rt, kind }: CopMove,
@@ -2815,13 +2813,6 @@ fn emit_move_to_cop<A: Allocator + Copy>(
             );
         }
         _ => {}
-    }
-
-    if cop == 2 {
-        return EmitSummary {
-            pc_updated: false,
-            used_mtc2:  true,
-        };
     }
 
     default()

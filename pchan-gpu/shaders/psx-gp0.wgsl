@@ -185,6 +185,18 @@ fn get_textured(flags: u32) -> bool {
     return get_flag(flags, 3);
 }
 
+fn get_modulation(flags: u32) -> bool {
+   return extractBits(flags, 4, 1) != 0;
+}
+
+fn get_semi_transparency(flags: u32) -> u32 {
+   return extractBits(flags, 5, 2);
+}
+
+fn get_stp_on(flags: u32) -> bool {
+   return extractBits(flags, 7, 1) != 0;
+}
+
 fn wrap2(x: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
     let r = b - a;
     return a + (x - a) % r;
@@ -229,13 +241,18 @@ fn get_color(in: VertexOutput) -> u32 {
             }
         }
         tex_color = rgb5_split_color(tex_color_packed);
-        in_color = tex_color;
+
         if all(tex_color.rgb == vec3(0.0)) {
             return 0;
         }
-    }
 
-    // TODO: modulation and other effects
+        // TODO: modulation and other effects
+        if get_modulation(in.flags) {
+            in_color = tex_color * in.color * 2.0;
+        } else {
+            in_color = tex_color;
+        }
+    }
     
     if get_dither(in.flags) {
         in_color *= 255;

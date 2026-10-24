@@ -53,21 +53,21 @@ impl Default for DrawCallKind {
 
 #[derive(Debug, Clone, Copy, Endecode)]
 pub enum DrawRectDecoder {
-    Color {
-        color: DrawRectColor,
+    Header {
+        header: DrawRectHeader,
     },
     /// entered when textured=true
     Vertex1Textured {
-        color:   DrawRectColor,
+        header:  DrawRectHeader,
         vertex1: VramCoord,
     },
     /// entered when `textured=false`, `var_size=true`
     Vertex1VarSize {
-        color:   DrawRectColor,
+        header:  DrawRectHeader,
         vertex1: VramCoord,
     },
     Uv {
-        color:   DrawRectColor,
+        header:  DrawRectHeader,
         vertex1: VramCoord,
         uv:      Uv,
     },
@@ -75,14 +75,14 @@ pub enum DrawRectDecoder {
 
 impl Default for DrawRectDecoder {
     fn default() -> Self {
-        DrawRectDecoder::Color { color: default() }
+        DrawRectDecoder::Header { header: default() }
     }
 }
 
 #[derive(Debug, Clone, Endecode)]
 #[derive_const(Default)]
 pub struct DrawRect {
-    pub color:    DrawRectColor,
+    pub header:   DrawRectHeader,
     pub vertex1:  VramCoord,
     pub uv:       Option<Uv>,
     pub var_size: Option<VramCoord>,
@@ -180,7 +180,7 @@ pub struct GpuInternalDrawReg {
 #[derive_const(Default)]
 #[derive(Endecode)]
 #[must_use]
-pub struct DrawRectColor {
+pub struct DrawRectHeader {
     #[bits(0..=23, rw)]
     rgb: u24,
     #[bit(24, rw)]
@@ -207,8 +207,8 @@ pub enum RectSize {
 
 impl DrawRectDecoder {
     pub fn new(value: impl Copy) -> Self {
-        let color = DrawRectColor::new_with_raw_value(value.io_into_u32());
-        Self::Color { color }
+        let header = DrawRectHeader::new_with_raw_value(value.io_into_u32());
+        Self::Header { header }
     }
 }
 
@@ -223,46 +223,50 @@ impl DrawCallDecoder for DrawRectDecoder {
     #[pchan_macros::instrument(level = tracing::Level::TRACE, skip_all, ret)]
     fn advance<T: Copy>(self, value: T) -> Result<Self, DrawRect> {
         match self {
-            DrawRectDecoder::Color { color } => {
+            DrawRectDecoder::Header { header } => {
                 let vertex1 = VramCoord::from(value.io_into_u32());
-                match (color.textured(), color.size()) {
-                    (_, RectSize::VarSize) => Ok(Self::Vertex1VarSize { color, vertex1 }),
-                    (true, _) => Ok(Self::Vertex1Textured { color, vertex1 }),
+                match (header.textured(), header.size()) {
+                    (_, RectSize::VarSize) => Ok(Self::Vertex1VarSize { header, vertex1 }),
+                    (true, _) => Ok(Self::Vertex1Textured { header, vertex1 }),
                     (false, _) => Err(DrawRect {
-                        color,
+                        header,
                         vertex1,
                         ..Default::default()
                     }),
                 }
             }
-            DrawRectDecoder::Vertex1Textured { color, vertex1 } => match color.size() {
+            DrawRectDecoder::Vertex1Textured { header, vertex1 } => match header.size() {
                 RectSize::VarSize => Ok(Self::Uv {
-                    color,
+                    header,
                     vertex1,
                     uv: Uv::from_u32(value.io_into_u32()),
                 }),
                 _ => Err(DrawRect {
-                    color,
+                    header,
                     vertex1,
                     uv: Some(Uv::from_u32(value.io_into_u32())),
                     var_size: None,
                 }),
             },
-            DrawRectDecoder::Vertex1VarSize { color, vertex1 } => match color.textured() {
+            DrawRectDecoder::Vertex1VarSize { header, vertex1 } => match header.textured() {
                 true => Ok(Self::Uv {
-                    color,
+                    header,
                     vertex1,
                     uv: Uv::from_u32(value.io_into_u32()),
                 }),
                 false => Err(DrawRect {
-                    color,
+                    header,
                     vertex1,
                     uv: None,
                     var_size: Some(VramCoord::from(value.io_into_u32())),
                 }),
             },
-            DrawRectDecoder::Uv { color, vertex1, uv } => Err(DrawRect {
-                color,
+            DrawRectDecoder::Uv {
+                header,
+                vertex1,
+                uv,
+            } => Err(DrawRect {
+                header,
                 vertex1,
                 uv: Some(uv),
                 var_size: Some(VramCoord::from(value.io_into_u32())),
