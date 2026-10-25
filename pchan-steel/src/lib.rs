@@ -414,7 +414,6 @@ impl SteelExecutor {
             Call::HardReset => {
                 runner.frame_idx = 0;
 
-                smol::block_on(emu.gpu.wait_for_render_result());
                 let bios_path = emu.boot.bios_path.clone();
                 let alloc = emu.alloc;
                 emu.gpu.reset_renderer();

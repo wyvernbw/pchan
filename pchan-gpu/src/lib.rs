@@ -6,7 +6,6 @@
 
 extern crate alloc;
 
-use alloc::alloc::Global;
 use alloc::slice;
 use arbitrary_int::prelude::*;
 use blink_alloc::BlinkAlloc;
@@ -34,7 +33,7 @@ use pchan_emu::gpu::draw_call::{
 };
 use pchan_emu::gpu::{
     Conn, Display, DisplayColorDepth, DrawCallMsg, DrawPixels, FlushMsg, Gp0TexWindowCmd,
-    GpuStatReg, TextureColorMode, VramPayload,
+    GpuStatReg, TextureColorMode, VramSink,
 };
 use thiserror::Error;
 pub use wgpu;
@@ -480,7 +479,6 @@ impl Renderer {
     async fn render_loop(self: Arc<Self>) {
         tracing::info!("started gpu renderer task");
         let mut alloc = BlinkAlloc::new();
-        let mut vram_cleared = true;
         loop {
             let msg = self
                 .conn
@@ -494,55 +492,33 @@ impl Renderer {
                     alloc.reset();
                     let mut pass = Pass::new_in(&alloc);
                     pass.add_draw_call(draw_call);
-                    let mut flush = match self.draw_submission_loop(&mut pass).await {
+                    match self.draw_submission_loop(&mut pass).await {
                         SubmissionResult::Reset(ack) => {
                             self.reset();
-                            vram_cleared = true;
                             ack.send(()).await.unwrap();
                             continue;
                         }
-                        SubmissionResult::RequestedVram => {
-                            continue;
+                        SubmissionResult::RequestedVram(sink, ack) => {
+                            self.readback(sink).await;
+                            ack.send(()).await.unwrap();
                         }
-                        SubmissionResult::Flush(flush) => flush,
+                        SubmissionResult::Flush(flush) => {
+                            self.update_hw_display_uniforms(&flush.display, flush.gpustat);
+                        }
                     };
 
-                    self.update_hw_display_uniforms(&flush.display, flush.gpustat);
-
                     let start = Instant::now();
-                    tracing::info!("draw#{}:", flush.draw_idx);
                     let mut render_pass = self.create_render_pass(pass);
-                    render_pass.draw(&flush.vram.vram, flush.vram.dirty || vram_cleared);
-                    render_pass.finish(&mut flush.vram.vram).await.unwrap();
+                    render_pass.draw();
+                    render_pass.finish();
                     let elapsed = start.elapsed();
-
-                    vram_cleared = false;
 
                     // if tracing::enabled!(Level::DEBUG) {
                     tracing::info!("finished render in {:.2}ms", elapsed.as_millis_f32());
                     // }
-
-                    self.conn
-                        .vram_out_chan
-                        .0
-                        .send(pchan_emu::gpu::VramRes::Ok(VramPayload {
-                            vram: flush.vram.vram,
-                            draw_idx: flush.draw_idx,
-                        }))
-                        .await
-                        .unwrap();
                 }
                 DrawCallMsg::Flush(flush) => {
                     self.update_hw_display_uniforms(&flush.display, flush.gpustat);
-                    self.conn
-                        .vram_out_chan
-                        .0
-                        .send(pchan_emu::gpu::VramRes::Ok(VramPayload {
-                            vram: flush.vram.vram,
-                            draw_idx: flush.draw_idx,
-                        }))
-                        .await
-                        .unwrap();
                 }
                 DrawCallMsg::UpdateDisplay(display, gpustat) => {
                     self.update_hw_display_uniforms(&display, gpustat);
@@ -551,7 +527,10 @@ impl Renderer {
                     self.reset();
                     ack.send(()).await.unwrap();
                 }
-                DrawCallMsg::RequestVram => {}
+                DrawCallMsg::RequestVram(sink, ack) => {
+                    self.readback(sink).await;
+                    ack.send(()).await.unwrap();
+                }
             }
         }
     }
@@ -564,7 +543,7 @@ impl Renderer {
     async fn draw_submission_loop<A: Allocator + Copy>(
         &self,
         pass: &mut Pass<A>,
-    ) -> SubmissionResult<Global> {
+    ) -> SubmissionResult {
         loop {
             let msg = self
                 .conn
@@ -585,7 +564,9 @@ impl Renderer {
                     self.update_hw_display_uniforms(&display, gpustat);
                 }
                 DrawCallMsg::Reset(ack) => return SubmissionResult::Reset(ack),
-                DrawCallMsg::RequestVram => return SubmissionResult::RequestedVram,
+                DrawCallMsg::RequestVram(sink, ack) => {
+                    return SubmissionResult::RequestedVram(sink, ack);
+                }
             }
         }
     }
@@ -658,12 +639,60 @@ impl Renderer {
             })
             .unwrap();
     }
+
+    pub async fn readback(&self, sink: &VramSink) {
+        let mut encoder = self
+            .device
+            .create_command_encoder(&CommandEncoderDescriptor::default());
+        encoder.copy_texture_to_buffer(
+            TexelCopyTextureInfoBase {
+                texture: &self.render_texture,
+                mip_level: 0,
+                origin: Origin3d::default(),
+                aspect: TextureAspect::All,
+            },
+            TexelCopyBufferInfo {
+                buffer: &self.vram_out_buf,
+                layout: TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(1024 * 2),
+                    rows_per_image: Some(512),
+                },
+            },
+            Extent3d {
+                width: 1024,
+                height: 512,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        self.queue.submit([encoder.finish()]);
+
+        self.vram_out_buf.map_async(MapMode::Read, .., move |res| {
+            if let Err(err) = res {
+                tracing::warn!("{err}");
+            }
+        });
+
+        let device = self.device.clone();
+        smol::unblock(move || {
+            _ = device.poll(PollType::wait_indefinitely());
+        })
+        .await;
+        let buf_mapped = self.vram_out_buf.get_mapped_range(..).unwrap();
+        let buf =
+            unsafe { core::slice::from_raw_parts(buf_mapped.as_ptr().cast::<u16>(), 1024 * 512) };
+        let mut vram = sink.lock().await;
+        vram.copy_from_slice(buf);
+        drop(buf_mapped);
+        self.vram_out_buf.unmap();
+    }
 }
 
-enum SubmissionResult<A: Allocator> {
+enum SubmissionResult {
     Reset(kanal::AsyncSender<()>),
-    RequestedVram,
-    Flush(FlushMsg<A>),
+    RequestedVram(&'static VramSink, kanal::AsyncSender<()>),
+    Flush(FlushMsg),
 }
 
 #[derive(derive_more::Debug)]

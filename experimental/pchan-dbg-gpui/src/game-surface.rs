@@ -145,41 +145,6 @@ impl Element for GameSurface {
         cx: &mut App,
     ) {
         let mut state = self.state.as_mut(cx);
-        if state.cpu_vram_dump {
-            const W: u32 = 1024;
-            const H: u32 = 512;
-            let expand = |c: u16| -> u8 {
-                let c = (c & 0x1f) as u8;
-                (c << 3) | (c >> 2)
-            };
-
-            drop(state);
-            let render_image = self.emucx.update(cx, |emucx, cx| {
-                let vram = cx.foreground_executor().block_on(emucx.emu.gpu.lock_vram());
-
-                let mut buf = Vec::with_capacity((W * H * 4) as usize);
-                for px in vram.iter().take((W * H) as usize) {
-                    buf.extend_from_slice(&[expand(*px >> 10), expand(*px >> 5), expand(*px), 255]);
-                }
-
-                let img = image::RgbaImage::from_raw(W, H, buf).unwrap();
-
-                Arc::new(RenderImage::new([image::Frame::new(img)]))
-            });
-            window
-                .paint_image(
-                    bounds,
-                    bounds,
-                    Corners::default(),
-                    render_image.clone(),
-                    0,
-                    false,
-                )
-                .ok();
-
-            window.drop_image(render_image).ok();
-            return;
-        }
         state.wait_for_display_draw(&self.renderer);
         #[cfg(target_os = "macos")]
         {

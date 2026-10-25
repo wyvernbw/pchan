@@ -37,7 +37,6 @@ pub enum Task {
     Nop,
 
     GpuFlushDrawCalls,
-    GpuStartBlitCpuToVram,
     GpuStartBlitVramToCpu,
     GpuIssueDrawCall,
 
@@ -151,9 +150,6 @@ impl<A: Allocator + Copy> Emu<A> {
             Task::Nop => {}
             Task::GpuFlushDrawCalls => {
                 self.gpu.task_gpu_flush_draw_calls().await;
-            }
-            Task::GpuStartBlitCpuToVram => {
-                self.task_gpu_start_blit_cpu_to_vram().await;
             }
             Task::GpuStartBlitVramToCpu => {
                 self.task_gpu_start_blit_vram_to_cpu().await;

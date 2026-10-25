@@ -138,10 +138,11 @@ in comparision with duckstation dynarec, fails:
 
 # HW Rasterizer Todos
 
-- [ ] make rasterizer own the vram 
+- [x] make rasterizer own the vram 
 - [ ] make the vram rgba8unorm texture instead of r16uint
 - [ ] handle semi-transparency using blend states
   - [ ] split batches based on transparency type 
   - [ ] add pipeline with blend constant
   - [ ] subtract pipeline
+- [ ] get rid of per-primitive data duplicated per-vertex
 

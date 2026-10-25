@@ -7,8 +7,8 @@ use crate::{
     Aabb, BatchedGeometryDraw, BatchedGeometryDrawKind, BlitUniforms, Command, Pass, Renderer,
     Scene, Vertex,
 };
-use pchan_emu::gpu::GpuStatReg;
 use pchan_emu::gpu::draw_call::{Gp0HostBlit, Gp0VramBlit};
+use pchan_emu::gpu::{GpuStatReg, VramSink};
 use pchan_utils::tracy;
 use tracing::Level;
 use wgpu::util::StagingBelt;
@@ -57,9 +57,8 @@ pub struct RenderPass<'a, A: Allocator> {
 }
 
 impl<A: Allocator + Copy> RenderPass<'_, A> {
-    pub(crate) fn draw(&mut self, vram: &[u16], dirty: bool) {
+    pub(crate) fn draw(&mut self) {
         let _draw = tracy::span!("rd-gpu-draw");
-        self.init_vram(vram, dirty);
 
         let pass = self.pass.take();
         for cmd in &pass.cmds {
@@ -274,7 +273,9 @@ impl<A: Allocator + Copy> RenderPass<'_, A> {
         cpass.set_pipeline(&self.renderer.blit.pipe);
         cpass.set_bind_group(0, &self.renderer.blit.bind_group, &[]);
         cpass.dispatch_workgroups(dispatch_x, dispatch_y, 1);
-        drop(cpass)
+        drop(cpass);
+
+        self.commit_render_to_vram();
     }
 
     fn cpu_to_vram_blit(&mut self, blit: Gp0HostBlit, gpustat: GpuStatReg, data: &[u8]) {
@@ -327,54 +328,14 @@ impl<A: Allocator + Copy> RenderPass<'_, A> {
         cpass.set_bind_group(0, &self.renderer.blit.bind_group, &[]);
         cpass.dispatch_workgroups(dispatch_x, dispatch_y, 1);
         drop(cpass);
+
+        self.commit_render_to_vram();
     }
 
-    pub async fn finish(mut self, vram: &mut [u16]) -> Result<(), MapRangeError> {
+    pub fn finish(mut self) {
         let _commit = tracy::span!("rd-commit");
-        self.encoder.copy_texture_to_buffer(
-            TexelCopyTextureInfoBase {
-                texture: &self.renderer.render_texture,
-                mip_level: 0,
-                origin: Origin3d::default(),
-                aspect: TextureAspect::All,
-            },
-            TexelCopyBufferInfo {
-                buffer: &self.renderer.vram_out_buf,
-                layout: TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(1024 * 2),
-                    rows_per_image: Some(512),
-                },
-            },
-            Extent3d {
-                width: 1024,
-                height: 512,
-                depth_or_array_layers: 1,
-            },
-        );
-
         self.belt.finish();
         self.renderer.queue.submit([self.encoder.finish()]);
         self.belt.recall();
-        self.renderer
-            .vram_out_buf
-            .map_async(MapMode::Read, .., move |res| {
-                if let Err(err) = res {
-                    tracing::warn!("{err}");
-                }
-            });
-        let device = self.renderer.device.clone();
-        smol::unblock(move || {
-            _ = device.poll(PollType::wait_indefinitely());
-        })
-        .await;
-        let buf_mapped = self.renderer.vram_out_buf.get_mapped_range(..).unwrap();
-        let buf =
-            unsafe { core::slice::from_raw_parts(buf_mapped.as_ptr().cast::<u16>(), 1024 * 512) };
-        vram.copy_from_slice(buf);
-        drop(buf_mapped);
-        self.renderer.vram_out_buf.unmap();
-
-        Ok(())
     }
 }

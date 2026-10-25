@@ -456,7 +456,7 @@ impl EmuContext {
     fn save_state(&mut self, cx: &mut Context<Self>) -> miette::Result<()> {
         cx.foreground_executor().block_on(async {
             self.emu.gpu.task_gpu_flush_draw_calls().await;
-            self.emu.gpu.wait_for_render_result().await;
+            self.emu.gpu.request_vram().await;
         });
         let sink = Vec::new_in(self.alloc);
         let ser = pchan_encode::encode(&mut self.emu, sink, self.alloc).into_diagnostic()?;
@@ -471,7 +471,9 @@ impl EmuContext {
             };
 
             let mut ppm = format!("P6\n{W} {H}\n255\n").into_bytes();
-            let vram = cx.foreground_executor().block_on(self.emu.gpu.lock_vram());
+            let vram = cx
+                .foreground_executor()
+                .block_on(pchan_emu::gpu::VRAM.lock());
             for px in vram.iter().take(W * H) {
                 ppm.extend_from_slice(&[expand(*px), expand(*px >> 5), expand(*px >> 10)]);
             }
@@ -502,7 +504,9 @@ impl EmuContext {
             };
 
             let mut ppm = format!("P6\n{W} {H}\n255\n").into_bytes();
-            let vram = cx.foreground_executor().block_on(self.emu.gpu.lock_vram());
+            let vram = cx
+                .foreground_executor()
+                .block_on(pchan_emu::gpu::VRAM.lock());
             for px in vram.iter().take(W * H) {
                 ppm.extend_from_slice(&[expand(*px), expand(*px >> 5), expand(*px >> 10)]);
             }

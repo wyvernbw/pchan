@@ -7,8 +7,7 @@ use derive_more as d;
 use glam::prelude::{I16Vec2, U16Vec2};
 use pchan_encode::derive::Endecode;
 
-use crate::gpu::{DrawPixels, GpuState, Vram, mask_bit, set_mask_bit};
-use crate::memory::kb;
+use crate::gpu::Vram;
 
 #[derive(Copy, PartialEq, PartialOrd, Ord, Eq, d::Mul, d::MulAssign, Endecode)]
 #[derive_const(Clone, d::Add, d::AddAssign, Default, d::Debug)]
@@ -173,66 +172,6 @@ impl VramCursor {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
-    }
-}
-
-impl<A: Allocator> GpuState<A> {
-    pub(crate) fn vram_write(&mut self, coord: VramCoord, value: u16) {
-        let coord = coord.wrap();
-        let addr = coord.x as usize + coord.y as usize * kb(1);
-        self.vram_mutation_signal = true;
-        match &mut self.vram {
-            Vram::Mapped(vram) => {
-                vram[addr] = value;
-            }
-            Vram::Lent => {
-                tracing::error!("vram is lent.");
-            }
-        }
-    }
-
-    pub(crate) fn vram_read_direct(&mut self, coord: VramCoord) -> u16 {
-        let coord = coord.wrap();
-        let addr = coord.x as usize + coord.y as usize * kb(1);
-        match &self.vram {
-            Vram::Mapped(vram) => vram[addr],
-            Vram::Lent => {
-                tracing::error!("vram is lent.");
-                0
-            }
-        }
-    }
-
-    /// returns value through `self.gp0read`
-    pub(crate) fn vram_read(&mut self, coord: VramCoord, idx: usize) {
-        debug_assert!((0..=1).contains(&idx));
-        let value = self.vram_read_direct(coord);
-        self.gp0read[idx] = value;
-    }
-
-    pub fn vram_draw(&mut self, coord: VramCoord, mut value: u16) {
-        match self.gpustat.draw_pixels() {
-            DrawPixels::Always => {}
-            DrawPixels::NotToMaskedAreas => {
-                let current = self.vram_read_direct(coord);
-
-                if mask_bit(current) {
-                    return;
-                }
-                if self.gpustat.set_mask() {
-                    value = set_mask_bit(value, true);
-                }
-            }
-        }
-        self.vram_write(coord, value);
-    }
-}
-
-impl<A: Allocator + Copy> GpuState<A> {
-    pub async fn lock_vram(&mut self) -> &[u16] {
-        self.task_gpu_flush_draw_calls().await;
-        self.wait_for_render_result().await;
-        self.vram.as_slice()
     }
 }
 
