@@ -29,7 +29,7 @@ struct VertexOutput {
 };
 
 @group(0) @binding(0)
-var vram_t : texture_storage_2d<r16uint,read>;
+var vram_t : texture_storage_2d<rgba8unorm,read>;
 
 // struct RenderUniforms {
 // }
@@ -134,27 +134,34 @@ fn vramcoord_to_texcoord(coord: vec2<f32>) -> vec2<u32> {
     return vec2<u32>(vec2(coord.x, coord.y));
 }
 
-fn read_16bit(coord: vec2<f32>) -> u32 {
+fn read_16bit(coord: vec2<f32>) -> vec4<f32> {
     let texcoord = vramcoord_to_texcoord(coord);
     // wgpu tex coords are +Y = down
-    var packed = textureLoad(vram_t, texcoord).r;
-    return packed;
+    let texel = textureLoad(vram_t, texcoord);
+    return texel;
+}
+
+fn read_raw16(coord: vec2<f32>) -> u32 {
+    let t = read_16bit(coord);
+    let r = u32(round(t.r * 31.0));
+    let g = u32(round(t.g * 31.0));
+    let b = u32(round(t.b * 31.0));
+    let a = u32(round(t.a));
+    return r | (g << 5u) | (b << 10u) | (a << 15u);
 }
 
 fn read_4bit(coord: vec2<f32>) -> u32 {
-    var packed = read_16bit(vec2(coord.x / 4, coord.y));
-    let bit_idx = u32(coord.x) % 4;
-    let shift_amt = bit_idx * 4;
-
-    return (packed >> shift_amt) & 0xFu;
+    let x = i32(floor(coord.x));
+    let hw = read_raw16(vec2<f32>(f32(x >> 2u), floor(coord.y)));
+    let shift = u32(x & 3) * 4u;
+    return (hw >> shift) & 0xFu;
 }
 
 fn read_8bit(coord: vec2<f32>) -> u32 {
-    var packed = read_16bit(vec2(coord.x / 2, coord.y));
-    let bit_idx = u32(coord.x) % 2;
-    let shift_amt = bit_idx * 8;
-
-    return (packed >> shift_amt) & 0xFFu;
+    let x = i32(floor(coord.x));
+    let hw = read_raw16(vec2<f32>(f32(x >> 1u), floor(coord.y)));
+    let shift = u32(x & 1) * 8u;
+    return (hw >> shift) & 0xFFu;
 }
 
 fn pack_h(v: vec2<f32>, f: f32) -> vec2<f32> {
@@ -203,7 +210,7 @@ fn wrap2(x: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
 }
 
 struct Color {
-    packed: u32,
+    unpacked: vec4<f32>,
     transparent: bool
 }
 
@@ -227,7 +234,7 @@ fn get_color(in: VertexOutput) -> Color {
 
                 var coord = vec2(in.clut.x + f32(clut_idx), in.clut.y);
                 let clut_color = read_16bit(coord);
-                tex_color_packed = clut_color;
+                tex_color  = clut_color;
             }
             case COLOR_MODE_8BIT: {
                 let base = pack_h(in.texpage_base, 2);
@@ -237,20 +244,19 @@ fn get_color(in: VertexOutput) -> Color {
 
                 let coord = vec2(in.clut.x + f32(clut_idx), in.clut.y);
                 let clut_color = read_16bit(coord);
-                tex_color_packed = clut_color;
+                tex_color = clut_color;
             }
             case COLOR_MODE_15BIT, COLOR_MODE_24BIT, default: {
                 let base = in.texpage_base;
                 var texcoord = base  + in.uv;
                 texcoord = apply_tex_window(texcoord, tex_window);
-                tex_color_packed = read_16bit(texcoord);
+                tex_color = read_16bit(texcoord);
             }
         }
         has_stp = get_flag(tex_color_packed, 15);
-        tex_color = rgb5_split_color(tex_color_packed);
 
         if all(tex_color.rgb == vec3(0.0)) {
-            return Color(0, true);
+            return Color(vec4(0), true);
         }
 
         if get_modulation(in.flags) {
@@ -263,7 +269,7 @@ fn get_color(in: VertexOutput) -> Color {
     has_stp = has_stp && get_stp_on(in.flags);
     if has_stp {
         let mode = get_semi_transparency(in.flags);
-        let fbf = rgb5_split_color(read_16bit(in.vram_position));
+        let fbf = read_16bit(in.vram_position);
         switch mode {
             case 0, default: {
                 in_color = (in_color+fbf) * 0.5;
@@ -292,11 +298,10 @@ fn get_color(in: VertexOutput) -> Color {
     }
 
     if any(in_color.rgb > vec3(1.0)) || any(in_color.rgb < vec3(0.0)) {
-        return Color(pack_color(vec4(1.0, 0.0, 0.0, 1.0)), false);
+        return Color(vec4(1.0, 0.0, 0.0, 1.0), false);
     }
 
-    let color_packed = pack_color(in_color);
-    return Color(color_packed, false);
+    return Color(in_color, false);
 }
 
 const DITHER: array<array<i32, 4>, 4> = array(
@@ -307,7 +312,7 @@ const DITHER: array<array<i32, 4>, 4> = array(
 );
 
 @fragment
-fn fs_main(in: VertexOutput) -> @location(0) u32 {
+fn fs_main(in: VertexOutput) -> @location(0) vec4<f32>{
     if in.vram_position.x < in.draw_area_top_left.x
     || in.vram_position.y < in.draw_area_top_left.y
     || in.vram_position.x > in.draw_area_bottom_right.x
@@ -319,7 +324,7 @@ fn fs_main(in: VertexOutput) -> @location(0) u32 {
     var pbc = get_flag(in.gpustat, 12);
 
     var current = read_16bit(in.vram_position);
-    if pbc && get_mask_bit(current) {
+    if pbc && get_mask_bit(pack4x8unorm(current)) {
         discard;
     }
 
@@ -329,8 +334,8 @@ fn fs_main(in: VertexOutput) -> @location(0) u32 {
     }
 
     if pbw {
-        color.packed = rgb5_set_stp(color.packed);
+        color.unpacked.a = 1.0;
     }
 
-    return color.packed;
+    return color.unpacked;
 }

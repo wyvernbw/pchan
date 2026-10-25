@@ -63,9 +63,12 @@ pub struct Renderer {
     pub display_uniforms: DisplayUniforms,
     belt: Mutex<StagingBelt>,
     blit: BlitV2VResources,
+    readback: ReadbackResources,
 
     conn: Conn,
 }
+
+const VRAM_FMT: TextureFormat = TextureFormat::Rgba8Unorm;
 
 /// Uniforms passed to display shader
 #[derive(Debug)]
@@ -150,13 +153,13 @@ impl Renderer {
             mip_level_count: 1,
             sample_count: 1,
             dimension: TextureDimension::D2,
-            format: TextureFormat::R16Uint,
+            format: VRAM_FMT,
             usage: TextureUsages::RENDER_ATTACHMENT
                 | TextureUsages::COPY_SRC
                 | TextureUsages::COPY_DST
                 | TextureUsages::TEXTURE_BINDING
                 | TextureUsages::STORAGE_BINDING,
-            view_formats: &[TextureFormat::R16Uint],
+            view_formats: &[VRAM_FMT],
         });
         let render_view = render_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let render_sampler = device.create_sampler(&SamplerDescriptor {
@@ -191,22 +194,22 @@ impl Renderer {
             mip_level_count: 1,
             sample_count: 1,
             dimension: TextureDimension::D2,
-            format: TextureFormat::R16Uint,
+            format: VRAM_FMT,
             usage: TextureUsages::STORAGE_BINDING
                 | TextureUsages::COPY_DST
                 | TextureUsages::COPY_SRC,
-            view_formats: &[TextureFormat::R16Uint],
+            view_formats: &[VRAM_FMT],
         });
         let vram_view = vram_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let vram_out_buf = device.create_buffer(&BufferDescriptor {
             label: Some("psx.vram.out"),
-            size: 1024 * 512 * size_of::<u16>() as u64,
+            size: 1024 * 512 * size_of::<[u8; 4]>() as u64,
             usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
         let vram_blit_buffer = device.create_buffer(&BufferDescriptor {
             label: Some("psx.vram.blit"),
-            size: 1024 * 512 * size_of::<u16>() as u64,
+            size: 1024 * 512 * size_of::<[u8; 4]>() as u64,
             usage: BufferUsages::COPY_DST | BufferUsages::COPY_SRC | BufferUsages::STORAGE,
             mapped_at_creation: false,
         });
@@ -221,7 +224,7 @@ impl Renderer {
                     visibility: ShaderStages::all(),
                     ty: BindingType::StorageTexture {
                         access: StorageTextureAccess::ReadOnly,
-                        format: TextureFormat::R16Uint,
+                        format: VRAM_FMT,
                         view_dimension: TextureViewDimension::D2,
                     },
                     count: None,
@@ -250,7 +253,7 @@ impl Renderer {
                         binding: 0,
                         visibility: ShaderStages::VERTEX_FRAGMENT,
                         ty: BindingType::Texture {
-                            sample_type: TextureSampleType::Uint,
+                            sample_type: TextureSampleType::Float { filterable: false },
                             view_dimension: TextureViewDimension::D2,
                             multisampled: false,
                         },
@@ -338,7 +341,7 @@ impl Renderer {
                 entry_point: None,
                 compilation_options: PipelineCompilationOptions::default(),
                 targets: &[Some(ColorTargetState {
-                    format: TextureFormat::R16Uint,
+                    format: VRAM_FMT,
                     blend: None,
                     write_mask: ColorWrites::default(),
                 })],
@@ -385,6 +388,7 @@ impl Renderer {
         let belt = StagingBelt::new(device.clone(), mb(4) as u64);
         let blit_v2v =
             create_blit_compute_resources(&device, &vram_blit_buffer, &render_view, &vram_view);
+        let readback = create_readback_resources(&device, &render_view);
 
         Ok(Self {
             instance,
@@ -412,6 +416,7 @@ impl Renderer {
             belt: belt.into(),
             vram_blit_buffer,
             blit: blit_v2v,
+            readback,
         })
     }
 
@@ -644,28 +649,20 @@ impl Renderer {
         let mut encoder = self
             .device
             .create_command_encoder(&CommandEncoderDescriptor::default());
-        encoder.copy_texture_to_buffer(
-            TexelCopyTextureInfoBase {
-                texture: &self.render_texture,
-                mip_level: 0,
-                origin: Origin3d::default(),
-                aspect: TextureAspect::All,
-            },
-            TexelCopyBufferInfo {
-                buffer: &self.vram_out_buf,
-                layout: TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(1024 * 2),
-                    rows_per_image: Some(512),
-                },
-            },
-            Extent3d {
-                width: 1024,
-                height: 512,
-                depth_or_array_layers: 1,
-            },
-        );
 
+        let mut cpass = encoder.begin_compute_pass(&ComputePassDescriptor::default());
+        cpass.set_bind_group(0, &self.readback.bind_group, &[]);
+        cpass.set_pipeline(&self.readback.pipe);
+        cpass.dispatch_workgroups(1024 / 2 / 16, 512 / 16, 1);
+        drop(cpass);
+
+        encoder.copy_buffer_to_buffer(
+            &self.readback.readback_buf,
+            0,
+            &self.vram_out_buf,
+            0,
+            Some(self.readback.readback_buf.size()),
+        );
         self.queue.submit([encoder.finish()]);
 
         self.vram_out_buf.map_async(MapMode::Read, .., move |res| {
@@ -684,6 +681,31 @@ impl Renderer {
             unsafe { core::slice::from_raw_parts(buf_mapped.as_ptr().cast::<u16>(), 1024 * 512) };
         let mut vram = sink.lock().await;
         vram.copy_from_slice(buf);
+
+        {
+            use std::io::Write;
+
+            let width = 1024;
+            let height = 512;
+            let path = "/tmp/vram-dump.ppm";
+            let mut out = Vec::with_capacity(width * height * 3 + 32);
+            write!(out, "P6\n{width} {height}\n255\n").unwrap();
+
+            // 5-bit -> 8-bit, replicating the top bits so 31 maps to 255
+            let expand = |c: u16| ((c << 3) | (c >> 2)) as u8;
+
+            for &px in vram.iter().take(width * height) {
+                let r = px & 0x1F;
+                let g = (px >> 5) & 0x1F;
+                let b = (px >> 10) & 0x1F;
+                out.extend_from_slice(&[expand(r), expand(g), expand(b)]);
+            }
+
+            if let Err(err) = std::fs::write(path, out) {
+                tracing::warn!("failed to write {path}: {err}");
+            }
+        }
+
         drop(buf_mapped);
         self.vram_out_buf.unmap();
     }
@@ -903,8 +925,8 @@ impl Aabb {
         let max_w = 1024u32.saturating_sub(ox);
         let max_h = 512u32.saturating_sub(oy);
 
-        let width = cast(size.x - 1).next_multiple_of(4).min(max_w);
-        let height = cast(size.y - 1).next_multiple_of(4).min(max_h);
+        let width = cast(size.x).next_multiple_of(4).min(max_w);
+        let height = cast(size.y).next_multiple_of(4).min(max_h);
 
         (uvec2(ox, oy), uvec2(width, height))
     }
@@ -1612,7 +1634,7 @@ fn create_blit_compute_resources(
                 visibility: ShaderStages::COMPUTE,
                 ty: BindingType::StorageTexture {
                     access: StorageTextureAccess::ReadWrite,
-                    format: TextureFormat::R16Uint,
+                    format: VRAM_FMT,
                     view_dimension: TextureViewDimension::D2,
                 },
                 count: None,
@@ -1623,7 +1645,7 @@ fn create_blit_compute_resources(
                 visibility: ShaderStages::COMPUTE,
                 ty: BindingType::StorageTexture {
                     access: StorageTextureAccess::ReadWrite,
-                    format: TextureFormat::R16Uint,
+                    format: VRAM_FMT,
                     view_dimension: TextureViewDimension::D2,
                 },
                 count: None,
@@ -1728,5 +1750,87 @@ impl BlitUniforms {
 impl BlitUniforms {
     fn as_bytes(&self) -> &[u8] {
         unsafe { slice::from_raw_parts(ptr::from_ref(self).cast::<u8>(), mem::size_of_val(self)) }
+    }
+}
+
+#[derive(Debug)]
+struct ReadbackResources {
+    readback_buf: Buffer,
+    bind_group: BindGroup,
+    pipe: ComputePipeline,
+}
+
+fn create_readback_resources(device: &Device, target_view: &TextureView) -> ReadbackResources {
+    let shader = include_wgsl!("../shaders/rgb8-to-rgb5.wgsl");
+    let shader = device.create_shader_module(shader);
+
+    let readback_buf = device.create_buffer(&BufferDescriptor {
+        label: Some("pchan-gpu.blit.uniform_buffer"),
+        size: mb(1) as u64,
+        usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    });
+
+    let bind_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+        label: None,
+        entries: &[
+            // src texture
+            BindGroupLayoutEntry {
+                binding: 0,
+                visibility: ShaderStages::COMPUTE,
+                ty: BindingType::Texture {
+                    sample_type: TextureSampleType::Float { filterable: false },
+                    view_dimension: TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            // dest buffer
+            BindGroupLayoutEntry {
+                binding: 1,
+                visibility: ShaderStages::COMPUTE,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+        ],
+    });
+
+    let bind_group = device.create_bind_group(&BindGroupDescriptor {
+        label: None,
+        layout: &bind_layout,
+        entries: &[
+            BindGroupEntry {
+                binding: 0,
+                resource: BindingResource::TextureView(target_view),
+            },
+            BindGroupEntry {
+                binding: 1,
+                resource: BindingResource::Buffer(readback_buf.as_entire_buffer_binding()),
+            },
+        ],
+    });
+
+    let pipe_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
+        label: None,
+        bind_group_layouts: &[Some(&bind_layout)],
+        immediate_size: 0,
+    });
+    let cpipe = device.create_compute_pipeline(&ComputePipelineDescriptor {
+        label: None,
+        layout: Some(&pipe_layout),
+        module: &shader,
+        entry_point: None,
+        compilation_options: PipelineCompilationOptions::default(),
+        cache: None,
+    });
+
+    ReadbackResources {
+        readback_buf,
+        bind_group,
+        pipe: cpipe,
     }
 }

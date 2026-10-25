@@ -87,36 +87,36 @@ impl<A: Allocator + Copy> RenderPass<'_, A> {
     }
 
     fn init_vram(&mut self, vram: &[u16], dirty: bool) {
-        let vram_buf =
-            unsafe { slice::from_raw_parts(vram.as_ptr().cast::<u8>(), mem::size_of_val(vram)) };
-        if dirty {
-            const STAGING_SIZE: NonZeroU64 = NonZeroU64::new(1024 * 2 * 512).unwrap();
-            const STAGING_ALIGNMENT: NonZeroU64 = NonZeroU64::new(256).unwrap();
+        // let vram_buf =
+        //     unsafe { slice::from_raw_parts(vram.as_ptr().cast::<u8>(), mem::size_of_val(vram)) };
+        // if dirty {
+        //     const STAGING_SIZE: NonZeroU64 = NonZeroU64::new(1024 * 2 * 512).unwrap();
+        //     const STAGING_ALIGNMENT: NonZeroU64 = NonZeroU64::new(256).unwrap();
 
-            let staging = self.belt.allocate(STAGING_SIZE, STAGING_ALIGNMENT);
-            let mut view = staging
-                .get_mapped_range_mut()
-                .expect("failed to map staging buffer");
-            view.copy_from_slice(vram_buf);
-            self.encoder.copy_buffer_to_texture(
-                TexelCopyBufferInfo {
-                    buffer: staging.buffer(),
-                    layout: TexelCopyBufferLayout {
-                        offset: staging.offset(),
-                        bytes_per_row: Some(1024 * 2),
-                        rows_per_image: Some(512),
-                    },
-                },
-                self.renderer.vram_texture.as_image_copy(),
-                Extent3d {
-                    width: 1024,
-                    height: 512,
-                    depth_or_array_layers: 1,
-                },
-            );
+        //     let staging = self.belt.allocate(STAGING_SIZE, STAGING_ALIGNMENT);
+        //     let mut view = staging
+        //         .get_mapped_range_mut()
+        //         .expect("failed to map staging buffer");
+        //     view.copy_from_slice(vram_buf);
+        //     self.encoder.copy_buffer_to_texture(
+        //         TexelCopyBufferInfo {
+        //             buffer: staging.buffer(),
+        //             layout: TexelCopyBufferLayout {
+        //                 offset: staging.offset(),
+        //                 bytes_per_row: Some(1024 * 2),
+        //                 rows_per_image: Some(512),
+        //             },
+        //         },
+        //         self.renderer.vram_texture.as_image_copy(),
+        //         Extent3d {
+        //             width: 1024,
+        //             height: 512,
+        //             depth_or_array_layers: 1,
+        //         },
+        //     );
 
-            self.commit_vram_to_render();
-        }
+        //     self.commit_vram_to_render();
+        // }
     }
 
     fn start_scene(&mut self, scene: &Scene<A>) {
@@ -229,7 +229,7 @@ impl<A: Allocator + Copy> RenderPass<'_, A> {
                 buffer: &self.renderer.vram_blit_buffer,
                 layout: TexelCopyBufferLayout {
                     offset: 0,
-                    bytes_per_row: Some(1024 * 2),
+                    bytes_per_row: Some(1024 * 4),
                     rows_per_image: Some(512),
                 },
             },
