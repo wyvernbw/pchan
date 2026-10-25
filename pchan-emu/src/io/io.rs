@@ -45,8 +45,8 @@ impl<A: Allocator + Copy> Emu<A> {
         self.evque_advance(d_clock).await;
 
         self.run_gpu();
-        self.run_video_io(d_clock);
         self.run_sio_bdtimers(d_clock);
+        self.run_video_io(d_clock).await;
 
         let mut d_clock = d_clock;
         while d_clock > 0 {

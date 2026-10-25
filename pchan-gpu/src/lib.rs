@@ -1,3 +1,4 @@
+#![feature(allocator_ext)]
 #![feature(duration_millis_float)]
 #![allow(clippy::missing_errors_doc)]
 #![allow(clippy::missing_panics_doc)]
@@ -7,6 +8,7 @@
 extern crate alloc;
 
 use alloc::alloc::Global;
+use alloc::collections::VecDeque;
 use alloc::slice;
 use arbitrary_int::prelude::*;
 use blink_alloc::BlinkAlloc;
@@ -33,12 +35,14 @@ use pchan_emu::gpu::draw_call::{
     RectSize, Shading,
 };
 use pchan_emu::gpu::{
-    Conn, Display, DisplayColorDepth, DrawCallMsg, DrawPixels, FlushMsg, Gp0TexWindowCmd,
-    GpuStatReg, TextureColorMode, VramPayload,
+    Conn, Display, DisplayColorDepth, DrawCallMsg, DrawPixels, Gp0TexWindowCmd, GpuStatReg,
+    InitMsg, TextureColorMode, VramPayload,
 };
 use thiserror::Error;
 pub use wgpu;
 use wgpu::*;
+
+use crate::render_pass::PchanRenderPass;
 
 #[derive(Debug)]
 pub struct Renderer {
@@ -356,11 +360,7 @@ impl Renderer {
                 module: &display_shader,
                 entry_point: None,
                 compilation_options: PipelineCompilationOptions::default(),
-                buffers: &[Some(VertexBufferLayout {
-                    array_stride: 0,
-                    step_mode: VertexStepMode::Vertex,
-                    attributes: &[],
-                })],
+                buffers: &[],
             },
             primitive: PrimitiveState {
                 topology: PrimitiveTopology::TriangleList,
@@ -484,7 +484,8 @@ impl Renderer {
     async fn render_loop(self: Arc<Self>) {
         tracing::info!("started gpu renderer task");
         let mut alloc = BlinkAlloc::new();
-        let mut vram_cleared = true;
+        let mut init: Option<InitMsg<_>> = None;
+        let mut rpass: Option<PchanRenderPass> = None;
         loop {
             let msg = self
                 .conn
@@ -496,57 +497,51 @@ impl Renderer {
             match msg {
                 DrawCallMsg::DrawCall(draw_call) => {
                     alloc.reset();
-                    let mut pass = Pass::new_in(&alloc);
-                    pass.add_draw_call(draw_call);
-                    let mut flush = match self.draw_submission_loop(&mut pass).await {
-                        SubmissionResult::Reset(ack) => {
-                            self.reset();
-                            vram_cleared = true;
-                            ack.send(()).await.unwrap();
-                            continue;
-                        }
-                        SubmissionResult::RequestedVram => {
-                            continue;
-                        }
-                        SubmissionResult::Flush(flush) => flush,
-                    };
+                    let mut pass_cmds = Pass::new_in(&alloc);
+                    pass_cmds.add_draw_call(draw_call);
+                    loop {
+                        match self.draw_submission_loop(&mut pass_cmds).await {
+                            SubmissionResult::Reset(ack) => {
+                                self.reset();
+                                ack.send(()).await.unwrap();
+                                break;
+                            }
+                            SubmissionResult::RequestedVram => {
+                                pass_cmds.end();
+                                while let Some(cmd) = pass_cmds.pending_cmds.pop_front() {
+                                    self.run_cmd(cmd, &mut rpass).await;
+                                }
+                                break;
+                            }
+                            SubmissionResult::Init(_) | SubmissionResult::None => {}
+                            SubmissionResult::CommandsBuilt => {
+                                while let Some(cmd) = pass_cmds.pending_cmds.pop_front() {
+                                    self.run_cmd(cmd, &mut rpass).await;
+                                }
+                            }
+                        };
+                    }
 
-                    self.update_hw_display_uniforms(&flush.display, flush.gpustat);
-
-                    let start = Instant::now();
-                    tracing::info!("draw#{}:", flush.draw_idx);
-                    let mut render_pass = self.create_render_pass(pass);
-                    render_pass.draw(&flush.vram.vram, flush.vram.dirty || vram_cleared);
-                    render_pass.finish(&mut flush.vram.vram).await.unwrap();
-                    let elapsed = start.elapsed();
-
-                    vram_cleared = false;
-
-                    // if tracing::enabled!(Level::DEBUG) {
-                    tracing::info!("finished render in {:.2}ms", elapsed.as_millis_f32());
-                    // }
-
-                    self.conn
-                        .vram_out_chan
-                        .0
-                        .send(pchan_emu::gpu::VramRes::Ok(VramPayload {
-                            vram: flush.vram.vram,
-                            draw_idx: flush.draw_idx,
-                        }))
-                        .await
-                        .unwrap();
+                    if let Some(mut init) = init.take() {
+                        self.finish(&mut init, &mut rpass).await;
+                        self.conn
+                            .vram_out_chan
+                            .0
+                            .send(pchan_emu::gpu::VramRes::Ok(VramPayload {
+                                vram: init.vram.vram,
+                                draw_idx: init.draw_idx,
+                            }))
+                            .await
+                            .unwrap();
+                    }
                 }
-                DrawCallMsg::Flush(flush) => {
-                    self.update_hw_display_uniforms(&flush.display, flush.gpustat);
-                    self.conn
-                        .vram_out_chan
-                        .0
-                        .send(pchan_emu::gpu::VramRes::Ok(VramPayload {
-                            vram: flush.vram.vram,
-                            draw_idx: flush.draw_idx,
-                        }))
-                        .await
-                        .unwrap();
+                DrawCallMsg::Init(new_init) => {
+                    self.update_hw_display_uniforms(&new_init.display, new_init.gpustat);
+                    let mut render_pass = self.create_render_pass();
+                    render_pass.init_vram(&new_init.vram.vram, new_init.vram.dirty);
+                    rpass = Some(render_pass);
+                    tracing::info!("draw#{}:", new_init.draw_idx);
+                    init = Some(new_init);
                 }
                 DrawCallMsg::UpdateDisplay(display, gpustat) => {
                     self.update_hw_display_uniforms(&display, gpustat);
@@ -555,7 +550,19 @@ impl Renderer {
                     self.reset();
                     ack.send(()).await.unwrap();
                 }
-                DrawCallMsg::RequestVram => {}
+                DrawCallMsg::RequestVram => {
+                    if let Some(init) = init.take() {
+                        self.conn
+                            .vram_out_chan
+                            .0
+                            .send(pchan_emu::gpu::VramRes::Ok(VramPayload {
+                                vram: init.vram.vram,
+                                draw_idx: init.draw_idx,
+                            }))
+                            .await
+                            .unwrap();
+                    }
+                }
             }
         }
     }
@@ -569,29 +576,64 @@ impl Renderer {
         &self,
         pass: &mut Pass<A>,
     ) -> SubmissionResult<Global> {
-        loop {
-            let msg = self
-                .conn
-                .draw_call_chan
-                .1
-                .recv()
-                .await
-                .expect("render channel closed");
-            match msg {
-                DrawCallMsg::DrawCall(draw_call) => {
-                    pass.add_draw_call(draw_call);
-                }
-                DrawCallMsg::Flush(flush_msg) => {
-                    pass.flush_geometry();
-                    return SubmissionResult::Flush(flush_msg);
-                }
-                DrawCallMsg::UpdateDisplay(display, gpustat) => {
-                    self.update_hw_display_uniforms(&display, gpustat);
-                }
-                DrawCallMsg::Reset(ack) => return SubmissionResult::Reset(ack),
-                DrawCallMsg::RequestVram => return SubmissionResult::RequestedVram,
+        let msg = self
+            .conn
+            .draw_call_chan
+            .1
+            .recv()
+            .await
+            .expect("render channel closed");
+        match msg {
+            DrawCallMsg::DrawCall(draw_call) => {
+                pass.add_draw_call(draw_call);
             }
+            DrawCallMsg::Init(flush_msg) => {
+                if let Err(cmd) = pass.flush_geometry() {
+                    pass.pending_cmds.push_back(cmd);
+                }
+                return SubmissionResult::Init(flush_msg);
+            }
+            DrawCallMsg::UpdateDisplay(display, gpustat) => {
+                self.update_hw_display_uniforms(&display, gpustat);
+            }
+            DrawCallMsg::Reset(ack) => return SubmissionResult::Reset(ack),
+            DrawCallMsg::RequestVram => return SubmissionResult::RequestedVram,
         }
+        if pass.pending_cmds.is_empty() {
+            SubmissionResult::None
+        } else {
+            SubmissionResult::CommandsBuilt
+        }
+    }
+
+    async fn run_cmd<'a, A: Allocator + Copy>(
+        &'a self,
+        cmd: Command<A>,
+        rpass: &mut Option<PchanRenderPass<'a>>,
+    ) {
+        let now = Instant::now();
+
+        let mut pass = match rpass.take() {
+            Some(pass) => pass,
+            None => self.create_render_pass(),
+        };
+        let submit = pass.draw(cmd);
+        if submit {
+            pass.submit();
+        } else {
+            *rpass = Some(pass);
+        }
+
+        let elapsed = now.elapsed();
+        tracing::info!("finished cmd in {:.2}ms", elapsed.as_millis_f32());
+    }
+
+    async fn finish(&self, init: &mut InitMsg<Global>, rpass: &mut Option<PchanRenderPass<'_>>) {
+        let rpass = match rpass.take() {
+            Some(pass) => pass,
+            None => self.create_render_pass(),
+        };
+        rpass.finish(&mut init.vram.vram).await.unwrap();
     }
 
     pub fn reset(&self) {
@@ -664,13 +706,15 @@ impl Renderer {
     }
 }
 
-enum SubmissionResult<A: Allocator> {
+enum SubmissionResult<FA: Allocator> {
     Reset(kanal::AsyncSender<()>),
     RequestedVram,
-    Flush(FlushMsg<A>),
+    Init(InitMsg<FA>),
+    CommandsBuilt,
+    None,
 }
 
-#[derive(derive_more::Debug)]
+#[derive(derive_more::Debug, Default)]
 enum Command<A: Allocator> {
     DrawGeometry(GeometryDraw<A>),
     VramToVramBlit {
@@ -682,6 +726,8 @@ enum Command<A: Allocator> {
         data: Vec<u8>,
         gpustat: GpuStatReg,
     },
+    #[default]
+    Nop,
 }
 
 struct GeometryDraw<A: Allocator> {
@@ -704,7 +750,7 @@ enum BatchedGeometryDrawKind {
 
 #[derive(derive_more::Debug)]
 pub(crate) struct Pass<A: Allocator> {
-    cmds: Vec<Command<A>, A>,
+    pending_cmds: VecDeque<Command<A>, A>,
     geometry_builder: Option<GeometryBuilder<A>>,
     vertex_buf_cursor: u32,
     #[debug(skip)]
@@ -947,22 +993,20 @@ impl<A: Allocator + Copy> GeometryBuilder<A> {
 
 impl<A: Allocator + Copy> Pass<A> {
     pub fn empty(alloc: A) -> Self {
-        let cmds = Vec::new_in(alloc);
         Pass {
-            cmds,
             geometry_builder: None,
             alloc,
             vertex_buf_cursor: 0,
+            pending_cmds: VecDeque::with_capacity_in(4, alloc),
         }
     }
 
     pub fn new_in(alloc: A) -> Self {
-        let cmds = Vec::new_in(alloc);
         Pass {
-            cmds,
             geometry_builder: None,
             alloc,
             vertex_buf_cursor: 0,
+            pending_cmds: VecDeque::with_capacity_in(4, alloc),
         }
     }
 
@@ -978,15 +1022,19 @@ impl<A: Allocator + Copy> Pass<A> {
                     builder.add_draw_call(draw_call);
                 }
                 DrawCallKind::BlitVram2Vram(gp0_vram_blit) => {
-                    self.flush_geometry();
-                    self.cmds.push(Command::VramToVramBlit {
+                    if let Err(cmd) = self.flush_geometry() {
+                        self.pending_cmds.push_back(cmd);
+                    }
+                    self.pending_cmds.push_back(Command::VramToVramBlit {
                         blit: gp0_vram_blit,
                         gpustat: draw_call.gpustat,
                     });
                 }
                 DrawCallKind::BlitCpu2Vram(gp0_host_blit, data) => {
-                    self.flush_geometry();
-                    self.cmds.push(Command::CpuToVramBlit {
+                    if let Err(cmd) = self.flush_geometry() {
+                        self.pending_cmds.push_back(cmd);
+                    }
+                    self.pending_cmds.push_back(Command::CpuToVramBlit {
                         blit: gp0_host_blit,
                         gpustat: draw_call.gpustat,
                         data,
@@ -1004,13 +1052,13 @@ impl<A: Allocator + Copy> Pass<A> {
                     self.geometry_builder = Some(geometry_builder);
                 }
                 DrawCallKind::BlitVram2Vram(blit) => {
-                    self.cmds.push(Command::VramToVramBlit {
+                    self.pending_cmds.push_back(Command::VramToVramBlit {
                         blit,
                         gpustat: draw_call.gpustat,
                     });
                 }
                 DrawCallKind::BlitCpu2Vram(blit, data) => {
-                    self.cmds.push(Command::CpuToVramBlit {
+                    self.pending_cmds.push_back(Command::CpuToVramBlit {
                         blit,
                         data,
                         gpustat: draw_call.gpustat,
@@ -1022,15 +1070,23 @@ impl<A: Allocator + Copy> Pass<A> {
         };
     }
 
-    fn flush_geometry(&mut self) {
+    fn end(&mut self) {
+        if let Err(cmd) = self.flush_geometry() {
+            self.pending_cmds.push_back(cmd);
+        }
+    }
+
+    fn flush_geometry(&mut self) -> Result<(), Command<A>> {
         if let Some(mut geom) = self.geometry_builder.take() {
             geom.flush_batch();
             self.vertex_buf_cursor += geom.scene.vertex_bytes().len() as u32;
-            self.cmds.push(Command::DrawGeometry(GeometryDraw {
+            Err(Command::DrawGeometry(GeometryDraw {
                 batches: geom.batches,
                 scene: geom.scene,
                 dp: geom.dp,
-            }));
+            }))
+        } else {
+            Ok(())
         }
     }
 }
