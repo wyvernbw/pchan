@@ -27,7 +27,7 @@ All games will have some graphical glitches because the gpu isn't done yet.
 Games I'm testing:
 
 - MK2: **playable**
-- Crash Bandicoot: **in-game**, 3d is broken (duh)
+- Crash Bandicoot: **playable**, some graphical glitches, timing issues
 - Ridge Racer: **intro** (cdrom issue)
 - Puzzle Bobble 2: **playable**, very broken graphically 
 - FF7: **no boot**
