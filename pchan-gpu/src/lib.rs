@@ -193,7 +193,9 @@ impl Renderer {
             sample_count: 1,
             dimension: TextureDimension::D2,
             format: TextureFormat::R16Uint,
-            usage: TextureUsages::STORAGE_BINDING | TextureUsages::COPY_DST,
+            usage: TextureUsages::STORAGE_BINDING
+                | TextureUsages::COPY_DST
+                | TextureUsages::COPY_SRC,
             view_formats: &[TextureFormat::R16Uint],
         });
         let vram_view = vram_texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -697,7 +699,7 @@ struct BatchedGeometryDraw {
 #[derive(derive_more::Debug)]
 enum BatchedGeometryDrawKind {
     OpaqueOnly,
-    Transparent,
+    Transparent(Aabb),
 }
 
 #[derive(derive_more::Debug)]
@@ -763,7 +765,7 @@ impl<A: Allocator + Copy> Scene<A> {
 impl From<&DrawCall> for BatchedGeometryDrawKind {
     fn from(value: &DrawCall) -> Self {
         match value.inner.is_transparent() {
-            true => BatchedGeometryDrawKind::Transparent,
+            true => BatchedGeometryDrawKind::Transparent(Aabb::void()),
             false => BatchedGeometryDrawKind::OpaqueOnly,
         }
     }
@@ -804,6 +806,18 @@ impl Aabb {
     fn intersects(self, o: Aabb) -> bool {
         self.min.cmplt(o.max).all() && o.min.cmplt(self.max).all()
     }
+    fn union(self, o: Aabb) -> Aabb {
+        Aabb {
+            min: self.min.min(o.min),
+            max: self.max.max(o.max),
+        }
+    }
+    fn clamp(self, o: Aabb) -> Aabb {
+        Aabb {
+            min: self.min.clamp(o.min, o.max),
+            max: self.max.clamp(o.min, o.max),
+        }
+    }
     fn bounding_box_of(draw_call: &DrawCall) -> Option<Self> {
         match &draw_call.inner {
             DrawCallKind::Rect(draw_rect) => match draw_rect.header.size() {
@@ -837,6 +851,10 @@ impl Aabb {
             _ => None,
         }
     }
+
+    fn to_origin_size(self) -> (I16Vec2, I16Vec2) {
+        (self.min, self.max - self.min)
+    }
 }
 
 impl<A: Allocator + Copy> GeometryBuilder<A> {
@@ -850,14 +868,14 @@ impl<A: Allocator + Copy> GeometryBuilder<A> {
         }
     }
     fn add_draw_call(&mut self, draw_call: DrawCall) {
-        match self.builder.kind {
+        match &mut self.builder.kind {
             BatchedGeometryDrawKind::OpaqueOnly => {
                 if draw_call.inner.is_transparent() {
                     self.begin_transparent();
                     return self.add_draw_call(draw_call);
                 }
             }
-            BatchedGeometryDrawKind::Transparent => {
+            BatchedGeometryDrawKind::Transparent(reads_from) => {
                 // check for overlapping geometry in transparent pass
                 if let Some(aabb) = Aabb::bounding_box_of(&draw_call) {
                     if draw_call.inner.is_transparent() {
@@ -865,6 +883,11 @@ impl<A: Allocator + Copy> GeometryBuilder<A> {
                             self.begin_transparent();
                             return self.add_draw_call(draw_call);
                         }
+
+                        *reads_from = reads_from.union(aabb).clamp(Aabb {
+                            min: i16vec2(0, 0),
+                            max: i16vec2(1024, 512),
+                        });
                     }
                     self.aabbs.push(aabb);
                 }
@@ -903,7 +926,7 @@ impl<A: Allocator + Copy> GeometryBuilder<A> {
 
     fn begin_transparent(&mut self) {
         self.flush_batch();
-        self.builder.kind = BatchedGeometryDrawKind::Transparent;
+        self.builder.kind = BatchedGeometryDrawKind::Transparent(Aabb::void());
     }
 
     fn flush_batch(&mut self) {
