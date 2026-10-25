@@ -356,11 +356,7 @@ impl Renderer {
                 module: &display_shader,
                 entry_point: None,
                 compilation_options: PipelineCompilationOptions::default(),
-                buffers: &[Some(VertexBufferLayout {
-                    array_stride: 0,
-                    step_mode: VertexStepMode::Vertex,
-                    attributes: &[],
-                })],
+                buffers: &[],
             },
             primitive: PrimitiveState {
                 topology: PrimitiveTopology::TriangleList,
@@ -725,12 +721,14 @@ impl<A: Allocator + Copy> Scene<A> {
         Self {
             vertex_buf: Vec::with_capacity_in(512, alloc),
             vertex_buf_start: at,
+            aabb: Aabb::void(),
         }
     }
     fn from_draw_call(at: u32, draw_call: DrawCall, alloc: A) -> Option<Self> {
         let mut scene = Scene {
             vertex_buf: Vec::new_in(alloc),
             vertex_buf_start: at,
+            aabb: Aabb::void(),
         };
         match draw_call.inner {
             DrawCallKind::Rect(draw_rect) => {
@@ -787,10 +785,20 @@ struct Aabb {
 }
 
 impl Aabb {
-    fn void() -> Self {
+    const VRAM: Self = Aabb {
+        min: i16vec2(0, 0),
+        max: i16vec2(1024, 512),
+    };
+    const fn void() -> Self {
         Self {
             min: I16Vec2::MAX,
             max: I16Vec2::MIN,
+        }
+    }
+    const fn zero() -> Self {
+        Self {
+            min: I16Vec2::ZERO,
+            max: I16Vec2::ZERO,
         }
     }
     fn new(origin: I16Vec2, size: I16Vec2) -> Self {
@@ -798,6 +806,7 @@ impl Aabb {
         let max = origin + size;
         Self { min: origin, max }
     }
+    #[must_use]
     fn grow_to_include(self, pos: I16Vec2) -> Self {
         let min = self.min.min(pos);
         let max = self.max.max(pos);
@@ -855,6 +864,21 @@ impl Aabb {
     fn to_origin_size(self) -> (I16Vec2, I16Vec2) {
         (self.min, self.max - self.min)
     }
+
+    fn to_vram_origin_size(self) -> (UVec2, UVec2) {
+        let (origin, size) = self.to_origin_size();
+        let cast = |x: i16| u32::from(x.max(0).cast_unsigned());
+
+        let ox = cast(origin.x);
+        let oy = cast(origin.y);
+        let max_w = 1024u32.saturating_sub(ox);
+        let max_h = 512u32.saturating_sub(oy);
+
+        let width = cast(size.x - 1).next_multiple_of(4).min(max_w);
+        let height = cast(size.y - 1).next_multiple_of(4).min(max_h);
+
+        (uvec2(ox, oy), uvec2(width, height))
+    }
 }
 
 impl<A: Allocator + Copy> GeometryBuilder<A> {
@@ -871,8 +895,10 @@ impl<A: Allocator + Copy> GeometryBuilder<A> {
         match &mut self.builder.kind {
             BatchedGeometryDrawKind::OpaqueOnly => {
                 if draw_call.inner.is_transparent() {
-                    self.begin_transparent();
+                    self.builder.kind = BatchedGeometryDrawKind::Transparent(Aabb::zero());
                     return self.add_draw_call(draw_call);
+                } else if let Some(aabb) = Aabb::bounding_box_of(&draw_call) {
+                    self.aabbs.push(aabb.clamp(Aabb::VRAM));
                 }
             }
             BatchedGeometryDrawKind::Transparent(reads_from) => {
@@ -926,7 +952,7 @@ impl<A: Allocator + Copy> GeometryBuilder<A> {
 
     fn begin_transparent(&mut self) {
         self.flush_batch();
-        self.builder.kind = BatchedGeometryDrawKind::Transparent(Aabb::void());
+        self.builder.kind = BatchedGeometryDrawKind::Transparent(Aabb::zero());
     }
 
     fn flush_batch(&mut self) {
@@ -1195,6 +1221,7 @@ impl Flags {
 pub struct Scene<A: Allocator> {
     vertex_buf: Vec<Vertex, A>,
     vertex_buf_start: u32,
+    aabb: Aabb,
 }
 
 impl From<VramCoord> for Vertex {
@@ -1356,6 +1383,9 @@ impl<A: Allocator> Scene<A> {
             }
         };
         let vertices = triangulate_quad(&quad.vertices());
+        for vertex in &vertices {
+            self.aabb = self.aabb.grow_to_include(vertex.pos).clamp(Aabb::VRAM);
+        }
         self.vertex_buf.extend(vertices);
         Ok(self.vertex_bytes().len())
     }
@@ -1416,11 +1446,18 @@ impl<A: Allocator> Scene<A> {
             pchan_emu::gpu::draw_call::DrawPolygonVertexCount::Three => {
                 assert_eq!(vertices.len(), 3);
                 ensure_vertex_order(&mut vertices, [0, 1, 2]);
+                for vertex in &vertices {
+                    self.aabb = self.aabb.grow_to_include(vertex.pos).clamp(Aabb::VRAM);
+                }
                 self.vertex_buf.extend(vertices);
             }
             pchan_emu::gpu::draw_call::DrawPolygonVertexCount::Four => {
                 assert_eq!(vertices.len(), 4);
                 let vertices = triangulate_quad(&vertices);
+
+                for vertex in &vertices {
+                    self.aabb = self.aabb.grow_to_include(vertex.pos).clamp(Aabb::VRAM);
+                }
 
                 self.vertex_buf.extend_from_slice(&vertices);
             }

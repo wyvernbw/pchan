@@ -135,3 +135,13 @@ in comparision with duckstation dynarec, fails:
 - [x] fix bra adv
 - [x] add lwl/lwr load cancels
 - [x] fix mem adv
+
+# HW Rasterizer Todos
+
+- [ ] make rasterizer own the vram 
+- [ ] make the vram rgba8unorm texture instead of r16uint
+- [ ] handle semi-transparency using blend states
+  - [ ] split batches based on transparency type 
+  - [ ] add pipeline with blend constant
+  - [ ] subtract pipeline
+

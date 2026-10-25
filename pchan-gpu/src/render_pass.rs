@@ -4,14 +4,14 @@ use core::{mem, ptr, slice};
 use std::sync::MutexGuard;
 
 use crate::{
-    BatchedGeometryDraw, BatchedGeometryDrawKind, BlitUniforms, Command, Pass, Renderer, Scene,
-    Vertex,
+    Aabb, BatchedGeometryDraw, BatchedGeometryDrawKind, BlitUniforms, Command, Pass, Renderer,
+    Scene, Vertex,
 };
 use pchan_emu::gpu::GpuStatReg;
 use pchan_emu::gpu::draw_call::{Gp0HostBlit, Gp0VramBlit};
 use pchan_utils::tracy;
 use tracing::Level;
-use wgpu::util::{BufferInitDescriptor, DeviceExt, StagingBelt};
+use wgpu::util::StagingBelt;
 use wgpu::*;
 
 const WORKGROUP_SIZE: u32 = 16;
@@ -31,13 +31,6 @@ impl Renderer {
     }
 
     pub fn draw_display(&self, render_pass: &mut wgpu::RenderPass<'_>) {
-        let vertex_buf = &[0, 0, 0, 0, 0, 0];
-        let vertex_buffer = self.device.create_buffer_init(&BufferInitDescriptor {
-            label: None,
-            usage: BufferUsages::VERTEX,
-            contents: vertex_buf,
-        });
-
         {
             let display_uniforms = self.display_uniforms.to_data();
             let display_uniforms_slice = unsafe {
@@ -51,7 +44,6 @@ impl Renderer {
 
         render_pass.set_pipeline(&self.display_pipeline);
         render_pass.set_bind_group(0, &self.display_bind_group, &[]);
-        render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
         render_pass.draw(0..6, 0..1);
     }
 }
@@ -79,7 +71,7 @@ impl<A: Allocator + Copy> RenderPass<'_, A> {
                         tracing::debug!("\t- batch: {}..{}", batch.span.start, batch.span.end);
                         self.draw_batch(batch, &geom.scene);
                     }
-                    self.end_scene();
+                    self.end_scene(&geom.scene);
                 }
                 Command::VramToVramBlit { blit, gpustat } => {
                     self.vram_blit(blit, *gpustat);
@@ -124,22 +116,7 @@ impl<A: Allocator + Copy> RenderPass<'_, A> {
                 },
             );
 
-            self.encoder.copy_buffer_to_texture(
-                TexelCopyBufferInfo {
-                    buffer: staging.buffer(),
-                    layout: TexelCopyBufferLayout {
-                        offset: staging.offset(),
-                        bytes_per_row: Some(1024 * 2),
-                        rows_per_image: Some(512),
-                    },
-                },
-                self.renderer.render_texture.as_image_copy(),
-                Extent3d {
-                    width: 1024,
-                    height: 512,
-                    depth_or_array_layers: 1,
-                },
-            );
+            self.commit_vram_to_render();
         }
     }
 
@@ -158,8 +135,6 @@ impl<A: Allocator + Copy> RenderPass<'_, A> {
             );
             view.copy_from_slice(vertex_buf);
         }
-
-        self.commit_vram_to_render();
     }
 
     fn draw_batch(&mut self, batch: &BatchedGeometryDraw, scene: &Scene<A>) {
@@ -170,32 +145,7 @@ impl<A: Allocator + Copy> RenderPass<'_, A> {
         let vertex_end = byte_end / size_of::<Vertex>() as u32;
 
         if let BatchedGeometryDrawKind::Transparent(reads_from) = batch.kind {
-            let (origin, size) = reads_from.to_origin_size();
-            let cast = |x: i16| u32::from(x.max(0).cast_unsigned());
-
-            let ox = cast(origin.x);
-            let oy = cast(origin.y);
-            let max_w = 1024u32.saturating_sub(ox);
-            let max_h = 512u32.saturating_sub(oy);
-
-            let width = cast(size.x - 1).next_multiple_of(4).min(max_w);
-            let height = cast(size.y - 1).next_multiple_of(4).min(max_h);
-
-            let copy_info = |texture| TexelCopyTextureInfo {
-                texture,
-                mip_level: 0,
-                origin: Origin3d { x: ox, y: oy, z: 0 },
-                aspect: TextureAspect::All,
-            };
-            self.encoder.copy_texture_to_texture(
-                copy_info(&self.renderer.render_texture),
-                copy_info(&self.renderer.vram_texture),
-                Extent3d {
-                    width,
-                    height,
-                    depth_or_array_layers: 1,
-                },
-            );
+            self.copy_render_to_vram(reads_from);
         }
 
         let mut render_pass = self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -220,8 +170,31 @@ impl<A: Allocator + Copy> RenderPass<'_, A> {
         render_pass.draw(vertex_start..vertex_end, 0..1);
     }
 
-    fn end_scene(&mut self) {
-        self.commit_render_to_vram();
+    fn copy_render_to_vram(&mut self, aabb: Aabb) {
+        let (origin, size) = aabb.to_vram_origin_size();
+        let copy_info = |texture| TexelCopyTextureInfo {
+            texture,
+            mip_level: 0,
+            origin: Origin3d {
+                x: origin.x,
+                y: origin.y,
+                z: 0,
+            },
+            aspect: TextureAspect::All,
+        };
+        self.encoder.copy_texture_to_texture(
+            copy_info(&self.renderer.render_texture),
+            copy_info(&self.renderer.vram_texture),
+            Extent3d {
+                width: size.x,
+                height: size.y,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
+
+    fn end_scene(&mut self, scene: &Scene<A>) {
+        self.copy_render_to_vram(scene.aabb);
     }
 
     fn commit_render_to_vram(&mut self) {
