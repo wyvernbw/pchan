@@ -42,15 +42,16 @@ pub struct Conn {
 #[derive(Debug, Clone)]
 pub enum DrawCallMsg<A: Allocator> {
     DrawCall(DrawCall),
-    Init(InitMsg<A>),
+    Flush(FlushMsg<A>),
     UpdateDisplay(crate::gpu::Display, GpuStatReg),
     Reset(kanal::AsyncSender<()>),
     RequestVram,
 }
 
 #[derive(Debug, Clone)]
-pub struct InitMsg<A: Allocator> {
+pub struct FlushMsg<A: Allocator> {
     pub display:  crate::gpu::Display,
+    /// gpustat at vblank
     pub gpustat:  GpuStatReg,
     pub draw_idx: usize,
     pub vram:     VramMsg<A>,
@@ -458,7 +459,6 @@ impl<A: Allocator + Copy> Emu<A> {
                 Gp0VramRect::Pos { color, pos } => {
                     let size: VramCoord = unsafe { transmute(value) };
                     let size = size.fill_cmd_size_mask();
-
                     if size.x != 0 && size.y != 0 {
                         let mut cursor = VramCursor::new(pos, pos + size);
                         if tracing::enabled!(Level::TRACE) {
@@ -780,28 +780,13 @@ impl<A: Allocator> GpuState<A> {
 
 impl<A: Allocator + Copy> GpuState<A> {
     pub async fn task_gpu_flush_draw_calls(&mut self) {
-        match self.vram {
-            Vram::Mapped(_) => {}
-            Vram::Lent => {
-                self.conn
-                    .draw_call_chan
-                    .0
-                    .send(DrawCallMsg::RequestVram)
-                    .await
-                    .unwrap();
-            }
-        }
-    }
-
-    pub async fn issue_draw_call(&mut self, draw_call: DrawCall) {
-        self.draw_calls_in_flight = true;
         match self.take_vram() {
             Vram::Mapped(vram) => {
                 self.draw_idx += 1;
                 self.conn
                     .draw_call_chan
                     .0
-                    .send(DrawCallMsg::Init(InitMsg {
+                    .send(DrawCallMsg::Flush(FlushMsg {
                         display:  self.dp.clone(),
                         gpustat:  self.gpustat,
                         draw_idx: self.draw_idx,
@@ -815,12 +800,6 @@ impl<A: Allocator + Copy> GpuState<A> {
             }
             Vram::Lent => {}
         }
-        self.conn
-            .draw_call_chan
-            .0
-            .send(DrawCallMsg::DrawCall(draw_call))
-            .await
-            .unwrap();
     }
 
     pub async fn wait_for_render_result(&mut self) {
@@ -835,10 +814,7 @@ impl<A: Allocator + Copy> GpuState<A> {
                     .await
                     .expect("channel dropped: failed to receive queued render");
                 match vram {
-                    VramRes::Ok(vram) => {
-                        tracing::info!("received vram successfully");
-                        self.submit_vram(vram)
-                    }
+                    VramRes::Ok(vram) => self.submit_vram(vram),
                     VramRes::Error => {
                         tracing::error!("render thread responded with no vram!");
                         self.vram = Vram::Mapped(create_vram(Global));
@@ -1423,6 +1399,16 @@ impl<A: Allocator> GpuState<A> {
         (VideoEventKind::Vblank, vblank)
     }
 
+    pub async fn issue_draw_call(&mut self, draw_call: DrawCall) {
+        self.draw_calls_in_flight = true;
+        self.conn
+            .draw_call_chan
+            .0
+            .send(DrawCallMsg::DrawCall(draw_call))
+            .await
+            .unwrap();
+    }
+
     pub fn create_draw_call(&self, kind: DrawCallKind) -> DrawCall {
         DrawCall {
             gpustat:    self.gpustat,
@@ -1499,13 +1485,13 @@ impl<A: Allocator + Copy> Emu<A> {
         (start, start + U16Vec2::new(width, height))
     }
 
-    pub async fn run_video_io(&mut self, by_cpu_cycles: u64) {
+    pub fn run_video_io(&mut self, by_cpu_cycles: u64) {
         let cycles = self.cpu_cycles_to_video_cycles(by_cpu_cycles);
         self.gpu.dp.update_ranges();
-        self.run_video_events(cycles).await;
+        self.run_video_events(cycles);
     }
 
-    async fn run_video_events(&mut self, advance_by: u64) {
+    fn run_video_events(&mut self, advance_by: u64) {
         let cycles_per_scanline = self.gpu.video_cycles_per_scanline();
         self.gpu.dp.video_cycle_in_scanline += advance_by;
         if self.gpu.dp.video_cycle_in_scanline < cycles_per_scanline {
@@ -1520,7 +1506,7 @@ impl<A: Allocator + Copy> Emu<A> {
             let new_vblank = !dp.in_vblank() && dp.in_vblank_with(dp.current_scanline + 1);
 
             if new_vblank {
-                self.run_vblank().await;
+                self.run_vblank();
             }
 
             self.timers.trigger_hblank_start();

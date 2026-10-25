@@ -17,19 +17,27 @@ use wgpu::*;
 const WORKGROUP_SIZE: u32 = 16;
 
 impl Renderer {
-    pub(crate) fn create_render_pass(&self) -> PchanRenderPass<'_> {
+    pub(crate) fn create_render_pass<A: Allocator>(&self, pass: Pass<A>) -> RenderPass<'_, A> {
         let encoder = self
             .device
             .create_command_encoder(&CommandEncoderDescriptor::default());
         let belt = self.belt.try_lock().unwrap();
-        PchanRenderPass {
+        RenderPass {
             encoder,
             renderer: self,
+            pass,
             belt,
         }
     }
 
     pub fn draw_display(&self, render_pass: &mut wgpu::RenderPass<'_>) {
+        let vertex_buf = &[0, 0, 0, 0, 0, 0];
+        let vertex_buffer = self.device.create_buffer_init(&BufferInitDescriptor {
+            label: None,
+            usage: BufferUsages::VERTEX,
+            contents: vertex_buf,
+        });
+
         {
             let display_uniforms = self.display_uniforms.to_data();
             let display_uniforms_slice = unsafe {
@@ -43,51 +51,51 @@ impl Renderer {
 
         render_pass.set_pipeline(&self.display_pipeline);
         render_pass.set_bind_group(0, &self.display_bind_group, &[]);
+        render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
         render_pass.draw(0..6, 0..1);
     }
 }
 
 #[derive(derive_more::Debug)]
-pub struct PchanRenderPass<'a> {
+pub struct RenderPass<'a, A: Allocator> {
     encoder: CommandEncoder,
     belt: MutexGuard<'a, StagingBelt>,
     renderer: &'a Renderer,
+    pass: Pass<A>,
 }
 
-impl PchanRenderPass<'_> {
-    pub(crate) fn draw<A: Allocator + Copy>(&mut self, cmd: Command<A>) -> bool {
+impl<A: Allocator + Copy> RenderPass<'_, A> {
+    pub(crate) fn draw(&mut self, vram: &[u16], dirty: bool) {
         let _draw = tracy::span!("rd-gpu-draw");
+        self.init_vram(vram, dirty);
 
-        match cmd {
-            Command::DrawGeometry(geom) => {
-                tracing::debug!("- geometry ({} batches):", geom.batches.len());
-                self.start_scene(&geom.scene);
-                for batch in &geom.batches {
-                    tracing::debug!("\t- batch: {}..{}", batch.span.start, batch.span.end);
-                    self.draw_batch(batch, &geom.scene);
+        let pass = self.pass.take();
+        for cmd in &pass.cmds {
+            match cmd {
+                Command::DrawGeometry(geom) => {
+                    tracing::debug!("- geometry ({} batches):", geom.batches.len());
+                    self.start_scene(&geom.scene);
+                    for batch in &geom.batches {
+                        tracing::debug!("\t- batch: {}..{}", batch.span.start, batch.span.end);
+                        self.draw_batch(batch, &geom.scene);
+                    }
+                    self.end_scene();
                 }
-                self.end_scene();
-                true
+                Command::VramToVramBlit { blit, gpustat } => {
+                    self.vram_blit(blit, *gpustat);
+                }
+                Command::CpuToVramBlit {
+                    blit,
+                    data,
+                    gpustat,
+                } => {
+                    self.cpu_to_vram_blit(*blit, *gpustat, data);
+                }
             }
-            Command::VramToVramBlit { blit, gpustat } => {
-                tracing::debug!("- vram->vram");
-                self.vram_blit(&blit, gpustat);
-                false
-            }
-            Command::CpuToVramBlit {
-                blit,
-                data,
-                gpustat,
-            } => {
-                tracing::debug!("- cpu->vram");
-                self.cpu_to_vram_blit(blit, gpustat, &data);
-                false
-            }
-            Command::Nop => false,
         }
     }
 
-    pub(crate) fn init_vram(&mut self, vram: &[u16], dirty: bool) {
+    fn init_vram(&mut self, vram: &[u16], dirty: bool) {
         let vram_buf =
             unsafe { slice::from_raw_parts(vram.as_ptr().cast::<u8>(), mem::size_of_val(vram)) };
         if dirty {
@@ -135,7 +143,7 @@ impl PchanRenderPass<'_> {
         }
     }
 
-    fn start_scene<A: Allocator + Copy>(&mut self, scene: &Scene<A>) {
+    fn start_scene(&mut self, scene: &Scene<A>) {
         let vertex_start = scene.vertex_buf_start;
         let vertex_buf = scene.vertex_bytes();
         let vertex_end = vertex_start + vertex_buf.len() as u32;
@@ -150,9 +158,11 @@ impl PchanRenderPass<'_> {
             );
             view.copy_from_slice(vertex_buf);
         }
+
+        self.commit_vram_to_render();
     }
 
-    fn draw_batch<A: Allocator>(&mut self, batch: &BatchedGeometryDraw, scene: &Scene<A>) {
+    fn draw_batch(&mut self, batch: &BatchedGeometryDraw, scene: &Scene<A>) {
         let vertex_count = scene.vertex_buf.len();
         let byte_start = batch.span.start;
         let byte_end = batch.span.end;
@@ -168,8 +178,8 @@ impl PchanRenderPass<'_> {
             let max_w = 1024u32.saturating_sub(ox);
             let max_h = 512u32.saturating_sub(oy);
 
-            let width = cast(size.x).next_multiple_of(4).min(max_w);
-            let height = cast(size.y).next_multiple_of(4).min(max_h);
+            let width = cast(size.x - 1).next_multiple_of(4).min(max_w);
+            let height = cast(size.y - 1).next_multiple_of(4).min(max_h);
 
             let copy_info = |texture| TexelCopyTextureInfo {
                 texture,
@@ -344,13 +354,6 @@ impl PchanRenderPass<'_> {
         cpass.set_bind_group(0, &self.renderer.blit.bind_group, &[]);
         cpass.dispatch_workgroups(dispatch_x, dispatch_y, 1);
         drop(cpass);
-    }
-
-    pub fn submit(mut self) {
-        let _commit = tracy::span!("rd-commit");
-        self.belt.finish();
-        self.renderer.queue.submit([self.encoder.finish()]);
-        self.belt.recall();
     }
 
     pub async fn finish(mut self, vram: &mut [u16]) -> Result<(), MapRangeError> {
