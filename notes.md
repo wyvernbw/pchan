@@ -146,7 +146,7 @@ in comparision with duckstation dynarec, fails:
   - [x] add pipeline with blend constant
   - [x] subtract pipeline
   - [ ] per texel blending
-    - [x] use separate texture for stp
+    - [ ] use separate texture for stp
     - [ ] use alpha for blend factors
 - [ ] get rid of per-primitive data duplicated per-vertex
 

@@ -55,8 +55,6 @@ pub struct Renderer {
     pub vertex_buf: Buffer,
     pub render_texture: Texture,
     pub render_view: TextureView,
-    stp_texture: Texture,
-    stp_texture_view: TextureView,
     render_bind_group: BindGroup,
     vram_texture: Texture,
     vram_out_buf: Buffer,
@@ -80,7 +78,6 @@ struct RenderPipelines {
 }
 
 const VRAM_FMT: TextureFormat = TextureFormat::Rgba8Unorm;
-const MASK_FMT: TextureFormat = TextureFormat::R32Float;
 
 /// Uniforms passed to display shader
 #[derive(Debug)]
@@ -153,9 +150,9 @@ impl Renderer {
     ) -> RenderPipeline {
         device.create_render_pipeline(&RenderPipelineDescriptor {
             label: None,
-            layout: Some(pipeline_layout),
+            layout: Some(&pipeline_layout),
             vertex: VertexState {
-                module: shader_module,
+                module: &shader_module,
                 entry_point: None,
                 compilation_options: PipelineCompilationOptions::default(),
                 buffers: &[Some(VertexBufferLayout {
@@ -177,7 +174,7 @@ impl Renderer {
             depth_stencil: None,
             multisample: MultisampleState::default(),
             fragment: Some(FragmentState {
-                module: shader_module,
+                module: &shader_module,
                 entry_point: None,
                 compilation_options: PipelineCompilationOptions::default(),
                 targets: &[Some(ColorTargetState {
@@ -189,25 +186,6 @@ impl Renderer {
             multiview_mask: None,
             cache: None,
         })
-    }
-
-    fn create_stp_texture(device: &Device) -> (Texture, TextureView) {
-        let stp_texture = device.create_texture(&TextureDescriptor {
-            label: Some("psx.stp"),
-            size: Extent3d {
-                width: 1024,
-                height: 512,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: TextureDimension::D2,
-            format: MASK_FMT,
-            usage: TextureUsages::STORAGE_BINDING | TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-        let stp_texture_view = stp_texture.create_view(&TextureViewDescriptor::default());
-        (stp_texture, stp_texture_view)
     }
 
     pub fn from_wgpu(
@@ -253,8 +231,6 @@ impl Renderer {
             anisotropy_clamp: 1,
             border_color: None,
         });
-        let (stp_texture, stp_texture_view) = Self::create_stp_texture(&device);
-
         let vertex_buf = device.create_buffer(&BufferDescriptor {
             label: Some("pchan-gpu.vertex-buf"),
             size: mb(8) as u64,
@@ -298,42 +274,24 @@ impl Renderer {
         let render_bind_group_layout =
             device.create_bind_group_layout(&BindGroupLayoutDescriptor {
                 label: Some("pchan_gpu::rasterizer_bind_group_layout"),
-                entries: &[
-                    BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: ShaderStages::all(),
-                        ty: BindingType::StorageTexture {
-                            access: StorageTextureAccess::ReadOnly,
-                            format: VRAM_FMT,
-                            view_dimension: TextureViewDimension::D2,
-                        },
-                        count: None,
+                entries: &[BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: ShaderStages::all(),
+                    ty: BindingType::StorageTexture {
+                        access: StorageTextureAccess::ReadOnly,
+                        format: VRAM_FMT,
+                        view_dimension: TextureViewDimension::D2,
                     },
-                    BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: ShaderStages::FRAGMENT,
-                        ty: BindingType::StorageTexture {
-                            access: StorageTextureAccess::ReadWrite,
-                            format: TextureFormat::R32Float,
-                            view_dimension: TextureViewDimension::D2,
-                        },
-                        count: None,
-                    },
-                ],
+                    count: None,
+                }],
             });
         let render_bind_group = device.create_bind_group(&BindGroupDescriptor {
             label: Some("pchan_gpu::rasterizer_bind_group"),
             layout: &render_bind_group_layout,
-            entries: &[
-                BindGroupEntry {
-                    binding: 0,
-                    resource: BindingResource::TextureView(&vram_view),
-                },
-                BindGroupEntry {
-                    binding: 1,
-                    resource: BindingResource::TextureView(&stp_texture_view),
-                },
-            ],
+            entries: &[BindGroupEntry {
+                binding: 0,
+                resource: BindingResource::TextureView(&vram_view),
+            }],
         });
 
         let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
@@ -487,14 +445,9 @@ impl Renderer {
         });
 
         let belt = StagingBelt::new(device.clone(), mb(4) as u64);
-        let blit_v2v = create_blit_compute_resources(
-            &device,
-            &vram_blit_buffer,
-            &render_view,
-            &vram_view,
-            &stp_texture_view,
-        );
-        let readback = create_readback_resources(&device, &render_view, &stp_texture_view);
+        let blit_v2v =
+            create_blit_compute_resources(&device, &vram_blit_buffer, &render_view, &vram_view);
+        let readback = create_readback_resources(&device, &render_view);
 
         Ok(Self {
             instance,
@@ -523,8 +476,6 @@ impl Renderer {
             vram_blit_buffer,
             blit: blit_v2v,
             readback,
-            stp_texture,
-            stp_texture_view,
         })
     }
 
@@ -1770,16 +1721,13 @@ struct BlitV2VResources {
     uniforms_buf: Buffer,
     bind_group: BindGroup,
     pipe: ComputePipeline,
-    stp_src_tex: Texture,
-    stp_src_view: TextureView,
 }
 
 fn create_blit_compute_resources(
     device: &Device,
     blit_buffer: &Buffer,
-    target_dst_view: &TextureView,
-    vram_src_view: &TextureView,
-    stp_dst_view: &TextureView,
+    target_view: &TextureView,
+    vram_view: &TextureView,
 ) -> BlitV2VResources {
     let shader = device.create_shader_module(include_wgsl!("../shaders/blit.wgsl"));
 
@@ -1789,8 +1737,6 @@ fn create_blit_compute_resources(
         usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
-
-    let (stp_src_tex, stp_src_view) = Renderer::create_stp_texture(device);
 
     let bind_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
         label: None,
@@ -1839,28 +1785,6 @@ fn create_blit_compute_resources(
                 },
                 count: None,
             },
-            // src stp storage texture
-            BindGroupLayoutEntry {
-                binding: 4,
-                visibility: ShaderStages::COMPUTE,
-                ty: BindingType::StorageTexture {
-                    access: StorageTextureAccess::ReadOnly,
-                    format: MASK_FMT,
-                    view_dimension: TextureViewDimension::D2,
-                },
-                count: None,
-            },
-            // dest stp storage texture
-            BindGroupLayoutEntry {
-                binding: 5,
-                visibility: ShaderStages::COMPUTE,
-                ty: BindingType::StorageTexture {
-                    access: StorageTextureAccess::WriteOnly,
-                    format: MASK_FMT,
-                    view_dimension: TextureViewDimension::D2,
-                },
-                count: None,
-            },
         ],
     });
 
@@ -1878,19 +1802,11 @@ fn create_blit_compute_resources(
             },
             BindGroupEntry {
                 binding: 2,
-                resource: BindingResource::TextureView(target_dst_view),
+                resource: BindingResource::TextureView(target_view),
             },
             BindGroupEntry {
                 binding: 3,
-                resource: BindingResource::TextureView(vram_src_view),
-            },
-            BindGroupEntry {
-                binding: 4,
-                resource: BindingResource::TextureView(&stp_src_view),
-            },
-            BindGroupEntry {
-                binding: 5,
-                resource: BindingResource::TextureView(stp_dst_view),
+                resource: BindingResource::TextureView(vram_view),
             },
         ],
     });
@@ -1913,8 +1829,6 @@ fn create_blit_compute_resources(
         uniforms_buf: uniforms_buffer,
         bind_group,
         pipe: cpipe,
-        stp_src_tex,
-        stp_src_view,
     }
 }
 
@@ -1981,11 +1895,7 @@ struct ReadbackResources {
     pipe: ComputePipeline,
 }
 
-fn create_readback_resources(
-    device: &Device,
-    target_view: &TextureView,
-    stp_view: &TextureView,
-) -> ReadbackResources {
+fn create_readback_resources(device: &Device, target_view: &TextureView) -> ReadbackResources {
     let shader = include_wgsl!("../shaders/rgb8-to-rgb5.wgsl");
     let shader = device.create_shader_module(shader);
 
@@ -2010,20 +1920,9 @@ fn create_readback_resources(
                 },
                 count: None,
             },
-            // src stp texture
-            BindGroupLayoutEntry {
-                binding: 1,
-                visibility: ShaderStages::COMPUTE,
-                ty: BindingType::Texture {
-                    sample_type: TextureSampleType::Float { filterable: false },
-                    view_dimension: TextureViewDimension::D2,
-                    multisampled: false,
-                },
-                count: None,
-            },
             // dest buffer
             BindGroupLayoutEntry {
-                binding: 2,
+                binding: 1,
                 visibility: ShaderStages::COMPUTE,
                 ty: BindingType::Buffer {
                     ty: BufferBindingType::Storage { read_only: false },
@@ -2045,10 +1944,6 @@ fn create_readback_resources(
             },
             BindGroupEntry {
                 binding: 1,
-                resource: BindingResource::TextureView(stp_view),
-            },
-            BindGroupEntry {
-                binding: 2,
                 resource: BindingResource::Buffer(readback_buf.as_entire_buffer_binding()),
             },
         ],

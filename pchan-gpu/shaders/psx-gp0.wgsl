@@ -30,8 +30,6 @@ struct VertexOutput {
 
 @group(0) @binding(0)
 var vram_t : texture_storage_2d<rgba8unorm,read>;
-@group(0) @binding(1)
-var mask_tex: texture_storage_2d<r32float, read_write>;
 
 // struct RenderUniforms {
 // }
@@ -216,7 +214,7 @@ struct Color {
     transparent: bool
 }
 
-fn get_color(in: VertexOutput, mask_bit: f32) -> Color {
+fn get_color(in: VertexOutput) -> Color {
     var in_color = in.color;
     var set_mask = get_set_mask(in.flags);
     let textured = get_textured(in.flags);
@@ -311,18 +309,18 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32>{
         return in.color;
     }
 
-    let mask_bit = textureLoad(mask_tex, vec2<u32>(in.vram_position)).r;
-    if pbc && mask_bit > 0.0 {
+    var current = read_16bit(in.vram_position);
+    if pbc && get_mask_bit(pack4x8unorm(current)) {
         discard;
     }
 
-    var color = get_color(in, mask_bit);
+    var color = get_color(in);
     if color.transparent {
         discard;
     }
 
     if pbw && !fill {
-        textureStore(mask_tex, vec2<u32>(in.vram_position), vec4(1.0));
+        color.unpacked.a = 1.0;
     }
 
     return color.unpacked;
