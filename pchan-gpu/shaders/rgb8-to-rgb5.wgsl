@@ -1,6 +1,8 @@
 @group(0) @binding(0)
 var src_tex: texture_2d<f32>;
-@group(0) @binding(1) var<storage, read_write> dest_buf: array<u32>;
+@group(0) @binding(1)
+var stp_src_tex: texture_2d<f32>;
+@group(0) @binding(2) var<storage, read_write> dest_buf: array<u32>;
 
 
 @compute @workgroup_size(16, 16, 1)
@@ -30,7 +32,7 @@ fn read_raw16(coord: vec2<u32>) -> u32 {
     let r = u32(round(t.r * 31.0));
     let g = u32(round(t.g * 31.0));
     let b = u32(round(t.b * 31.0));
-    let a = u32(round(t.a));
+    let a = u32(round(textureLoad(stp_src_tex, coord, 0).r));
     return r | (g << 5u) | (b << 10u) | (a << 15u);
 }
 

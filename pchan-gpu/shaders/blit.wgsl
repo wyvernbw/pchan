@@ -10,6 +10,8 @@ struct Uniforms {
 @group(0) @binding(1) var<storage, read> src_buf: array<u32>;
 @group(0) @binding(2) var dest_tex: texture_storage_2d<rgba8unorm,write>;
 @group(0) @binding(3) var vram_tex: texture_storage_2d<rgba8unorm,read_write>;
+@group(0) @binding(4) var mask_src_tex: texture_storage_2d<r32float,read>;
+@group(0) @binding(5) var mask_dst_tex: texture_storage_2d<r32float,write>;
 
 const CPU_TO_VRAM: u32 = 0;
 const VRAM_TO_VRAM: u32 = 1;
@@ -23,8 +25,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     var pbw = get_flag(uniforms.gpustat, 11);
     var pbc = get_flag(uniforms.gpustat, 12);
-    let current = textureLoad(vram_tex, vec2<i32>(dest));
-    if pbc && current.a > 0.5 {
+
+    var mask = textureLoad(mask_src_tex, vec2<i32>(dest)).r;
+    if pbc && mask > 0.5 {
         return;
     }
 
@@ -33,23 +36,25 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let i0 = gid.y * size.x + gid.x;
             var value = rgb5_split_color(get_packed_src(i0));
 
-            if pbw {
-                value.a = 1.0;
-            }
+            mask = select(value.a, 1.0, pbw);
 
             textureStore(dest_tex, dest, value);
             textureStore(vram_tex, dest, value);
+            textureStore(mask_dst_tex, dest, vec4(mask));
         }
         case VRAM_TO_VRAM, default: {
             let sp = vec2(gid.x, gid.y) + uniforms.src;
-            var value = get_vram(sp);
+            var color = get_vram(sp);
 
-            if pbw {
-                value.a = 1.0;
-            }
+            mask = select(
+                textureLoad(mask_src_tex, sp).r,
+                1.0,
+                pbw
+            );
 
-            textureStore(dest_tex, dest, value);
-            textureStore(vram_tex, dest, value);
+            textureStore(dest_tex, dest, color);
+            textureStore(vram_tex, dest, color);
+            textureStore(mask_dst_tex, dest, vec4(mask));
             // textureStore(dest_tex, dest_left, vec4(0x0000, 0, 0, 0));
             // textureStore(dest_tex, dest_right, vec4(0x0000, 0, 0, 0));
             // textureStore(vram_tex, vramcoord_to_texcoord(dest), vec4(0x00000000, 0, 0, 0));
