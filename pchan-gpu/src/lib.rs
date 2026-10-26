@@ -49,7 +49,7 @@ pub struct Renderer {
     pub tracy: TracyClient,
 
     _pipeline_layout: PipelineLayout,
-    render_pipeline: RenderPipeline,
+    render_pipelines: RenderPipelines,
     pub display_pipeline: RenderPipeline,
     _display_format: TextureFormat,
     pub vertex_buf: Buffer,
@@ -67,6 +67,14 @@ pub struct Renderer {
     readback: ReadbackResources,
 
     conn: Conn,
+}
+
+#[derive(Debug)]
+struct RenderPipelines {
+    add: RenderPipeline,
+    average: RenderPipeline,
+    subtract: RenderPipeline,
+    mix: RenderPipeline,
 }
 
 const VRAM_FMT: TextureFormat = TextureFormat::Rgba8Unorm;
@@ -134,6 +142,52 @@ pub enum InitError {
 }
 
 impl Renderer {
+    fn create_render_pipeline(
+        device: &Device,
+        pipeline_layout: &PipelineLayout,
+        shader_module: &ShaderModule,
+        blend_state: Option<BlendState>,
+    ) -> RenderPipeline {
+        device.create_render_pipeline(&RenderPipelineDescriptor {
+            label: None,
+            layout: Some(&pipeline_layout),
+            vertex: VertexState {
+                module: &shader_module,
+                entry_point: None,
+                compilation_options: PipelineCompilationOptions::default(),
+                buffers: &[Some(VertexBufferLayout {
+                    array_stride: size_of::<Vertex>() as u64, // 8
+                    step_mode: VertexStepMode::Vertex,
+                    attributes: Vertex::desc(),
+                })],
+            },
+            primitive: PrimitiveState {
+                topology: PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: FrontFace::Cw,
+                // psx gpu does not perform backface/frontface culling
+                cull_mode: None,
+                unclipped_depth: false,
+                polygon_mode: PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: MultisampleState::default(),
+            fragment: Some(FragmentState {
+                module: &shader_module,
+                entry_point: None,
+                compilation_options: PipelineCompilationOptions::default(),
+                targets: &[Some(ColorTargetState {
+                    format: VRAM_FMT,
+                    blend: blend_state,
+                    write_mask: ColorWrites::default(),
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        })
+    }
+
     pub fn from_wgpu(
         instance: Instance,
         adapter: Adapter,
@@ -312,44 +366,48 @@ impl Renderer {
 
         // attributes
 
-        let render_pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
-            label: None,
-            layout: Some(&pipeline_layout),
-            vertex: VertexState {
-                module: &shader_module,
-                entry_point: None,
-                compilation_options: PipelineCompilationOptions::default(),
-                buffers: &[Some(VertexBufferLayout {
-                    array_stride: size_of::<Vertex>() as u64, // 8
-                    step_mode: VertexStepMode::Vertex,
-                    attributes: Vertex::desc(),
-                })],
-            },
-            primitive: PrimitiveState {
-                topology: PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: FrontFace::Cw,
-                // psx gpu does not perform backface/frontface culling
-                cull_mode: None,
-                unclipped_depth: false,
-                polygon_mode: PolygonMode::Fill,
-                conservative: false,
-            },
-            depth_stencil: None,
-            multisample: MultisampleState::default(),
-            fragment: Some(FragmentState {
-                module: &shader_module,
-                entry_point: None,
-                compilation_options: PipelineCompilationOptions::default(),
-                targets: &[Some(ColorTargetState {
-                    format: VRAM_FMT,
-                    blend: None,
-                    write_mask: ColorWrites::default(),
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
+        let render_pipelines = RenderPipelines {
+            add: Self::create_render_pipeline(
+                &device,
+                &pipeline_layout,
+                &shader_module,
+                Some(BlendState {
+                    color: BlendComponent {
+                        src_factor: BlendFactor::Constant,
+                        dst_factor: BlendFactor::One,
+                        operation: BlendOperation::Add,
+                    },
+                    alpha: BlendComponent::REPLACE,
+                }),
+            ),
+            average: Self::create_render_pipeline(
+                &device,
+                &pipeline_layout,
+                &shader_module,
+                Some(BlendState {
+                    color: BlendComponent {
+                        src_factor: BlendFactor::Constant,
+                        dst_factor: BlendFactor::Constant,
+                        operation: BlendOperation::Add,
+                    },
+                    alpha: BlendComponent::REPLACE,
+                }),
+            ),
+            subtract: Self::create_render_pipeline(
+                &device,
+                &pipeline_layout,
+                &shader_module,
+                Some(BlendState {
+                    color: BlendComponent {
+                        src_factor: BlendFactor::One,
+                        dst_factor: BlendFactor::One,
+                        operation: BlendOperation::ReverseSubtract,
+                    },
+                    alpha: BlendComponent::REPLACE,
+                }),
+            ),
+            mix: Self::create_render_pipeline(&device, &pipeline_layout, &shader_module, None),
+        };
 
         let display_shader = device.create_shader_module(include_wgsl!("../shaders/display.wgsl"));
         let display_pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
@@ -397,7 +455,7 @@ impl Renderer {
             device,
             queue,
             _pipeline_layout: pipeline_layout,
-            render_pipeline,
+            render_pipelines,
             render_texture,
             render_view,
             vram_texture,
@@ -746,10 +804,17 @@ struct BatchedGeometryDraw {
     span: Range<u32>,
 }
 
-#[derive(derive_more::Debug)]
+#[derive(derive_more::Debug, PartialEq, Clone, Copy)]
 enum BatchedGeometryDrawKind {
     OpaqueOnly,
-    Transparent(Aabb),
+    Transparent(Transparency),
+}
+
+#[derive(derive_more::Debug, PartialEq, Clone, Copy)]
+enum Transparency {
+    Add(f32),
+    Average,
+    Subtract,
 }
 
 #[derive(derive_more::Debug)]
@@ -814,11 +879,26 @@ impl<A: Allocator + Copy> Scene<A> {
     }
 }
 
+fn draw_call_transparency(draw: &DrawCall) -> Option<Transparency> {
+    if draw.inner.is_transparent() {
+        let mode = match draw.gpustat.semi_transparency().value() {
+            0 => Transparency::Average,
+            1 => Transparency::Add(1.0),
+            2 => Transparency::Subtract,
+            3 => Transparency::Add(0.25),
+            _ => unreachable!("u2 cannot be greater than 3"),
+        };
+        Some(mode)
+    } else {
+        None
+    }
+}
+
 impl From<&DrawCall> for BatchedGeometryDrawKind {
     fn from(value: &DrawCall) -> Self {
-        match value.inner.is_transparent() {
-            true => BatchedGeometryDrawKind::Transparent(Aabb::void()),
-            false => BatchedGeometryDrawKind::OpaqueOnly,
+        match draw_call_transparency(value) {
+            Some(mode) => BatchedGeometryDrawKind::Transparent(mode),
+            None => BatchedGeometryDrawKind::OpaqueOnly,
         }
     }
 }
@@ -948,30 +1028,22 @@ impl<A: Allocator + Copy> GeometryBuilder<A> {
     fn add_draw_call(&mut self, draw_call: DrawCall) {
         match &mut self.builder.kind {
             BatchedGeometryDrawKind::OpaqueOnly => {
-                if draw_call.inner.is_transparent() {
-                    self.builder.kind = BatchedGeometryDrawKind::Transparent(Aabb::zero());
+                if let Some(tp) = draw_call_transparency(&draw_call) {
+                    self.begin_transparent(tp);
                     return self.add_draw_call(draw_call);
-                } else if let Some(aabb) = Aabb::bounding_box_of(&draw_call) {
-                    self.aabbs.push(aabb.clamp(Aabb::VRAM));
                 }
             }
-            BatchedGeometryDrawKind::Transparent(reads_from) => {
-                // check for overlapping geometry in transparent pass
-                if let Some(aabb) = Aabb::bounding_box_of(&draw_call) {
-                    if draw_call.inner.is_transparent() {
-                        if self.aabbs.iter().any(|other| aabb.intersects(*other)) {
-                            self.begin_transparent();
-                            return self.add_draw_call(draw_call);
-                        }
-
-                        *reads_from = reads_from.union(aabb).clamp(Aabb {
-                            min: i16vec2(0, 0),
-                            max: i16vec2(1024, 512),
-                        });
-                    }
-                    self.aabbs.push(aabb);
+            BatchedGeometryDrawKind::Transparent(tp) => match draw_call_transparency(&draw_call) {
+                Some(new_tp) if new_tp == *tp => {}
+                Some(new_tp) => {
+                    self.begin_transparent(new_tp);
+                    return self.add_draw_call(draw_call);
                 }
-            }
+                None => {
+                    self.begin_opaque();
+                    return self.add_draw_call(draw_call);
+                }
+            },
         };
         match draw_call.inner {
             DrawCallKind::Rect(draw_rect) => {
@@ -1017,9 +1089,14 @@ impl<A: Allocator + Copy> GeometryBuilder<A> {
         }
     }
 
-    fn begin_transparent(&mut self) {
+    fn begin_transparent(&mut self, tp: Transparency) {
         self.flush_batch();
-        self.builder.kind = BatchedGeometryDrawKind::Transparent(Aabb::zero());
+        self.builder.kind = BatchedGeometryDrawKind::Transparent(tp);
+    }
+
+    fn begin_opaque(&mut self) {
+        self.flush_batch();
+        self.builder.kind = BatchedGeometryDrawKind::OpaqueOnly;
     }
 
     fn flush_batch(&mut self) {

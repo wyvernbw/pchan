@@ -66,10 +66,12 @@ impl<A: Allocator + Copy> RenderPass<'_, A> {
                 Command::DrawGeometry(geom) => {
                     tracing::debug!("- geometry ({} batches):", geom.batches.len());
                     self.start_scene(&geom.scene);
+                    let mut render = self.start_render();
                     for batch in &geom.batches {
                         tracing::debug!("\t- batch: {}..{}", batch.span.start, batch.span.end);
-                        self.draw_batch(batch, &geom.scene);
+                        render.draw_batch(batch);
                     }
+                    drop(render);
                     self.end_scene(&geom.scene);
                 }
                 Command::VramToVramBlit { blit, gpustat } => {
@@ -136,17 +138,7 @@ impl<A: Allocator + Copy> RenderPass<'_, A> {
         }
     }
 
-    fn draw_batch(&mut self, batch: &BatchedGeometryDraw, scene: &Scene<A>) {
-        let vertex_count = scene.vertex_buf.len();
-        let byte_start = batch.span.start;
-        let byte_end = batch.span.end;
-        let vertex_start = byte_start / size_of::<Vertex>() as u32;
-        let vertex_end = byte_end / size_of::<Vertex>() as u32;
-
-        if let BatchedGeometryDrawKind::Transparent(reads_from) = batch.kind {
-            self.copy_render_to_vram(reads_from);
-        }
-
+    fn start_render(&mut self) -> GeometryRenderPass<'_> {
         let mut render_pass = self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: None,
             color_attachments: &[Some(RenderPassColorAttachment {
@@ -163,10 +155,15 @@ impl<A: Allocator + Copy> RenderPass<'_, A> {
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        render_pass.set_pipeline(&self.renderer.render_pipeline);
-        render_pass.set_bind_group(0, &self.renderer.render_bind_group, &[]);
         render_pass.set_vertex_buffer(0, self.renderer.vertex_buf.slice(..));
-        render_pass.draw(vertex_start..vertex_end, 0..1);
+        render_pass.set_pipeline(&self.renderer.render_pipelines.mix);
+        render_pass.set_bind_group(0, &self.renderer.render_bind_group, &[]);
+
+        GeometryRenderPass {
+            rpass: render_pass,
+            current_kind: BatchedGeometryDrawKind::OpaqueOnly,
+            gpu: self.renderer,
+        }
     }
 
     fn copy_render_to_vram(&mut self, aabb: Aabb) {
@@ -337,5 +334,51 @@ impl<A: Allocator + Copy> RenderPass<'_, A> {
         self.belt.finish();
         self.renderer.queue.submit([self.encoder.finish()]);
         self.belt.recall();
+    }
+}
+
+struct GeometryRenderPass<'a> {
+    gpu: &'a Renderer,
+    rpass: wgpu::RenderPass<'a>,
+    current_kind: BatchedGeometryDrawKind,
+}
+
+impl GeometryRenderPass<'_> {
+    fn update(&mut self, batch: &BatchedGeometryDraw) {
+        if batch.kind != self.current_kind {
+            self.current_kind = batch.kind;
+            let blend_constant = |factor: f32| wgpu::Color {
+                r: f64::from(factor),
+                g: f64::from(factor),
+                b: f64::from(factor),
+                a: f64::from(factor),
+            };
+            match self.current_kind {
+                BatchedGeometryDrawKind::OpaqueOnly => {
+                    self.rpass.set_pipeline(&self.gpu.render_pipelines.mix);
+                }
+                BatchedGeometryDrawKind::Transparent(crate::Transparency::Add(factor)) => {
+                    self.rpass.set_pipeline(&self.gpu.render_pipelines.add);
+                    self.rpass.set_blend_constant(blend_constant(factor));
+                }
+                BatchedGeometryDrawKind::Transparent(crate::Transparency::Subtract) => {
+                    self.rpass.set_pipeline(&self.gpu.render_pipelines.subtract);
+                }
+                BatchedGeometryDrawKind::Transparent(crate::Transparency::Average) => {
+                    self.rpass.set_pipeline(&self.gpu.render_pipelines.average);
+                    self.rpass.set_blend_constant(blend_constant(0.5));
+                }
+            }
+        }
+    }
+
+    fn draw_batch(&mut self, batch: &BatchedGeometryDraw) {
+        let byte_start = batch.span.start;
+        let byte_end = batch.span.end;
+        let vertex_start = byte_start / size_of::<Vertex>() as u32;
+        let vertex_end = byte_end / size_of::<Vertex>() as u32;
+
+        self.update(batch);
+        self.rpass.draw(vertex_start..vertex_end, 0..1);
     }
 }

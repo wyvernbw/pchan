@@ -267,25 +267,6 @@ fn get_color(in: VertexOutput) -> Color {
     }
 
     has_stp = has_stp && get_stp_on(in.flags);
-    if has_stp {
-        let mode = get_semi_transparency(in.flags);
-        let fbf = read_16bit(in.vram_position);
-        switch mode {
-            case 0, default: {
-                in_color = (in_color+fbf) * 0.5;
-            }
-            case 1: {
-                in_color += fbf;
-            }
-            case 2: {
-                in_color = fbf-in_color;
-            }
-            case 3: {
-                in_color = fbf + in_color * 0.25;
-            }
-        }
-        in_color = clamp(in_color, vec4(0.0), vec4(1.0));
-    }
     
     if get_dither(in.flags) {
         in_color *= 255;
