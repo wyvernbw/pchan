@@ -96,3 +96,10 @@ debug = true
 overflow-checks = true
 panic = "abort"
 rustflags = ["-Zsanitizer=address"]
+
+[profile.perf]
+inherits = "release"
+strip = false
+debug = 2
+lto = "thin"
+panic = "unwind"

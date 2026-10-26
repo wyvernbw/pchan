@@ -148,6 +148,6 @@ in comparision with duckstation dynarec, fails:
   - [x] per texel blending
     - [x] ~~se separate texture for stp~~
     - [x] ~~use alpha for blend factors~~
-    - [x] use dual state blending for blending factor
+    - [x] use dual source blending for blending factor
 - [ ] get rid of per-primitive data duplicated per-vertex
 

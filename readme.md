@@ -27,7 +27,7 @@ All games will have some graphical glitches because the gpu isn't done yet.
 Games I'm testing:
 
 - MK2: **playable**
-- Crash Bandicoot: **playable**, some graphical glitches, timing issues
+- Crash Bandicoot: **playable**, some graphical glitches, maybe timing issues
 - Ridge Racer: **intro** (cdrom issue)
 - Puzzle Bobble 2: **playable**, very broken graphically 
 - FF7: **no boot**
@@ -90,12 +90,13 @@ about 10 years
 
 ## Performance
 
-Initially this section contained a lot more useless speculation, so I chose to
-remove it. Instead, here's some actual meaningful metrics: pchan runs a bios
-shell frame in 3ms. This would be more than fast enough for gameplay, but the
-goal is ~0.1ms (Duckstation runs it in ~0.16ms). There is a long way to go,
-but I already know which parts are stupid slow and how to fix them. However, my
-initial focus for now is on features and correctness.
+P-chan can render a frame of Crash Bandicoot (in-game, level 1) in roughly
+3ms on an m2 macbook air, which is still roughly 5x slower than Duckstation.
+The low hanging fruits for optimization currently are general guest emulation
+(mostly the spu) and the hardware rasterizer memory usage (per primitive data is
+duplicated per vertex). I also expect a pretty big improvement once I implement
+JIT block hot linking. The main focus now however is on features and correctness,
+and I'm not too upset by current performance.
 
 A goal of this project is to make a very accurate and fast dynarec, such that an
 interpreter is not needed. This might be impossible and/or it might make P-chan
@@ -103,15 +104,10 @@ quite cycle-inaccurate. The reason behind this decision is that, I really cannot
 be assed to code an interpreter. No interpreter makes debugging difficult, as
 such, much <3 to the devs of PCSX-Redux, which I am using for cross comparison.
 
-## On AI Code
+## Code Policy
 
-**No llm generated code** exists in **any** of the `pchan-*` crates (so all
-crates in this repo). I do not condone the creation of machine generated slop.
-Such workflows might work for uninspired react copy and paste dashboards,
-but emulators require a holistic knowledge of hardware and implementation.
-Some dependencies might include llm generated code (trust me I wish I could
-go full schizo and remove them, but that isn't really practical sadly). Such
-dependencies are usually limited to non core crates (so things outside of
-`pchan-emu`, `pchan-gpu`, `pchan-audio` etc.).
+P-Chan is free software licensed under the GPL-3 license, and it will always
+remain that way.
 
-As such, any hallucinated code came straight from my human, tired brain :)
+**No llm generated code** exists in this repo. Never glorify
+incompetence, and never rent convenience from corporations.
