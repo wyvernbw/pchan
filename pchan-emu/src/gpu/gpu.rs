@@ -14,7 +14,7 @@ use arbitrary_int::prelude::*;
 use bitbybit::{bitenum, bitfield};
 use glam::{U8Vec2, U8Vec3, U16Vec2, U64Vec2, u64vec2};
 use pchan_encode::derive::Endecode;
-use pchan_utils::{AsyncChan, default, hex};
+use pchan_utils::{AsyncChan, hex};
 use smol::lock::Mutex;
 use tracing::Level;
 
@@ -22,7 +22,7 @@ use crate::Emu;
 use crate::gpu::draw_call::{
     DrawCall, DrawCallDecoder, DrawCallKind, DrawLineDecoder, DrawPolygonDecoder, DrawRectDecoder,
     Gp0HostBlit, Gp0HostBlitDecoder, Gp0SetDrawAreaCmd, Gp0SetDrawOffsetCmd, Gp0SetMaskBitCmd,
-    Gp0VramBlitDecoder, GpuInternalDrawReg,
+    Gp0VramBlitDecoder, GpuInternalDrawReg, QuickFillDecoder,
 };
 use crate::gpu::vram::{VramCoord, VramCursor};
 use crate::io::evque::Task;
@@ -81,8 +81,11 @@ pub enum Vram<A: Allocator> {
     Lent,
 }
 
-pub type VramSink = Mutex<[u16; mb(1) / 2]>;
-pub static VRAM: VramSink = Mutex::new([0u16; mb(1) / 2]);
+const fn vram_size<T: Sized>() -> usize {
+    mb(2) / size_of::<T>()
+}
+pub type VramSink = Mutex<[u16; vram_size::<u16>()]>;
+pub static VRAM: VramSink = Mutex::new([0u16; vram_size::<u16>()]);
 pub static VRAM_REF: &VramSink = &VRAM;
 
 #[derive(derive_more::Debug, Clone, Endecode)]
@@ -252,7 +255,7 @@ impl<A: Allocator + Copy> Emu<A> {
                 Gp0::WaitingForCmd
             }
 
-            0x02 => Gp0::Fill(Gp0VramRect::Color {
+            0x02 => Gp0::QuickFillDecode(QuickFillDecoder::Color {
                 color: U8Vec3::from_array(cmd.fields().to_le_bytes()),
             }),
 
@@ -425,41 +428,13 @@ impl<A: Allocator + Copy> Emu<A> {
                 }
             },
 
-            Gp0::Fill(gp0_vram_rect) => match gp0_vram_rect {
-                Gp0VramRect::Color { color } => {
-                    let pos: VramCoord = unsafe { transmute(value) };
-                    let pos = pos.fill_cmd_pos_mask();
-                    self.gpu.gp0 = Gp0::Fill(Gp0VramRect::Pos { color, pos })
+            Gp0::QuickFillDecode(decoder) => match decoder.advance(value) {
+                Ok(decoder) => {
+                    self.gpu.gp0 = Gp0::QuickFillDecode(decoder);
                 }
-                Gp0VramRect::Pos { color, pos } => {
-                    let size: VramCoord = unsafe { transmute(value) };
-                    let size = size.fill_cmd_size_mask();
-
-                    tracing::warn!("todo: gpu fill cmd");
-                    #[cfg(false)]
-                    if size.x != 0 && size.y != 0 {
-                        let mut cursor = VramCursor::new(pos, pos + size);
-                        if tracing::enabled!(Level::TRACE) {
-                            tracing::trace!(pc = %hex(self.cpu.pc), "started vram fill: {cursor:?}");
-                        }
-                        smol::block_on(async {
-                            self.gpu.task_gpu_flush_draw_calls().await;
-                            self.gpu.request_vram().await;
-                        });
-                        if tracing::enabled!(Level::TRACE) {
-                            tracing::trace!(pc = %hex(self.cpu.pc), "got vram back after flush: {cursor:?}");
-                        }
-                        for dest in cursor.iter() {
-                            let color = color >> 3u16;
-                            let rgb5 = Rgb5::new_with_raw_value(0x0)
-                                .with_r(color.x.as_())
-                                .with_g(color.y.as_())
-                                .with_b(color.z.as_());
-                            self.gpu.vram_write(dest, rgb5.raw_value());
-                        }
-                    }
-
+                Err(draw_call) => {
                     self.gpu.gpustat.set_ready_recv_cmd(true);
+                    self.gpu_spawn_issue_draw_call(DrawCallKind::QuickFill(draw_call));
                     self.gpu.gp0 = Gp0::WaitingForCmd;
                 }
             },
@@ -705,7 +680,8 @@ impl<A: Allocator + Copy> GpuState<A> {
             .draw_call_chan
             .0
             .send(DrawCallMsg::RequestVram(&VRAM, tx))
-            .await;
+            .await
+            .unwrap();
         rx.recv().await.expect("ack channel closed");
     }
 
@@ -774,7 +750,7 @@ pub enum Gp0 {
     WaitingForCmd,
     Busy,
 
-    Fill(Gp0VramRect),
+    QuickFillDecode(QuickFillDecoder),
 
     DrawPolygonDecode(DrawPolygonDecoder),
     DrawLineDecode(DrawLineDecoder),
@@ -789,18 +765,6 @@ pub enum Gp0 {
     BlitVramToCpuDecoding(Gp0HostBlitDecoder),
     BlitVramToVramDecoding(Gp0VramBlitDecoder),
     CpuReadingVram,
-}
-
-#[derive(Debug, Clone, Endecode)]
-pub enum Gp0VramRect {
-    Color { color: U8Vec3 },
-    Pos { color: U8Vec3, pos: VramCoord },
-}
-
-impl Default for Gp0VramRect {
-    fn default() -> Self {
-        Self::Color { color: default() }
-    }
 }
 
 #[bitfield(u32)]

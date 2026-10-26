@@ -12,6 +12,7 @@ use blink_alloc::BlinkAlloc;
 pub use glam;
 use pchan_emu::gpu::vram::{IVramCoord, VramCoord};
 use pchan_emu::memory::mb;
+use pchan_utils::default;
 use pchan_utils::tracy::TracyClient;
 pub(crate) mod render_pass;
 
@@ -28,12 +29,12 @@ use wgpu::util::StagingBelt;
 use glam::prelude::*;
 use pchan_emu::Emu;
 use pchan_emu::gpu::draw_call::{
-    DrawCall, DrawCallKind, DrawPolygon, DrawRect, Gp0HostBlit, Gp0VramBlit, GpuInternalDrawReg,
-    RectSize, Shading,
+    DrawCall, DrawCallKind, DrawPolygon, DrawRect, Gp0HostBlit, Gp0QuickFill, Gp0VramBlit,
+    GpuInternalDrawReg, RectSize, Shading,
 };
 use pchan_emu::gpu::{
-    Conn, Display, DisplayColorDepth, DrawCallMsg, DrawPixels, FlushMsg, Gp0TexWindowCmd,
-    GpuStatReg, TextureColorMode, VramSink,
+    Conn, Display, DisplayColorDepth, DrawCallMsg, FlushMsg, Gp0TexWindowCmd, GpuStatReg,
+    TextureColorMode, VramSink,
 };
 use thiserror::Error;
 pub use wgpu;
@@ -677,8 +678,10 @@ impl Renderer {
         })
         .await;
         let buf_mapped = self.vram_out_buf.get_mapped_range(..).unwrap();
-        let buf =
-            unsafe { core::slice::from_raw_parts(buf_mapped.as_ptr().cast::<u16>(), 1024 * 512) };
+
+        let (prefix, buf, _suffix) = unsafe { buf_mapped.align_to::<u16>() };
+        assert_eq!(prefix, []);
+
         let mut vram = sink.lock().await;
         vram.copy_from_slice(buf);
 
@@ -997,7 +1000,20 @@ impl<A: Allocator + Copy> GeometryBuilder<A> {
             DrawCallKind::Line(_) => {
                 tracing::warn!("todo: DrawCallKind::Line");
             }
-            _ => {}
+            DrawCallKind::QuickFill(quick_fill) => {
+                let len = self.scene.add_quick_fill_draw_call(
+                    &quick_fill,
+                    draw_call.gpustat,
+                    &draw_call.draw_reg,
+                    draw_call.tex_window,
+                );
+                let end = len as u32 + self.scene.vertex_buf_start;
+                self.builder.span.end = end;
+            }
+            DrawCallKind::BlitVram2Vram(_)
+            | DrawCallKind::BlitCpu2Vram(_, _)
+            | DrawCallKind::BlitVram2Cpu(_)
+            | DrawCallKind::Nop => {}
         }
     }
 
@@ -1051,7 +1067,10 @@ impl<A: Allocator + Copy> Pass<A> {
     pub fn add_draw_call(&mut self, draw_call: DrawCall) {
         match &mut self.geometry_builder {
             Some(builder) => match draw_call.inner {
-                DrawCallKind::Rect(_) | DrawCallKind::Polygon(_) | DrawCallKind::Line(_) => {
+                DrawCallKind::Rect(_)
+                | DrawCallKind::Polygon(_)
+                | DrawCallKind::Line(_)
+                | DrawCallKind::QuickFill(_) => {
                     builder.add_draw_call(draw_call);
                 }
                 DrawCallKind::BlitVram2Vram(gp0_vram_blit) => {
@@ -1073,7 +1092,10 @@ impl<A: Allocator + Copy> Pass<A> {
                 DrawCallKind::Nop => {}
             },
             None => match draw_call.inner {
-                DrawCallKind::Rect(_) | DrawCallKind::Polygon(_) | DrawCallKind::Line(_) => {
+                DrawCallKind::Rect(_)
+                | DrawCallKind::Polygon(_)
+                | DrawCallKind::Line(_)
+                | DrawCallKind::QuickFill(_) => {
                     let dp = HWDisplayUniforms::from_hw(&draw_call.display, draw_call.gpustat);
                     let mut geometry_builder =
                         GeometryBuilder::new(self.vertex_buf_cursor, dp, self.alloc);
@@ -1247,7 +1269,7 @@ struct Flags {
     #[bit(1, rw)]
     set_mask: bool,
     #[bit(2, rw)]
-    draw_pixels: DrawPixels,
+    quick_fill: bool,
     #[bit(3, rw)]
     textured: bool,
     #[bit(4, rw)]
@@ -1263,7 +1285,6 @@ impl Flags {
         Self::ZERO
             .with_set_mask(gpustat.set_mask())
             .with_dither(gpustat.dither())
-            .with_draw_pixels(gpustat.draw_pixels())
             .with_semi_transparency(gpustat.semi_transparency())
     }
 }
@@ -1321,7 +1342,7 @@ pub struct Quad {
 }
 
 impl Quad {
-    fn new_with_topleft_and_size(top_left: Vertex, size: U16Vec2) -> Self {
+    fn new(top_left: Vertex, size: U16Vec2) -> Self {
         let tex_size = size;
         Quad {
             top_left,
@@ -1424,14 +1445,10 @@ impl<A: Allocator> Scene<A> {
 
         let quad: Quad = match (draw_rect.header.size(), draw_rect.var_size) {
             (RectSize::VarSize, None) => return Err(DrawRectError::MissingVarSize),
-            (RectSize::VarSize, Some(size)) => {
-                Quad::new_with_topleft_and_size(top_left, u16vec2(size.x, size.y))
-            }
-            (RectSize::SinglePixel, _) => Quad::new_with_topleft_and_size(top_left, u16vec2(1, 1)),
-            (RectSize::Sprite8x8, _) => Quad::new_with_topleft_and_size(top_left, u16vec2(8, 8)),
-            (RectSize::Sprite16x16, _) => {
-                Quad::new_with_topleft_and_size(top_left, u16vec2(16, 16))
-            }
+            (RectSize::VarSize, Some(size)) => Quad::new(top_left, u16vec2(size.x, size.y)),
+            (RectSize::SinglePixel, _) => Quad::new(top_left, u16vec2(1, 1)),
+            (RectSize::Sprite8x8, _) => Quad::new(top_left, u16vec2(8, 8)),
+            (RectSize::Sprite16x16, _) => Quad::new(top_left, u16vec2(16, 16)),
         };
         let vertices = triangulate_quad(&quad.vertices());
         for vertex in &vertices {
@@ -1513,6 +1530,47 @@ impl<A: Allocator> Scene<A> {
                 self.vertex_buf.extend_from_slice(&vertices);
             }
         };
+        self.vertex_bytes().len()
+    }
+
+    fn add_quick_fill_draw_call(
+        &mut self,
+        fill: &Gp0QuickFill,
+        gpustat: GpuStatReg,
+        _: &GpuInternalDrawReg,
+        tex_window: Gp0TexWindowCmd,
+    ) -> usize {
+        let flags = Flags::from_gpustat(gpustat)
+            .with_modulation(false)
+            .with_stp_on(false)
+            .with_dither(false)
+            .with_textured(false)
+            .with_quick_fill(true);
+
+        let topleft = Vertex::new(VertexSpec {
+            pos: fill.pos.fill_cmd_pos_mask().as_i16vec2(),
+            color: fill.color,
+            color_mode: TextureColorMode::C15BitDirect,
+            uv: default(),
+            clut: default(),
+            texpage_base: default(),
+            flags,
+            draw_area_top_left: default(),
+            draw_area_bottom_right: VramCoord::new(1024, 512),
+            draw_offset: default(),
+            gpustat,
+            tex_window,
+        });
+
+        let quad = Quad::new(topleft, fill.size.fill_cmd_size_mask().as_u16vec2());
+        let mut vertices = triangulate_quad(&quad.vertices());
+
+        ensure_vertex_order(&mut vertices, [0, 1, 2]);
+        for vertex in &vertices {
+            self.aabb = self.aabb.grow_to_include(vertex.pos).clamp(Aabb::VRAM);
+        }
+        self.vertex_buf.extend(vertices);
+
         self.vertex_bytes().len()
     }
 }

@@ -7,8 +7,8 @@ use crate::{
     Aabb, BatchedGeometryDraw, BatchedGeometryDrawKind, BlitUniforms, Command, Pass, Renderer,
     Scene, Vertex,
 };
+use pchan_emu::gpu::GpuStatReg;
 use pchan_emu::gpu::draw_call::{Gp0HostBlit, Gp0VramBlit};
-use pchan_emu::gpu::{GpuStatReg, VramSink};
 use pchan_utils::tracy;
 use tracing::Level;
 use wgpu::util::StagingBelt;

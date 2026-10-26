@@ -322,6 +322,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32>{
     var draw_pixels = get_draw_pixels(in.flags);
     var pbw = get_flag(in.gpustat, 11);
     var pbc = get_flag(in.gpustat, 12);
+    let fill = get_flag(in.flags, 2);
+
+    if fill {
+        return in.color;
+    }
 
     var current = read_16bit(in.vram_position);
     if pbc && get_mask_bit(pack4x8unorm(current)) {
@@ -333,7 +338,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32>{
         discard;
     }
 
-    if pbw {
+    if pbw && !fill {
         color.unpacked.a = 1.0;
     }
 

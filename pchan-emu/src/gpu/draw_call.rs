@@ -3,7 +3,7 @@ use core::mem::transmute;
 
 use crate::gpu::vram::{IVramCoord, VramCoord, VramCursor};
 use crate::gpu::{DrawPixels, Gp0TexWindowCmd, GpuStatReg, TexpageCmd, VramMsg};
-use crate::io::CastIOInto;
+use crate::io::{CastIOFrom, CastIOInto};
 use alloc::alloc::Global;
 use arbitrary_int::prelude::*;
 use bitbybit::{bitenum, bitfield};
@@ -43,6 +43,14 @@ pub enum DrawCallKind {
     BlitVram2Vram(Gp0VramBlit),
     BlitCpu2Vram(Gp0HostBlit, #[endecode(alloc(global))] Vec<u8, Global>),
     BlitVram2Cpu(Gp0HostBlit),
+    QuickFill(Gp0QuickFill),
+}
+
+#[derive(Debug, Clone, Endecode, Default)]
+pub struct Gp0QuickFill {
+    pub pos:   VramCoord,
+    pub size:  VramCoord,
+    pub color: U8Vec3,
 }
 
 impl Default for DrawCallKind {
@@ -61,7 +69,8 @@ impl DrawCallKind {
             DrawCallKind::Nop
             | DrawCallKind::BlitVram2Vram(_)
             | DrawCallKind::BlitCpu2Vram(_, _)
-            | DrawCallKind::BlitVram2Cpu(_) => false,
+            | DrawCallKind::BlitVram2Cpu(_)
+            | DrawCallKind::QuickFill(_) => false,
         }
     }
 }
@@ -794,5 +803,36 @@ impl BlitCmd for Gp0HostBlit {
 impl BlitCmd for Gp0VramBlit {
     fn is_small(&self) -> bool {
         self.size.area() < 512
+    }
+}
+
+#[derive(Debug, Clone, Endecode)]
+pub enum QuickFillDecoder {
+    Color { color: U8Vec3 },
+    Pos { color: U8Vec3, pos: VramCoord },
+}
+
+impl Default for QuickFillDecoder {
+    fn default() -> Self {
+        Self::Color { color: default() }
+    }
+}
+
+impl DrawCallDecoder for QuickFillDecoder {
+    type Output = Gp0QuickFill;
+
+    fn advance<T: Copy>(self, value: T) -> Result<Self, Self::Output> {
+        let value = value.io_into_u32();
+        match self {
+            QuickFillDecoder::Color { color } => Ok(QuickFillDecoder::Pos {
+                color,
+                pos: value.io_from_u32(),
+            }),
+            QuickFillDecoder::Pos { color, pos } => Err(Gp0QuickFill {
+                pos,
+                color,
+                size: value.io_from_u32(),
+            }),
+        }
     }
 }
