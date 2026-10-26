@@ -1,3 +1,5 @@
+enable dual_source_blending;
+
 struct VertexInput {
     @location(0) position: vec2<i32>,
     @location(1) color_and_mode: u32,
@@ -27,6 +29,11 @@ struct VertexOutput {
     @interpolate(flat) @location(14) gpustat: u32,
     @interpolate(flat) @location(15) tex_window: u32
 };
+
+struct OutColor {
+    @location(0) @blend_src(0) color: vec4<f32>,
+    @location(0) @blend_src(1) src1: vec4<f32>,
+}
 
 @group(0) @binding(0)
 var vram_t : texture_storage_2d<rgba8unorm,read>;
@@ -184,10 +191,6 @@ fn get_set_mask(flags: u32) -> bool {
     return get_flag(flags, 1);
 }
 
-fn get_draw_pixels(flags: u32) -> bool {
-    return get_flag(flags, 2);
-}
-
 fn get_textured(flags: u32) -> bool {
     return get_flag(flags, 3);
 }
@@ -210,12 +213,12 @@ fn wrap2(x: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
 }
 
 struct Color {
-    unpacked: vec4<f32>,
+    out: OutColor,
     transparent: bool
 }
 
 fn get_color(in: VertexOutput) -> Color {
-    var in_color = in.color;
+    var in_color = OutColor(in.color, vec4(0.0));
     var set_mask = get_set_mask(in.flags);
     let textured = get_textured(in.flags);
     let tex_window = unpack_tex_window(in.tex_window);
@@ -228,8 +231,8 @@ fn get_color(in: VertexOutput) -> Color {
         switch in.color_mode {
             case COLOR_MODE_4BIT: {
                 let base = pack_h(in.texpage_base, 4);
-                var texcoord = base  + in.uv;
-                texcoord = apply_tex_window(texcoord, tex_window);
+                let uv = apply_tex_window(in.uv, tex_window);
+                var texcoord = base  + uv;
                 var clut_idx = read_4bit(texcoord);
 
                 var coord = vec2(in.clut.x + f32(clut_idx), in.clut.y);
@@ -238,8 +241,8 @@ fn get_color(in: VertexOutput) -> Color {
             }
             case COLOR_MODE_8BIT: {
                 let base = pack_h(in.texpage_base, 2);
-                var texcoord = base  + in.uv;
-                texcoord = apply_tex_window(texcoord, tex_window);
+                let uv = apply_tex_window(in.uv, tex_window);
+                var texcoord = base  + uv;
                 var clut_idx = read_8bit(texcoord);
 
                 let coord = vec2(in.clut.x + f32(clut_idx), in.clut.y);
@@ -248,38 +251,67 @@ fn get_color(in: VertexOutput) -> Color {
             }
             case COLOR_MODE_15BIT, COLOR_MODE_24BIT, default: {
                 let base = in.texpage_base;
-                var texcoord = base  + in.uv;
-                texcoord = apply_tex_window(texcoord, tex_window);
+                let uv = apply_tex_window(in.uv, tex_window);
+                var texcoord = base  + uv;
                 tex_color = read_16bit(texcoord);
             }
         }
-        has_stp = get_flag(tex_color_packed, 15);
 
-        if all(tex_color.rgb == vec3(0.0)) {
-            return Color(vec4(0), true);
+        if all(tex_color == vec4(0.0)) {
+            return Color(OutColor(vec4(0), vec4(1)), true);
         }
 
         if get_modulation(in.flags) {
-            in_color = tex_color * in.color * 2.0;
+            in_color.color = tex_color* in.color* 2.0;
         } else {
-            in_color = tex_color;
+            in_color.color = tex_color;
         }
+
+        in_color.color.a = tex_color.a;
+        has_stp = in_color.color.a > 0.0;
+
+    } else {
+        in_color.color.a = 0.0;
     }
 
     has_stp = has_stp && get_stp_on(in.flags);
+
+    if get_stp_on(in.flags) {
+        // A: Bx(1-f) + F
+        // S: B - F
+        // SO: Bxf + F(1-f)
+        switch get_semi_transparency(in.flags) {
+            // average: A
+            case 0, default: {
+                in_color.src1 = vec4(select(1.0, 0.5, has_stp));
+                in_color.color = select(in_color.color, in_color.color * 0.5, has_stp);
+            }
+            // full add: A
+            case 1: {
+                in_color.src1 = vec4(select(1., 0., has_stp));
+            }
+            // subtract (S or SO)
+            case 2: {
+                in_color.src1 = vec4(select(0., 1., has_stp));
+            }
+            // 1/4 add: A
+            case 3: {
+                in_color.src1 = vec4(select(1., 0., has_stp));
+                in_color.color = select(in_color.color, in_color.color * 0.25, has_stp);
+            }
+        }
+    } else {
+        in_color.src1 = vec4(1);
+    }
     
     if get_dither(in.flags) {
-        in_color *= 255;
+        in_color.color *= 255;
         var dither_pos: vec2<f32>;
         dither_pos = in.vram_position % 4;
         var dither_value: i32 = DITHER[u32(dither_pos.y)][u32(dither_pos.x)];
-        in_color += f32(dither_value);
-        in_color = clamp(in_color, vec4(0), vec4(0xff));
-        in_color /= 255;
-    }
-
-    if any(in_color.rgb > vec3(1.0)) || any(in_color.rgb < vec3(0.0)) {
-        return Color(vec4(1.0, 0.0, 0.0, 1.0), false);
+        in_color.color += f32(dither_value);
+        in_color.color = clamp(in_color.color, vec4(0), vec4(0xff));
+        in_color.color /= 255;
     }
 
     return Color(in_color, false);
@@ -293,24 +325,24 @@ const DITHER: array<array<i32, 4>, 4> = array(
 );
 
 @fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32>{
-    if in.vram_position.x < in.draw_area_top_left.x
-    || in.vram_position.y < in.draw_area_top_left.y
-    || in.vram_position.x > in.draw_area_bottom_right.x
-    || in.vram_position.y > in.draw_area_bottom_right.y {
+fn fs_main(in: VertexOutput) -> OutColor {
+    let p = floor(in.vram_position);
+    if p.x < in.draw_area_top_left.x
+    || p.y < in.draw_area_top_left.y
+    || p.x > in.draw_area_bottom_right.x
+    || p.y > in.draw_area_bottom_right.y {
         discard;
     }
-    var draw_pixels = get_draw_pixels(in.flags);
     var pbw = get_flag(in.gpustat, 11);
     var pbc = get_flag(in.gpustat, 12);
     let fill = get_flag(in.flags, 2);
 
     if fill {
-        return in.color;
+        return OutColor(in.color, vec4(1.0));
     }
 
     var current = read_16bit(in.vram_position);
-    if pbc && get_mask_bit(pack4x8unorm(current)) {
+    if pbc && current.a > 0.0 {
         discard;
     }
 
@@ -320,8 +352,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32>{
     }
 
     if pbw && !fill {
-        color.unpacked.a = 1.0;
+        color.out.color.a = 1.0;
     }
 
-    return color.unpacked;
+    return color.out;
 }

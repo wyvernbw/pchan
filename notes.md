@@ -141,12 +141,13 @@ in comparision with duckstation dynarec, fails:
 - [x] make rasterizer own the vram 
 - [x] make the vram rgba8unorm texture instead of r16uint
 - [x] implement fill command
-- [ ] handle semi-transparency using blend states
+- [x] handle semi-transparency using blend states
   - [x] split batches based on transparency type 
   - [x] add pipeline with blend constant
   - [x] subtract pipeline
-  - [ ] per texel blending
-    - [ ] use separate texture for stp
-    - [ ] use alpha for blend factors
+  - [x] per texel blending
+    - [x] ~~se separate texture for stp~~
+    - [x] ~~use alpha for blend factors~~
+    - [x] use dual state blending for blending factor
 - [ ] get rid of per-primitive data duplicated per-vertex
 

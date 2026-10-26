@@ -73,7 +73,7 @@ impl<A: Allocator + Copy> Allocate<A> for Evque<A> {
         Evque {
             clock: 0,
             queue: Box::new_in(BinaryHeap::new(), alloc),
-            tasks: Vec::with_capacity_in(2048, alloc),
+            tasks: Vec::with_capacity_in(4096, alloc),
         }
     }
 }

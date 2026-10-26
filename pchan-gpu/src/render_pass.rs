@@ -5,7 +5,7 @@ use std::sync::MutexGuard;
 
 use crate::{
     Aabb, BatchedGeometryDraw, BatchedGeometryDrawKind, BlitUniforms, Command, Pass, Renderer,
-    Scene, Vertex,
+    Scene, Transparency, Vertex,
 };
 use pchan_emu::gpu::GpuStatReg;
 use pchan_emu::gpu::draw_call::{Gp0HostBlit, Gp0VramBlit};
@@ -156,7 +156,7 @@ impl<A: Allocator + Copy> RenderPass<'_, A> {
             multiview_mask: None,
         });
         render_pass.set_vertex_buffer(0, self.renderer.vertex_buf.slice(..));
-        render_pass.set_pipeline(&self.renderer.render_pipelines.mix);
+        render_pass.set_pipeline(&self.renderer.render_pipelines.add);
         render_pass.set_bind_group(0, &self.renderer.render_bind_group, &[]);
 
         GeometryRenderPass {
@@ -354,19 +354,15 @@ impl GeometryRenderPass<'_> {
                 a: f64::from(factor),
             };
             match self.current_kind {
-                BatchedGeometryDrawKind::OpaqueOnly => {
-                    self.rpass.set_pipeline(&self.gpu.render_pipelines.mix);
-                }
                 BatchedGeometryDrawKind::Transparent(crate::Transparency::Add(factor)) => {
                     self.rpass.set_pipeline(&self.gpu.render_pipelines.add);
-                    self.rpass.set_blend_constant(blend_constant(factor));
                 }
                 BatchedGeometryDrawKind::Transparent(crate::Transparency::Subtract) => {
                     self.rpass.set_pipeline(&self.gpu.render_pipelines.subtract);
                 }
-                BatchedGeometryDrawKind::Transparent(crate::Transparency::Average) => {
-                    self.rpass.set_pipeline(&self.gpu.render_pipelines.average);
-                    self.rpass.set_blend_constant(blend_constant(0.5));
+                BatchedGeometryDrawKind::OpaqueOnly
+                | BatchedGeometryDrawKind::Transparent(crate::Transparency::Average) => {
+                    self.rpass.set_pipeline(&self.gpu.render_pipelines.add);
                 }
             }
         }
@@ -379,6 +375,15 @@ impl GeometryRenderPass<'_> {
         let vertex_end = byte_end / size_of::<Vertex>() as u32;
 
         self.update(batch);
-        self.rpass.draw(vertex_start..vertex_end, 0..1);
+
+        if let BatchedGeometryDrawKind::Transparent(Transparency::Subtract) = batch.kind {
+            self.rpass.set_pipeline(&self.gpu.render_pipelines.subtract);
+            self.rpass.draw(vertex_start..vertex_end, 0..1);
+            self.rpass
+                .set_pipeline(&self.gpu.render_pipelines.subtract_opaque);
+            self.rpass.draw(vertex_start..vertex_end, 0..1);
+        } else {
+            self.rpass.draw(vertex_start..vertex_end, 0..1);
+        }
     }
 }

@@ -72,9 +72,8 @@ pub struct Renderer {
 #[derive(Debug)]
 struct RenderPipelines {
     add: RenderPipeline,
-    average: RenderPipeline,
     subtract: RenderPipeline,
-    mix: RenderPipeline,
+    subtract_opaque: RenderPipeline,
 }
 
 const VRAM_FMT: TextureFormat = TextureFormat::Rgba8Unorm;
@@ -150,9 +149,9 @@ impl Renderer {
     ) -> RenderPipeline {
         device.create_render_pipeline(&RenderPipelineDescriptor {
             label: None,
-            layout: Some(&pipeline_layout),
+            layout: Some(pipeline_layout),
             vertex: VertexState {
-                module: &shader_module,
+                module: shader_module,
                 entry_point: None,
                 compilation_options: PipelineCompilationOptions::default(),
                 buffers: &[Some(VertexBufferLayout {
@@ -373,21 +372,8 @@ impl Renderer {
                 &shader_module,
                 Some(BlendState {
                     color: BlendComponent {
-                        src_factor: BlendFactor::Constant,
-                        dst_factor: BlendFactor::One,
-                        operation: BlendOperation::Add,
-                    },
-                    alpha: BlendComponent::REPLACE,
-                }),
-            ),
-            average: Self::create_render_pipeline(
-                &device,
-                &pipeline_layout,
-                &shader_module,
-                Some(BlendState {
-                    color: BlendComponent {
-                        src_factor: BlendFactor::Constant,
-                        dst_factor: BlendFactor::Constant,
+                        src_factor: BlendFactor::One,
+                        dst_factor: BlendFactor::OneMinusSrc1,
                         operation: BlendOperation::Add,
                     },
                     alpha: BlendComponent::REPLACE,
@@ -406,7 +392,19 @@ impl Renderer {
                     alpha: BlendComponent::REPLACE,
                 }),
             ),
-            mix: Self::create_render_pipeline(&device, &pipeline_layout, &shader_module, None),
+            subtract_opaque: Self::create_render_pipeline(
+                &device,
+                &pipeline_layout,
+                &shader_module,
+                Some(BlendState {
+                    color: BlendComponent {
+                        src_factor: BlendFactor::Src1,
+                        dst_factor: BlendFactor::OneMinusSrc1,
+                        operation: BlendOperation::Add,
+                    },
+                    alpha: BlendComponent::REPLACE,
+                }),
+            ),
         };
 
         let display_shader = device.create_shader_module(include_wgsl!("../shaders/display.wgsl"));
@@ -502,6 +500,7 @@ impl Renderer {
                 label: None,
                 required_features: Features::default()
                     | Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
+                    | Features::DUAL_SOURCE_BLENDING
                     | Features::CLEAR_TEXTURE,
                 required_limits: Limits::defaults(),
                 experimental_features: ExperimentalFeatures::disabled(),

@@ -30,7 +30,7 @@ fn read_raw16(coord: vec2<u32>) -> u32 {
     let r = u32(round(t.r * 31.0));
     let g = u32(round(t.g * 31.0));
     let b = u32(round(t.b * 31.0));
-    let a = u32(round(t.a));
+    let a = u32(t.a > 0.5);
     return r | (g << 5u) | (b << 10u) | (a << 15u);
 }
 
