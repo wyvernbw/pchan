@@ -28,6 +28,7 @@ use crate::dynarec_v2::regalloc::{
 };
 use crate::memory::kb;
 
+#[path = "./emitters/emitters.rs"]
 pub mod emitters;
 pub mod regalloc;
 
