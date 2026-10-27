@@ -409,6 +409,7 @@ pub struct GteBindings<A: Allocator> {
     rtpt:  GteFn<A>,
     rtps:  GteFn<A>,
     nclip: GteFn<A>,
+    op:    GteFn<A>,
     ncs:   GteFn<A>,
     nct:   GteFn<A>,
     nccs:  GteFn<A>,
@@ -432,6 +433,7 @@ impl<A: Allocator + Copy> GteBindings<A> {
     pub const RTPT: u32 = offset_of!(Self, rtpt) as u32 + Self::OFFSET;
     pub const RTPS: u32 = offset_of!(Self, rtps) as u32 + Self::OFFSET;
     pub const NCLIP: u32 = offset_of!(Self, nclip) as u32 + Self::OFFSET;
+    pub const OP: u32 = offset_of!(Self, op) as u32 + Self::OFFSET;
     pub const NCS: u32 = offset_of!(Self, ncs) as u32 + Self::OFFSET;
     pub const NCT: u32 = offset_of!(Self, nct) as u32 + Self::OFFSET;
     pub const NCCS: u32 = offset_of!(Self, nccs) as u32 + Self::OFFSET;
@@ -454,6 +456,7 @@ impl<A: Allocator + Copy> GteBindings<A> {
             rtpt:  Emu::gte_rtpt,
             rtps:  Emu::gte_rtps,
             nclip: Emu::gte_nclip,
+            op:    Emu::gte_outer_product,
             ncs:   Emu::gte_ncs,
             nct:   Emu::gte_nct,
             nccs:  Emu::gte_nccs,
@@ -851,6 +854,35 @@ impl<A: Allocator> Emu<A> {
         gte.ctrl.flag.update_err();
     }
 
+    ///```plain
+    /// [MAC1,MAC2,MAC3] = [IR3*D2-IR2*D3, IR1*D3-IR3*D1, IR2*D1-IR1*D2] SAR (sf*12)
+    /// [IR1,IR2,IR3]    = [MAC1,MAC2,MAC3]                        ;copy result
+    /// ```
+    fn gte_outer_product(&mut self, cmd: GteCommandField) {
+        let gte = &mut self.cpu.gte;
+        gte.clear_flag();
+
+        let rt = &gte.ctrl.rt_mat;
+
+        let d = i16x3::from_array([rt[0][0], rt[1][1], rt[2][2]]);
+        let ir = gte.data.irv.cast::<i16>();
+        let shift = i64::from(cmd.sf()) * 12;
+
+        let a = i16x3::from_array([ir[2], ir[0], ir[1]]);
+        let b = i16x3::from_array([d[1], d[2], d[0]]);
+        let c = a.rotate_elements_right::<1>();
+        let d = b.rotate_elements_left::<1>();
+        let col1 = a.cast::<i64>() * b.cast::<i64>();
+        let col2 = c.cast::<i64>() * d.cast::<i64>();
+        let cross = gte.check_macv(col1) - gte.check_macv(col2);
+        let macv = gte.check_macv(cross) >> shift;
+
+        gte.data.macv = macv.cast();
+        gte.data.irv = gte.sat_irv(macv, cmd).cast();
+
+        gte.ctrl.flag.update_err();
+    }
+
     /// ```plain
     /// [IR1,IR2,IR3] = [MAC1,MAC2,MAC3] = (LLM*V0) SAR (sf*12)
     /// [IR1,IR2,IR3] = [MAC1,MAC2,MAC3] = (BK*1000h + LCM*IR) SAR (sf*12)
@@ -1089,7 +1121,7 @@ impl<A: Allocator + Copy> Emu<A> {
         match cmd {
             GteCmd::Rtps => Some(GteBindings::<A>::RTPS),
             GteCmd::Nclip => Some(GteBindings::<A>::NCLIP),
-            GteCmd::Op => trace_todo!(),
+            GteCmd::Op => Some(GteBindings::<A>::OP),
             GteCmd::Dpcs => trace_todo!(),
             GteCmd::Intpl => trace_todo!(),
             GteCmd::Mvmva => Some(GteBindings::<A>::MVMVA),
