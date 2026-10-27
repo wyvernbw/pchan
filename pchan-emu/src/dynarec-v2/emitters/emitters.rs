@@ -6,30 +6,22 @@ mod emitters_gte;
 #[path = "./emitters-tests.rs"]
 mod emitters_tests;
 
-use crate::bindings::ExternFnTable;
-use crate::cpu::gte::GteBindings;
-use crate::cpu::{Cpu, RA};
-use crate::dynarec_v2::regalloc::AllocResultStackless;
-#[cfg(test)]
-use crate::dynarec_v2::{CreateDynarecParams, run_step};
-use crate::dynarec_v2::{DynEmitter, Guest};
 use crate::Emu;
-#[cfg(test)]
-use core::fmt;
+use crate::bindings::ExternFnTable;
+use crate::cpu::ops::*;
+use crate::cpu::{Cpu, RA};
+use crate::dynarec_v2::emitters::emitters_gte::emit_mtc2_ctc2;
+use crate::dynarec_v2::regalloc::AllocResultStackless;
+use crate::dynarec_v2::{DynEmitter, Guest};
 use core::num::NonZeroU8;
 
 use arbitrary_int::traits::Integer;
 use enum_dispatch::enum_dispatch;
 
 use pchan_utils::default;
-#[cfg(test)]
-use rstest::rstest;
 use smallbox::SmallBox;
 
-use crate::cpu::ops::prelude::*;
 use crate::dynarec_v2::{Dynarec, LoadedReg, Reg};
-#[cfg(test)]
-use crate::memory;
 use crate::memory::ext;
 use dynasm::dynasm;
 use dynasmrt::DynasmApi;
@@ -812,47 +804,7 @@ fn emit_move_to_cop<A: Allocator + Copy>(
                 );
             });
         }
-        // gte screen z fifo mirror register "SXYP"
-        (2, 15) => {
-            emit_call(&mut ctx, |dynarec| {
-                #[cfg(target_arch = "aarch64")]
-                dynasm!(
-                    dynarec.asm
-                    ; .arch aarch64
-                    ; ldr x3, [x0, #GteBindings::<A>::WRITE_SXYP]
-                    ; blr x3
-                );
-            });
-        }
-        // gte irgb register
-        (2, 28) => {
-            let rt = ctx.dynarec.emit_load_reg_stackless(rt);
-            emit_call(&mut ctx, |dynarec| {
-                #[cfg(target_arch = "aarch64")]
-                dynasm!(
-                    dynarec.asm
-                    ; .arch aarch64
-                    ; mov w1, W(*rt)
-                    ; ldr x3, [x0, #GteBindings::<A>::WRITE_IRGB]
-                    ; blr x3
-                );
-            });
-        }
-        // gte lzcs register
-        (2, 30) => {
-            let rt = ctx.dynarec.emit_load_reg_stackless(rt);
-            emit_call(&mut ctx, |dynarec| {
-                #[cfg(target_arch = "aarch64")]
-                dynasm!(
-                    dynarec.asm
-                    ; .arch aarch64
-                    ; mov w1, W(*rt)
-                    ; ldr x3, [x0, #GteBindings::<A>::WRITE_LZCS]
-                    ; blr x3
-                );
-            });
-        }
-        (0 | 2, _) => {
+        (0, rd) => {
             let rt = ctx.dynarec.emit_load_reg_stackless(rt);
 
             #[cfg(target_arch = "aarch64")]
@@ -860,11 +812,13 @@ fn emit_move_to_cop<A: Allocator + Copy>(
                 ctx.dynarec.asm
                 ; .arch aarch64
                 ; nop
-                ; str W(*rt), [x0, Cpu::cop_reg_offset(cop, reg) as _]
+                ; str W(*rt), [x0, Cpu::cop_reg_offset(cop, rd) as _]
                 ; nop
             );
         }
-        _ => {}
+        (2, rd) => emit_mtc2_ctc2(ctx, rt, rd),
+
+        _ => todo!(),
     }
 
     default()
@@ -905,9 +859,11 @@ impl DynarecOp for CopNCmd {
 #[allow(clippy::useless_conversion)]
 #[cfg(target_arch = "aarch64")]
 fn emit_move_from_cop<A: Allocator + Copy>(
-    mut ctx: EmitCtx<A>,
+    ctx: EmitCtx<A>,
     CopMove { cop, rd, rt, kind }: CopMove,
 ) {
+    use crate::dynarec_v2::emitters::emitters_gte::emit_mfc2_cfc2;
+
     if rt == 0 {
         return;
     }
@@ -928,46 +884,7 @@ fn emit_move_from_cop<A: Allocator + Copy>(
 
             ctx.dynarec.mark_dirty(rt);
         }
-        // gte screen z fifo mirror register "SXYP"
-        (2, 15) => {
-            emit_move_to_cop(
-                ctx,
-                CopMove {
-                    cop,
-                    rd: 14,
-                    rt,
-                    kind,
-                },
-            );
-        }
-        (2, _) => {
-            let rta = ctx.dynarec.alloc_reg_stackless(rt);
-            dynasm!(
-                ctx.dynarec.asm
-                ; .arch aarch64
-                ; ldr W(*rta), [x0, Cpu::cop_reg_offset(cop, reg) as _]
-            );
-
-            if rt != 0 {
-                dynasm!(
-                    ctx.dynarec.asm
-                    ; .arch aarch64
-                    ; str W(*rta), [x0, #shadow(rt)]
-                );
-            }
-
-            // writeback to gpr
-            ctx.schedule_in(1, Some(rt), move |ctx| {
-                let rta = ctx.dynarec.alloc_reg_stackless(rt);
-                dynasm!(
-                    ctx.dynarec.asm
-                    ; .arch aarch64
-                    ; ldr W(*rta), [x0, #shadow(rt)]
-                );
-                ctx.dynarec.mark_dirty(rt);
-                EmitSummary::default()
-            });
-        }
+        (2, rd) => emit_mfc2_cfc2(ctx, rt, rd),
         _ => todo!(),
     }
 }

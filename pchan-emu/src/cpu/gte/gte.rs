@@ -405,9 +405,11 @@ pub struct GteBindings<A: Allocator> {
     avsz4: GteFn<A>,
     mvmva: GteFn<A>,
 
-    write_sxyp: fn(&mut Emu<A>),
+    write_sxyp: fn(&mut Emu<A>, u32),
     write_irgb: fn(&mut Emu<A>, u32),
     write_lzcs: fn(&mut Emu<A>, i32),
+
+    read_orgb: fn(&mut Emu<A>),
 }
 
 impl<A: Allocator + Copy> GteBindings<A> {
@@ -424,9 +426,12 @@ impl<A: Allocator + Copy> GteBindings<A> {
     pub const AVSZ3: u32 = offset_of!(Self, avsz3) as u32 + Self::OFFSET;
     pub const AVSZ4: u32 = offset_of!(Self, avsz4) as u32 + Self::OFFSET;
     pub const MVMVA: u32 = offset_of!(Self, mvmva) as u32 + Self::OFFSET;
+
     pub const WRITE_SXYP: u32 = offset_of!(Self, write_sxyp) as u32 + Self::OFFSET;
     pub const WRITE_IRGB: u32 = offset_of!(Self, write_irgb) as u32 + Self::OFFSET;
     pub const WRITE_LZCS: u32 = offset_of!(Self, write_lzcs) as u32 + Self::OFFSET;
+
+    pub const READ_ORGB: u32 = offset_of!(Self, read_orgb) as u32 + Self::OFFSET;
 
     pub(crate) const fn new() -> Self {
         Self {
@@ -446,6 +451,8 @@ impl<A: Allocator + Copy> GteBindings<A> {
             write_sxyp: Emu::gte_write_sxyp,
             write_irgb: Emu::gte_write_irgb,
             write_lzcs: Emu::gte_write_lzcs,
+
+            read_orgb: Emu::gte_read_orgb,
         }
     }
 }
@@ -853,16 +860,32 @@ impl<A: Allocator> Emu<A> {
         gte.data.irv = gte.sat_irv(macv, cmd).cast();
     }
 
-    fn gte_write_sxyp(&mut self) {
+    fn gte_write_sxyp(&mut self, value: u32) {
+        self.cpu.gte.data.sxy_fifo[3] = i16x2::from_ne_bytes(u8x4::from_array(value.to_ne_bytes()));
         self.cpu.gte.advance_sxy_fifo();
     }
 
     fn gte_write_irgb(&mut self, value: u32) {
         let value = value.as_u16();
-        self.cpu.gte.data.irgb_orgb[0] = u32::from(value);
         let rgb = Rgb5::new_with_raw_value(value.as_u16());
-        self.cpu.gte.data.irgb_orgb[1] =
-            u32::from_ne_bytes([rgb.r().value(), rgb.g().value(), rgb.b().value(), 0]);
+
+        self.cpu.gte.data.irgb_orgb[0] = u32::from(rgb.with_mask(false).raw_value());
+
+        let irv = i32x3::from_array([
+            i32::from(rgb.r().value()),
+            i32::from(rgb.g().value()),
+            i32::from(rgb.b().value()),
+        ]);
+        let irv = irv << 7;
+        self.cpu.gte.data.irv = irv;
+    }
+
+    fn gte_read_orgb(&mut self) {
+        let irv = self.cpu.gte.data.irv;
+        let orgb = (irv >> 7) & i32x3::splat(0x1f);
+        let orgb = orgb.resize::<4>(0).cast::<u8>().cast::<u32>();
+        let orgb = orgb[0] | (orgb[1] << 5) | (orgb[2] << 10);
+        self.cpu.gte.data.irgb_orgb[1] = orgb;
     }
 
     fn gte_write_lzcs(&mut self, value: i32) {
