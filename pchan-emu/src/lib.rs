@@ -27,7 +27,6 @@
 #![feature(const_destruct)]
 #![feature(arbitrary_self_types)]
 #![feature(integer_widen_truncate)]
-#![feature(integer_cast_extras)]
 #![feature(allocator_ext)]
 #![feature(default_field_values)]
 #![feature(vec_push_within_capacity)]

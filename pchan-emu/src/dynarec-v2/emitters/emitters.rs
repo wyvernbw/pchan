@@ -13,7 +13,7 @@ use crate::dynarec_v2::regalloc::AllocResultStackless;
 #[cfg(test)]
 use crate::dynarec_v2::{CreateDynarecParams, run_step};
 use crate::dynarec_v2::{DynEmitter, Guest};
-use crate::{Emu, cpu};
+use crate::Emu;
 #[cfg(test)]
 use core::fmt;
 use core::num::NonZeroU8;

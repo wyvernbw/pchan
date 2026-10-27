@@ -1,34 +1,24 @@
 use crate::bindings::ExternFnTable;
 
-use crate::cpu::gte::GteBindings;
 use crate::cpu::{Cpu, RA};
 use crate::dynarec_v2::emitters::{
     AluImm, Boundary, CopMove, CopRegisterKind, DynarecOp, EitherZero, EmitAddImm16Args, EmitCtx,
     EmitSummary, Hilo, ShiftImm, either_zero, emit_alu_imm, emit_alu_reg, emit_branch,
     emit_branch_zero, emit_call, emit_load, emit_move_from_cop, emit_move_to_cop, emit_mthilo,
-    emit_shift_by_reg, emit_shift_imm, emit_store, shadow,
+    emit_shift_by_reg, emit_shift_imm, emit_store,
 };
-use crate::dynarec_v2::regalloc::AllocResultStackless;
-#[cfg(test)]
-use crate::dynarec_v2::{CreateDynarecParams, run_step};
-use crate::dynarec_v2::{DynEmitter, Guest};
 use crate::{Emu, cpu};
-#[cfg(test)]
-use core::fmt;
-use core::num::NonZeroU8;
 
 use arbitrary_int::traits::Integer;
-use enum_dispatch::enum_dispatch;
 
 use pchan_utils::default;
 
 use crate::cpu::ops::prelude::*;
-use crate::dynarec_v2::{Dynarec, LoadedReg, Reg};
+use crate::dynarec_v2::Reg;
 use crate::memory::ext;
 use dynasm::dynasm;
 use dynasmrt::DynasmApi;
 
-use super::ScheduledEmitter;
 use core::alloc::Allocator;
 
 impl DynarecOp for Addiu {
