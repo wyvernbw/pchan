@@ -22,7 +22,7 @@ use core::num::NonZeroU64;
 use core::ops::Range;
 use core::{mem, ptr};
 use std::mem::offset_of;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 use std::time::Instant;
 use wgpu::util::StagingBelt;
 
@@ -173,7 +173,7 @@ impl Renderer {
             depth_stencil: None,
             multisample: MultisampleState::default(),
             fragment: Some(FragmentState {
-                module: &shader_module,
+                module: shader_module,
                 entry_point: None,
                 compilation_options: PipelineCompilationOptions::default(),
                 targets: &[Some(ColorTargetState {
@@ -501,8 +501,12 @@ impl Renderer {
                 required_features: Features::default()
                     | Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
                     | Features::DUAL_SOURCE_BLENDING
-                    | Features::CLEAR_TEXTURE,
-                required_limits: Limits::defaults(),
+                    | Features::CLEAR_TEXTURE
+                    | Features::IMMEDIATES,
+                required_limits: Limits {
+                    max_immediate_size: 8,
+                    ..default()
+                },
                 experimental_features: ExperimentalFeatures::disabled(),
                 memory_hints: MemoryHints::Performance,
                 trace: Trace::Off,
@@ -553,7 +557,7 @@ impl Renderer {
             match msg {
                 DrawCallMsg::DrawCall(draw_call) => {
                     alloc.reset();
-                    let mut pass = Pass::new_in(&alloc);
+                    let mut pass = Pass::new_in(self.belt.try_lock().unwrap(), &alloc);
                     pass.add_draw_call(draw_call);
                     match self.draw_submission_loop(&mut pass).await {
                         SubmissionResult::Reset(ack) => {
@@ -605,7 +609,7 @@ impl Renderer {
     #[must_use]
     async fn draw_submission_loop<A: Allocator + Copy>(
         &self,
-        pass: &mut Pass<A>,
+        pass: &mut Pass<'_, A>,
     ) -> SubmissionResult {
         loop {
             let msg = self
@@ -621,6 +625,7 @@ impl Renderer {
                 }
                 DrawCallMsg::Flush(flush_msg) => {
                     pass.flush_geometry();
+                    pass.flush_cpu_to_vram();
                     return SubmissionResult::Flush(flush_msg);
                 }
                 DrawCallMsg::UpdateDisplay(display, gpustat) => {
@@ -777,18 +782,16 @@ enum SubmissionResult {
     Flush(FlushMsg),
 }
 
-#[derive(derive_more::Debug)]
+#[derive(derive_more::Debug, Default)]
 enum Command<A: Allocator> {
     DrawGeometry(GeometryDraw<A>),
     VramToVramBlit {
         blit: Gp0VramBlit,
         gpustat: GpuStatReg,
     },
-    CpuToVramBlit {
-        blit: Gp0HostBlit,
-        data: Vec<u8>,
-        gpustat: GpuStatReg,
-    },
+    CpuToVram(CpuToVramBlitBatch<A>),
+    #[default]
+    Nop,
 }
 
 struct GeometryDraw<A: Allocator> {
@@ -816,13 +819,43 @@ enum Transparency {
     Subtract,
 }
 
+struct CpuToVramBlit {
+    blit: Gp0HostBlit,
+    gpustat: GpuStatReg,
+    cursor: u32,
+    index: u32,
+}
+
+struct CpuToVramBlitBatchBuilder<A: Allocator> {
+    cursor: u32,
+    staging_buf: Buffer,
+    staging_offset: BufferAddress,
+    blits: Vec<CpuToVramBlit, A>,
+    uniforms: Vec<BlitUniforms, A>,
+}
+
+struct CpuToVramBlitBatch<A: Allocator> {
+    staging_buf: Buffer,
+    staging_offset: BufferAddress,
+    data_len: u64,
+    blits: Vec<CpuToVramBlit, A>,
+    uniforms: Vec<BlitUniforms, A>,
+}
+
 #[derive(derive_more::Debug)]
-pub(crate) struct Pass<A: Allocator> {
+pub(crate) struct Pass<'b, A: Allocator> {
     cmds: Vec<Command<A>, A>,
-    geometry_builder: Option<GeometryBuilder<A>>,
+    builder: PassCmdBuilder<A>,
     vertex_buf_cursor: u32,
+    belt: MutexGuard<'b, StagingBelt>,
     #[debug(skip)]
     alloc: A,
+}
+
+enum PassCmdBuilder<A: Allocator> {
+    None,
+    Geometry(GeometryBuilder<A>),
+    CpuToVramBlit(CpuToVramBlitBatchBuilder<A>),
 }
 
 #[derive(derive_more::Debug)]
@@ -1114,69 +1147,143 @@ impl<A: Allocator + Copy> GeometryBuilder<A> {
     }
 }
 
-impl<A: Allocator + Copy> Pass<A> {
-    pub fn empty(alloc: A) -> Self {
+const CPU_TO_VRAM_BLIT_BUF_SIZE: usize = mb(2);
+const CPU_TO_VRAM_UNIFORM_BUF_SIZE: usize = mb(2);
+const CPU_TO_VRAM_MAX_BLITS: usize = CPU_TO_VRAM_UNIFORM_BUF_SIZE / size_of::<BlitUniforms>();
+
+impl<A: Allocator + Copy> CpuToVramBlitBatchBuilder<A> {
+    fn new(pass: &mut Pass<A>) -> Self {
+        let buf = pass.belt.allocate(
+            NonZeroU64::new(CPU_TO_VRAM_BLIT_BUF_SIZE as u64).unwrap(),
+            NonZeroU64::new(4).unwrap(),
+        );
+        let offset = buf.offset();
+        Self {
+            cursor: 0,
+            blits: Vec::with_capacity_in(64, pass.alloc),
+            uniforms: Vec::with_capacity_in(64, pass.alloc),
+            staging_buf: buf.buffer().clone(),
+            staging_offset: offset,
+        }
+    }
+
+    fn add_draw_call(
+        &mut self,
+        blit: Gp0HostBlit,
+        data: Vec<u8>,
+        gpustat: GpuStatReg,
+    ) -> Result<(), Vec<u8>> {
+        if self.uniforms.len() > CPU_TO_VRAM_MAX_BLITS {
+            return Err(data);
+        }
+
+        let cursor = self.cursor;
+        let end = cursor + data.len() as u32;
+
+        self.cursor = end;
+
+        let buf_start = u64::from(cursor) + self.staging_offset;
+        let buf_end = u64::from(end) + self.staging_offset;
+        self.staging_buf
+            .get_mapped_range_mut(buf_start..buf_end)
+            .unwrap()
+            .copy_from_slice(&data);
+
+        self.blits.push(CpuToVramBlit {
+            blit,
+            gpustat,
+            cursor,
+            index: self.blits.len() as u32,
+        });
+        self.uniforms
+            .push(BlitUniforms::from_host_blit(blit, gpustat));
+
+        Ok(())
+    }
+
+    fn flush(self) -> Option<CpuToVramBlitBatch<A>> {
+        if self.uniforms.is_empty() || self.blits.is_empty() {
+            return None;
+        }
+        Some(CpuToVramBlitBatch {
+            staging_buf: self.staging_buf,
+            staging_offset: self.staging_offset,
+            blits: self.blits,
+            data_len: u64::from(self.cursor),
+            uniforms: self.uniforms,
+        })
+    }
+}
+
+impl<'b, A: Allocator + Copy> Pass<'b, A> {
+    pub fn empty(belt: MutexGuard<'b, StagingBelt>, alloc: A) -> Self {
         let cmds = Vec::new_in(alloc);
         Pass {
+            belt,
             cmds,
-            geometry_builder: None,
+            builder: PassCmdBuilder::None,
             alloc,
             vertex_buf_cursor: 0,
         }
     }
 
-    pub fn new_in(alloc: A) -> Self {
+    pub fn new_in(belt: MutexGuard<'b, StagingBelt>, alloc: A) -> Self {
         let cmds = Vec::new_in(alloc);
         Pass {
             cmds,
-            geometry_builder: None,
+            builder: PassCmdBuilder::None,
             alloc,
             vertex_buf_cursor: 0,
+            belt,
         }
     }
 
-    #[must_use]
-    pub fn take(&mut self) -> Pass<A> {
-        mem::replace(self, Pass::empty(self.alloc))
-    }
-
-    pub fn add_draw_call(&mut self, draw_call: DrawCall) {
-        match &mut self.geometry_builder {
-            Some(builder) => match draw_call.inner {
+    pub fn add_draw_call(&mut self, mut draw_call: DrawCall) {
+        match &mut self.builder {
+            PassCmdBuilder::Geometry(builder) => match draw_call.inner {
+                DrawCallKind::Nop => {}
                 DrawCallKind::Rect(_)
                 | DrawCallKind::Polygon(_)
                 | DrawCallKind::Line(_)
                 | DrawCallKind::QuickFill(_) => {
                     builder.add_draw_call(draw_call);
                 }
-                DrawCallKind::BlitVram2Vram(gp0_vram_blit) => {
+                _ => {
                     self.flush_geometry();
-                    self.cmds.push(Command::VramToVramBlit {
-                        blit: gp0_vram_blit,
-                        gpustat: draw_call.gpustat,
-                    });
+                    self.add_draw_call(draw_call);
                 }
-                DrawCallKind::BlitCpu2Vram(gp0_host_blit, data) => {
-                    self.flush_geometry();
-                    self.cmds.push(Command::CpuToVramBlit {
-                        blit: gp0_host_blit,
-                        gpustat: draw_call.gpustat,
-                        data,
-                    });
-                }
-                DrawCallKind::BlitVram2Cpu(_blit) => todo!(),
-                DrawCallKind::Nop => {}
             },
-            None => match draw_call.inner {
+            PassCmdBuilder::CpuToVramBlit(builder) => match draw_call.inner {
+                DrawCallKind::Nop => {}
+                DrawCallKind::BlitCpu2Vram(gp0_host_blit, data) => {
+                    match builder.add_draw_call(gp0_host_blit, data, draw_call.gpustat) {
+                        Ok(_) => {}
+                        Err(data) => {
+                            tracing::warn!(
+                                "ran out of space in cpu to vram blit staging buffer. maybe increase the capacity"
+                            );
+                            draw_call.inner = DrawCallKind::BlitCpu2Vram(gp0_host_blit, data);
+                            self.flush_cpu_to_vram();
+                            self.add_draw_call(draw_call);
+                        }
+                    }
+                }
+                _ => {
+                    self.flush_cpu_to_vram();
+                    self.add_draw_call(draw_call);
+                }
+            },
+            PassCmdBuilder::None => match draw_call.inner {
+                DrawCallKind::Nop => {}
                 DrawCallKind::Rect(_)
                 | DrawCallKind::Polygon(_)
                 | DrawCallKind::Line(_)
                 | DrawCallKind::QuickFill(_) => {
                     let dp = HWDisplayUniforms::from_hw(&draw_call.display, draw_call.gpustat);
-                    let mut geometry_builder =
+                    let geometry_builder =
                         GeometryBuilder::new(self.vertex_buf_cursor, dp, self.alloc);
-                    geometry_builder.add_draw_call(draw_call);
-                    self.geometry_builder = Some(geometry_builder);
+                    self.builder = PassCmdBuilder::Geometry(geometry_builder);
+                    self.add_draw_call(draw_call);
                 }
                 DrawCallKind::BlitVram2Vram(blit) => {
                     self.cmds.push(Command::VramToVramBlit {
@@ -1184,29 +1291,50 @@ impl<A: Allocator + Copy> Pass<A> {
                         gpustat: draw_call.gpustat,
                     });
                 }
-                DrawCallKind::BlitCpu2Vram(blit, data) => {
-                    self.cmds.push(Command::CpuToVramBlit {
-                        blit,
-                        data,
-                        gpustat: draw_call.gpustat,
-                    });
+                DrawCallKind::BlitCpu2Vram(_, _) => {
+                    self.builder =
+                        PassCmdBuilder::CpuToVramBlit(CpuToVramBlitBatchBuilder::new(self));
+                    self.add_draw_call(draw_call)
                 }
                 DrawCallKind::BlitVram2Cpu(_blit) => todo!(),
-                DrawCallKind::Nop => {}
             },
-        };
+        }
     }
 
     fn flush_geometry(&mut self) {
-        if let Some(mut geom) = self.geometry_builder.take() {
-            geom.flush_batch();
-            self.vertex_buf_cursor += geom.scene.vertex_bytes().len() as u32;
-            self.cmds.push(Command::DrawGeometry(GeometryDraw {
-                batches: geom.batches,
-                scene: geom.scene,
-                dp: geom.dp,
-            }));
+        match self.builder.take() {
+            PassCmdBuilder::Geometry(mut geom) => {
+                geom.flush_batch();
+                self.vertex_buf_cursor += geom.scene.vertex_bytes().len() as u32;
+                self.cmds.push(Command::DrawGeometry(GeometryDraw {
+                    batches: geom.batches,
+                    scene: geom.scene,
+                    dp: geom.dp,
+                }));
+            }
+            other => {
+                self.builder = other;
+            }
         }
+    }
+
+    fn flush_cpu_to_vram(&mut self) {
+        match self.builder.take() {
+            PassCmdBuilder::CpuToVramBlit(builder) => {
+                if let Some(cmd) = builder.flush() {
+                    self.cmds.push(Command::CpuToVram(cmd));
+                }
+            }
+            other => {
+                self.builder = other;
+            }
+        }
+    }
+}
+
+impl<A: Allocator> PassCmdBuilder<A> {
+    fn take(&mut self) -> Self {
+        mem::replace(self, PassCmdBuilder::None)
     }
 }
 
@@ -1732,8 +1860,8 @@ fn create_blit_compute_resources(
 
     let uniforms_buffer = device.create_buffer(&BufferDescriptor {
         label: Some("pchan-gpu.blit.uniform_buffer"),
-        size: 512,
-        usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+        size: CPU_TO_VRAM_UNIFORM_BUF_SIZE as u64,
+        usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
 
@@ -1745,7 +1873,7 @@ fn create_blit_compute_resources(
                 binding: 0,
                 visibility: ShaderStages::COMPUTE,
                 ty: BindingType::Buffer {
-                    ty: BufferBindingType::Uniform,
+                    ty: BufferBindingType::Storage { read_only: true },
                     has_dynamic_offset: false,
                     min_binding_size: None,
                 },
@@ -1813,7 +1941,7 @@ fn create_blit_compute_resources(
     let pipe_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
         label: None,
         bind_group_layouts: &[Some(&bind_layout)],
-        immediate_size: 0,
+        immediate_size: 8,
     });
     let cpipe = device.create_compute_pipeline(&ComputePipelineDescriptor {
         label: None,
@@ -1831,7 +1959,7 @@ fn create_blit_compute_resources(
     }
 }
 
-#[repr(C, align(8))]
+#[repr(C)]
 #[derive(Debug, Clone)]
 pub(crate) struct BlitUniforms {
     kind: BlitKind,

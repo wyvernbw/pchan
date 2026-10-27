@@ -6,7 +6,13 @@ struct Uniforms {
     size: vec2<u32>
 }
 
-@group(0) @binding(0) var<uniform> uniforms: Uniforms;
+struct Push {
+    cursor: u32,
+    index: u32,
+}
+
+var<immediate> push: Push;
+@group(0) @binding(0) var<storage> uniforms_buf: array<Uniforms>;
 @group(0) @binding(1) var<storage, read> src_buf: array<u32>;
 @group(0) @binding(2) var dest_tex: texture_storage_2d<rgba8unorm,write>;
 @group(0) @binding(3) var vram_tex: texture_storage_2d<rgba8unorm,read_write>;
@@ -16,6 +22,10 @@ const VRAM_TO_VRAM: u32 = 1;
 
 @compute @workgroup_size(16, 16, 1)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let cursor = push.cursor;
+    let index = push.index;
+    let uniforms = uniforms_buf[index];
+
     var size = copy_clip_size(uniforms.size);
     var dest = clip_pos(gid.xy+uniforms.dest);
 
@@ -30,7 +40,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     switch uniforms.kind {
         case CPU_TO_VRAM {
-            let i0 = gid.y * size.x + gid.x;
+            let i0 = gid.y * size.x + gid.x + cursor / 2u;
             var value = rgb5_split_color(get_packed_src(i0));
 
             if pbw {
@@ -41,7 +51,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             textureStore(vram_tex, dest, value);
         }
         case VRAM_TO_VRAM, default: {
-            let sp = vec2(gid.x, gid.y) + uniforms.src;
+            let sp = vec2(gid.x, gid.y);
             var value = get_vram(sp);
 
             if pbw {

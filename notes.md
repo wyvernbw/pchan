@@ -149,5 +149,7 @@ in comparision with duckstation dynarec, fails:
     - [x] ~~se separate texture for stp~~
     - [x] ~~use alpha for blend factors~~
     - [x] use dual source blending for blending factor
+- [x] batch cpu to vram blits
+- [ ] batch vram to vram blits
 - [ ] get rid of per-primitive data duplicated per-vertex
 
