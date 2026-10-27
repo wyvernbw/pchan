@@ -1,5 +1,5 @@
 use crate::cpu::Cpu;
-use crate::cpu::gte::GteBindings;
+use crate::cpu::gte::{Gte, GteBindings};
 use crate::dynarec_v2::emitters::{EmitCtx, EmitSummary, emit_call, shadow};
 use crate::dynarec_v2::regalloc::Reg;
 use core::alloc::Allocator;
@@ -10,7 +10,7 @@ use dynasmrt::DynasmApi;
 pub(crate) fn emit_mtc2_ctc2<A: Allocator + Copy>(mut ctx: EmitCtx<A>, rt: u8, rd: u8) {
     match rd {
         // trunacte u32 to i16 then sign extend
-        1 | 3 | 5 | 8 | 9 | 10 | 11 | 36 | 44 | 52 | 59 | 61 | 62 => {
+        1 | 3 | 5 | 8 | 9 | 10 | 11 | 36 | 44 | 52 | 58 | 59 | 61 | 62 => {
             ctx.dynarec.emit_load_temp_reg(rt, Reg::W(1));
             dynasm!(
                 ctx.dynarec.asm
@@ -20,8 +20,8 @@ pub(crate) fn emit_mtc2_ctc2<A: Allocator + Copy>(mut ctx: EmitCtx<A>, rt: u8, r
                 ; nop
             )
         }
-        // sz fifo, H: trunacte and zero ext
-        7 | 16..=19 | 58 => {
+        // sz fifo
+        7 | 16..=19 => {
             ctx.dynarec.emit_load_temp_reg(rt, Reg::W(1));
             dynasm!(
                 ctx.dynarec.asm
@@ -108,20 +108,20 @@ pub(crate) fn emit_mfc2_cfc2<A: Allocator + Copy>(mut ctx: EmitCtx<A>, rt: u8, r
     let rta = ctx.dynarec.alloc_reg_stackless(rt);
 
     match rd {
-        // orgb, call read_orgb to update value from irv, then read
-        29 => {
+        // irgb/orgb, call read_irgb_orgb to update value from irv, then read
+        28 | 29 => {
             emit_call(&mut ctx, |dynarec| {
                 dynasm!(
                     dynarec.asm
                     ; .arch aarch64
-                    ; ldr x3, [x0, #GteBindings::<A>::READ_ORGB]
+                    ; ldr x3, [x0, #GteBindings::<A>::READ_IRGB_ORGB]
                     ; blr x3
                 );
             });
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
-                ; ldr W(*rta), [x0, Cpu::cop_reg_offset(2, rd) as _]
+                ; ldr W(*rta), [x0, Gte::RGB_U32]
             );
         }
         // H: buggy u16, sign extend on read

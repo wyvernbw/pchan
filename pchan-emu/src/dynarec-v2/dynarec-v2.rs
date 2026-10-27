@@ -978,7 +978,7 @@ pub(crate) fn fetch_and_compile_single_threaded<A: Allocator + Copy>(
     let mut start = dynarec.asm.offset();
 
     if start.0 > ASM_CAPACITY * 3 / 4 {
-        tracing::warn!("JIT cache over capacity");
+        tracing::debug!("flushing JIT cache (capacity exceeded).");
         emu.dynarec_cache.flush();
         *dynarec = Dynarec::new(CreateDynarecParams {
             reg_alloc: None,
