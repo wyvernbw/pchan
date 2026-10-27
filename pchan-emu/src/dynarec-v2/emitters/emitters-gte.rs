@@ -21,7 +21,7 @@ pub(crate) fn emit_mtc2_ctc2<A: Allocator + Copy>(mut ctx: EmitCtx<A>, rt: u8, r
             )
         }
         // sz fifo, H: trunacte and zero ext
-        16..=19 | 58 => {
+        7 | 16..=19 | 58 => {
             ctx.dynarec.emit_load_temp_reg(rt, Reg::W(1));
             dynasm!(
                 ctx.dynarec.asm
@@ -31,8 +31,8 @@ pub(crate) fn emit_mtc2_ctc2<A: Allocator + Copy>(mut ctx: EmitCtx<A>, rt: u8, r
                 ; nop
             )
         }
-        // OTZ, ORGB, LZCR: read only
-        7 | 29 | 31 => {}
+        // ORGB, LZCR: read only
+        29 | 31 => {}
         // gte screen z fifo mirror register "SXYP"
         15 => {
             emit_call(&mut ctx, |dynarec| {
@@ -70,6 +70,19 @@ pub(crate) fn emit_mtc2_ctc2<A: Allocator + Copy>(mut ctx: EmitCtx<A>, rt: u8, r
                     ; .arch aarch64
                     ; mov w1, W(*rt)
                     ; ldr x3, [x0, #GteBindings::<A>::WRITE_LZCS]
+                    ; blr x3
+                );
+            });
+        }
+        // gte flag
+        63 => {
+            emit_call(&mut ctx, |dynarec| {
+                dynarec.emit_load_temp_reg(rt, Reg::W(1));
+                #[cfg(target_arch = "aarch64")]
+                dynasm!(
+                    dynarec.asm
+                    ; .arch aarch64
+                    ; ldr x3, [x0, #GteBindings::<A>::WRITE_FLAG]
                     ; blr x3
                 );
             });

@@ -210,6 +210,11 @@ const _: () = const {
 #[bitfield(u32)]
 #[derive(Endecode, Debug, Default)]
 struct Flag {
+    #[bit(31, rw)]
+    err:      bool,
+    #[bits([23..=30, 13..=18], rw)]
+    err_cond: u14,
+
     #[bits(28..=30, rw)]
     macv_ovf_pos:    u3,
     #[bits(25..=27, rw)]
@@ -228,6 +233,12 @@ struct Flag {
     sxy2_sat:        u2,
     #[bit(12, rw)]
     ir0_sat:         bool,
+}
+
+impl Flag {
+    fn update_err(&mut self) {
+        self.set_err(self.err_cond().value() != 0);
+    }
 }
 
 impl GteCtrlRegs {
@@ -408,6 +419,7 @@ pub struct GteBindings<A: Allocator> {
     write_sxyp: fn(&mut Emu<A>, u32),
     write_irgb: fn(&mut Emu<A>, u32),
     write_lzcs: fn(&mut Emu<A>, i32),
+    write_flag: fn(&mut Emu<A>, u32),
 
     read_orgb: fn(&mut Emu<A>),
 }
@@ -430,6 +442,7 @@ impl<A: Allocator + Copy> GteBindings<A> {
     pub const WRITE_SXYP: u32 = offset_of!(Self, write_sxyp) as u32 + Self::OFFSET;
     pub const WRITE_IRGB: u32 = offset_of!(Self, write_irgb) as u32 + Self::OFFSET;
     pub const WRITE_LZCS: u32 = offset_of!(Self, write_lzcs) as u32 + Self::OFFSET;
+    pub const WRITE_FLAG: u32 = offset_of!(Self, write_flag) as u32 + Self::OFFSET;
 
     pub const READ_ORGB: u32 = offset_of!(Self, read_orgb) as u32 + Self::OFFSET;
 
@@ -451,6 +464,7 @@ impl<A: Allocator + Copy> GteBindings<A> {
             write_sxyp: Emu::gte_write_sxyp,
             write_irgb: Emu::gte_write_irgb,
             write_lzcs: Emu::gte_write_lzcs,
+            write_flag: Emu::gte_write_flag,
 
             read_orgb: Emu::gte_read_orgb,
         }
@@ -896,6 +910,12 @@ impl<A: Allocator> Emu<A> {
         };
         gte.data.lzcs_lzcr[0] = value;
         gte.data.lzcs_lzcr[1] = cnt as i32;
+    }
+
+    fn gte_write_flag(&mut self, value: u32) {
+        let mut flag = Flag::new_with_raw_value(value);
+        flag.update_err();
+        self.cpu.gte.ctrl.flag = flag;
     }
 }
 
