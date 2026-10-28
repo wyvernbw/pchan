@@ -51,6 +51,10 @@ Progress:
     - [x] polygons (tris and quads)
     - [x] rects (sprites)
     - [ ] lines
+    - [x] texture modulation
+    - [x] semi-transparency (via dual source blending)
+    - [x] vram blits (via compute shaders)
+    - [x] mask bit and mask control emulation (via rgba alpha channel)
   - [ ] software renderer (not started)
 - [x] gte (tests passed: 1150/1150)
   - [ ] load delays (probably not important?)
