@@ -1265,11 +1265,12 @@ impl<A: Allocator> Emu<A> {
     fn gte_avsz3(&mut self, _: GteCommandField) {
         let gte = &mut self.cpu.gte;
         gte.clear_flag();
-        let sz = gte.data.sz_fifo;
-        let mac0 = gte.ctrl.zsf3.as_i64() * (sz[1] + sz[2] + sz[3]).as_i64();
-        // TODO: flags
+
+        let sz = gte.data.sz_fifo.map(i64::from);
+        let mac0 = gte.ctrl.zsf3.as_i64() * (sz[1] + sz[2] + sz[3]);
         gte.data.mac0 = gte.cast_mac0(mac0);
-        gte.data.otz = (mac0 >> 12).clamp(0, 0xffff).as_u16();
+        gte.data.otz = gte.sat_sz3_otz(mac0 >> 12);
+
         gte.ctrl.flag.update_err();
     }
     /// ```plain
@@ -1279,11 +1280,12 @@ impl<A: Allocator> Emu<A> {
     fn gte_avsz4(&mut self, _: GteCommandField) {
         let gte = &mut self.cpu.gte;
         gte.clear_flag();
-        let sz = gte.data.sz_fifo;
-        let mac0 = gte.ctrl.zsf4.as_i64() * (sz[0] + sz[1] + sz[2] + sz[3]).as_i64();
-        // TODO: flags
+
+        let sz = gte.data.sz_fifo.map(i64::from);
+        let mac0 = gte.ctrl.zsf4.as_i64() * (sz[0] + sz[1] + sz[2] + sz[3]);
         gte.data.mac0 = gte.cast_mac0(mac0);
-        gte.data.otz = (mac0 >> 12).clamp(0, 0xffff).as_u16();
+        gte.data.otz = gte.sat_sz3_otz(mac0 >> 12);
+
         gte.ctrl.flag.update_err();
     }
 
