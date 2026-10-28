@@ -453,7 +453,9 @@ pub struct GteBindings<A: Allocator> {
     nccs:  GteFn<A>,
     ncct:  GteFn<A>,
     ncds:  GteFn<A>,
+    cdp:   GteFn<A>,
     ncdt:  GteFn<A>,
+    cc:    GteFn<A>,
     avsz3: GteFn<A>,
     avsz4: GteFn<A>,
     mvmva: GteFn<A>,
@@ -482,6 +484,8 @@ impl<A: Allocator + Copy> GteBindings<A> {
     pub const NCCT: u32 = offset_of!(Self, ncct) as u32 + Self::OFFSET;
     pub const NCDS: u32 = offset_of!(Self, ncds) as u32 + Self::OFFSET;
     pub const NCDT: u32 = offset_of!(Self, ncdt) as u32 + Self::OFFSET;
+    pub const CDP: u32 = offset_of!(Self, cdp) as u32 + Self::OFFSET;
+    pub const CC: u32 = offset_of!(Self, cc) as u32 + Self::OFFSET;
     pub const AVSZ3: u32 = offset_of!(Self, avsz3) as u32 + Self::OFFSET;
     pub const AVSZ4: u32 = offset_of!(Self, avsz4) as u32 + Self::OFFSET;
     pub const MVMVA: u32 = offset_of!(Self, mvmva) as u32 + Self::OFFSET;
@@ -509,6 +513,8 @@ impl<A: Allocator + Copy> GteBindings<A> {
             ncct:  Emu::gte_ncct,
             ncds:  Emu::gte_ncds,
             ncdt:  Emu::gte_ncdt,
+            cdp:   Emu::gte_cdp,
+            cc:    Emu::gte_cc,
             avsz3: Emu::gte_avsz3,
             avsz4: Emu::gte_avsz4,
             mvmva: Emu::gte_mvmva,
@@ -806,6 +812,48 @@ impl Gte {
 
         self.check_macv(macv)
     }
+
+    /// ```plain
+    /// [IR1,IR2,IR3] = [MAC1,MAC2,MAC3] = (LLM*V0) SAR (sf*12)
+    /// [IR1,IR2,IR3] = [MAC1,MAC2,MAC3] = (BK*1000h + LCM*IR) SAR (sf*12)
+    /// ```
+    fn calculate_light_color(&mut self, v: i16x3, sf: bool, lm: SaturateMode) {
+        trace_calc!(let macv = self.macv_matmul3x3v::<false>(self.ctrl.ls_mat, v, i64x3::splat(0)));
+        trace_calc!(let macv = self.shift_macv(macv, sf));
+        self.data.irv = self.sat_irv(macv, lm).cast();
+
+        let bias = self.ctrl.bg_col.cast::<i64>() * i64x3::splat(0x1000);
+        trace_calc! {
+            let macv = self.macv_matmul3x3v::<false>(
+                self.ctrl.lc_mat,
+                self.data.irv.cast::<i16>(),
+                bias
+            )
+        };
+        trace_calc!(let macv = self.shift_macv(macv, sf));
+        self.data.irv = self.sat_irv(macv, lm).cast();
+        self.data.macv = macv;
+    }
+
+    /// ```plain
+    /// [MAC1,MAC2,MAC3] = [R*IR1,G*IR2,B*IR3] SHL 4
+    /// ```
+    #[must_use]
+    fn calculate_color(&mut self) -> i64x3 {
+        let rgb = self.data.rgbc.resize::<3>(0);
+        let macv = self.check_macv(rgb.cast::<i64>() * self.data.irv.cast()) << 4;
+        trace_calc!(macv);
+
+        trace_calc!(self.check_macv(macv))
+    }
+
+    fn push_macv_color(&mut self, _: bool, lm: SaturateMode) {
+        let macv = self.data.macv;
+        let color = macv >> 4;
+        self.advance_crgb_fifo();
+        self.data.crgb_fifo[2] = self.sat_crgb(color).resize::<4>(self.data.rgbc[3]);
+        self.data.irv = self.sat_irv(macv, lm).cast();
+    }
 }
 
 static UNR_TABLE: [u8; 0x100 + 1] = [
@@ -1063,20 +1111,7 @@ impl<A: Allocator> Emu<A> {
         let gte = &mut self.cpu.gte;
         let shift = i64::from(cmd.sf()) * 12;
 
-        trace_calc!(let macv = gte.macv_matmul3x3v::<false>(gte.ctrl.ls_mat, v, i64x3::splat(0)));
-        trace_calc!(let macv = gte.shift_macv(macv, cmd.sf()));
-        gte.data.irv = gte.sat_irv(macv, cmd.lm()).cast();
-
-        let bias = gte.ctrl.bg_col.cast::<i64>() * i64x3::splat(0x1000);
-        trace_calc! {
-            let macv = gte.macv_matmul3x3v::<false>(
-                gte.ctrl.lc_mat,
-                gte.data.irv.cast::<i16>(),
-                bias
-            )
-        };
-        trace_calc!(let macv = gte.shift_macv(macv,cmd.sf()));
-        gte.data.irv = gte.sat_irv(macv, cmd.lm()).cast();
+        gte.calculate_light_color(v, cmd.sf(), cmd.lm());
 
         let cmd_kind: GteCmd = const {
             match GteCmd::new_with_raw_value(u6::new(C)) {
@@ -1085,15 +1120,12 @@ impl<A: Allocator> Emu<A> {
             }
         };
 
-        let mut macv = macv.cast::<i64>();
+        let mut macv = gte.data.macv.cast::<i64>();
         if matches!(
             cmd_kind,
             GteCmd::Ncds | GteCmd::Ncdt | GteCmd::Nccs | GteCmd::Ncct
         ) {
-            let rgb = gte.data.rgbc.resize::<3>(0);
-            macv = (rgb.cast::<i64>() * gte.data.irv.cast()) << 4;
-            trace_calc!(macv);
-            macv = trace_calc!(gte.check_macv(macv));
+            macv = gte.calculate_color();
         }
 
         if matches!(cmd_kind, GteCmd::Ncds | GteCmd::Ncdt) {
@@ -1110,11 +1142,7 @@ impl<A: Allocator> Emu<A> {
         }
 
         gte.data.macv = macv.cast();
-
-        let color = macv >> 4;
-        gte.advance_crgb_fifo();
-        gte.data.crgb_fifo[2] = gte.sat_crgb(color).resize::<4>(gte.data.rgbc[3]);
-        gte.data.irv = gte.sat_irv(macv, cmd.lm()).cast();
+        gte.push_macv_color(cmd.sf(), cmd.lm());
         gte.ctrl.flag.update_err();
     }
 
@@ -1154,6 +1182,63 @@ impl<A: Allocator> Emu<A> {
         self.ncxx::<NCDT>(cmd, self.cpu.gte.data.vxyz1);
         self.ncxx::<NCDT>(cmd, self.cpu.gte.data.vxyz2);
     }
+
+    /// ```plain
+    /// [IR1,IR2,IR3] = [MAC1,MAC2,MAC3] = (BK*1000h + LCM*IR) SAR (sf*12)
+    /// [MAC1,MAC2,MAC3] = [R*IR1,G*IR2,B*IR3] SHL 4
+    /// [MAC1,MAC2,MAC3] = MAC+(FC-MAC)*IR0                   ;<--- for CDP only
+    /// [MAC1,MAC2,MAC3] = [MAC1,MAC2,MAC3] SAR (sf*12)
+    /// Color FIFO = [MAC1/16,MAC2/16,MAC3/16,CODE], [IR1,IR2,IR3] = [MAC1,MAC2,MAC3]
+    /// ```
+    #[tracing::instrument(skip_all, "cc/cdp")]
+    fn gte_cc_cdp<const C: u8>(&mut self, cmd: GteCommandField) {
+        let cmd_kind: GteCmd = const {
+            match GteCmd::new_with_raw_value(u6::new(C)) {
+                Ok(cmd_n @ (GteCmd::Cc | GteCmd::Cdp)) => cmd_n,
+                Ok(_) => panic!("passed wrong gte cmd to depth cue function."),
+                Err(_) => panic!("not a proper gtecmd"),
+            }
+        };
+
+        let gte = &mut self.cpu.gte;
+        gte.clear_flag();
+
+        let bias = gte.ctrl.bg_col.cast::<i64>() * i64x3::splat(0x1000);
+        trace_calc! {
+            let macv = gte.macv_matmul3x3v::<false>(
+                gte.ctrl.lc_mat,
+                gte.data.irv.cast::<i16>(),
+                bias
+            )
+        };
+        trace_calc!(let macv = gte.shift_macv(macv, cmd.sf()));
+        gte.data.irv = gte.sat_irv(macv, cmd.lm()).cast();
+        gte.data.macv = macv;
+
+        let color = gte.calculate_color();
+        gte.data.macv = gte.cast_macv(color);
+
+        if cmd_kind == GteCmd::Cdp {
+            let macv = gte.interpolate_color(gte.ctrl.far_col, gte.data.macv.cast(), cmd.sf());
+            gte.data.macv = gte.cast_macv(macv);
+        }
+
+        gte.data.macv = gte.shift_macv(gte.data.macv.cast(), cmd.sf());
+        gte.push_macv_color(cmd.sf(), cmd.lm());
+
+        gte.ctrl.flag.update_err();
+    }
+
+    fn gte_cc(&mut self, cmd: GteCommandField) {
+        const CC: u8 = GteCmd::Cc as u8;
+        self.gte_cc_cdp::<CC>(cmd);
+    }
+
+    fn gte_cdp(&mut self, cmd: GteCommandField) {
+        const CDP: u8 = GteCmd::Cdp as u8;
+        self.gte_cc_cdp::<CDP>(cmd);
+    }
+
     /// ```plain
     /// MAC0 =  ZSF3*(SZ1+SZ2+SZ3)       ;for AVSZ3
     /// OTZ  =  MAC0/1000h               ;for both (saturated to 0..FFFFh)
@@ -1320,10 +1405,10 @@ impl<A: Allocator + Copy> Emu<A> {
             GteCmd::Intpl => Some(GteBindings::<A>::INTPL),
             GteCmd::Mvmva => Some(GteBindings::<A>::MVMVA),
             GteCmd::Ncds => Some(GteBindings::<A>::NCDS),
-            GteCmd::Cdp => trace_todo!(),
+            GteCmd::Cdp => Some(GteBindings::<A>::CDP),
             GteCmd::Ncdt => Some(GteBindings::<A>::NCDT),
             GteCmd::Nccs => Some(GteBindings::<A>::NCCS),
-            GteCmd::Cc => trace_todo!(),
+            GteCmd::Cc => Some(GteBindings::<A>::CC),
             GteCmd::Ncs => Some(GteBindings::<A>::NCS),
             GteCmd::Nct => Some(GteBindings::<A>::NCT),
             GteCmd::Sqr => trace_todo!(),

@@ -52,11 +52,9 @@ Progress:
     - [x] rects (sprites)
     - [ ] lines
   - [ ] software renderer (not started)
-- [ ] gte
-  - [ ] gte commands implementation: 55% done
-  - [ ] gte correctness
+- [ ] gte (tests passed: 701/1200)
   - [ ] load delays
-  - [ ] fifo mirror registers and move-on-write 
+  - [x] fifo mirror registers and move-on-write 
 - [ ] cdrom
   - [x] basic registers
   - [x] fifo
