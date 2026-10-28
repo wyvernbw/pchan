@@ -52,8 +52,8 @@ Progress:
     - [x] rects (sprites)
     - [ ] lines
   - [ ] software renderer (not started)
-- [ ] gte (tests passed: 970/1200)
-  - [ ] load delays
+- [x] gte (tests passed: 1150/1150)
+  - [ ] load delays (probably not important?)
   - [x] fifo mirror registers and move-on-write 
 - [ ] cdrom
   - [x] basic registers

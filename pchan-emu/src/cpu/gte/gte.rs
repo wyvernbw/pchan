@@ -463,6 +463,8 @@ pub struct GteBindings<A: Allocator> {
     sqr:   GteFn<A>,
     avsz3: GteFn<A>,
     avsz4: GteFn<A>,
+    gpf:   GteFn<A>,
+    gpl:   GteFn<A>,
     mvmva: GteFn<A>,
 
     write_sxyp: fn(&mut Emu<A>, u32),
@@ -494,6 +496,8 @@ impl<A: Allocator + Copy> GteBindings<A> {
     pub const SQR: u32 = offset_of!(Self, sqr) as u32 + Self::OFFSET;
     pub const AVSZ3: u32 = offset_of!(Self, avsz3) as u32 + Self::OFFSET;
     pub const AVSZ4: u32 = offset_of!(Self, avsz4) as u32 + Self::OFFSET;
+    pub const GPF: u32 = offset_of!(Self, gpf) as u32 + Self::OFFSET;
+    pub const GPL: u32 = offset_of!(Self, gpl) as u32 + Self::OFFSET;
     pub const MVMVA: u32 = offset_of!(Self, mvmva) as u32 + Self::OFFSET;
 
     pub const WRITE_SXYP: u32 = offset_of!(Self, write_sxyp) as u32 + Self::OFFSET;
@@ -524,6 +528,8 @@ impl<A: Allocator + Copy> GteBindings<A> {
             sqr:   Emu::gte_sqr,
             avsz3: Emu::gte_avsz3,
             avsz4: Emu::gte_avsz4,
+            gpf:   Emu::gte_gpf,
+            gpl:   Emu::gte_gpl,
             mvmva: Emu::gte_mvmva,
 
             write_sxyp: Emu::gte_write_sxyp,
@@ -977,6 +983,51 @@ impl<A: Allocator> Emu<A> {
         self.rtps::<false>(cmd, self.cpu.gte.data.vxyz1);
         self.rtps::<true>(cmd, self.cpu.gte.data.vxyz2);
     }
+    /// ```plain
+    /// [MAC1,MAC2,MAC3] = [0,0,0]                            ;<--- for GPF only
+    /// [MAC1,MAC2,MAC3] = [MAC1,MAC2,MAC3] SHL (sf*12)       ;<--- for GPL only
+    /// [MAC1,MAC2,MAC3] = (([IR1,IR2,IR3] * IR0) + [MAC1,MAC2,MAC3]) SAR (sf*12)
+    /// Color FIFO = [MAC1/16,MAC2/16,MAC3/16,CODE], [IR1,IR2,IR3] = [MAC1,MAC2,MAC3]
+    /// ```
+    #[tracing::instrument(skip_all, "gpf/gpl")]
+    fn gte_gp_interpolation<const C: u8>(&mut self, cmd: GteCommandField) {
+        let cmd_kind: GteCmd = const {
+            match GteCmd::new_with_raw_value(u6::new(C)) {
+                Ok(cmd_n @ (GteCmd::Gpl | GteCmd::Gpf)) => cmd_n,
+                Ok(_) => panic!("passed wrong gte cmd to gp interpolation function."),
+                Err(_) => panic!("not a proper gtecmd"),
+            }
+        };
+
+        let gte = &mut self.cpu.gte;
+        let shift = i64::from(cmd.sf()) * 12;
+        gte.clear_flag();
+
+        let macv = match cmd_kind {
+            GteCmd::Gpf => i64x3::splat(0),
+            GteCmd::Gpl => gte.check_macv(gte.data.macv.cast::<i64>() << shift),
+            _ => unreachable!(),
+        };
+
+        let irv = gte.data.irv.cast::<i64>();
+        let ir0 = i64::from(gte.data.ir0);
+        trace_calc! {
+            let macv = gte.shift_macv(irv * i64x3::splat(ir0) + macv, cmd.sf())
+        };
+
+        gte.data.macv = macv;
+        gte.push_macv_color(false, cmd.lm());
+
+        gte.ctrl.flag.update_err();
+    }
+
+    fn gte_gpf(&mut self, cmd: GteCommandField) {
+        self.gte_gp_interpolation::<{ GteCmd::Gpf as u8 }>(cmd);
+    }
+
+    fn gte_gpl(&mut self, cmd: GteCommandField) {
+        self.gte_gp_interpolation::<{ GteCmd::Gpl as u8 }>(cmd);
+    }
 
     /// ```plain
     /// MAC0 =   SX0*SY1 + SX1*SY2 + SX2*SY0 - SX0*SY2 - SX1*SY0 - SX2*SY1
@@ -1198,7 +1249,7 @@ impl<A: Allocator> Emu<A> {
         let cmd_kind: GteCmd = const {
             match GteCmd::new_with_raw_value(u6::new(C)) {
                 Ok(cmd_n @ (GteCmd::Cc | GteCmd::Cdp)) => cmd_n,
-                Ok(_) => panic!("passed wrong gte cmd to depth cue function."),
+                Ok(_) => panic!("passed wrong gte cmd to cc cdp function."),
                 Err(_) => panic!("not a proper gtecmd"),
             }
         };
@@ -1412,12 +1463,6 @@ fn transpose3x3<T: SimdElement>(mat: [Simd<T, 3>; 3]) -> [Simd<T, 3>; 3] {
 impl<A: Allocator + Copy> Emu<A> {
     pub(crate) fn gte_function(cmd: GteCommandField) -> Option<u32> {
         let cmd = cmd.cmd().ok()?;
-        macro_rules! trace_todo {
-            () => {{
-                tracing::warn!("not yet implemented: gte2 cmd {cmd:?}");
-                None
-            }};
-        }
         match cmd {
             GteCmd::Rtps => Some(GteBindings::<A>::RTPS),
             GteCmd::Nclip => Some(GteBindings::<A>::NCLIP),
@@ -1438,8 +1483,8 @@ impl<A: Allocator + Copy> Emu<A> {
             GteCmd::Avsz3 => Some(GteBindings::<A>::AVSZ3),
             GteCmd::Avsz4 => Some(GteBindings::<A>::AVSZ4),
             GteCmd::Rtpt => Some(GteBindings::<A>::RTPT),
-            GteCmd::Gpf => trace_todo!(),
-            GteCmd::Gpl => trace_todo!(),
+            GteCmd::Gpf => Some(GteBindings::<A>::GPF),
+            GteCmd::Gpl => Some(GteBindings::<A>::GPL),
             GteCmd::Ncct => Some(GteBindings::<A>::NCCT),
         }
     }
