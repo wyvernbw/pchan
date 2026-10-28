@@ -456,6 +456,7 @@ pub struct GteBindings<A: Allocator> {
     cdp:   GteFn<A>,
     ncdt:  GteFn<A>,
     cc:    GteFn<A>,
+    sqr:   GteFn<A>,
     avsz3: GteFn<A>,
     avsz4: GteFn<A>,
     mvmva: GteFn<A>,
@@ -486,6 +487,7 @@ impl<A: Allocator + Copy> GteBindings<A> {
     pub const NCDT: u32 = offset_of!(Self, ncdt) as u32 + Self::OFFSET;
     pub const CDP: u32 = offset_of!(Self, cdp) as u32 + Self::OFFSET;
     pub const CC: u32 = offset_of!(Self, cc) as u32 + Self::OFFSET;
+    pub const SQR: u32 = offset_of!(Self, sqr) as u32 + Self::OFFSET;
     pub const AVSZ3: u32 = offset_of!(Self, avsz3) as u32 + Self::OFFSET;
     pub const AVSZ4: u32 = offset_of!(Self, avsz4) as u32 + Self::OFFSET;
     pub const MVMVA: u32 = offset_of!(Self, mvmva) as u32 + Self::OFFSET;
@@ -515,6 +517,7 @@ impl<A: Allocator + Copy> GteBindings<A> {
             ncdt:  Emu::gte_ncdt,
             cdp:   Emu::gte_cdp,
             cc:    Emu::gte_cc,
+            sqr:   Emu::gte_sqr,
             avsz3: Emu::gte_avsz3,
             avsz4: Emu::gte_avsz4,
             mvmva: Emu::gte_mvmva,
@@ -1240,6 +1243,22 @@ impl<A: Allocator> Emu<A> {
     }
 
     /// ```plain
+    /// [MAC1,MAC2,MAC3] = [IR1*IR1,IR2*IR2,IR3*IR3] SHR (sf*12)
+    /// [IR1,IR2,IR3]    = [MAC1,MAC2,MAC3]    ;IR1,IR2,IR3 saturated to max 7FFFh
+    /// ```
+    fn gte_sqr(&mut self, cmd: GteCommandField) {
+        let gte = &mut self.cpu.gte;
+        gte.clear_flag();
+
+        let irv = gte.data.irv.cast::<i64>();
+        let macv = gte.shift_macv(irv * irv, cmd.sf());
+        gte.data.macv = macv.cast();
+        gte.data.irv = gte.sat_irv(macv, cmd.lm()).cast();
+
+        gte.ctrl.flag.update_err();
+    }
+
+    /// ```plain
     /// MAC0 =  ZSF3*(SZ1+SZ2+SZ3)       ;for AVSZ3
     /// OTZ  =  MAC0/1000h               ;for both (saturated to 0..FFFFh)
     /// ```
@@ -1411,7 +1430,7 @@ impl<A: Allocator + Copy> Emu<A> {
             GteCmd::Cc => Some(GteBindings::<A>::CC),
             GteCmd::Ncs => Some(GteBindings::<A>::NCS),
             GteCmd::Nct => Some(GteBindings::<A>::NCT),
-            GteCmd::Sqr => trace_todo!(),
+            GteCmd::Sqr => Some(GteBindings::<A>::SQR),
             GteCmd::Dcpl => Some(GteBindings::<A>::DCPL),
             GteCmd::Dpct => Some(GteBindings::<A>::DPCT),
             GteCmd::Avsz3 => Some(GteBindings::<A>::AVSZ3),
