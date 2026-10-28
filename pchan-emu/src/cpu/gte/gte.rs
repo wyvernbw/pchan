@@ -39,6 +39,10 @@ macro_rules! trace_calc {
         let $b = $e;
         tracing::trace!(target: "gte", "{:<14.14} = {}", stringify!($b), pchan_utils::hex_simd($b));
     };
+    (s:let $b:ident = $e:expr) => {
+        let $b = $e;
+        tracing::trace!(target: "gte", "{:<14.14} = {}", stringify!($b), pchan_utils::hex($b));
+    };
 }
 
 #[repr(C)]
@@ -617,9 +621,9 @@ impl Gte {
         mac0
     }
 
-    fn check_mac0v(&mut self, mac0v: i64x3) -> i64x3 {
-        let ovf_pos = mac0v.simd_gt(i64x3::splat(i64::from(i32::MAX))).any();
-        let ovf_neg = mac0v.simd_lt(i64x3::splat(i64::from(i32::MIN))).any();
+    fn check_mac0v(&mut self, mac0v: i64x2) -> i64x2 {
+        let ovf_pos = mac0v.simd_gt(i64x2::splat(i64::from(i32::MAX))).any();
+        let ovf_neg = mac0v.simd_lt(i64x2::splat(i64::from(i32::MIN))).any();
         let old_ovf_pos = self.ctrl.flag.mac0_ovf_pos();
         let old_ovf_neg = self.ctrl.flag.mac0_ovf_neg();
         self.ctrl.flag.set_mac0_ovf_pos(old_ovf_pos | ovf_pos);
@@ -917,7 +921,7 @@ impl<A: Allocator> Emu<A> {
     /// MAC0=(((H*20000h/SZ3)+1)/2)*IR2+OFY, SY2=MAC0/10000h ;ScrY FIFO -400h..+3FFh
     /// MAC0=(((H*20000h/SZ3)+1)/2)*DQA+DQB, IR0=MAC0/1000h  ;Depth cueing 0..+1000h
     /// ```
-    fn rtps(&mut self, cmd: GteCommandField, v: i16x3) {
+    fn rtps<const LAST: bool>(&mut self, cmd: GteCommandField, v: i16x3) {
         let gte = &mut self.cpu.gte;
 
         let (mac, macv_unshifted) = {
@@ -939,28 +943,23 @@ impl<A: Allocator> Emu<A> {
 
         let div = gte.unr_div(u32::from(gte.ctrl.h), u32::from(sz3));
 
-        let mac0v = i64x3::splat(div.as_i64());
+        let mac0v = i64x2::splat(div.as_i64());
         let mac0v = gte.check_mac0v(
-            mac0v
-                * i64x3::from_array([
-                    gte.data.irv[0].as_i64(),
-                    gte.data.irv[1].as_i64(),
-                    gte.ctrl.dqa.as_i64(),
-                ])
-                + i64x3::from_array([
-                    gte.ctrl.of[0].as_i64(),
-                    gte.ctrl.of[1].as_i64(),
-                    gte.ctrl.dqb.as_i64(),
-                ]),
+            mac0v * i64x2::from_array([gte.data.irv[0].as_i64(), gte.data.irv[1].as_i64()])
+                + i64x2::from_array([gte.ctrl.of[0].as_i64(), gte.ctrl.of[1].as_i64()]),
         );
+        trace_calc!(mac0v);
 
         let sxy2 = mac0v.resize::<2>(0) >> 16;
         let sxy2 = gte.sat_sxy(sxy2);
         gte.push_sxy(sxy2);
 
-        let mac0 = mac0v[2];
-        gte.data.mac0 = gte.cast_mac0(mac0);
-        gte.data.ir0 = gte.sat_ir0(mac0 >> 12);
+        if LAST {
+            let mac0 = div.as_i64() * i64::from(gte.ctrl.dqa) + i64::from(gte.ctrl.dqb);
+            gte.data.mac0 = gte.cast_mac0(mac0);
+            gte.data.ir0 = gte.sat_ir0(mac0 >> 12);
+            tracing::trace!(target:"gte", "ir0.sat = {}", gte.ctrl.flag.ir0_sat());
+        }
 
         gte.ctrl.flag.update_err();
     }
@@ -968,14 +967,15 @@ impl<A: Allocator> Emu<A> {
     fn gte_rtps(&mut self, cmd: GteCommandField) {
         self.cpu.gte.clear_flag();
         let v0 = self.cpu.gte.data.vxyz0;
-        self.rtps(cmd, v0);
+        self.rtps::<true>(cmd, v0);
     }
 
     fn gte_rtpt(&mut self, cmd: GteCommandField) {
+        tracing::trace!(target: "gte", "rtpt:vvv");
         self.cpu.gte.clear_flag();
-        self.rtps(cmd, self.cpu.gte.data.vxyz0);
-        self.rtps(cmd, self.cpu.gte.data.vxyz1);
-        self.rtps(cmd, self.cpu.gte.data.vxyz2);
+        self.rtps::<false>(cmd, self.cpu.gte.data.vxyz0);
+        self.rtps::<false>(cmd, self.cpu.gte.data.vxyz1);
+        self.rtps::<true>(cmd, self.cpu.gte.data.vxyz2);
     }
 
     /// ```plain
