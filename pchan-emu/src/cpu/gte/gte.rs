@@ -973,13 +973,18 @@ impl<A: Allocator> Emu<A> {
         gte.data.macv = checked_macv;
 
         trace_calc!(gte.ctrl.far_col);
+        // i have no idea why << 12 is required
         trace_calc!(let fc_cast = gte.ctrl.far_col.cast::<i64>() << 12);
-        trace_calc!(let diff = fc_cast - macv);
-        trace_calc!(let diff = gte.sat_irv(diff.cast::<i32>(), cmd.with_lm(SaturateMode::Signed)));
-        trace_calc!(let prod = (diff.cast::<i32>() * i16x3::splat(gte.data.ir0 as i16).cast::<i32>()).cast::<i64>());
+        trace_calc!(let diff = gte.check_macv(fc_cast - macv)); // checking here is required, even tho we saturate later.
+        // this counteracts the earlier shift
+        trace_calc!(let diff = diff >> shift);
+        trace_calc!(let diff = diff.cast::<i32>());
+        trace_calc!(let diff = gte.sat_irv(diff, cmd.with_lm(SaturateMode::Signed)));
+        trace_calc!(let diff = diff.cast::<i64>());
+        trace_calc!(let prod = gte.check_macv(diff * i16x3::splat(gte.data.ir0 as i16).cast::<i64>()));
 
         trace_calc!(macv);
-        let macv = trace_calc!(macv + prod);
+        trace_calc!(let macv = gte.check_macv(macv + prod));
         trace_calc!(let macv_shifted = gte.check_macv(macv >> shift));
         gte.data.macv = macv_shifted.cast();
 
