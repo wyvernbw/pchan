@@ -44,7 +44,7 @@ pub enum TtyFlushError {
 impl<A: Allocator> Tty<A> {
     pub fn putchar(&mut self, c: char) {
         if self.end == TTY_CAP {
-            tracing::error!("tty buffer overflow");
+            tracing::error!(target: "tty", "(p-chan) tty buffer overflow");
             return;
         }
         self.buf[self.end] = c as _;
@@ -61,7 +61,7 @@ impl<A: Allocator> Tty<A> {
                 print!("{string}");
             }
             TtyMode::Tracing => {
-                tracing::info!(name: "psx-tty", "{}", string.trim());
+                tracing::info!(target: "tty", "{}", string.trim());
             }
             TtyMode::Silent => {}
         }

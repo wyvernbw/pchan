@@ -14,6 +14,33 @@ use crate::cpu::Cpu;
 use crate::gpu::vram::Rgb5;
 use crate::memory::ext;
 
+macro_rules! trace_calc {
+    ($e:expr) => {{
+        let _binding = $e;
+        tracing::info!(
+            target: "gte",
+            "{:<14.14} = {}",
+            stringify!($e),
+            pchan_utils::hex_simd(_binding)
+        );
+        _binding
+    }};
+    (s:$e:expr) => {{
+        let _binding = $e;
+        tracing::info!(
+            target: "gte",
+            "{:<14.14} = {:?}",
+            stringify!($e),
+            pchan_utils::hex(_binding)
+        );
+        _binding
+    }};
+    (let $b:ident = $e:expr) => {
+        let $b = $e;
+        tracing::info!(target: "gte", "{:<14.14} = {}", stringify!($b), pchan_utils::hex_simd($b));
+    };
+}
+
 #[repr(C)]
 #[derive(Default, Debug, Endecode, Clone)]
 pub struct Gte {
@@ -116,6 +143,7 @@ pub mod types {
     pub type i64x3 = Simd<i64, 3>;
     pub type i32x3 = Simd<i32, 3>;
     pub type i16x3 = Simd<i16, 3>;
+    pub type u8x3 = Simd<u8, 3>;
 }
 
 use types::*;
@@ -224,6 +252,8 @@ struct Flag {
     macv_ovf_neg:    u3,
     #[bits(22..=24, rw)]
     irv_sat:         u3,
+    #[bits(19..=21, rw)]
+    crgb_sat:        u3,
     #[bit(18, rw)]
     sz3_otz_sat:     bool,
     #[bit(17, rw)]
@@ -280,12 +310,12 @@ impl GteCtrlRegs {
 ///  6-9    Always zero                        (ignored by hardware)
 ///  0-5    Real GTE Command Number (00h..3Fh) (used by hardware)
 /// ```
-#[bitfield(u32)]
+#[bitfield(u32, debug)]
 #[must_use]
 pub struct GteCommandField {
     #[bits(0..=5, r)]
     cmd:           Option<GteCmd>,
-    #[bit(10, r)]
+    #[bit(10, rw)]
     lm:            SaturateMode,
     #[bits(13..=14, r)]
     mvmva_tr_vec:  MVMVATranslationVec,
@@ -298,6 +328,7 @@ pub struct GteCommandField {
 }
 
 #[bitenum(u1, exhaustive = true)]
+#[derive(Debug)]
 enum SaturateMode {
     Signed,
     Unsigned,
@@ -305,6 +336,7 @@ enum SaturateMode {
 
 ///  13-14  MVMVA Translation Vector (0=TR, 1=BK, 2=FC/Bugged, 3=None)
 #[bitenum(u2, exhaustive = true)]
+#[derive(Debug)]
 enum MVMVATranslationVec {
     TR,
     BK,
@@ -314,6 +346,7 @@ enum MVMVATranslationVec {
 
 ///  15-16  MVMVA Multiply Vector    (0=V0, 1=V1, 2=V2, 3=IR/long)
 #[bitenum(u2, exhaustive = true)]
+#[derive(Debug)]
 enum MVMVAMultiplyVec {
     V0,
     V1,
@@ -323,6 +356,7 @@ enum MVMVAMultiplyVec {
 
 ///  17-18  MVMVA Multiply Matrix    (0=Rotation. 1=Light, 2=Color, 3=Reserved)
 #[bitenum(u2, exhaustive = true)]
+#[derive(Debug)]
 enum MVMVAMultiplyMat {
     Rotation,
     Light,
@@ -410,8 +444,12 @@ pub struct GteBindings<A: Allocator> {
     rtps:  GteFn<A>,
     nclip: GteFn<A>,
     op:    GteFn<A>,
+    dpcs:  GteFn<A>,
+    intpl: GteFn<A>,
     ncs:   GteFn<A>,
     nct:   GteFn<A>,
+    dcpl:  GteFn<A>,
+    dpct:  GteFn<A>,
     nccs:  GteFn<A>,
     ncct:  GteFn<A>,
     ncds:  GteFn<A>,
@@ -434,8 +472,12 @@ impl<A: Allocator + Copy> GteBindings<A> {
     pub const RTPS: u32 = offset_of!(Self, rtps) as u32 + Self::OFFSET;
     pub const NCLIP: u32 = offset_of!(Self, nclip) as u32 + Self::OFFSET;
     pub const OP: u32 = offset_of!(Self, op) as u32 + Self::OFFSET;
+    pub const DPCS: u32 = offset_of!(Self, dpcs) as u32 + Self::OFFSET;
+    pub const INTPL: u32 = offset_of!(Self, intpl) as u32 + Self::OFFSET;
     pub const NCS: u32 = offset_of!(Self, ncs) as u32 + Self::OFFSET;
     pub const NCT: u32 = offset_of!(Self, nct) as u32 + Self::OFFSET;
+    pub const DCPL: u32 = offset_of!(Self, dcpl) as u32 + Self::OFFSET;
+    pub const DPCT: u32 = offset_of!(Self, dpct) as u32 + Self::OFFSET;
     pub const NCCS: u32 = offset_of!(Self, nccs) as u32 + Self::OFFSET;
     pub const NCCT: u32 = offset_of!(Self, ncct) as u32 + Self::OFFSET;
     pub const NCDS: u32 = offset_of!(Self, ncds) as u32 + Self::OFFSET;
@@ -457,8 +499,12 @@ impl<A: Allocator + Copy> GteBindings<A> {
             rtps:  Emu::gte_rtps,
             nclip: Emu::gte_nclip,
             op:    Emu::gte_outer_product,
+            dpcs:  Emu::gte_dpcs,
+            intpl: Emu::gte_intpl,
             ncs:   Emu::gte_ncs,
             nct:   Emu::gte_nct,
+            dcpl:  Emu::gte_dcpl,
+            dpct:  Emu::gte_dpct,
             nccs:  Emu::gte_nccs,
             ncct:  Emu::gte_ncct,
             ncds:  Emu::gte_ncds,
@@ -587,24 +633,29 @@ impl Gte {
         cmd: GteCommandField,
     ) -> i16x3 {
         let irv = irv.cast::<i64>();
-        let (new_irv, check_irv) = match (cmd.cmd(), cmd.lm()) {
-            (_, SaturateMode::Signed) => {
-                let irv = irv.simd_clamp(Simd::splat(-0x8000), Simd::splat(0x7fff));
-                (irv, irv)
-            }
-            (_, SaturateMode::Unsigned) => {
-                let irv = irv.simd_clamp(Simd::splat(-0x0), Simd::splat(0x7fff));
-                (irv, irv)
-            }
+        let new_irv = match (cmd.cmd(), cmd.lm()) {
+            (_, SaturateMode::Signed) => irv.simd_clamp(Simd::splat(-0x8000), Simd::splat(0x7fff)),
+            (_, SaturateMode::Unsigned) => irv.simd_clamp(Simd::splat(-0x0), Simd::splat(0x7fff)),
         };
-        let sat_flags = check_irv
-            .simd_ne(irv)
-            .to_bitmask()
-            .as_::<u3>()
-            .reverse_bits();
+        let sat_flags = new_irv.simd_ne(irv).to_bitmask().as_::<u3>().reverse_bits();
         let old_sat_flags = self.ctrl.flag.irv_sat();
         self.ctrl.flag.set_irv_sat(old_sat_flags | sat_flags);
         new_irv.cast()
+    }
+
+    fn sat_crgb<S: SimdInt<Cast<i64> = Simd<i64, 3>>>(&mut self, crgb: S) -> u8x3 {
+        let crgb = crgb.cast::<i64>();
+        let new_crgb = crgb.simd_clamp(i64x3::splat(0x0), i64x3::splat(0xff));
+
+        let sat_flags = new_crgb
+            .simd_ne(crgb)
+            .to_bitmask()
+            .as_::<u3>()
+            .reverse_bits();
+        let old_sat_flags = self.ctrl.flag.crgb_sat();
+        self.ctrl.flag.set_crgb_sat(old_sat_flags | sat_flags);
+
+        new_crgb.cast()
     }
 
     /// force sf=1 and lm=0 for ir3 check
@@ -884,6 +935,91 @@ impl<A: Allocator> Emu<A> {
     }
 
     /// ```plain
+    /// [MAC1,MAC2,MAC3] = [R*IR1,G*IR2,B*IR3] SHL 4          ;<--- for DCPL only
+    /// [MAC1,MAC2,MAC3] = [IR1,IR2,IR3] SHL 12               ;<--- for INTPL only
+    /// [MAC1,MAC2,MAC3] = [R,G,B] SHL 16                     ;<--- for DPCS/DPCT
+    /// [MAC1,MAC2,MAC3] = MAC+(FC-MAC)*IR0
+    /// [MAC1,MAC2,MAC3] = [MAC1,MAC2,MAC3] SAR (sf*12)
+    /// Color FIFO = [MAC1/16,MAC2/16,MAC3/16,CODE], [IR1,IR2,IR3] = [MAC1,MAC2,MAC3]
+    /// ```
+    fn gte_depth_cue<const C: u8>(&mut self, cmd: GteCommandField) {
+        tracing::info!("{cmd:?}");
+        let cmd_kind: GteCmd = const {
+            match GteCmd::new_with_raw_value(u6::new(C)) {
+                Ok(cmd_n @ (GteCmd::Dcpl | GteCmd::Intpl | GteCmd::Dpcs | GteCmd::Dpct)) => cmd_n,
+                Ok(_) => panic!("passed wrong gte cmd to depth cue function."),
+                Err(_) => panic!("not a proper gtecmd"),
+            }
+        };
+
+        let gte = &mut self.cpu.gte;
+        let shift = i64::from(cmd.sf()) * 12;
+
+        let macv = match cmd_kind {
+            GteCmd::Dcpl => {
+                let macv = gte.data.rgbc.resize::<3>(0).cast::<i64>() * gte.data.irv.cast::<i64>();
+
+                macv << 4
+            }
+
+            GteCmd::Intpl => gte.data.irv.cast::<i64>() << 12,
+            GteCmd::Dpcs => (gte.data.rgbc.resize::<3>(0).cast::<u64>() << 16).cast(),
+            GteCmd::Dpct => (gte.data.crgb_fifo[0].resize::<3>(0).cast::<i64>() << 16).cast(),
+            _ => unreachable!(),
+        };
+
+        trace_calc!(macv);
+        trace_calc!(let checked_macv = gte.check_macv(macv.cast()).cast());
+        gte.data.macv = checked_macv;
+
+        trace_calc!(gte.ctrl.far_col);
+        trace_calc!(let fc_cast = gte.ctrl.far_col.cast::<i64>() << 12);
+        trace_calc!(let diff = fc_cast - macv);
+        trace_calc!(let diff = gte.sat_irv(diff.cast::<i32>(), cmd.with_lm(SaturateMode::Signed)));
+        trace_calc!(let prod = (diff.cast::<i32>() * i16x3::splat(gte.data.ir0 as i16).cast::<i32>()).cast::<i64>());
+
+        trace_calc!(macv);
+        let macv = trace_calc!(macv + prod);
+        trace_calc!(let macv_shifted = gte.check_macv(macv >> shift));
+        gte.data.macv = macv_shifted.cast();
+
+        trace_calc!(let irv = gte.sat_irv(gte.data.macv, cmd).cast());
+        gte.data.irv = irv;
+
+        gte.advance_crgb_fifo();
+        let code = gte.data.rgbc[3];
+        gte.data.crgb_fifo[2] = gte.sat_crgb(macv_shifted >> 4).resize::<4>(code);
+
+        gte.ctrl.flag.update_err();
+    }
+
+    fn gte_dcpl(&mut self, cmd: GteCommandField) {
+        const DCPL: u8 = GteCmd::Dcpl as u8;
+        self.cpu.gte.clear_flag();
+        self.gte_depth_cue::<DCPL>(cmd);
+    }
+
+    fn gte_intpl(&mut self, cmd: GteCommandField) {
+        const INTPL: u8 = GteCmd::Intpl as u8;
+        self.cpu.gte.clear_flag();
+        self.gte_depth_cue::<INTPL>(cmd);
+    }
+
+    fn gte_dpcs(&mut self, cmd: GteCommandField) {
+        const DPCS: u8 = GteCmd::Dpcs as u8;
+        self.cpu.gte.clear_flag();
+        self.gte_depth_cue::<DPCS>(cmd);
+    }
+
+    fn gte_dpct(&mut self, cmd: GteCommandField) {
+        const DPCT: u8 = GteCmd::Dpct as u8;
+        self.cpu.gte.clear_flag();
+        self.gte_depth_cue::<DPCT>(cmd);
+        self.gte_depth_cue::<DPCT>(cmd);
+        self.gte_depth_cue::<DPCT>(cmd);
+    }
+
+    /// ```plain
     /// [IR1,IR2,IR3] = [MAC1,MAC2,MAC3] = (LLM*V0) SAR (sf*12)
     /// [IR1,IR2,IR3] = [MAC1,MAC2,MAC3] = (BK*1000h + LCM*IR) SAR (sf*12)
     /// [MAC1,MAC2,MAC3] = [R*IR1,G*IR2,B*IR3] SHL 4          ;<--- for NCDx/NCCx
@@ -1122,8 +1258,8 @@ impl<A: Allocator + Copy> Emu<A> {
             GteCmd::Rtps => Some(GteBindings::<A>::RTPS),
             GteCmd::Nclip => Some(GteBindings::<A>::NCLIP),
             GteCmd::Op => Some(GteBindings::<A>::OP),
-            GteCmd::Dpcs => trace_todo!(),
-            GteCmd::Intpl => trace_todo!(),
+            GteCmd::Dpcs => Some(GteBindings::<A>::DPCS),
+            GteCmd::Intpl => Some(GteBindings::<A>::INTPL),
             GteCmd::Mvmva => Some(GteBindings::<A>::MVMVA),
             GteCmd::Ncds => Some(GteBindings::<A>::NCDS),
             GteCmd::Cdp => trace_todo!(),
@@ -1133,8 +1269,8 @@ impl<A: Allocator + Copy> Emu<A> {
             GteCmd::Ncs => Some(GteBindings::<A>::NCS),
             GteCmd::Nct => Some(GteBindings::<A>::NCT),
             GteCmd::Sqr => trace_todo!(),
-            GteCmd::Dcpl => trace_todo!(),
-            GteCmd::Dpct => trace_todo!(),
+            GteCmd::Dcpl => Some(GteBindings::<A>::DCPL),
+            GteCmd::Dpct => Some(GteBindings::<A>::DPCT),
             GteCmd::Avsz3 => Some(GteBindings::<A>::AVSZ3),
             GteCmd::Avsz4 => Some(GteBindings::<A>::AVSZ4),
             GteCmd::Rtpt => Some(GteBindings::<A>::RTPT),

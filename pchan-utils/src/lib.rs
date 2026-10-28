@@ -1,9 +1,12 @@
 #![feature(const_trait_impl)]
+#![feature(portable_simd)]
 #![allow(incomplete_features)]
 #![allow(clippy::missing_errors_doc)]
 #![allow(clippy::missing_panics_doc)]
 
 use core::fmt::{self, Display};
+use core::simd::prelude::Simd;
+use std::simd::SimdElement;
 use std::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use kanal::{AsyncReceiver, AsyncSender, Receiver, Sender};
@@ -268,6 +271,12 @@ pub fn hex_pref<T, const PREFIX: bool>(mut x: T) -> Hex<PREFIX> {
     }
 }
 
+pub struct SimdHex<const N: usize, const PREFIX: bool>([Hex<PREFIX>; N]);
+
+pub fn hex_simd<T: SimdElement, const N: usize>(x: Simd<T, N>) -> SimdHex<N, true> {
+    SimdHex(x.to_array().map(|x| hex(x)))
+}
+
 impl<const PREFIX: bool> Display for Hex<PREFIX> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let str = unsafe { str::from_utf8_unchecked(&self.buf[2..self.effective_len()]) };
@@ -277,6 +286,20 @@ impl<const PREFIX: bool> Display for Hex<PREFIX> {
             }
             false => write!(f, "{str}"),
         }
+    }
+}
+
+impl<const N: usize, const PREFIX: bool> Display for SimdHex<N, PREFIX> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut iter = self.0.iter();
+        let Some(first) = iter.next() else {
+            return Ok(());
+        };
+        write!(f, "{first}")?;
+        for x in iter {
+            write!(f, "|{x}")?;
+        }
+        Ok(())
     }
 }
 
