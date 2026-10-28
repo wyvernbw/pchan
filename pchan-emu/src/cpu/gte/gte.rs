@@ -627,15 +627,11 @@ impl Gte {
         new_ir0 as i32
     }
 
-    fn sat_irv<S: SimdInt<Cast<i64> = Simd<i64, 3>>>(
-        &mut self,
-        irv: S,
-        cmd: GteCommandField,
-    ) -> i16x3 {
+    fn sat_irv<S: SimdInt<Cast<i64> = Simd<i64, 3>>>(&mut self, irv: S, lm: SaturateMode) -> i16x3 {
         let irv = irv.cast::<i64>();
-        let new_irv = match (cmd.cmd(), cmd.lm()) {
-            (_, SaturateMode::Signed) => irv.simd_clamp(Simd::splat(-0x8000), Simd::splat(0x7fff)),
-            (_, SaturateMode::Unsigned) => irv.simd_clamp(Simd::splat(-0x0), Simd::splat(0x7fff)),
+        let new_irv = match lm {
+            SaturateMode::Signed => irv.simd_clamp(Simd::splat(-0x8000), Simd::splat(0x7fff)),
+            SaturateMode::Unsigned => irv.simd_clamp(Simd::splat(-0x0), Simd::splat(0x7fff)),
         };
         let sat_flags = new_irv.simd_ne(irv).to_bitmask().as_::<u3>().reverse_bits();
         let old_sat_flags = self.ctrl.flag.irv_sat();
@@ -666,7 +662,7 @@ impl Gte {
         self.ctrl.flag.set_irv_sat(old_sat_flags | sat_flags);
 
         let shift = i64::from(cmd.sf()) * 12;
-        self.sat_irv(irv_unshifted >> shift, cmd)
+        self.sat_irv(irv_unshifted >> shift, cmd.lm())
     }
 
     fn sat_crgb<S: SimdInt<Cast<i64> = Simd<i64, 3>>>(&mut self, crgb: S) -> u8x3 {
@@ -773,6 +769,7 @@ impl Gte {
         &mut self,
         mat: [impl SimdInt<Cast<i64> = Simd<i64, 3>>; 3],
         v: impl SimdInt<Cast<i64> = Simd<i64, 3>>,
+        acc: i64x3,
     ) -> i64x3 {
         let mat = mat.map(|row| row.cast::<i64>());
         let v = v.cast::<i64>();
@@ -781,7 +778,7 @@ impl Gte {
                 (mat[0] * v).reduce_sum(),
                 (mat[1] * v).reduce_sum(),
                 (mat[2] * v).reduce_sum(),
-            ])
+            ]) + acc
         } else {
             (0..3)
                 .map(|c| {
@@ -790,8 +787,24 @@ impl Gte {
                         i64x3::splat(v[c]),
                     )
                 })
-                .fold(i64x3::splat(0), |acc, (c, v)| self.check_macv(acc + c * v))
+                .fold(acc, |acc, (c, v)| self.check_macv(acc + c * v))
         }
+    }
+
+    fn interpolate_color(&mut self, fc: i32x3, macv: i64x3, sf: bool) -> i64x3 {
+        let shift = i64::from(sf) * 12;
+        // i have no idea why << 12 is required
+        let fc = fc.cast::<i64>() << 12;
+        let diff = self.check_macv(fc - macv);
+        // this counteracts the earlier shift
+        let diff = diff >> shift;
+        let diff = diff.cast::<i32>();
+        let diff = self.sat_irv(diff, SaturateMode::Signed);
+        let diff = diff.cast::<i64>();
+        let prod = diff * i64x3::splat(i64::from(self.data.ir0));
+        let macv = macv + prod.cast();
+
+        self.check_macv(macv)
     }
 }
 
@@ -860,7 +873,7 @@ impl<A: Allocator> Emu<A> {
             let rt = gte.ctrl.rt_mat;
             let tr = gte.ctrl.tr_vec;
             let mac = gte.check_macv(tr.cast::<i64>() << 12);
-            let mac = mac + gte.macv_matmul3x3v::<false>(rt, v);
+            let mac = gte.macv_matmul3x3v::<false>(rt, v, mac);
             let mac = gte.check_macv(mac);
             (gte.shift_macv(mac, cmd.sf()), mac)
         };
@@ -954,7 +967,7 @@ impl<A: Allocator> Emu<A> {
         let macv = gte.check_macv(cross) >> shift;
 
         gte.data.macv = macv.cast();
-        gte.data.irv = gte.sat_irv(macv, cmd).cast();
+        gte.data.irv = gte.sat_irv(macv, cmd.lm()).cast();
 
         gte.ctrl.flag.update_err();
     }
@@ -998,22 +1011,11 @@ impl<A: Allocator> Emu<A> {
         gte.data.macv = checked_macv;
 
         trace_calc!(gte.ctrl.far_col);
-        // i have no idea why << 12 is required
-        trace_calc!(let fc_cast = gte.ctrl.far_col.cast::<i64>() << 12);
-        trace_calc!(let diff = gte.check_macv(fc_cast - macv)); // checking here is required, even tho we saturate later.
-        // this counteracts the earlier shift
-        trace_calc!(let diff = diff >> shift);
-        trace_calc!(let diff = diff.cast::<i32>());
-        trace_calc!(let diff = gte.sat_irv(diff, cmd.with_lm(SaturateMode::Signed)));
-        trace_calc!(let diff = diff.cast::<i64>());
-        trace_calc!(let prod = gte.check_macv(diff * i16x3::splat(gte.data.ir0 as i16).cast::<i64>()));
-
-        trace_calc!(macv);
-        trace_calc!(let macv = gte.check_macv(macv + prod));
+        let macv = gte.interpolate_color(gte.ctrl.far_col, macv, cmd.sf());
         trace_calc!(let macv_shifted = gte.check_macv(macv >> shift));
         gte.data.macv = macv_shifted.cast();
 
-        trace_calc!(let irv = gte.sat_irv(gte.data.macv, cmd).cast());
+        trace_calc!(let irv = gte.sat_irv(gte.data.macv, cmd.lm()).cast());
         gte.data.irv = irv;
 
         gte.advance_crgb_fifo();
@@ -1060,18 +1062,21 @@ impl<A: Allocator> Emu<A> {
     fn ncxx<const C: u8>(&mut self, cmd: GteCommandField, v: i16x3) {
         let gte = &mut self.cpu.gte;
         let shift = i64::from(cmd.sf()) * 12;
-        let macv = gte.macv_matmul3x3v::<false>(gte.ctrl.ls_mat, v);
-        let macv = gte.shift_macv(macv, cmd.sf());
-        gte.data.macv = macv;
-        gte.data.irv = gte.sat_irv(macv, cmd).cast();
 
-        let lcmxir = gte.macv_matmul3x3v::<false>(gte.ctrl.lc_mat, gte.data.irv.cast::<i16>());
-        let macv = gte.shift_macv(
-            gte.ctrl.bg_col.cast::<i64>() * i64x3::splat(0x1000) + lcmxir,
-            cmd.sf(),
-        );
-        gte.data.macv = macv;
-        gte.data.irv = gte.sat_irv(macv, cmd).cast();
+        trace_calc!(let macv = gte.macv_matmul3x3v::<false>(gte.ctrl.ls_mat, v, i64x3::splat(0)));
+        trace_calc!(let macv = gte.shift_macv(macv, cmd.sf()));
+        gte.data.irv = gte.sat_irv(macv, cmd.lm()).cast();
+
+        let bias = gte.ctrl.bg_col.cast::<i64>() * i64x3::splat(0x1000);
+        trace_calc! {
+            let macv = gte.macv_matmul3x3v::<false>(
+                gte.ctrl.lc_mat,
+                gte.data.irv.cast::<i16>(),
+                bias
+            )
+        };
+        trace_calc!(let macv = gte.shift_macv(macv,cmd.sf()));
+        gte.data.irv = gte.sat_irv(macv, cmd.lm()).cast();
 
         let cmd_kind: GteCmd = const {
             match GteCmd::new_with_raw_value(u6::new(C)) {
@@ -1080,36 +1085,36 @@ impl<A: Allocator> Emu<A> {
             }
         };
 
+        let mut macv = macv.cast::<i64>();
         if matches!(
             cmd_kind,
             GteCmd::Ncds | GteCmd::Ncdt | GteCmd::Nccs | GteCmd::Ncct
         ) {
             let rgb = gte.data.rgbc.resize::<3>(0);
-            let macv = (rgb.cast::<i32>() * gte.data.irv) << 4;
-            gte.data.macv = macv;
+            macv = (rgb.cast::<i64>() * gte.data.irv.cast()) << 4;
+            trace_calc!(macv);
+            macv = trace_calc!(gte.check_macv(macv));
         }
 
         if matches!(cmd_kind, GteCmd::Ncds | GteCmd::Ncdt) {
-            let macv = gte.data.macv.cast::<i64>();
-            let macv = macv
-                + (gte.ctrl.far_col.cast::<i64>() - macv) * i64x3::splat(i64::from(gte.data.ir0));
-            gte.data.macv = gte.cast_macv(macv);
+            macv = gte.interpolate_color(gte.ctrl.far_col, macv, cmd.sf());
         }
 
         if matches!(
             cmd_kind,
             GteCmd::Ncds | GteCmd::Ncdt | GteCmd::Nccs | GteCmd::Ncct
         ) {
-            gte.data.macv >>= i32x3::splat(shift as i32);
+            macv >>= i64x3::splat(shift);
+            macv = gte.check_macv(macv);
+            trace_calc!(macv);
         }
 
-        let color = (gte.data.macv >> 4)
-            .simd_clamp(i32x3::splat(0), i32x3::splat(255))
-            .cast::<u8>()
-            .resize::<4>(gte.data.rgbc[3]);
+        gte.data.macv = macv.cast();
+
+        let color = macv >> 4;
         gte.advance_crgb_fifo();
-        gte.data.crgb_fifo[2] = color;
-        gte.data.irv = cmd.saturate_vec(gte.data.macv).cast();
+        gte.data.crgb_fifo[2] = gte.sat_crgb(color).resize::<4>(gte.data.rgbc[3]);
+        gte.data.irv = gte.sat_irv(macv, cmd.lm()).cast();
         gte.ctrl.flag.update_err();
     }
 
@@ -1224,9 +1229,9 @@ impl<A: Allocator> Emu<A> {
             MVMVATranslationVec::FCBugged => {
                 let tx = gte.ctrl.far_col;
                 let flags_vx = i16x3::from_array([vx[0], 0, 0]);
-                let macv = (tx.cast::<i64>() << 12) + gte.macv_matmul3x3v::<false>(mx, flags_vx);
+                let macv = gte.macv_matmul3x3v::<false>(mx, flags_vx, tx.cast::<i64>() << 12);
                 let macv = gte.shift_macv(macv, cmd.sf());
-                let _ = gte.sat_irv(macv, cmd);
+                let _ = gte.sat_irv(macv, cmd.lm());
 
                 let mut bugged_vx = vx;
                 bugged_vx[0] = 0;
@@ -1236,11 +1241,11 @@ impl<A: Allocator> Emu<A> {
             MVMVATranslationVec::None => (i32x3::splat(0), vx),
         };
 
-        trace_calc!(let macv = (tx.cast::<i64>() << 12) + gte.macv_matmul3x3v::<false>(mx, vx));
+        trace_calc!(let macv = gte.macv_matmul3x3v::<false>(mx, vx, tx.cast::<i64>() << 12));
         trace_calc!(let macv = gte.check_macv(macv));
         // trace_calc!(let macv = gte.shift_macv(macv, cmd.sf()));
         gte.data.macv = gte.shift_macv(macv, cmd.sf());
-        gte.data.irv = gte.sat_irv(gte.data.macv, cmd).cast();
+        gte.data.irv = gte.sat_irv(gte.data.macv, cmd.lm()).cast();
         gte.ctrl.flag.update_err();
     }
 
