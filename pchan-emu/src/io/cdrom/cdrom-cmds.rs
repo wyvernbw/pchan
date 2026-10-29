@@ -80,6 +80,10 @@ pub(crate) enum CommandStateV2 {
     InitInt3,
     InitInt2,
 
+    SetSessionInt3(Bcd),
+    SetSessionDiscSingleInt2,
+    SetSessionDiscSingleInt5(u8),
+
     GetTNInt3,
 
     GetTDInt3(Bcd),
@@ -149,6 +153,13 @@ impl<A: Allocator> Emu<A> {
                 self.cdrom_continue_cmd(CommandStateV2::InitInt3);
                 self.cdrom_queue_response(INIT_TIMING);
             }
+            // SetSession - Command 12h,session --> INT3(stat) --> INT2(stat)
+            0x12 => {
+                let sesh = self.cdrom.get_param::<Bcd>();
+                tracing::info!(target: "cdrom", "SetSession\t\t{}", sesh.unpack());
+                self.cdrom_continue_cmd(CommandStateV2::SetSessionInt3(sesh));
+                self.cdrom_queue_response(INIT_TIMING);
+            }
             // GetTN - Command 13h --> INT3(stat,first,last) ;BCD
             0x13 => {
                 self.cdrom_continue_cmd(CommandStateV2::GetTNInt3);
@@ -161,7 +172,9 @@ impl<A: Allocator> Emu<A> {
                 self.cdrom_queue_response(NOP_TIMING);
             }
             // `SeekL` - Command 15h --> INT3(stat) --> INT2(stat)
-            0x15 => {
+            // `SeekP` - Command 16h --> INT3(stat) --> INT2(stat)
+            // TODO: maybe handle SeekP separately?
+            0x15 | 0x16 => {
                 let seek_time = self.cdrom.drive.current_seek_time();
                 tracing::info!(target: "cdrom", "SeekL\t\t{} seek time: {}ms", self.cdrom.drive.cursor.to_mss::<u8>(), cycles_to_ms(seek_time));
                 self.cdrom_continue_cmd(CommandStateV2::SeekLInt3);
@@ -381,6 +394,38 @@ impl<A: Allocator> Emu<A> {
                 self.cdrom.drive.cursor = CdromCursor::default();
                 self.cdrom_send_response_v2(int2(status));
                 self.cdrom_end_cmd();
+            }
+
+            // TODO: support multi-session discs?
+            CommandStateV2::SetSessionInt3(bcd) => match bcd.unpack() {
+                0 => {
+                    self.cdrom_send_response_v2(int5([0x03, 0x10]));
+                    self.cdrom_end_cmd();
+                }
+                1 => {
+                    self.cdrom.drive.status_code.set_seek(true);
+                    self.cdrom_send_response_v2(int3(self.cdrom.drive.status_code));
+                    self.cdrom_continue_cmd(CommandStateV2::SetSessionDiscSingleInt2);
+                    self.cdrom_queue_response(NOP_TIMING);
+                }
+                _ => {
+                    self.cdrom_send_response_v2(int3(status));
+                    self.cdrom_continue_cmd(CommandStateV2::SetSessionDiscSingleInt5(2));
+                    self.cdrom_queue_response(NOP_TIMING);
+                }
+            },
+            CommandStateV2::SetSessionDiscSingleInt2 => {
+                self.cdrom.drive.status_code.set_seek(false);
+                self.cdrom_send_response_v2(int2(self.cdrom.drive.status_code));
+                self.cdrom_end_cmd();
+            }
+            CommandStateV2::SetSessionDiscSingleInt5(0) => {
+                self.cdrom_end_cmd();
+            }
+            CommandStateV2::SetSessionDiscSingleInt5(counter) => {
+                self.cdrom_send_response_v2(int5([0x06, 0x40]));
+                self.cdrom_continue_cmd(CommandStateV2::SetSessionDiscSingleInt5(counter - 1));
+                self.cdrom_queue_response(NOP_TIMING);
             }
 
             CommandStateV2::GetTNInt3 => {

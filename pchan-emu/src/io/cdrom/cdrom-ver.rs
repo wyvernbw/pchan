@@ -13,6 +13,6 @@ pub static PSXLATEPU8: CDRomVer = CDRomVer([0x95, 0x07, 0x24, 0xc1]);
 
 impl Default for CDRomVer {
     fn default() -> Self {
-        PSXLATEPU8
+        PSXPU7
     }
 }
