@@ -20,6 +20,7 @@ use alloc::sync::Arc;
 use core::alloc::Allocator;
 use core::num::NonZeroU64;
 use core::ops::Range;
+use core::sync::atomic::AtomicBool;
 use core::{mem, ptr};
 use std::mem::offset_of;
 use std::sync::{Mutex, MutexGuard};
@@ -65,6 +66,8 @@ pub struct Renderer {
     belt: Mutex<StagingBelt>,
     blit: BlitV2VResources,
     readback: ReadbackResources,
+
+    clear_display_flag: AtomicBool,
 
     conn: Conn,
 }
@@ -474,6 +477,7 @@ impl Renderer {
             vram_blit_buffer,
             blit: blit_v2v,
             readback,
+            clear_display_flag: AtomicBool::new(false),
         })
     }
 
@@ -603,7 +607,15 @@ impl Renderer {
     }
 
     fn update_hw_display_uniforms(&self, display: &Display, gpustat: GpuStatReg) {
-        *self.display_uniforms.hw.lock().unwrap() = HWDisplayUniforms::from_hw(display, gpustat);
+        let mut uniforms = self.display_uniforms.hw.lock().unwrap();
+        let new_uniforms = HWDisplayUniforms::from_hw(display, gpustat);
+
+        if uniforms.dp_res != new_uniforms.dp_res {
+            self.clear_display_flag
+                .store(true, core::sync::atomic::Ordering::Release);
+        }
+
+        *uniforms = new_uniforms;
     }
 
     #[must_use]
@@ -661,6 +673,15 @@ impl Renderer {
                 timeout: None,
             })
             .unwrap();
+    }
+
+    pub fn consume_clear_display(&self) -> bool {
+        self.clear_display_flag.compare_exchange(
+            true,
+            false,
+            core::sync::atomic::Ordering::Acquire,
+            core::sync::atomic::Ordering::Acquire,
+        ) == Ok(true)
     }
 
     pub fn upload_vram(&self, vram: &[u16]) {

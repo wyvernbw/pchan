@@ -705,6 +705,11 @@ pub(crate) fn draw_display(
     let mut encoder = gpu
         .device
         .create_command_encoder(&CommandEncoderDescriptor::default());
+
+    if gpu.consume_clear_display() {
+        encoder.clear_texture(target, &ImageSubresourceRange::default());
+    }
+
     let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         color_attachments:        &[Some(wgpu::RenderPassColorAttachment {
             view:           &target_view,
