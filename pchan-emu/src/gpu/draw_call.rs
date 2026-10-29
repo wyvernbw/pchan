@@ -304,7 +304,7 @@ pub struct DrawPolygon {
     pub header:  DrawPolygonHeader,
     pub attrs:   heapless::Vec<DrawPolygonAttribute, 4>,
     pub clut:    U16Vec2,
-    pub texpage: TexpageCmd,
+    pub texpage: Option<TexpageCmd>,
 }
 
 impl DrawPolygon {
@@ -325,6 +325,11 @@ impl DrawPolygon {
             self.attrs[2].clone(),
             self.attrs[3].clone(),
         ]
+    }
+
+    #[must_use]
+    pub fn semi_transparency(&self) -> Option<u2> {
+        self.texpage.map(|tp| tp.semi_transparency())
     }
 }
 
@@ -497,9 +502,12 @@ impl DrawCallDecoder for DrawPolygonDecoder {
                     Err(DrawPolygon {
                         header:  self.header,
                         clut:    self.attrs[0].uv.unwrap_or_default().extra_as_clut(),
-                        texpage: TexpageCmd::new_with_raw_value(u32::from(
-                            self.attrs[1].uv.unwrap_or_default().extra,
-                        )),
+                        // texpage: TexpageCmd::new_with_raw_value(u32::from(
+                        //     self.attrs[1].uv.unwrap_or_default().extra,
+                        // )),
+                        texpage: self.attrs[1]
+                            .uv
+                            .map(|uv| TexpageCmd::new_with_raw_value(u32::from(uv.extra))),
                         attrs:   self.attrs,
                     })
                 } else {

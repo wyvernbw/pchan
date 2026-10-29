@@ -268,7 +268,7 @@ fn get_color(in: VertexOutput) -> Color {
         }
 
         in_color.color.a = tex_color.a;
-        has_stp = in_color.color.a > 0.0;
+        has_stp = in_color.color.a > 0.5;
 
     } else {
         in_color.color.a = 0.0;
@@ -279,7 +279,7 @@ fn get_color(in: VertexOutput) -> Color {
     if get_stp_on(in.flags) {
         // A: Bx(1-f) + F
         // S: B - F
-        // SO: Bxf + F(1-f)
+        // SO: Bx(1-f) + Fxf
         switch get_semi_transparency(in.flags) {
             // average: A
             case 0, default: {
@@ -292,7 +292,8 @@ fn get_color(in: VertexOutput) -> Color {
             }
             // subtract (S or SO)
             case 2: {
-                in_color.src1 = vec4(select(0., 1., has_stp));
+                // return Color(OutColor(vec4(1.0, 0.0, 1.0, 1.0), vec4(1)), false);
+                in_color.src1 = vec4(f32(!has_stp));
             }
             // 1/4 add: A
             case 3: {

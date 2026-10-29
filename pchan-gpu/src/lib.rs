@@ -911,16 +911,28 @@ impl<A: Allocator + Copy> Scene<A> {
     }
 }
 
-fn draw_call_transparency(draw: &DrawCall) -> Option<Transparency> {
-    if draw.inner.is_transparent() {
-        let mode = match draw.gpustat.semi_transparency().value() {
+impl From<u2> for Transparency {
+    fn from(value: u2) -> Self {
+        match value.value() {
             0 => Transparency::Average,
             1 => Transparency::Add(1.0),
             2 => Transparency::Subtract,
             3 => Transparency::Add(0.25),
             _ => unreachable!("u2 cannot be greater than 3"),
-        };
-        Some(mode)
+        }
+    }
+}
+
+fn draw_call_transparency(draw: &DrawCall) -> Option<Transparency> {
+    if draw.inner.is_transparent() {
+        let gpustat_mode = Transparency::from(draw.gpustat.semi_transparency());
+        match &draw.inner {
+            DrawCallKind::Polygon(poly) => Some(
+                poly.semi_transparency()
+                    .map_or(gpustat_mode, Transparency::from),
+            ),
+            _ => Some(gpustat_mode),
+        }
     } else {
         None
     }
@@ -1490,6 +1502,13 @@ impl Flags {
             .with_dither(gpustat.dither())
             .with_semi_transparency(gpustat.semi_transparency())
     }
+
+    pub const fn with_optional_semi_transparency(self, stp: Option<u2>) -> Self {
+        match stp {
+            Some(stp) => self.with_semi_transparency(stp),
+            None => self,
+        }
+    }
 }
 
 #[derive(derive_more::Debug, Clone)]
@@ -1654,19 +1673,19 @@ impl<A: Allocator> Scene<A> {
         let header = draw_polygon.header;
         let clut = draw_polygon.clut;
         let texpage = draw_polygon.texpage;
-        let texpage_base = texpage.to_u8vec2();
+        let texpage_base = texpage.unwrap_or_default().to_u8vec2();
 
         let color = header.color();
         let shading = header.shading();
-        let color_mode = match header.textured() {
-            true => draw_polygon.texpage.texpage_colors(),
-            false => TextureColorMode::C15BitDirect,
+        let color_mode = match (header.textured(), texpage) {
+            (true, Some(texpage)) => texpage.texpage_colors(),
+            _ => TextureColorMode::C15BitDirect,
         };
         let flags = Flags::from_gpustat(gpustat)
-            .with_semi_transparency(texpage.semi_transparency())
+            .with_optional_semi_transparency(draw_polygon.semi_transparency())
             .with_modulation(header.modulation())
             .with_stp_on(header.semi_transparent())
-            .with_dither(texpage.dither() && (header.modulation() || header.goraud()))
+            .with_dither(gpustat.dither() && (header.modulation() || header.goraud()))
             .with_textured(header.textured());
         let mut vertices = draw_polygon
             .attrs

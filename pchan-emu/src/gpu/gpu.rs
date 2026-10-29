@@ -466,16 +466,18 @@ impl<A: Allocator + Copy> Emu<A> {
                             tracing::trace!(?draw_call, "decoded");
                         }
 
-                        if draw_call.header.textured() {
+                        if let Some(texpage) = draw_call.texpage
+                            && draw_call.header.textured()
+                        {
                             self.gpu
                                 .gpustat
-                                .set_texpage_x_base(draw_call.texpage.texpage_x_base());
+                                .set_texpage_x_base(texpage.texpage_x_base());
                             self.gpu
                                 .gpustat
-                                .set_texpage_y_base(draw_call.texpage.texpage_y_base());
+                                .set_texpage_y_base(texpage.texpage_y_base());
                             self.gpu
                                 .gpustat
-                                .set_texpage_colors(draw_call.texpage.texpage_colors());
+                                .set_texpage_colors(texpage.texpage_colors());
                         }
 
                         self.gpu.gpustat.set_ready_recv_cmd(true);
@@ -973,6 +975,7 @@ impl ops::Not for DrawEvenOdd {
 ///
 #[bitfield(u32)]
 #[derive(derive_more::Debug, Default, derive_more::Into, Endecode)]
+#[endecode(alloc(default))]
 #[debug("{}", hex(self.raw_value))]
 #[must_use]
 pub struct TexpageCmd {
