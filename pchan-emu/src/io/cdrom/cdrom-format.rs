@@ -74,6 +74,10 @@ impl<T> Mss<T> {
 
 pub const SECTOR_USER_SIZE: usize = 0x930;
 
+pub const fn mss_to_lba<T: [const] Into<u8> + [const] Destruct>(mss: Mss<T>) -> u32 {
+    CdromCursor::from_mss(mss).lba
+}
+
 impl CdromCursor {
     pub const fn from_mss<T: [const] Into<u8> + [const] Destruct>(mss: Mss<T>) -> Self {
         let min = mss.min.into() as u32;
@@ -110,19 +114,24 @@ impl CdromCursor {
 }
 
 /// TODO: add support for multiple tracks
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Endecode)]
+#[endecode(alloc(default, global))]
 pub struct CueSheet {
     pub filename: String,
+    #[endecode(alloc(global))]
     pub tracks:   Vec<Track>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Endecode)]
+#[endecode(alloc(default, global))]
 pub struct Track {
     pub number:     u8,
+    #[endecode(alloc(global))]
     pub index_list: Vec<CueIndex>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Endecode, Default)]
+#[endecode(alloc(default))]
 pub struct CueIndex {
     pub sect:   u8,
     pub min:    u8,

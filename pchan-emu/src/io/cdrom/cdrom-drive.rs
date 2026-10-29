@@ -12,7 +12,7 @@ use crate::Emu;
 use crate::cpu::Cpu;
 use crate::io::cdrom::cdrom_cmds::{CommandStateV2, SetMode, SetModeSpeed, StatusCode};
 use crate::io::cdrom::cdrom_format::{
-    CdromCursor, CueFormatParseErr, CueSheet, Mss, SECTOR_USER_SIZE,
+    Bcd, CdromCursor, CueFormatParseErr, CueSheet, Mss, SECTOR_USER_SIZE, mss_to_lba,
 };
 use crate::io::cdrom::{CDRomStatusReg, DriveStatus};
 use crate::io::evque::EventId;
@@ -22,6 +22,9 @@ use super::cdrom_cmds::SetModeSectSize;
 #[derive(Default, derive_more::Debug, Endecode)]
 pub struct CdromDrive {
     pub cursor:        CdromCursor,
+    pub current_track: Option<u8>,
+    #[endecode(alloc(global))]
+    pub toc:           Option<CueSheet>,
     pub old_cursor:    CdromCursor,
     pub setloc_armed:  bool,
     pub status_code:   StatusCode,
@@ -42,6 +45,7 @@ impl Clone for CdromDrive {
     fn clone(&self) -> Self {
         Self {
             cursor:          self.cursor,
+            current_track:   None,
             old_cursor:      self.old_cursor,
             status_code:     self.status_code,
             drive_status:    self.drive_status.clone(),
@@ -53,6 +57,7 @@ impl Clone for CdromDrive {
             open_disc_state: None,
             setloc_armed:    false,
             cmd_state_v2:    CommandStateV2::Idle,
+            toc:             None,
         }
     }
 }
@@ -224,9 +229,52 @@ impl CdromDrive {
         self.seek_time(self.old_cursor.lba, self.cursor.lba)
     }
 
-    pub fn get_toc(&mut self) -> Option<&CueSheet> {
-        self.disc.as_mut().map(|disc| disc.get_toc())
+    pub fn read_toc(&mut self) -> Option<&CueSheet> {
+        let toc = self.disc.as_mut().map(|disc| disc.get_toc());
+        self.toc = toc.cloned();
+        toc
     }
+
+    pub fn get_play_track_lba(&self, track: Option<Bcd>) -> PlaySeekResult {
+        fn get_inner(
+            drive: &CdromDrive,
+            track: Option<Bcd>,
+            toc: Option<&CueSheet>,
+        ) -> Option<PlaySeekResult> {
+            let track = track?.unpack();
+            let toc = toc?;
+            let n = toc.tracks.len() as u8;
+
+            let track = if (1..=n).contains(&track) {
+                track
+            } else if (n + 1..n + 0x99).contains(&track) {
+                drive.current_track?
+            } else {
+                return None;
+            };
+
+            let index = toc.tracks[usize::from(track)].index_list.first()?;
+            let lba = mss_to_lba(Mss::new(index.min, index.second, index.sect));
+            let seek_time = drive.seek_time(drive.cursor.lba, lba);
+
+            Some(PlaySeekResult { lba, seek_time })
+        }
+
+        match get_inner(self, track, self.toc.as_ref()) {
+            Some(result) => result,
+            None => {
+                let seek_time = self.current_seek_time();
+                let lba = self.cursor.lba;
+                PlaySeekResult { lba, seek_time }
+            }
+        }
+    }
+}
+
+#[derive(Default, derive_more::Debug, Endecode, Clone, Copy)]
+pub struct PlaySeekResult {
+    pub lba:       u32,
+    pub seek_time: u64,
 }
 
 impl CommandState {

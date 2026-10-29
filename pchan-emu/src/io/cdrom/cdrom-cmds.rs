@@ -3,6 +3,7 @@ use core::iter;
 
 use crate::Emu;
 use crate::cpu::{Cpu, cycles_to_ms};
+use crate::io::cdrom::cdrom_drive::PlaySeekResult;
 use crate::io::cdrom::cdrom_format::{Bcd, CdromCursor, Mss};
 use crate::io::cdrom::{CDRomState, DriveStatus};
 use crate::io::evque::{EvCtx, EventId, EventKind};
@@ -56,6 +57,8 @@ pub(crate) enum CommandStateV2 {
     Nop,
     GetIdInt3_5,
     GetIdInt2_5,
+
+    Play(PlaySeekResult),
 
     TestHC05BiosDateInt3,
 
@@ -117,6 +120,15 @@ impl<A: Allocator> Emu<A> {
                 self.cdrom_continue_cmd(CommandStateV2::SetlocInt3(mss));
                 self.cdrom_queue_response(NOP_TIMING);
             }
+            // Play - Command 03h (,track) --> INT3(stat) --> optional INT1(report bytes)
+            0x03 => {
+                let track = self.cdrom.get_optional_param::<Bcd>();
+                let seek = self.cdrom.drive.get_play_track_lba(track);
+                tracing::info!(target: "cdrom", "Play\t\t{:?} seek time: {}ms", track.map(Bcd::unpack), cycles_to_ms(seek.seek_time));
+                self.cdrom_continue_cmd(CommandStateV2::Play(seek));
+                self.cdrom_queue_response(NOP_TIMING);
+            }
+
             // `ReadN` - Command 06h --> INT3(stat) --> INT1(stat) --> datablock
             0x06 => {
                 let seek_time = self.cdrom.drive.current_seek_time();
@@ -305,6 +317,17 @@ impl<A: Allocator> Emu<A> {
                 self.cdrom_end_cmd();
             }
 
+            CommandStateV2::Play(seek) => {
+                self.cdrom.drive.status_code.set_play(true);
+                self.cdrom.drive.status_code.set_spindle_mot(true);
+                self.cdrom.drive.cursor.lba = seek.lba;
+
+                self.cdrom_send_response_v2(int3(status));
+                self.cdrom.status.set_busy_status(false);
+
+                self.cdrom.drive.seek_to_cursor();
+            }
+
             CommandStateV2::SetlocInt3(mss) => {
                 self.cdrom.drive.setloc(mss);
                 self.cdrom_send_response_v2(int3(status));
@@ -432,7 +455,7 @@ impl<A: Allocator> Emu<A> {
                 let cue_sheet = self
                     .cdrom
                     .drive
-                    .get_toc()
+                    .read_toc()
                     .expect("todo: called GetTN without a disc. error int5");
                 let first = 1;
                 let last = cue_sheet.tracks.last().map_or(1, |track| track.number);
@@ -450,7 +473,7 @@ impl<A: Allocator> Emu<A> {
                 let cue_sheet = self
                     .cdrom
                     .drive
-                    .get_toc()
+                    .read_toc()
                     .expect("todo: called GetTN without a disc. error int5");
                 let idx = n.unpack();
 
@@ -480,7 +503,7 @@ impl<A: Allocator> Emu<A> {
                 let cue_sheet = self
                     .cdrom
                     .drive
-                    .get_toc()
+                    .read_toc()
                     .expect("todo: called GetTN without a disc. error int5");
 
                 // move drive head to start of first track
@@ -564,6 +587,10 @@ impl<A: Allocator> CDRomState<A> {
 
     fn get_param<T: From<u8>>(&mut self) -> T {
         self.param_fifo.pop_front().unwrap_or_default().into()
+    }
+
+    fn get_optional_param<T: From<u8>>(&mut self) -> Option<T> {
+        self.param_fifo.pop_front().map(Into::into)
     }
 }
 
