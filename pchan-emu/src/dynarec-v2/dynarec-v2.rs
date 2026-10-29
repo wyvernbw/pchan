@@ -1053,9 +1053,10 @@ pub(crate) fn fetch_and_compile_single_threaded<A: Allocator + Copy>(
                     },))
                     .pc_updated;
             }
-            // use average cycle value
-            cycles += 2;
-
+            cycles += u32::from(op.cycles());
+            if op.hazard() != 0 {
+                cycles -= 1;
+            }
             last_address = address;
             op_count += 1;
         });
