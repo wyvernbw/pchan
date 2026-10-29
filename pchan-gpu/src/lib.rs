@@ -1663,9 +1663,10 @@ impl<A: Allocator> Scene<A> {
             false => TextureColorMode::C15BitDirect,
         };
         let flags = Flags::from_gpustat(gpustat)
+            .with_semi_transparency(texpage.semi_transparency())
             .with_modulation(header.modulation())
             .with_stp_on(header.semi_transparent())
-            .with_dither(gpustat.dither() && (header.modulation() || header.goraud()))
+            .with_dither(texpage.dither() && (header.modulation() || header.goraud()))
             .with_textured(header.textured());
         let mut vertices = draw_polygon
             .attrs

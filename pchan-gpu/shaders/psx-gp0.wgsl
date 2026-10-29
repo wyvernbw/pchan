@@ -305,13 +305,15 @@ fn get_color(in: VertexOutput) -> Color {
     }
     
     if get_dither(in.flags) {
-        in_color.color *= 255;
+        var rgb8 = in_color.color.rgb;
+        rgb8 *= 255;
         var dither_pos: vec2<f32>;
         dither_pos = in.vram_position % 4;
         var dither_value: i32 = DITHER[u32(dither_pos.y)][u32(dither_pos.x)];
-        in_color.color += f32(dither_value);
-        in_color.color = clamp(in_color.color, vec4(0), vec4(0xff));
-        in_color.color /= 255;
+        rgb8 += f32(dither_value);
+        rgb8 = clamp(rgb8, vec3(0), vec3(0xff));
+        rgb8 /= 255;
+        in_color.color = vec4(rgb8, in_color.color.a);
     }
 
     return Color(in_color, false);
