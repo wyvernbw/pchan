@@ -771,7 +771,7 @@ impl SioState {
         self.sio0ctrl.set_ack(false);
         self.sio0ctrl.set_reset(false);
 
-        tracing::info!(
+        tracing::trace!(
             target:"sio",
             ack=ctrl.ack(),
             port = ?self.sio0ctrl.sio0_port(),
@@ -782,7 +782,7 @@ impl SioState {
     }
 
     fn read_sio0_ctrl(&self) -> SioCtrlReg {
-        tracing::debug!(
+        tracing::trace!(
             target:"sio",
             ack=self.sio0ctrl.ack(),
             port = ?self.sio0ctrl.sio0_port(),

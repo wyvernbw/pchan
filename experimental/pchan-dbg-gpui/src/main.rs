@@ -804,6 +804,10 @@ async fn emu_loop(appcx: AppCx, cx: &mut AsyncApp) {
                 emucx.pc_history.push_overwrite(emu.cpu.pc);
                 emucx.run_once
             });
+            tracing::info!(
+                "vblanks in between flips: {}",
+                pchan_emu::gpu::VBLANK_COUNT.load(core::sync::atomic::Ordering::Acquire)
+            );
             let elapsed = cx.foreground_executor().block_on(elapsed);
 
             if emucx.save {
@@ -845,8 +849,10 @@ async fn emu_loop(appcx: AppCx, cx: &mut AsyncApp) {
                 Instant::now()
             };
 
-            let surface = surface.as_mut(cx);
-            surface.wait_for_display_draw(&emucx.renderer);
+            surface.update(cx, |surface, cx| {
+                surface.wait_for_display_draw(&emucx.renderer);
+                cx.notify();
+            });
 
             deadline
         });

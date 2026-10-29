@@ -196,7 +196,7 @@ impl<A: Allocator> Emu<A> {
                 self.timers
                     .timer_0
                     .write_mode(TimerCounterMode::new_with_raw_value(value.io_into_u32()));
-                tracing::info!("timer 0 mode: {:#?}", self.timers.timer_1.mode);
+                tracing::info!("timer 0 mode: {:#?}", self.timers.timer_0.mode);
             }
             0x1f801108 => {
                 self.timers.timer_0.target =

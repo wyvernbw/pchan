@@ -537,7 +537,9 @@ impl<A: Allocator + Copy> Emu<A> {
             0x05 => {
                 let cmd = Gp1StartOfDisplayArea::new_with_raw_value(value.raw_value());
                 self.gpu.dp.display_vram_start = cmd.to_u16vec2();
-                tracing::debug!("set framebuffer coords");
+                let vb = VBLANK_COUNT.swap(0, core::sync::atomic::Ordering::Release);
+                tracing::debug!(target:"gpu", "GP1(0x05) set framebuffer coords: {vb}vblanks (before reset), {}x{}, scanline: {}", cmd.x(), cmd.y(), self.gpu.dp.current_scanline);
+                self.gpu_flush_draw_calls();
             }
             0x06 => {
                 ///  0-11   X1 (260h+0)       ;12bit       ;\counted in video clock units,
@@ -1343,7 +1345,6 @@ impl<A: Allocator + Copy> Emu<A> {
         let cycles_per_scanline = self.gpu.video_cycles_per_scanline();
         self.gpu.dp.video_cycle_in_scanline += advance_by;
         if self.gpu.dp.video_cycle_in_scanline < cycles_per_scanline {
-            self.timers.trigger_hblank_end();
             return;
         }
         let scanlines_to_run = self.gpu.dp.video_cycle_in_scanline / cycles_per_scanline;

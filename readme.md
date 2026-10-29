@@ -23,14 +23,13 @@ cargo run -p pchan-dbg-v2 -- game.exe
 
 ## Status
 
-All games will have some graphical glitches because the gpu isn't done yet.
+Most graphical glitches are gone.
 Games I'm testing:
 
 - MK2: **playable**
-- Crash Bandicoot: **playable**, few graphical glitches, maybe timing issues
-- Ridge Racer: **playable**, some graphical glitches, no music (cdrom issue)
-- Puzzle Bobble 2: **playable**, very broken graphically 
-- FF7: **no boot**
+- Crash Bandicoot: **playable** 
+- Ridge Racer: **playable**, no music (cdrom issue)
+- FF7: **no boot** (mdec not implemented)
 - Silent Hill: **no boot**
 
 Progress:
