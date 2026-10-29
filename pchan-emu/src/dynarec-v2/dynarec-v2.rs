@@ -228,6 +228,9 @@ pub async fn run_block<A: Allocator + Copy>(
             emu.raise_exception(Exception::AdEl);
         }
         emu.cpu.cop0.set_bd(false);
+        if emu.gpu.vblank_signal {
+            break;
+        }
 
         debug_assert_eq!(emu.cpu.gpr[0], 0);
         debug_assert_eq!(emu.cpu.gpr_shadow[0], 0);

@@ -110,7 +110,6 @@ impl CdromDrive {
     }
 
     pub(crate) fn change_speed_time(&self, to_speed: SetModeSpeed) -> u64 {
-        const A: u64 = Cpu::CLOCK as u64 * 7 / 10;
         if self.mode.speed() == to_speed {
             0
         } else {
@@ -211,9 +210,9 @@ impl CdromDrive {
             cycles += self.spinup_time();
         }
 
-        if from_lba < 250 && to_lba < 250 {
-            return cycles + u64::from(lba_diff) * (u64::from(Cpu::CLOCK) * 50 / 1000) / 150;
-        }
+        // if from_lba < 250 && to_lba < 250 {
+        //     return cycles + u64::from(lba_diff) * (u64::from(Cpu::CLOCK) * 50 / 1000) / 150;
+        // }
 
         if track_delta < 1. {
             let reading_speed = match self.mode.speed() {
