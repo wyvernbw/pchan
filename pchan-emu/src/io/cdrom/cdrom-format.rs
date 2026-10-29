@@ -9,7 +9,7 @@ use pchan_encode::derive::Endecode;
 use pchan_encode::{Endecode, EndecodeError, Stream};
 
 #[bitfield(u8, debug)]
-#[derive(Endecode, Default)]
+#[derive(Endecode, PartialEq, Eq, Default)]
 pub struct Bcd {
     /// the least significant digit
     #[bits(0..=3, rw)]
@@ -58,7 +58,7 @@ pub struct CdromCursor {
 }
 
 /// (minute, second, sector) tuple
-#[derive(Debug, Clone, Copy, derive_more::Display, Default, Endecode)]
+#[derive(Debug, Clone, Copy, derive_more::Display, Default, Endecode, PartialEq, Eq)]
 #[display("{min:02}:{sec:02}:{sect:02}")]
 pub struct Mss<T> {
     pub min:  T,
@@ -84,13 +84,13 @@ impl CdromCursor {
         let sec = mss.sec.into() as u32;
         let sect = mss.sect.into() as u32;
         Self {
-            lba:  (min * (60 * 75) + sec * 75 + sect).saturating_sub(150),
+            lba:  (min * (60 * 75) + sec * 75 + sect),
             byte: 0,
         }
     }
 
     pub fn to_mss<T: From<u8>>(self) -> Mss<T> {
-        let lba = self.lba + 150;
+        let lba = self.lba;
 
         let sect = (lba % 75) as u8;
         let sec = (lba / 75 % 60) as u8;

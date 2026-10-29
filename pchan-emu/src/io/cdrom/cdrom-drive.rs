@@ -109,6 +109,15 @@ impl CdromDrive {
         }
     }
 
+    pub(crate) fn change_speed_time(&self, to_speed: SetModeSpeed) -> u64 {
+        const A: u64 = Cpu::CLOCK as u64 * 7 / 10;
+        if self.mode.speed() == to_speed {
+            0
+        } else {
+            u64::from(Cpu::CLOCK) * 7 / 10
+        }
+    }
+
     pub fn pause(&mut self) {
         self.drive_state = DriveState::Idle;
         self.status_code.reset_state();
@@ -124,7 +133,7 @@ impl CdromDrive {
             // TODO: better reporting
             tracing::info!(
                 target: "cdrom",
-                "Data Sector\t{} lba={} size={}",
+                "DataSector\t{} lba={} size={}",
                 self.cursor.to_mss::<u8>(),
                 self.cursor.lba,
                 self.mode.sect_size().raw_value(),
@@ -202,6 +211,10 @@ impl CdromDrive {
             cycles += self.spinup_time();
         }
 
+        if from_lba < 250 && to_lba < 250 {
+            return cycles + u64::from(lba_diff) * (u64::from(Cpu::CLOCK) * 50 / 1000) / 150;
+        }
+
         if track_delta < 1. {
             let reading_speed = match self.mode.speed() {
                 SetModeSpeed::Normal => Cpu::CLOCK / 75,
@@ -227,6 +240,10 @@ impl CdromDrive {
 
     pub fn current_seek_time(&self) -> u64 {
         self.seek_time(self.old_cursor.lba, self.cursor.lba)
+    }
+
+    pub fn current_seek_lba_diff(&self) -> u32 {
+        self.old_cursor.lba.abs_diff(self.cursor.lba)
     }
 
     pub fn read_toc(&mut self) -> Option<&CueSheet> {
@@ -271,7 +288,7 @@ impl CdromDrive {
     }
 }
 
-#[derive(Default, derive_more::Debug, Endecode, Clone, Copy)]
+#[derive(Default, derive_more::Debug, Endecode, Clone, Copy, PartialEq, Eq)]
 pub struct PlaySeekResult {
     pub lba:       u32,
     pub seek_time: u64,
@@ -385,13 +402,15 @@ pub enum Disc {
 impl Disc {
     pub fn seek(&mut self, to: CdromCursor) -> std::io::Result<()> {
         let (padding, reader) = match self {
-            Disc::CueBin(cue_format, disc_reader) => (
-                u32::from(cue_format.tracks[0].index_list[0].second) * 75 * SECTOR_USER_SIZE as u32,
+            Disc::CueBin(cue_sheet, disc_reader) => (
+                // TODO: get pregap from cue sheet
+                (u32::from(cue_sheet.tracks[0].index_list[0].second) * 75)
+                    * SECTOR_USER_SIZE as u32,
                 disc_reader,
             ),
             Disc::Raw(disc_reader) => (0, disc_reader),
         };
-        let byte = padding + to.to_byte();
+        let byte = (padding + to.to_byte()).saturating_sub(150 * SECTOR_USER_SIZE as u32);
         reader.seek(u64::from(byte))
     }
 

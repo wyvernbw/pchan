@@ -50,7 +50,7 @@ impl<const N: usize> From<StatusCode> for heapless::Vec<u8, N> {
     }
 }
 
-#[derive(Default, derive_more::Debug, Endecode)]
+#[derive(Default, derive_more::Debug, Endecode, PartialEq, Eq)]
 pub(crate) enum CommandStateV2 {
     #[default]
     Idle,
@@ -116,7 +116,7 @@ impl<A: Allocator> Emu<A> {
                 let sec = self.cdrom.get_param::<Bcd>();
                 let sect = self.cdrom.get_param::<Bcd>();
                 let mss = Mss::new(min, sec, sect);
-                tracing::info!(target: "cdrom", "Setloc\t\t{}->{}", self.cdrom.drive.cursor.to_mss::<u8>(), mss);
+                tracing::info!(target: "cdrom", "{:<14.14}{}->{}", "Setloc", self.cdrom.drive.cursor.to_mss::<u8>(), mss);
                 self.cdrom_continue_cmd(CommandStateV2::SetlocInt3(mss));
                 self.cdrom_queue_response(NOP_TIMING);
             }
@@ -124,7 +124,7 @@ impl<A: Allocator> Emu<A> {
             0x03 => {
                 let track = self.cdrom.get_optional_param::<Bcd>();
                 let seek = self.cdrom.drive.get_play_track_lba(track);
-                tracing::info!(target: "cdrom", "Play\t\t{:?} seek time: {}ms", track.map(Bcd::unpack), cycles_to_ms(seek.seek_time));
+                tracing::info!(target: "cdrom", "{:<14.14}{:?} seek time: {}ms","Play",track.map(Bcd::unpack), cycles_to_ms(seek.seek_time));
                 self.cdrom_continue_cmd(CommandStateV2::Play(seek));
                 self.cdrom_queue_response(NOP_TIMING);
             }
@@ -132,7 +132,7 @@ impl<A: Allocator> Emu<A> {
             // `ReadN` - Command 06h --> INT3(stat) --> INT1(stat) --> datablock
             0x06 => {
                 let seek_time = self.cdrom.drive.current_seek_time();
-                tracing::info!(target: "cdrom", "ReadN\t\t{} seek time: {}ms", self.cdrom.drive.cursor.to_mss::<u8>(), cycles_to_ms(seek_time));
+                tracing::info!(target: "cdrom", "{:<14.14}{} seek time: {}ms","ReadN",self.cdrom.drive.cursor.to_mss::<u8>(), cycles_to_ms(seek_time));
                 self.cdrom_continue_cmd(CommandStateV2::ReadNInt3);
                 self.cdrom_queue_response(NOP_TIMING);
             }
@@ -149,26 +149,35 @@ impl<A: Allocator> Emu<A> {
             }
             // Setmode - Command 0Eh,mode --> INT3(stat)
             0x0e => {
-                tracing::info!(target: "cdrom", "Setmode\t\t{}", self.cdrom.drive.cursor.to_mss::<u8>());
+                tracing::info!(target: "cdrom", "{:<14.14}{}","Setmode",self.cdrom.drive.cursor.to_mss::<u8>());
                 let setmode = self.cdrom.get_param::<SetMode>();
                 self.cdrom_continue_cmd(CommandStateV2::SetModeInt3(setmode));
                 self.cdrom_queue_response(NOP_TIMING);
             }
             // Pause - Command 09h --> INT3(stat) --> INT2(stat)
             0x09 => {
-                tracing::info!(target: "cdrom", "Pause\t\t{}", self.cdrom.drive.cursor.to_mss::<u8>());
+                tracing::info!(target: "cdrom", "{:<14.14}{}","Pause",self.cdrom.drive.cursor.to_mss::<u8>());
                 self.cdrom_continue_cmd(CommandStateV2::PauseInt3);
                 self.cdrom_queue_response(NOP_TIMING);
             }
             // Init - Command 0Ah --> INT3(stat) --> INT2(stat)
             0x0a => {
+                if self.cdrom.drive.cmd_state_v2 == CommandStateV2::InitInt2 {
+                    tracing::info!(
+                        target: "cdrom",
+                        "{:<14.14}pending...",
+                        "Init",
+                    );
+                    return;
+                }
+
                 self.cdrom_continue_cmd(CommandStateV2::InitInt3);
                 self.cdrom_queue_response(INIT_TIMING);
             }
             // SetSession - Command 12h,session --> INT3(stat) --> INT2(stat)
             0x12 => {
                 let sesh = self.cdrom.get_param::<Bcd>();
-                tracing::info!(target: "cdrom", "SetSession\t\t{}", sesh.unpack());
+                tracing::info!(target: "cdrom", "{:<14.14}{}","SetSession",sesh.unpack());
                 self.cdrom_continue_cmd(CommandStateV2::SetSessionInt3(sesh));
                 self.cdrom_queue_response(INIT_TIMING);
             }
@@ -188,7 +197,14 @@ impl<A: Allocator> Emu<A> {
             // TODO: maybe handle SeekP separately?
             0x15 | 0x16 => {
                 let seek_time = self.cdrom.drive.current_seek_time();
-                tracing::info!(target: "cdrom", "SeekL\t\t{} seek time: {}ms", self.cdrom.drive.cursor.to_mss::<u8>(), cycles_to_ms(seek_time));
+                let lba_diff = self.cdrom.drive.current_seek_lba_diff();
+                tracing::info!(
+                    target: "cdrom",
+                    "{:<14.14}{} seek time: {}ms ({lba_diff} physical lba difference)",
+                    "SeekL",
+                    self.cdrom.drive.cursor.to_mss::<u8>(),
+                    cycles_to_ms(seek_time)
+                );
                 self.cdrom_continue_cmd(CommandStateV2::SeekLInt3);
                 self.cdrom_queue_response(NOP_TIMING);
             }
@@ -215,14 +231,14 @@ impl<A: Allocator> Emu<A> {
             }
             // GetID
             0x1a => {
-                tracing::info!("0x1a GetID");
+                tracing::info!(target: "cdrom", "GetID");
                 self.cdrom_continue_cmd(CommandStateV2::GetIdInt3_5);
                 self.cdrom_queue_response(NOP_TIMING);
             }
 
             // ReadTOC - Command 1Eh --> INT3(stat) --> INT2(stat)
             0x1e => {
-                tracing::info!("ReadTOC");
+                tracing::info!(target: "cdrom", "ReadTOC");
                 self.cdrom_continue_cmd(CommandStateV2::ReadTOCInt3);
                 self.cdrom_queue_response(INIT_TIMING);
             }
@@ -249,6 +265,7 @@ impl<A: Allocator> Emu<A> {
 
     pub(crate) fn handle_ev_cdrom_response(&mut self, _: EvCtx, id: u32) {
         if id < self.cdrom.ev_id {
+            tracing::info!(target: "cdrom", "response dropped");
             return;
         }
         self.cdrom_proc_cmd_response();
@@ -407,15 +424,31 @@ impl<A: Allocator> Emu<A> {
             CommandStateV2::InitInt3 => {
                 self.cdrom_send_response_v2(int3(status));
                 self.cdrom_continue_cmd(CommandStateV2::InitInt2);
+
+                let seek_time = self.cdrom.drive.current_seek_time();
                 let spinup_time = self.cdrom.drive.spinup_time();
-                self.cdrom_queue_response(spinup_time as u32 + INIT_TIMING);
+                let change_speed_time = self.cdrom.drive.change_speed_time(SetModeSpeed::Normal);
+                let in_cycles = seek_time as u32 + spinup_time as u32 + change_speed_time as u32;
+
+                tracing::info!(
+                    target: "cdrom",
+                    "{:<14.14}{}ms (seek time: {}ms, spinup time: {}ms, change speed time: {}ms)",
+                    "Init",
+                    cycles_to_ms(u64::from(in_cycles)),
+                    cycles_to_ms(seek_time),
+                    cycles_to_ms(spinup_time),
+                    cycles_to_ms(change_speed_time)
+                );
+
+                self.cdrom.drive.cursor = CdromCursor::default();
+
+                self.cdrom_queue_response(in_cycles);
             }
             CommandStateV2::InitInt2 => {
                 self.cdrom.drive.mode = SetMode::new_with_raw_value(0x20);
                 self.cdrom.drive.status_code.reset_state();
                 self.cdrom.drive.spin_up();
-                self.cdrom.drive.cursor = CdromCursor::default();
-                self.cdrom_send_response_v2(int2(status));
+                self.cdrom_send_response_v2(int2(self.cdrom.drive.status_code));
                 self.cdrom_end_cmd();
             }
 
@@ -460,7 +493,7 @@ impl<A: Allocator> Emu<A> {
                 let first = 1;
                 let last = cue_sheet.tracks.last().map_or(1, |track| track.number);
 
-                tracing::info!(target: "cdrom", "GetTN\t\t{first},{last}");
+                tracing::info!(target: "cdrom", "{:<14.14}{first},{last}", "GetTN");
 
                 let first = Bcd::from_binary(first).raw_value();
                 let last = Bcd::from_binary(last).raw_value();
@@ -486,7 +519,7 @@ impl<A: Allocator> Emu<A> {
                 let min = track.index_list[0].min;
                 let sec = track.index_list[0].second;
 
-                tracing::info!(target: "cdrom", "GetTD\t\t{min:02},{sec:02}");
+                tracing::info!(target: "cdrom", "{:<14.14}{min:02},{sec:02}", "GetTD");
 
                 let min = Bcd::from_binary(track.index_list[0].min);
                 let sec = Bcd::from_binary(track.index_list[0].second);
@@ -576,7 +609,7 @@ impl StatusCode {
 
 impl Default for StatusCode {
     fn default() -> Self {
-        Self::ZERO
+        Self::ZERO.with_spindle_mot(false)
     }
 }
 
@@ -605,7 +638,7 @@ impl<A: Allocator> CDRomState<A> {
 ///  0   CDDA        (0=Off, 1=Allow to Read CD-DA Sectors; ignore missing EDC)
 /// ```
 #[bitfield(u8, debug)]
-#[derive(Default, Endecode)]
+#[derive(Default, Endecode, PartialEq, Eq)]
 pub struct SetMode {
     #[bit(0, rw)]
     cdda:       bool,
@@ -648,7 +681,7 @@ impl SetModeSectSize {
 }
 
 #[bitenum(u1, exhaustive = true)]
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum SetModeSpeed {
     Normal = 0x0,
     Double = 0x1,

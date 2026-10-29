@@ -205,7 +205,6 @@ impl<A: Allocator + Copy> Emu<A> {
 
                 // writing 1 to irq flag resets it to 0
                 let irq_flags = irq_flags & !new_irq_flags;
-                tracing::info!("dma ack: {new_irq_flags:b}");
 
                 let new_dicr = new_dicr.with_combined_irq_flags(irq_flags);
 
@@ -286,7 +285,7 @@ impl<A: Allocator + Copy> Emu<A> {
         if dicr.irq_mask(idx) && dicr.master_chan_irq() {
             dicr.set_irq_flag(idx, true);
         } else {
-            tracing::info!("dma{idx} irq masked out on dma.dicr");
+            tracing::debug!(target: "dma", "dma{idx} irq masked out on dma.dicr");
         }
         self.update_dicr_master_irq_flag();
         let dicr = &mut self.dma.dicr;

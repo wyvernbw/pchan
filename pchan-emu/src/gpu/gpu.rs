@@ -1292,7 +1292,7 @@ pub struct Display {
 ///
 /// see <https://psx-spx.consoledev.net/graphicsprocessingunitgpu/#gp106h-horizontal-display-range-on-screen>
 impl<A: Allocator + Copy> Emu<A> {
-    fn cpu_cycles_to_video_cycles(&mut self, cycles: u64) -> u64 {
+    const fn cpu_cycles_to_video_cycles(&mut self, cycles: u64) -> u64 {
         // this might be based on the actual console hardware not on the
         // video mode you set in the gpu
         let factor = match self.gpu.gpustat.video_mode() {
