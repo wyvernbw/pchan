@@ -216,7 +216,7 @@ impl CdromDrive {
         } else {
             const MAX_TIME: f64 = f64::from(Cpu::CLOCK) * 0.9;
             const FIXED_COST: f64 = f64::from(Cpu::CLOCK) * 0.1;
-            const TIME_PER_TRACK: f64 = MAX_TIME / T;
+            const TIME_PER_TRACK: f64 = (MAX_TIME - FIXED_COST) / T;
             // let sect_diff = u64::from(to_lba.abs_diff(from_lba));
             // (sect_diff * u64::from(Cpu::CLOCK / 75)).max(u64::from(Cpu::CLOCK) / 75)
             cycles += (FIXED_COST + track_delta * TIME_PER_TRACK) as u64
