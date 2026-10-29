@@ -1184,6 +1184,7 @@ impl<A: Allocator + Copy> CpuToVramBlitBatchBuilder<A> {
 
         let buf_start = u64::from(cursor) + self.staging_offset;
         let buf_end = u64::from(end) + self.staging_offset;
+        // FIXME: fix buffer alignment issues
         self.staging_buf
             .get_mapped_range_mut(buf_start..buf_end)
             .unwrap()
@@ -1348,8 +1349,7 @@ struct Vertex {
     color: U8Vec3,
     color_mode: TextureColorMode,
 
-    uv: U8Vec2,
-    _pad_02: [u8; 2],
+    uv: U16Vec2,
     clut: U16Vec2,
     texpage_base: U8Vec2,
     flags: Flags,
@@ -1364,7 +1364,7 @@ struct VertexSpec {
     pos: I16Vec2,
     color: U8Vec3,
     color_mode: TextureColorMode,
-    uv: U8Vec2,
+    uv: U16Vec2,
     clut: U16Vec2,
     texpage_base: U8Vec2,
     flags: Flags,
@@ -1382,7 +1382,6 @@ impl Vertex {
             color: spec.color,
             color_mode: spec.color_mode,
             uv: spec.uv,
-            _pad_02: [0; 2],
             clut: spec.clut,
             texpage_base: spec.texpage_base,
             flags: spec.flags,
@@ -1415,7 +1414,7 @@ impl Vertex {
             },
             // uv @location(3)
             VertexAttribute {
-                format: VertexFormat::Uint8x2,
+                format: VertexFormat::Uint16x2,
                 offset: offset_of!(Vertex, uv) as _,
                 shader_location: 3,
             },
@@ -1520,7 +1519,7 @@ impl Vertex {
         self.color = color;
         self
     }
-    pub fn with_uv(mut self, uv: U8Vec2) -> Self {
+    pub fn with_uv(mut self, uv: U16Vec2) -> Self {
         self.uv = uv;
         self
     }
@@ -1552,31 +1551,13 @@ impl Quad {
             top_left,
             top_right: top_left
                 .with_pos(top_left.pos + i16vec2(size.x as i16, 0))
-                .with_uv(
-                    top_left
-                        .uv
-                        .as_u16vec2()
-                        .wrapping_add(u16vec2(tex_size.x, 0))
-                        .as_u8vec2(),
-                ),
+                .with_uv(top_left.uv.wrapping_add(u16vec2(tex_size.x, 0))),
             bottom_left: top_left
                 .with_pos(top_left.pos + i16vec2(0, size.y as i16))
-                .with_uv(
-                    top_left
-                        .uv
-                        .as_u16vec2()
-                        .wrapping_add(u16vec2(0, tex_size.y))
-                        .as_u8vec2(),
-                ),
+                .with_uv(top_left.uv.wrapping_add(u16vec2(0, tex_size.y))),
             bottom_right: top_left
                 .with_pos(top_left.pos + i16vec2(size.x as i16, size.y as i16))
-                .with_uv(
-                    top_left
-                        .uv
-                        .as_u16vec2()
-                        .wrapping_add(u16vec2(tex_size.x, tex_size.y))
-                        .as_u8vec2(),
-                ),
+                .with_uv(top_left.uv.wrapping_add(u16vec2(tex_size.x, tex_size.y))),
         }
     }
     fn vertices(self) -> [Vertex; 4] {
@@ -1631,12 +1612,13 @@ impl<A: Allocator> Scene<A> {
         let uv = draw_rect.uv.unwrap_or_default();
         let flags = Flags::from_gpustat(gpustat)
             .with_textured(draw_rect.header.textured())
+            .with_modulation(!draw_rect.header.raw())
             .with_stp_on(draw_rect.header.semi_transparent());
         let top_left = Vertex::new(VertexSpec {
             pos: i16vec2(draw_rect.vertex1.x as i16, draw_rect.vertex1.y as i16),
             color,
             color_mode,
-            uv: uv.uv,
+            uv: uv.uv.as_u16vec2(),
             clut: uv.extra_as_clut(),
             texpage_base: gpustat.texpage_base(),
             flags,
@@ -1693,7 +1675,7 @@ impl<A: Allocator> Scene<A> {
                     pos: attr.vertex,
                     color: U8Vec3::from_array(color.to_ne_bytes()),
                     color_mode,
-                    uv: attr.uv.unwrap_or_default().uv,
+                    uv: attr.uv.unwrap_or_default().uv.as_u16vec2(),
                     texpage_base,
                     clut,
                     flags,

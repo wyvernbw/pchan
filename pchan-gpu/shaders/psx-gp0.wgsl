@@ -85,7 +85,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     out.draw_offset = vec2<f32>(in.draw_offset);
 
     // https://psx-spx.consoledev.net/graphicsprocessingunitgpu/#clut-attribute-color-lookup-table-aka-palette
-    out.clut = vec2<f32>(vec2(in.clut.x * 16, in.clut.y));
+    out.clut = vec2<f32>(vec2((in.clut.x * 16) & 1023, in.clut.y));
 
     out.uv = vec2<f32>(in.uv);
     out.texpage_base = vec2<f32>(vec2(in.texpage_base.x * 64, in.texpage_base.y * 256));
@@ -116,7 +116,7 @@ fn unpack_tex_window(p: u32) -> TexWindow {
 }
 
 fn apply_tex_window(texcoord: vec2<f32>, t: TexWindow) -> vec2<f32> {
-    var p = vec2<u32>(texcoord);
+   var p = vec2<u32>(max(texcoord, vec2(0.0))) & vec2(0xFFu);
     p = (p & (~(t.mask * 8))) | ((t.offset & t.mask) * 8);
     return vec2<f32>(p);
 }
@@ -138,7 +138,7 @@ fn rgb5_set_stp(value: u32) -> u32 {
 }
 
 fn vramcoord_to_texcoord(coord: vec2<f32>) -> vec2<u32> {
-    return vec2<u32>(vec2(coord.x, coord.y));
+    return vec2<u32>(vec2(coord.x, coord.y) % vec2(1024, 512));
 }
 
 fn read_16bit(coord: vec2<f32>) -> vec4<f32> {
@@ -233,7 +233,7 @@ fn get_color(in: VertexOutput) -> Color {
                 let base = pack_h(in.texpage_base, 4);
                 let uv = apply_tex_window(in.uv, tex_window);
                 var texcoord = base  + uv;
-                var clut_idx = read_4bit(texcoord);
+                var clut_idx = read_4bit(texcoord) & 15;
 
                 var coord = vec2(in.clut.x + f32(clut_idx), in.clut.y);
                 let clut_color = read_16bit(coord);
@@ -243,7 +243,7 @@ fn get_color(in: VertexOutput) -> Color {
                 let base = pack_h(in.texpage_base, 2);
                 let uv = apply_tex_window(in.uv, tex_window);
                 var texcoord = base  + uv;
-                var clut_idx = read_8bit(texcoord);
+                var clut_idx = read_8bit(texcoord) & 255;
 
                 let coord = vec2(in.clut.x + f32(clut_idx), in.clut.y);
                 let clut_color = read_16bit(coord);
