@@ -2,16 +2,19 @@ use core::alloc::Allocator;
 use core::num::NonZeroU64;
 use core::{mem, ptr, slice};
 
-use crate::{
-    Aabb, BatchedGeometryDraw, BatchedGeometryDrawKind, BlitUniforms, Command, CpuToVramBlit,
-    CpuToVramBlitBatch, Pass, Renderer, Scene, Transparency, Vertex,
-};
 use pchan_emu::gpu::GpuStatReg;
 use pchan_emu::gpu::draw_call::Gp0VramBlit;
-use pchan_emu::memory::kb;
 use pchan_utils::tracy;
 use tracing::Level;
 use wgpu::*;
+
+use crate::frontend::{
+    BatchedGeometryDraw, BatchedGeometryDrawKind, Command, CpuToVramBlit, CpuToVramBlitBatch, Pass,
+    Scene, Transparency,
+};
+use crate::utils::Aabb;
+use crate::vertex::Vertex;
+use crate::{BlitUniforms, Renderer};
 
 const WORKGROUP_SIZE: u32 = 16;
 
@@ -21,6 +24,7 @@ impl Renderer {
         pass: Pass<'b, A>,
     ) -> RenderPass<'_, 'b, A> {
         let encoder = self
+            .gpu
             .device
             .create_command_encoder(&CommandEncoderDescriptor::default());
         RenderPass {
@@ -38,12 +42,15 @@ impl Renderer {
                 let ptr = ptr::from_ref(&display_uniforms).cast::<u8>();
                 slice::from_raw_parts(ptr, len)
             };
-            self.queue
-                .write_buffer(&self.display_uniform_buffer, 0, display_uniforms_slice);
+            self.gpu.queue.write_buffer(
+                &self.res.display_uniform_buffer,
+                0,
+                display_uniforms_slice,
+            );
         }
 
-        render_pass.set_pipeline(&self.display_pipeline);
-        render_pass.set_bind_group(0, &self.display_bind_group, &[]);
+        render_pass.set_pipeline(&self.res.display_pipeline);
+        render_pass.set_bind_group(0, &self.res.display_bind_group, &[]);
         render_pass.draw(0..6, 0..1);
     }
 }
@@ -99,7 +106,7 @@ impl<A: Allocator + Copy> RenderPass<'_, '_, A> {
         if let Some(size) = NonZeroU64::new(vertex_buf.len() as u64) {
             let mut view = self.pass.belt.write_buffer(
                 &mut self.encoder,
-                &self.renderer.vertex_buf,
+                &self.renderer.res.vertex_buf,
                 vertex_start.into(),
                 size,
             );
@@ -111,7 +118,7 @@ impl<A: Allocator + Copy> RenderPass<'_, '_, A> {
         let mut render_pass = self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: None,
             color_attachments: &[Some(RenderPassColorAttachment {
-                view: &self.renderer.render_view,
+                view: &self.renderer.res.render_view,
                 depth_slice: None,
                 resolve_target: None,
                 ops: Operations {
@@ -124,9 +131,9 @@ impl<A: Allocator + Copy> RenderPass<'_, '_, A> {
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        render_pass.set_vertex_buffer(0, self.renderer.vertex_buf.slice(..));
-        render_pass.set_pipeline(&self.renderer.render_pipelines.add);
-        render_pass.set_bind_group(0, &self.renderer.render_bind_group, &[]);
+        render_pass.set_vertex_buffer(0, self.renderer.res.vertex_buf.slice(..));
+        render_pass.set_pipeline(&self.renderer.res.render_pipelines.add);
+        render_pass.set_bind_group(0, &self.renderer.res.render_bind_group, &[]);
 
         GeometryRenderPass {
             rpass: render_pass,
@@ -148,8 +155,8 @@ impl<A: Allocator + Copy> RenderPass<'_, '_, A> {
             aspect: TextureAspect::All,
         };
         self.encoder.copy_texture_to_texture(
-            copy_info(&self.renderer.render_texture),
-            copy_info(&self.renderer.vram_texture),
+            copy_info(&self.renderer.res.render_texture),
+            copy_info(&self.renderer.res.vram_texture),
             Extent3d {
                 width: size.x,
                 height: size.y,
@@ -164,8 +171,8 @@ impl<A: Allocator + Copy> RenderPass<'_, '_, A> {
 
     fn commit_render_to_vram(&mut self) {
         self.encoder.copy_texture_to_texture(
-            self.renderer.render_texture.as_image_copy(),
-            self.renderer.vram_texture.as_image_copy(),
+            self.renderer.res.render_texture.as_image_copy(),
+            self.renderer.res.vram_texture.as_image_copy(),
             Extent3d {
                 width: 1024,
                 height: 512,
@@ -176,8 +183,8 @@ impl<A: Allocator + Copy> RenderPass<'_, '_, A> {
 
     fn commit_vram_to_render(&mut self) {
         self.encoder.copy_texture_to_texture(
-            self.renderer.vram_texture.as_image_copy(),
-            self.renderer.render_texture.as_image_copy(),
+            self.renderer.res.vram_texture.as_image_copy(),
+            self.renderer.res.render_texture.as_image_copy(),
             Extent3d {
                 width: 1024,
                 height: 512,
@@ -194,7 +201,7 @@ impl<A: Allocator + Copy> RenderPass<'_, '_, A> {
         // concurrent reads and writes to the same texture storage
         self.encoder.copy_texture_to_buffer(
             TexelCopyTextureInfo {
-                texture: &self.renderer.render_texture,
+                texture: &self.renderer.res.render_texture,
                 origin: Origin3d {
                     x: src_origin.x,
                     y: src_origin.y,
@@ -204,7 +211,7 @@ impl<A: Allocator + Copy> RenderPass<'_, '_, A> {
                 aspect: TextureAspect::All,
             },
             TexelCopyBufferInfo {
-                buffer: &self.renderer.vram_blit_buffer,
+                buffer: &self.renderer.res.vram_blit_buffer,
                 layout: TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(1024 * 4),
@@ -232,7 +239,7 @@ impl<A: Allocator + Copy> RenderPass<'_, '_, A> {
         self.encoder.copy_buffer_to_buffer(
             uniforms_staging.buffer(),
             uniforms_staging.offset(),
-            &self.renderer.blit.uniforms_buf,
+            &self.renderer.res.blit.uniforms_buf,
             0,
             uniforms.as_bytes().len().next_multiple_of(4) as u64,
         );
@@ -249,8 +256,8 @@ impl<A: Allocator + Copy> RenderPass<'_, '_, A> {
         let dispatch_x = uniforms.size.x.div_ceil(WORKGROUP_SIZE);
         let dispatch_y = uniforms.size.y.div_ceil(WORKGROUP_SIZE);
 
-        cpass.set_pipeline(&self.renderer.blit.pipe);
-        cpass.set_bind_group(0, &self.renderer.blit.bind_group, &[]);
+        cpass.set_pipeline(&self.renderer.res.blit.pipe);
+        cpass.set_bind_group(0, &self.renderer.res.blit.bind_group, &[]);
         cpass.set_immediates(0, &0u32.to_le_bytes());
         cpass.set_immediates(4, &0u32.to_le_bytes());
         cpass.dispatch_workgroups(dispatch_x, dispatch_y, 1);
@@ -266,7 +273,7 @@ impl<A: Allocator + Copy> RenderPass<'_, '_, A> {
         self.encoder.copy_buffer_to_buffer(
             &batch.staging_buf,
             batch.staging_offset,
-            &self.renderer.vram_blit_buffer,
+            &self.renderer.res.vram_blit_buffer,
             0,
             batch.data_len,
         );
@@ -286,7 +293,7 @@ impl<A: Allocator + Copy> RenderPass<'_, '_, A> {
         self.encoder.copy_buffer_to_buffer(
             uniforms_staging.buffer(),
             uniforms_staging.offset(),
-            &self.renderer.blit.uniforms_buf,
+            &self.renderer.res.blit.uniforms_buf,
             0,
             uniforms.len() as u64,
         );
@@ -294,8 +301,8 @@ impl<A: Allocator + Copy> RenderPass<'_, '_, A> {
             label: Some("psx.gpu.blit<cpu->vram>"),
             timestamp_writes: None,
         });
-        cpass.set_pipeline(&self.renderer.blit.pipe);
-        cpass.set_bind_group(0, &self.renderer.blit.bind_group, &[]);
+        cpass.set_pipeline(&self.renderer.res.blit.pipe);
+        cpass.set_bind_group(0, &self.renderer.res.blit.bind_group, &[]);
 
         CpuToVramPass { batch, cpass }
     }
@@ -303,7 +310,7 @@ impl<A: Allocator + Copy> RenderPass<'_, '_, A> {
     pub fn finish(mut self) {
         let _commit = tracy::span!("rd-commit");
         self.pass.belt.finish();
-        self.renderer.queue.submit([self.encoder.finish()]);
+        self.renderer.gpu.queue.submit([self.encoder.finish()]);
         self.pass.belt.recall();
     }
 }
@@ -319,14 +326,15 @@ impl GeometryRenderPass<'_> {
         if batch.kind != self.current_kind {
             self.current_kind = batch.kind;
             match self.current_kind {
-                BatchedGeometryDrawKind::Transparent(crate::Transparency::Subtract) => {
-                    self.rpass.set_pipeline(&self.gpu.render_pipelines.subtract);
+                BatchedGeometryDrawKind::Transparent(Transparency::Subtract) => {
+                    self.rpass
+                        .set_pipeline(&self.gpu.res.render_pipelines.subtract);
                 }
                 BatchedGeometryDrawKind::Transparent(
-                    crate::Transparency::Add(_) | crate::Transparency::Average,
+                    Transparency::Add(_) | Transparency::Average,
                 )
                 | BatchedGeometryDrawKind::OpaqueOnly => {
-                    self.rpass.set_pipeline(&self.gpu.render_pipelines.add);
+                    self.rpass.set_pipeline(&self.gpu.res.render_pipelines.add);
                 }
             }
         }
@@ -341,10 +349,11 @@ impl GeometryRenderPass<'_> {
         self.update(batch);
 
         if let BatchedGeometryDrawKind::Transparent(Transparency::Subtract) = batch.kind {
-            self.rpass.set_pipeline(&self.gpu.render_pipelines.subtract);
+            self.rpass
+                .set_pipeline(&self.gpu.res.render_pipelines.subtract);
             self.rpass.draw(vertex_start..vertex_end, 0..1);
             self.rpass
-                .set_pipeline(&self.gpu.render_pipelines.subtract_opaque);
+                .set_pipeline(&self.gpu.res.render_pipelines.subtract_opaque);
             self.rpass.draw(vertex_start..vertex_end, 0..1);
         } else {
             self.rpass.draw(vertex_start..vertex_end, 0..1);
