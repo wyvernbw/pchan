@@ -10,6 +10,7 @@ dhat-heap = ["dep:dhat"]
 version = "0.20.0"
 default-features = false
 features = [
+  "debug",
   "bevy_feathers",
   "system_font_discovery",
   # -- ui
@@ -40,6 +41,7 @@ pchan-emu.workspace = true
 pchan-gpu.workspace = true
 pchan-utils = { workspace = true, features = ["tracy", "tracy-enable"] }
 dhat = { version = "*", optional = true }
+pchan-bind.workspace = true
 
 [lints]
 workspace = true

@@ -30,8 +30,7 @@ pub struct Runner<A: Allocator> {
     pub running:     bool,
     pub frame_idx:   u64,
     transport:       Transport<A>,
-    #[debug(skip)]
-    actor_tx:        Caching<Arc<SharedRb<Heap<CompileActorMsg>>>, true, false>,
+    // actor_tx:        Caching<Arc<SharedRb<Heap<CompileActorMsg>>>, true, false>,
     dynarec:         Dynarec<A>,
     actor_handle:    ActorHandle,
     #[debug(skip)]
@@ -130,7 +129,7 @@ impl<A: Allocator + Copy + Clone> Runner<A> {
             mode: RunnerMode::default(),
             config: RunnerConfig::default(),
             transport,
-            actor_tx: prod,
+            // actor_tx: prod,
             dynarec: Dynarec::new(CreateDynarecParams::new(alloc)),
             actor_handle,
             alloc,
@@ -215,7 +214,7 @@ impl<A: Allocator + Copy + Clone> Runner<A> {
                             continue;
                         }
 
-                        self.actor_tx.try_push(CompileActorMsg::Op(pc, op)).unwrap();
+                        // self.actor_tx.try_push(CompileActorMsg::Op(pc, op)).unwrap();
                         match result {
                             InterpreterResult::None => {}
                             _ => {

@@ -9,6 +9,7 @@ use core::simd::prelude::Simd;
 use std::simd::SimdElement;
 use std::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
+pub use kanal;
 use kanal::{AsyncReceiver, AsyncSender, Receiver, Sender};
 
 #[cfg(feature = "tracing-subscriber")]
