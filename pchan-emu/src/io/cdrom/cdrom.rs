@@ -404,7 +404,8 @@ impl<A: Allocator> CDRomState<A> {
             Err(param) => {
                 // overwrite last
                 _ = self.param_fifo.pop_back();
-                become self.param_push(param);
+                // basically guaranteed to only recurse once
+                return self.param_push(param);
             }
         }
     }

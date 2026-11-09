@@ -3,12 +3,43 @@ name = "pchan-bevy"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+dhat-heap = ["dep:dhat"]
+
+[dependencies.bevy]
+version = "0.20.0"
+default-features = false
+features = [
+  "bevy_feathers",
+  "system_font_discovery",
+  # -- ui
+  "ui_api",
+  "ui_bevy_render",
+  "scene",
+  "picking",
+  "bevy_ui_widgets",
+  # -- default_platform
+  "std",
+  "bevy_gilrs",
+  "bevy_winit",
+  # Note: OS-integrated clipboard support is gated behind the `system_clipboard` feature,
+  # which is not enabled by default for security reasons.
+  "bevy_clipboard",
+  "default_font",
+  # "multi_threaded",
+  "webgl2",
+  "x11",
+  "wayland",
+  "custom_cursor",
+  # "sysinfo_plugin",
+]
+
 [dependencies]
-bevy = { version = "0.20.0", default-features = false, features = ["bevy_feathers", "system_font_discovery", "ui"] }
 pchan-audio.workspace = true
 pchan-emu.workspace = true
 pchan-gpu.workspace = true
 pchan-utils = { workspace = true, features = ["tracy", "tracy-enable"] }
+dhat = { version = "*", optional = true }
 
 [lints]
 workspace = true
