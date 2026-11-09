@@ -71,6 +71,7 @@ impl SurfaceState {
         use wgpu::*;
 
         let mut encoder = gpu
+            .gpu
             .device
             .create_command_encoder(&CommandEncoderDescriptor::default());
         let range = &ImageSubresourceRange {
@@ -81,7 +82,7 @@ impl SurfaceState {
             array_layer_count: None,
         };
         encoder.clear_texture(&self.target.wgpu, range);
-        encoder.clear_texture(&gpu.render_texture, range);
+        encoder.clear_texture(&gpu.res.render_texture, range);
 
         #[cfg(target_os = "macos")]
         {
@@ -112,8 +113,9 @@ impl SurfaceState {
         }
 
         let cmd_buf = encoder.finish();
-        let sub = gpu.queue.submit([cmd_buf]);
-        gpu.device
+        let sub = gpu.gpu.queue.submit([cmd_buf]);
+        gpu.gpu
+            .device
             .poll(wgt::PollType::Wait {
                 submission_index: Some(sub),
                 timeout:          None,
@@ -261,7 +263,7 @@ pub fn create_target(
     #[cfg(target_os = "macos")]
     let target = create_target_texture_metal(gpu, dp);
 
-    let target_buf = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+    let target_buf = gpu.gpu.device.create_buffer(&wgpu::BufferDescriptor {
         label:              None,
         size:               u64::from(width) * u64::from(dp.screen_rect.y),
         usage:              wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
@@ -283,7 +285,7 @@ pub fn create_target_texture_wgpu(
     gpu: &pchan_gpu::Renderer,
     dp: &pchan_gpu::AppDisplayUniforms,
 ) -> wgpu::Texture {
-    gpu.device.create_texture(&wgpu::TextureDescriptor {
+    gpu.gpu.device.create_texture(&wgpu::TextureDescriptor {
         label:           None,
         size:            wgpu::Extent3d {
             width:                 u32::from(dp.screen_rect.x),
@@ -340,6 +342,7 @@ pub fn create_target_texture_metal(
         .expect("failed to create CVPixelBuffer");
 
         let metal_device = &*gpu
+            .gpu
             .device
             .as_hal::<wgpu::hal::api::Metal>()
             .expect("failed to get metal device");
@@ -391,26 +394,29 @@ pub fn create_target_texture_metal(
             },
             None,
         );
-        let wgpu_yp_texture = gpu.device.create_texture_from_hal::<wgpu::hal::api::Metal>(
-            wgpu_hal_yp_tex,
-            &wgpu::TextureDescriptor {
-                label:           None,
-                size:            wgpu::Extent3d {
-                    width:                 u32::from(dp.screen_rect.x),
-                    height:                u32::from(dp.screen_rect.y.max(16)),
-                    depth_or_array_layers: 1,
+        let wgpu_yp_texture = gpu
+            .gpu
+            .device
+            .create_texture_from_hal::<wgpu::hal::api::Metal>(
+                wgpu_hal_yp_tex,
+                &wgpu::TextureDescriptor {
+                    label:           None,
+                    size:            wgpu::Extent3d {
+                        width:                 u32::from(dp.screen_rect.x),
+                        height:                u32::from(dp.screen_rect.y.max(16)),
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count:    1,
+                    dimension:       wgpu::TextureDimension::D2,
+                    format:          wgpu::TextureFormat::R8Unorm,
+                    usage:           wgpu::TextureUsages::RENDER_ATTACHMENT
+                        | wgpu::TextureUsages::COPY_SRC
+                        | wgpu::TextureUsages::STORAGE_BINDING,
+                    view_formats:    &[wgpu::TextureFormat::R8Unorm],
                 },
-                mip_level_count: 1,
-                sample_count:    1,
-                dimension:       wgpu::TextureDimension::D2,
-                format:          wgpu::TextureFormat::R8Unorm,
-                usage:           wgpu::TextureUsages::RENDER_ATTACHMENT
-                    | wgpu::TextureUsages::COPY_SRC
-                    | wgpu::TextureUsages::STORAGE_BINDING,
-                view_formats:    &[wgpu::TextureFormat::R8Unorm],
-            },
-            wgpu::wgt::TextureUses::STORAGE_WRITE_ONLY,
-        );
+                wgpu::wgt::TextureUses::STORAGE_WRITE_ONLY,
+            );
 
         let wgpu_hal_cbcr_tex = wgpu::hal::metal::Device::texture_from_raw(
             dest_cbcr_texture,
@@ -425,26 +431,29 @@ pub fn create_target_texture_metal(
             },
             None,
         );
-        let wgpu_cbcr_texture = gpu.device.create_texture_from_hal::<wgpu::hal::api::Metal>(
-            wgpu_hal_cbcr_tex,
-            &wgpu::TextureDescriptor {
-                label:           None,
-                size:            wgpu::Extent3d {
-                    width:                 width as u32 / 2,
-                    height:                height as u32 / 2,
-                    depth_or_array_layers: 1,
+        let wgpu_cbcr_texture = gpu
+            .gpu
+            .device
+            .create_texture_from_hal::<wgpu::hal::api::Metal>(
+                wgpu_hal_cbcr_tex,
+                &wgpu::TextureDescriptor {
+                    label:           None,
+                    size:            wgpu::Extent3d {
+                        width:                 width as u32 / 2,
+                        height:                height as u32 / 2,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count:    1,
+                    dimension:       wgpu::TextureDimension::D2,
+                    format:          wgpu::TextureFormat::Rg8Unorm,
+                    usage:           wgpu::TextureUsages::RENDER_ATTACHMENT
+                        | wgpu::TextureUsages::COPY_SRC
+                        | wgpu::TextureUsages::STORAGE_BINDING,
+                    view_formats:    &[wgpu::TextureFormat::Rg8Unorm],
                 },
-                mip_level_count: 1,
-                sample_count:    1,
-                dimension:       wgpu::TextureDimension::D2,
-                format:          wgpu::TextureFormat::Rg8Unorm,
-                usage:           wgpu::TextureUsages::RENDER_ATTACHMENT
-                    | wgpu::TextureUsages::COPY_SRC
-                    | wgpu::TextureUsages::STORAGE_BINDING,
-                view_formats:    &[wgpu::TextureFormat::Rg8Unorm],
-            },
-            wgpu::wgt::TextureUses::STORAGE_WRITE_ONLY,
-        );
+                wgpu::wgt::TextureUses::STORAGE_WRITE_ONLY,
+            );
 
         PchanTexture {
             wgpu:  wgpu_texture,
@@ -480,52 +489,55 @@ impl MetalYpCbCrComputeState {
     pub fn new(gpu: &pchan_gpu::Renderer, _tex: &PchanTexture) -> Self {
         use wgpu::*;
         let shader = gpu
+            .gpu
             .device
             .create_shader_module(include_wgsl!("./convert-ypcbcr.wgsl"));
-        let bind_group_layout = gpu
-            .device
-            .create_bind_group_layout(&BindGroupLayoutDescriptor {
-                label:   Some("ypcbcr-convert-bind-group-layout"),
-                entries: &[
-                    BindGroupLayoutEntry {
-                        binding:    0,
-                        visibility: ShaderStages::COMPUTE,
-                        ty:         BindingType::Texture {
-                            sample_type:    TextureSampleType::Float { filterable: false },
-                            view_dimension: TextureViewDimension::D2,
-                            multisampled:   false,
+        let bind_group_layout =
+            gpu.gpu
+                .device
+                .create_bind_group_layout(&BindGroupLayoutDescriptor {
+                    label:   Some("ypcbcr-convert-bind-group-layout"),
+                    entries: &[
+                        BindGroupLayoutEntry {
+                            binding:    0,
+                            visibility: ShaderStages::COMPUTE,
+                            ty:         BindingType::Texture {
+                                sample_type:    TextureSampleType::Float { filterable: false },
+                                view_dimension: TextureViewDimension::D2,
+                                multisampled:   false,
+                            },
+                            count:      None,
                         },
-                        count:      None,
-                    },
-                    BindGroupLayoutEntry {
-                        binding:    1,
-                        visibility: ShaderStages::COMPUTE,
-                        ty:         BindingType::Sampler(SamplerBindingType::NonFiltering),
-                        count:      None,
-                    },
-                    BindGroupLayoutEntry {
-                        binding:    2,
-                        visibility: ShaderStages::COMPUTE,
-                        ty:         BindingType::StorageTexture {
-                            access:         StorageTextureAccess::WriteOnly,
-                            format:         TextureFormat::R8Unorm,
-                            view_dimension: TextureViewDimension::D2,
+                        BindGroupLayoutEntry {
+                            binding:    1,
+                            visibility: ShaderStages::COMPUTE,
+                            ty:         BindingType::Sampler(SamplerBindingType::NonFiltering),
+                            count:      None,
                         },
-                        count:      None,
-                    },
-                    BindGroupLayoutEntry {
-                        binding:    3,
-                        visibility: ShaderStages::COMPUTE,
-                        ty:         BindingType::StorageTexture {
-                            access:         StorageTextureAccess::WriteOnly,
-                            format:         TextureFormat::Rg8Unorm,
-                            view_dimension: TextureViewDimension::D2,
+                        BindGroupLayoutEntry {
+                            binding:    2,
+                            visibility: ShaderStages::COMPUTE,
+                            ty:         BindingType::StorageTexture {
+                                access:         StorageTextureAccess::WriteOnly,
+                                format:         TextureFormat::R8Unorm,
+                                view_dimension: TextureViewDimension::D2,
+                            },
+                            count:      None,
                         },
-                        count:      None,
-                    },
-                ],
-            });
+                        BindGroupLayoutEntry {
+                            binding:    3,
+                            visibility: ShaderStages::COMPUTE,
+                            ty:         BindingType::StorageTexture {
+                                access:         StorageTextureAccess::WriteOnly,
+                                format:         TextureFormat::Rg8Unorm,
+                                view_dimension: TextureViewDimension::D2,
+                            },
+                            count:      None,
+                        },
+                    ],
+                });
         let pipe_layout = gpu
+            .gpu
             .device
             .create_pipeline_layout(&PipelineLayoutDescriptor {
                 label:              Some("ypcbcr-convert-pipeline-layout"),
@@ -533,6 +545,7 @@ impl MetalYpCbCrComputeState {
                 immediate_size:     0,
             });
         let cpipe = gpu
+            .gpu
             .device
             .create_compute_pipeline(&ComputePipelineDescriptor {
                 label:               Some("ypcbcr-convert-compute-pipeline"),
@@ -545,7 +558,7 @@ impl MetalYpCbCrComputeState {
                 },
                 cache:               None,
             });
-        let src_texture_sampler = gpu.device.create_sampler(&SamplerDescriptor {
+        let src_texture_sampler = gpu.gpu.device.create_sampler(&SamplerDescriptor {
             label: None,
             address_mode_u: AddressMode::ClampToEdge,
             address_mode_v: AddressMode::ClampToEdge,
@@ -593,7 +606,7 @@ impl MetalYpCbCrComputeState {
             .dest_cbcr_texture
             .create_view(&view_descriptor(TextureFormat::Rg8Unorm));
 
-        let bind_group = gpu.device.create_bind_group(&BindGroupDescriptor {
+        let bind_group = gpu.gpu.device.create_bind_group(&BindGroupDescriptor {
             label:   Some("ypcbcr-convert-bind-group"),
             layout:  &self.bind_group_layout,
             entries: &[
@@ -616,6 +629,7 @@ impl MetalYpCbCrComputeState {
             ],
         });
         let mut encoder = gpu
+            .gpu
             .device
             .create_command_encoder(&CommandEncoderDescriptor::default());
         let mut cpass = encoder.begin_compute_pass(&ComputePassDescriptor {
@@ -633,14 +647,15 @@ impl MetalYpCbCrComputeState {
         drop(cpass);
         let cmd_buf = encoder.finish();
 
-        let sub = gpu.queue.submit([cmd_buf]);
+        let sub = gpu.gpu.queue.submit([cmd_buf]);
 
         self.submission.set(Some(sub));
     }
 
     pub fn wait_for_conversion(&self, gpu: &pchan_gpu::Renderer) {
         if let Some(sub) = self.submission.take() {
-            gpu.device
+            gpu.gpu
+                .device
                 .poll(wgpu::wgt::PollType::Wait {
                     submission_index: Some(sub),
                     timeout:          None,
@@ -674,7 +689,7 @@ impl SurfaceState {
     }
     pub fn wait_for_display_draw(&self, gpu: &pchan_gpu::Renderer) {
         if let Some(sub) = self.display_submission.take() {
-            _ = gpu.device.poll(wgpu::PollType::Wait {
+            _ = gpu.gpu.device.poll(wgpu::PollType::Wait {
                 submission_index: Some(sub),
                 timeout:          None,
             });
@@ -703,6 +718,7 @@ pub(crate) fn draw_display(
         usage:             Some(TextureUsages::RENDER_ATTACHMENT),
     });
     let mut encoder = gpu
+        .gpu
         .device
         .create_command_encoder(&CommandEncoderDescriptor::default());
 
@@ -745,7 +761,7 @@ pub(crate) fn draw_display(
 
     let commands = encoder.finish();
 
-    gpu.queue.submit([commands])
+    gpu.gpu.queue.submit([commands])
 }
 
 impl PchanTexture {

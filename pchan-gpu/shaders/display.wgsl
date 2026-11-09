@@ -125,6 +125,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 out.g = srgb_to_linear(out.g);
                 out.b = srgb_to_linear(out.b);
             }
+            out.a = 1.0;
 
             return out;
         
@@ -137,6 +138,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 out.g = srgb_to_linear(out.g);
                 out.b = srgb_to_linear(out.b);
             }
+            out.a = 1.0;
 
             return out;
         }

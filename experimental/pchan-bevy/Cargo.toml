@@ -39,7 +39,7 @@ features = [
 pchan-audio.workspace = true
 pchan-emu.workspace = true
 pchan-gpu.workspace = true
-pchan-utils = { workspace = true, features = ["tracy", "tracy-enable"] }
+pchan-utils = { workspace = true, features = ["tracing-subscriber", "tracy", "tracy-enable"] }
 dhat = { version = "*", optional = true }
 pchan-bind.workspace = true
 
