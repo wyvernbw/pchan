@@ -81,3 +81,25 @@ pub struct Theme {
     pub fg:     Color,
     pub border: Color,
 }
+
+pub fn text(value: impl AsRef<str>) -> impl Scene {
+    let value = value.as_ref();
+    bsn! {
+        Text(value)
+        TextFont {
+            font: bevy::text::FontSourceTemplate::Generic(GenericFontFamily::SystemUi),
+            font_size: px(14.),
+            weight: FontWeight(0),
+        }
+    }
+}
+
+pub fn vseparator(theme: &Theme) -> impl Scene {
+    bsn! {
+        Node {
+            height: percent(100.),
+            width: px(1.),
+        }
+        BackgroundColor({theme.border})
+    }
+}

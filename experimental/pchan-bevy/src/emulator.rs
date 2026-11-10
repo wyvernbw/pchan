@@ -40,7 +40,10 @@ pub fn emulator_plugin(app: &mut App) {
         .init_resource::<DisplaySize>()
         .add_systems(Update, try_recv_hwr_chan)
         .add_systems(OnEnter(HwrState::Ready), setup_psx)
-        .add_systems(FixedUpdate, psx_loop.run_if(in_state(PsxState::Running)))
+        .add_systems(
+            FixedUpdate,
+            psx_loop.run_if(in_state(PsxState::Running).or_else(in_state(PsxState::RunOneFrame))),
+        )
         .add_systems(Update, track_display_size.after(UiSystems::Layout));
 
     if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
@@ -135,14 +138,17 @@ fn setup_psx(mut cmds: Commands, hwr: Res<Hwr>, mut images: ResMut<Assets<Image>
         force_mode: Some(RunnerMode::Dynarec),
         speed:      EmuSpeed::Percentage(NonZeroU16::new(100).unwrap()),
     });
-    // runner.running = false;
+    runner.running = false;
 
+    cmds.set_state(match runner.running {
+        true => PsxState::Running,
+        false => PsxState::Paused,
+    });
     cmds.insert_resource(Psx {
         emu,
         runner,
         elapsed: VecDeque::with_capacity(EMULATOR_ELAPSED_RINGBUF_SIZE),
     });
-    cmds.set_state(PsxState::Running);
 
     let mut image = Image::new_uninit(
         wgpu::Extent3d {
@@ -170,21 +176,36 @@ fn setup_psx(mut cmds: Commands, hwr: Res<Hwr>, mut images: ResMut<Assets<Image>
     Ok(())
 }
 
-fn psx_loop(mut psx: ResMut<Psx>, mut ev: MessageWriter<RequestRedraw>) {
-    let pool = AsyncComputeTaskPool::get();
-    let start = Instant::now();
-    pool.scope(|scope| {
-        scope.spawn(async {
-            let Psx { emu, runner, .. } = &mut *psx;
-            runner.run_until_vblank(emu).await;
-            ev.write(RequestRedraw);
-        });
-    });
-    let elapsed = start.elapsed().as_millis_f32();
-    if psx.elapsed.len() == EMULATOR_ELAPSED_RINGBUF_SIZE {
-        psx.elapsed.pop_front();
+fn psx_loop(
+    mut cmds: Commands,
+    mut psx: ResMut<Psx>,
+    state: Res<State<PsxState>>,
+    mut ev: MessageWriter<RequestRedraw>,
+) {
+    let state = *state.get();
+    match state {
+        PsxState::Setup | PsxState::Paused => {}
+        PsxState::Running | PsxState::RunOneFrame => {
+            let pool = AsyncComputeTaskPool::get();
+            let start = Instant::now();
+            pool.scope(|scope| {
+                scope.spawn(async {
+                    let Psx { emu, runner, .. } = &mut *psx;
+                    runner.run_until_vblank(emu).await;
+                    ev.write(RequestRedraw);
+                });
+            });
+            let elapsed = start.elapsed().as_millis_f32();
+            if psx.elapsed.len() == EMULATOR_ELAPSED_RINGBUF_SIZE {
+                psx.elapsed.pop_front();
+            }
+            psx.elapsed.push_back(elapsed);
+
+            if state == PsxState::RunOneFrame {
+                psx.pause(&mut cmds);
+            }
+        }
     }
-    psx.elapsed.push_back(elapsed);
 }
 
 #[derive(States, Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
@@ -193,6 +214,7 @@ pub enum PsxState {
     Setup,
     Paused,
     Running,
+    RunOneFrame,
 }
 
 #[derive(Component, Clone, Copy, Default)]
@@ -263,4 +285,23 @@ fn display_pass(
     });
 
     hwr.renderer.draw_display(pass.wgpu_pass());
+}
+
+impl Psx {
+    pub fn toggle_running(&mut self, cmds: &mut Commands) {
+        self.runner.running.toggle();
+        let state = match self.runner.running {
+            true => PsxState::Running,
+            false => PsxState::Paused,
+        };
+        cmds.set_state_if_different(state);
+    }
+    pub fn run_one_frame(&mut self, cmds: &mut Commands) {
+        self.runner.running = true;
+        cmds.set_state(PsxState::RunOneFrame);
+    }
+    pub fn pause(&mut self, cmds: &mut Commands) {
+        self.runner.running = false;
+        cmds.set_state(PsxState::Paused);
+    }
 }

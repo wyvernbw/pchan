@@ -899,6 +899,24 @@ impl GpuStatReg {
     }
 
     #[must_use]
+    pub fn refresh_rate(self) -> f32 {
+        match (self.video_mode(), self.v_interlace()) {
+            (VideoMode::Ntsc, true) => 59.940,
+            (VideoMode::Ntsc, false) => 59.826,
+            (VideoMode::Pal, true) => 50.0,
+            (VideoMode::Pal, false) => 49.761,
+        }
+    }
+
+    #[must_use]
+    pub fn frame_target(self) -> u8 {
+        match self.video_mode() {
+            VideoMode::Ntsc => 60,
+            VideoMode::Pal => 50,
+        }
+    }
+
+    #[must_use]
     pub fn texpage_base(self) -> U8Vec2 {
         U8Vec2::new(self.texpage_x_base().as_u8(), self.texpage_y_base().as_u8())
     }
