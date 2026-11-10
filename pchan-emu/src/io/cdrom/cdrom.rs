@@ -422,7 +422,9 @@ impl<A: Allocator> CDRomState<A> {
             Err(result) => {
                 // overwrite last
                 _ = self.result_fifo.pop_back();
-                become self.result_push(result);
+                // this will never recurse more than once, could use become but that
+                // breaks cranelift compiles.
+                return self.result_push(result);
             }
         }
     }

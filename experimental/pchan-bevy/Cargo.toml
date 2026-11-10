@@ -42,6 +42,9 @@ pchan-gpu.workspace = true
 pchan-utils = { workspace = true, features = ["tracing-subscriber", "tracy", "tracy-enable"] }
 dhat = { version = "*", optional = true }
 pchan-bind.workspace = true
+muda = "0.21.2"
+rfd = "0.18.0"
+pchan-macros.workspace = true
 
 [lints]
 workspace = true

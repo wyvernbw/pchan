@@ -4,21 +4,29 @@
 extern crate alloc;
 
 use core::time::Duration;
+use std::collections::HashMap;
+use std::path::PathBuf;
 
 use bevy::ecs::system::NonSendMarker;
 use bevy::feathers::theme::ThemeBackgroundColor;
 use bevy::feathers::*;
 use bevy::log::{LogPlugin, tracing};
 use bevy::prelude::*;
+use bevy::tasks::AsyncComputeTaskPool;
 use bevy::window::{PrimaryWindow, RequestRedraw, WindowEvent};
 #[cfg(target_os = "macos")]
 use bevy::winit::WINIT_WINDOWS;
-use bevy::winit::{RawWinitWindowEvent, WinitWindows};
+use bevy::winit::{EventLoopProxyWrapper, RawWinitWindowEvent, WinitWindows};
+use bevy::{window, winit};
+use muda::accelerator::{Accelerator, Code, Modifiers};
+use muda::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+use pchan_utils::{AsyncChan, Chan, kanal};
+use rfd::AsyncFileDialog;
 
 mod emulator;
 mod ui;
 
-use crate::emulator::{DisplayNode, DisplayTarget, Psx, PsxState, emulator_plugin};
+use crate::emulator::{DisplayNode, DisplayTarget, OpenContentAt, Psx, PsxState, emulator_plugin};
 use crate::ui::{Theme, text, ui_plugin, vseparator};
 
 #[cfg(feature = "dhat-heap")]
@@ -34,6 +42,8 @@ fn main() {
     #[cfg(feature = "dhat-heap")]
     let _profiler = dhat::Profiler::new_heap();
 
+    let mut title = String::new();
+    app_title(&mut title, None);
     App::new()
         .add_plugins(
             DefaultPlugins
@@ -44,7 +54,7 @@ fn main() {
                         titlebar_shown: true,
                         titlebar_transparent: true,
                         fullsize_content_view: true,
-                        title: "🐷🎗️P-ちゃん".to_string(),
+                        title,
                         ..default()
                     }),
                     ..default()
@@ -57,18 +67,218 @@ fn main() {
         .run();
 }
 
-fn setup(
-    mut cmds: Commands,
-    mut ev: MessageWriter<RequestRedraw>,
-    theme: Res<Theme>,
-    display: Res<DisplayTarget>,
+pub fn app_title(sink: &mut String, playing: Option<&str>) {
+    use core::fmt::Write;
+    use pchan_macros::git_rev;
+
+    sink.clear();
+    match playing {
+        Some(game) => {
+            let _ = write!(sink, "🐷🎗️P-ちゃん({}) {game}", git_rev!());
+        }
+        None => {
+            let _ = write!(sink, "🐷🎗️P-ちゃん({})", git_rev!());
+        }
+    }
+}
+
+#[derive(Resource, Clone)]
+struct MenubarChan(Chan<muda::MenuEvent>);
+
+#[derive(Message, Clone, Copy)]
+enum MainMenubarMsg {
+    OpenContent,
+}
+
+#[derive(Deref)]
+struct NativeMenubar<Ev> {
+    #[deref]
+    menu:      Menu,
+    event_map: HashMap<muda::MenuId, Ev>,
+}
+
+impl<Ev> NativeMenubar<Ev> {
+    fn new() -> Self {
+        Self {
+            menu:      Menu::new(),
+            event_map: HashMap::new(),
+        }
+    }
+    fn get_event(&self, ev: muda::MenuEvent) -> Option<&Ev> {
+        self.event_map.get(ev.id())
+    }
+    fn menu_item(&mut self, item: MenuItem, ev: Ev) -> MenuItem {
+        let id = item.id();
+        self.event_map.insert(id.clone(), ev);
+        item
+    }
+}
+
+fn setup(world: &mut World) -> Result<()> {
+    let display = world.resource::<DisplayTarget>();
+    let theme = world.resource::<Theme>();
+    world
+        .spawn_scene_list(bsn_list! {
+             Camera2d
+             --
+             @root(&theme, &display.0)
+        })
+        .unwrap();
+
+    world.write_message(RequestRedraw);
+
+    world.insert_resource(AsyncTaskChan(kanal::bounded_async(1)));
+
+    tracing::info!("adding menus.");
+
+    let cmd = cfg_select! {
+        target_os = "macos" => Modifiers::META,
+        _ => Modifiers::CONTROL,
+    };
+
+    let mut menu = NativeMenubar::<MainMenubarMsg>::new();
+    let submenu = Submenu::with_items(
+        "",
+        true,
+        &[
+            &menu.menu_item(
+                MenuItem::new(
+                    "Open Content",
+                    true,
+                    Some(Accelerator::new(cmd, Code::KeyO)),
+                ),
+                MainMenubarMsg::OpenContent,
+            ),
+            &PredefinedMenuItem::separator(),
+            // &menu_item2,
+            // &MenuItem::new("Menu item #3", true, None),
+            // &PredefinedMenuItem::separator(),
+            // &Submenu::with_items(
+            //     "Submenu Inner",
+            //     true,
+            //     &[
+            //         &MenuItem::new("Submenu item #1", true, None),
+            //         &PredefinedMenuItem::separator(),
+            //         &menu_item2,
+            //     ],
+            // )
+            // .unwrap(),
+        ],
+    )
+    .unwrap();
+    menu.append(&submenu).unwrap();
+
+    #[allow(unused)]
+    let win = world
+        .query_filtered::<&window::RawHandleWrapper, With<PrimaryWindow>>()
+        .single(world)?;
+    #[cfg(target_os = "windows")]
+    unsafe {
+        let win_handle = win.get_window_handle();
+        menu.init_for_hwnd(window_hwnd)
+    };
+
+    #[cfg(target_os = "macos")]
+    menu.init_for_nsapp();
+
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "openbsd"
+    ))]
+    todo!("in-engine menubar because linux sucks (jk ily)");
+
+    world.insert_non_send(menu);
+
+    let menu_chan = kanal::bounded::<muda::MenuEvent>(4);
+    world.insert_resource(MenubarChan(menu_chan.clone()));
+
+    let event_loop_proxy = world.resource::<EventLoopProxyWrapper>();
+    let proxy = winit::EventLoopProxy::clone(event_loop_proxy);
+    muda::MenuEvent::set_event_handler(Some(move |event| {
+        let _ = proxy.send_event(bevy::winit::WinitUserEvent::WakeUp);
+        let _ = menu_chan.0.send(event);
+    }));
+
+    Ok(())
+}
+
+fn menubar_channel_forward(
+    chan: If<Res<MenubarChan>>,
+    mut menu_tx: MessageWriter<MainMenubarMsg>,
+    menu: If<NonSend<NativeMenubar<MainMenubarMsg>>>,
 ) {
-    cmds.spawn_scene_list(bsn_list! {
-         Camera2d
-         --
-         @root(&theme, &display.0)
-    });
-    ev.write(RequestRedraw);
+    let Some(msg) = chan.into_inner().0.1.try_recv().unwrap() else {
+        return;
+    };
+    let Some(ev) = menu.get_event(msg) else {
+        return;
+    };
+    menu_tx.write(*ev);
+}
+
+#[derive(Message)]
+struct OpenContentMsg;
+
+fn handle_menubar_event(
+    mut menu_rx: MessageReader<MainMenubarMsg>,
+    mut open_content: MessageWriter<OpenContentMsg>,
+) {
+    for msg in menu_rx.read() {
+        match msg {
+            MainMenubarMsg::OpenContent => open_content.write(OpenContentMsg),
+        };
+    }
+}
+
+enum AsyncTaskMsg {
+    OpenContentReceivedPath(PathBuf),
+}
+#[derive(Resource, Deref)]
+struct AsyncTaskChan(AsyncChan<AsyncTaskMsg>);
+
+fn handle_app_events(
+    mut open_content: MessageReader<OpenContentMsg>,
+    task_chan: If<Res<AsyncTaskChan>>,
+    ev_loop_proxy: If<Res<EventLoopProxyWrapper>>,
+) {
+    if !open_content.is_empty() {
+        let pool = AsyncComputeTaskPool::get();
+        let task_chan = task_chan.clone();
+        let proxy = winit::EventLoopProxy::clone(&ev_loop_proxy);
+        pool.spawn(async move {
+            let file = AsyncFileDialog::new().set_directory(".").pick_file().await;
+            if let Some(file) = file {
+                let path = file.path().to_owned();
+                proxy.send_event(winit::WinitUserEvent::WakeUp).unwrap();
+                task_chan
+                    .0
+                    .send(AsyncTaskMsg::OpenContentReceivedPath(path))
+                    .await
+                    .unwrap();
+            }
+        })
+        .detach();
+
+        open_content.clear();
+    }
+}
+
+fn handle_async_task_msg(
+    task_chan: If<Res<AsyncTaskChan>>,
+    // mut psx: If<ResMut<Psx>>,
+    mut open_content: MessageWriter<OpenContentAt>,
+) -> Result<()> {
+    while let Some(msg) = task_chan.1.try_recv()? {
+        match msg {
+            AsyncTaskMsg::OpenContentReceivedPath(path) => {
+                open_content.write(OpenContentAt(path));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn on_window_event(
@@ -204,9 +414,19 @@ fn status_bar(theme: &Theme) -> impl Scene {
 }
 
 fn app_ui_plugin(app: &mut App) {
-    app.add_systems(Update, (update_statusbar,))
+    app.add_message::<MainMenubarMsg>()
+        .add_message::<OpenContentMsg>()
+        .add_systems(
+            Update,
+            (
+                update_statusbar,
+                handle_menubar_event.before(handle_app_events),
+                handle_app_events.before(handle_async_task_msg),
+                handle_async_task_msg,
+            ),
+        )
         .add_systems(PostUpdate, (on_window_event,))
-        .add_systems(PreUpdate, (keyboard_shortcuts,));
+        .add_systems(PreUpdate, (keyboard_shortcuts, menubar_channel_forward));
 }
 
 fn update_statusbar(psx: If<Res<Psx>>, items: Query<(&mut Text, &StatusbarItem)>) {
@@ -252,6 +472,7 @@ fn keyboard_shortcuts(
     psx_state: Res<State<PsxState>>,
     input: Res<ButtonInput<KeyCode>>,
     mut ev: MessageWriter<RequestRedraw>,
+    mut exit_tx: MessageWriter<AppExit>,
 ) {
     let psx_state = *psx_state.get();
     let cmd = if cfg!(target_os = "macos") {
@@ -262,6 +483,10 @@ fn keyboard_shortcuts(
 
     if cmd && input.just_pressed(KeyCode::KeyJ) {
         psx.toggle_running(&mut cmds);
+    }
+
+    if cmd && input.just_pressed(KeyCode::KeyQ) {
+        exit_tx.write_default();
     }
 
     match psx_state {

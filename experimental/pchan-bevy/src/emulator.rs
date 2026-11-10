@@ -1,5 +1,7 @@
 use core::mem;
 use core::num::NonZeroU16;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use alloc::alloc::Global;
@@ -22,12 +24,14 @@ use bevy::render::texture::GpuImage;
 use bevy::render::{RenderApp, RenderStartup};
 use bevy::tasks::AsyncComputeTaskPool;
 use bevy::ui::UiSystems;
-use bevy::window::RequestRedraw;
+use bevy::window::{PrimaryWindow, RequestRedraw};
 use pchan_audio::AudioTask;
 use pchan_emu::Emu;
 use pchan_emu::run::{EmuSpeed, Runner, RunnerConfig, RunnerMode};
 use pchan_gpu::wgpu;
 use pchan_utils::kanal;
+
+use crate::app_title;
 
 pub fn emulator_plugin(app: &mut App) {
     let hwr_chan = HwrChannel(kanal::bounded_async(1));
@@ -44,7 +48,9 @@ pub fn emulator_plugin(app: &mut App) {
             FixedUpdate,
             psx_loop.run_if(in_state(PsxState::Running).or_else(in_state(PsxState::RunOneFrame))),
         )
-        .add_systems(Update, track_display_size.after(UiSystems::Layout));
+        .add_systems(Update, track_display_size.after(UiSystems::Layout))
+        .add_message::<OpenContentAt>()
+        .add_systems(Update, emu_handle_open_content_at);
 
     if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
         render_app
@@ -304,4 +310,36 @@ impl Psx {
         self.runner.running = false;
         cmds.set_state(PsxState::Paused);
     }
+
+    pub fn open_content(&mut self, path: &Path) -> Result<()> {
+        match path.extension().and_then(|s| s.to_str()) {
+            Some("exe") => {
+                let exe = fs::read(path)?;
+                self.emu.sideload_exe(&exe, self.emu.alloc)?;
+            }
+            _ => {
+                let fsm = self.emu.open_disc(path, true)?;
+                self.emu.advance_open_disc(path, fsm, true)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Message)]
+pub struct OpenContentAt(pub PathBuf);
+
+fn emu_handle_open_content_at(
+    mut reader: MessageReader<OpenContentAt>,
+    mut psx: If<ResMut<Psx>>,
+    mut win: Option<Single<&mut Window, With<PrimaryWindow>>>,
+) -> Result<()> {
+    for OpenContentAt(path) in reader.read() {
+        psx.open_content(path)?;
+        if let Some(win) = &mut win {
+            let playing = path.file_name().and_then(|f| f.to_str());
+            app_title(&mut win.title, playing);
+        }
+    }
+    Ok(())
 }
