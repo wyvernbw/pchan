@@ -3,7 +3,6 @@
 
 extern crate alloc;
 
-use core::time::Duration;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -26,7 +25,7 @@ use rfd::AsyncFileDialog;
 mod emulator;
 mod ui;
 
-use crate::emulator::{DisplayNode, DisplayTarget, OpenContentAt, Psx, PsxState, emulator_plugin};
+use crate::emulator::{DisplayNode, DisplayTarget, Psx, PsxCmdMsg, PsxState, emulator_plugin};
 use crate::ui::{Theme, text, ui_plugin, vseparator};
 
 #[cfg(feature = "dhat-heap")]
@@ -88,6 +87,8 @@ struct MenubarChan(Chan<muda::MenuEvent>);
 #[derive(Message, Clone, Copy)]
 enum MainMenubarMsg {
     OpenContent,
+    UnloadContent,
+    Quit,
 }
 
 #[derive(Deref)]
@@ -112,6 +113,69 @@ impl<Ev> NativeMenubar<Ev> {
         self.event_map.insert(id.clone(), ev);
         item
     }
+
+    fn init(&self, #[allow(unused)] win: &window::RawHandleWrapper) {
+        #[cfg(target_os = "windows")]
+        unsafe {
+            let win_handle = win.get_window_handle();
+            self.menu.init_for_hwnd(window_hwnd)
+        };
+
+        #[cfg(target_os = "macos")]
+        self.menu.init_for_nsapp();
+    }
+}
+
+fn build_main_menubar(psx: &Psx) -> NativeMenubar<MainMenubarMsg> {
+    let cmd = cfg_select! {
+        target_os = "macos" => Modifiers::META,
+        _ => Modifiers::CONTROL,
+    };
+
+    let mut menu = NativeMenubar::<MainMenubarMsg>::new();
+    let open_content = menu.menu_item(
+        MenuItem::new(
+            "Open Content",
+            !psx.has_content(),
+            Some(Accelerator::new(cmd, Code::KeyO)),
+        ),
+        MainMenubarMsg::OpenContent,
+    );
+    let unload_content = menu.menu_item(
+        MenuItem::new("Unload Content", psx.has_content(), None),
+        MainMenubarMsg::UnloadContent,
+    );
+    let quit = menu.menu_item(
+        MenuItem::new("Quit", true, Some(Accelerator::new(cmd, Code::KeyQ))),
+        MainMenubarMsg::Quit,
+    );
+    let submenu = Submenu::with_items(
+        "",
+        true,
+        &[
+            &open_content,
+            &unload_content,
+            &PredefinedMenuItem::separator(),
+            &quit,
+            // &menu_item2,
+            // &MenuItem::new("Menu item #3", true, None),
+            // &PredefinedMenuItem::separator(),
+            // &Submenu::with_items(
+            //     "Submenu Inner",
+            //     true,
+            //     &[
+            //         &MenuItem::new("Submenu item #1", true, None),
+            //         &PredefinedMenuItem::separator(),
+            //         &menu_item2,
+            //     ],
+            // )
+            // .unwrap(),
+        ],
+    )
+    .unwrap();
+    menu.append(&submenu).unwrap();
+
+    menu
 }
 
 fn setup(world: &mut World) -> Result<()> {
@@ -131,55 +195,10 @@ fn setup(world: &mut World) -> Result<()> {
 
     tracing::info!("adding menus.");
 
-    let cmd = cfg_select! {
-        target_os = "macos" => Modifiers::META,
-        _ => Modifiers::CONTROL,
-    };
-
-    let mut menu = NativeMenubar::<MainMenubarMsg>::new();
-    let submenu = Submenu::with_items(
-        "",
-        true,
-        &[
-            &menu.menu_item(
-                MenuItem::new(
-                    "Open Content",
-                    true,
-                    Some(Accelerator::new(cmd, Code::KeyO)),
-                ),
-                MainMenubarMsg::OpenContent,
-            ),
-            &PredefinedMenuItem::separator(),
-            // &menu_item2,
-            // &MenuItem::new("Menu item #3", true, None),
-            // &PredefinedMenuItem::separator(),
-            // &Submenu::with_items(
-            //     "Submenu Inner",
-            //     true,
-            //     &[
-            //         &MenuItem::new("Submenu item #1", true, None),
-            //         &PredefinedMenuItem::separator(),
-            //         &menu_item2,
-            //     ],
-            // )
-            // .unwrap(),
-        ],
-    )
-    .unwrap();
-    menu.append(&submenu).unwrap();
-
     #[allow(unused)]
     let win = world
         .query_filtered::<&window::RawHandleWrapper, With<PrimaryWindow>>()
         .single(world)?;
-    #[cfg(target_os = "windows")]
-    unsafe {
-        let win_handle = win.get_window_handle();
-        menu.init_for_hwnd(window_hwnd)
-    };
-
-    #[cfg(target_os = "macos")]
-    menu.init_for_nsapp();
 
     #[cfg(any(
         target_os = "linux",
@@ -190,6 +209,9 @@ fn setup(world: &mut World) -> Result<()> {
     ))]
     todo!("in-engine menubar because linux sucks (jk ily)");
 
+    let psx = world.resource::<Psx>();
+    let menu = build_main_menubar(psx);
+    menu.init(win);
     world.insert_non_send(menu);
 
     let menu_chan = kanal::bounded::<muda::MenuEvent>(4);
@@ -203,6 +225,21 @@ fn setup(world: &mut World) -> Result<()> {
     }));
 
     Ok(())
+}
+
+#[derive(Message, Clone, Copy, Default)]
+pub struct UpdateMainMenubarMsg;
+
+fn update_main_menubar(
+    mut menubar: If<NonSendMut<NativeMenubar<MainMenubarMsg>>>,
+    psx: If<Res<Psx>>,
+    mut reader: MessageReader<UpdateMainMenubarMsg>,
+    win: If<Single<&window::RawHandleWrapper, With<PrimaryWindow>>>,
+) {
+    for _ in reader.read() {
+        **menubar = build_main_menubar(&psx);
+        menubar.init(&win);
+    }
 }
 
 fn menubar_channel_forward(
@@ -225,10 +262,20 @@ struct OpenContentMsg;
 fn handle_menubar_event(
     mut menu_rx: MessageReader<MainMenubarMsg>,
     mut open_content: MessageWriter<OpenContentMsg>,
+    mut psx_cmdw: MessageWriter<PsxCmdMsg>,
+    mut exit_tx: MessageWriter<AppExit>,
 ) {
     for msg in menu_rx.read() {
         match msg {
-            MainMenubarMsg::OpenContent => open_content.write(OpenContentMsg),
+            MainMenubarMsg::OpenContent => {
+                open_content.write(OpenContentMsg);
+            }
+            MainMenubarMsg::UnloadContent => {
+                psx_cmdw.write(PsxCmdMsg::UnloadContent);
+            }
+            MainMenubarMsg::Quit => {
+                exit_tx.write_default();
+            }
         };
     }
 }
@@ -249,7 +296,7 @@ fn handle_app_events(
         let task_chan = task_chan.clone();
         let proxy = winit::EventLoopProxy::clone(&ev_loop_proxy);
         pool.spawn(async move {
-            let file = AsyncFileDialog::new().set_directory(".").pick_file().await;
+            let file = AsyncFileDialog::new().pick_file().await;
             if let Some(file) = file {
                 let path = file.path().to_owned();
                 proxy.send_event(winit::WinitUserEvent::WakeUp).unwrap();
@@ -269,12 +316,12 @@ fn handle_app_events(
 fn handle_async_task_msg(
     task_chan: If<Res<AsyncTaskChan>>,
     // mut psx: If<ResMut<Psx>>,
-    mut open_content: MessageWriter<OpenContentAt>,
+    mut open_content: MessageWriter<PsxCmdMsg>,
 ) -> Result<()> {
     while let Some(msg) = task_chan.1.try_recv()? {
         match msg {
             AsyncTaskMsg::OpenContentReceivedPath(path) => {
-                open_content.write(OpenContentAt(path));
+                open_content.write(PsxCmdMsg::OpenContentAt(path));
             }
         }
     }
@@ -416,10 +463,12 @@ fn status_bar(theme: &Theme) -> impl Scene {
 fn app_ui_plugin(app: &mut App) {
     app.add_message::<MainMenubarMsg>()
         .add_message::<OpenContentMsg>()
+        .add_message::<UpdateMainMenubarMsg>()
         .add_systems(
             Update,
             (
                 update_statusbar,
+                update_main_menubar,
                 handle_menubar_event.before(handle_app_events),
                 handle_app_events.before(handle_async_task_msg),
                 handle_async_task_msg,

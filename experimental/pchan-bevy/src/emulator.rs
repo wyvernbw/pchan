@@ -31,7 +31,7 @@ use pchan_emu::run::{EmuSpeed, Runner, RunnerConfig, RunnerMode};
 use pchan_gpu::wgpu;
 use pchan_utils::kanal;
 
-use crate::app_title;
+use crate::{UpdateMainMenubarMsg, app_title};
 
 pub fn emulator_plugin(app: &mut App) {
     let hwr_chan = HwrChannel(kanal::bounded_async(1));
@@ -49,7 +49,7 @@ pub fn emulator_plugin(app: &mut App) {
             psx_loop.run_if(in_state(PsxState::Running).or_else(in_state(PsxState::RunOneFrame))),
         )
         .add_systems(Update, track_display_size.after(UiSystems::Layout))
-        .add_message::<OpenContentAt>()
+        .add_message::<PsxCmdMsg>()
         .add_systems(Update, emu_handle_open_content_at);
 
     if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
@@ -324,21 +324,43 @@ impl Psx {
         }
         Ok(())
     }
+
+    pub fn has_content(&self) -> bool {
+        self.emu.cdrom.disc().is_some() || self.emu.sideloaded_exe().is_some()
+    }
 }
 
 #[derive(Message)]
-pub struct OpenContentAt(pub PathBuf);
+pub enum PsxCmdMsg {
+    OpenContentAt(PathBuf),
+    UnloadContent,
+}
 
 fn emu_handle_open_content_at(
-    mut reader: MessageReader<OpenContentAt>,
+    mut reader: MessageReader<PsxCmdMsg>,
     mut psx: If<ResMut<Psx>>,
     mut win: Option<Single<&mut Window, With<PrimaryWindow>>>,
+    mut menubarw: Option<MessageWriter<UpdateMainMenubarMsg>>,
 ) -> Result<()> {
-    for OpenContentAt(path) in reader.read() {
-        psx.open_content(path)?;
-        if let Some(win) = &mut win {
-            let playing = path.file_name().and_then(|f| f.to_str());
-            app_title(&mut win.title, playing);
+    for cmd in reader.read() {
+        match cmd {
+            PsxCmdMsg::OpenContentAt(path) => {
+                psx.open_content(path)?;
+                if let Some(win) = &mut win {
+                    let playing = path.file_name().and_then(|f| f.to_str());
+                    app_title(&mut win.title, playing);
+                }
+                if let Some(menubarw) = &mut menubarw {
+                    menubarw.write_default();
+                }
+            }
+            PsxCmdMsg::UnloadContent => {
+                let _ = psx.emu.cdrom.take_disc();
+                psx.emu.boot.remove_sideload();
+                if let Some(menubarw) = &mut menubarw {
+                    menubarw.write_default();
+                }
+            }
         }
     }
     Ok(())

@@ -38,6 +38,12 @@ impl<A: Allocator> Allocate<A> for BootloaderState<A> {
     }
 }
 
+impl<A: Allocator> BootloaderState<A> {
+    pub fn remove_sideload(&mut self) {
+        self.sideload = None;
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum BootError {
     #[error(transparent)]
@@ -97,6 +103,10 @@ impl<A: Allocator> Emu<A> {
         tracing::info!("parsed executable");
         self.boot.sideload = Some(exe);
         Ok(())
+    }
+
+    pub fn sideloaded_exe(&self) -> Option<&Exe<'_, Vec<u8, A>>> {
+        self.boot.sideload.as_ref()
     }
 
     #[instrument(skip_all)]

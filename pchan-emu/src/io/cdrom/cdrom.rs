@@ -447,10 +447,18 @@ impl<A: Allocator> CDRomState<A> {
         self.status.set_result_rready(false);
     }
 
+    pub fn disc(&self) -> Option<&Disc> {
+        self.drive.disc.as_ref()
+    }
+
     pub fn take_disc(&mut self) -> Option<Disc> {
+        // TODO: detect audio CD
+        self.drive.drive_status = DriveStatus::NoDisk;
         self.drive.disc.take()
     }
     pub fn put_disc(&mut self, disc: Option<Disc>) {
+        // TODO: detect audio CD
+        self.drive.drive_status = DriveStatus::LicensedMode2;
         self.drive.disc = disc;
     }
 }
