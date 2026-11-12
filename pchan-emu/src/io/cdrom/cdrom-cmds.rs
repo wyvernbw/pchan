@@ -131,13 +131,23 @@ impl<A: Allocator> Emu<A> {
 
             // `ReadN` - Command 06h --> INT3(stat) --> INT1(stat) --> datablock
             0x06 => {
-                let seek_time = self.cdrom.drive.current_seek_time();
+                let seek_time_only = self.cdrom.drive.current_seek_time();
                 let speed_change_time = self
                     .cdrom
                     .drive
                     .change_speed_time(self.cdrom.drive.mode.speed());
-                let seek_time = seek_time + speed_change_time;
-                tracing::info!(target: "cdrom", "{:<14.14}{} seek time: {}ms","ReadN",self.cdrom.drive.cursor.to_mss::<u8>(), cycles_to_ms(seek_time));
+                let seek_time = seek_time_only + speed_change_time;
+                tracing::info!(
+                    target: "cdrom",
+                    "{:<14.14}{} seek time: {}ms ({}ms seek + {}ms {}->{} speed change)",
+                    "ReadN",
+                    self.cdrom.drive.cursor.to_mss::<u8>(),
+                    cycles_to_ms(seek_time),
+                    cycles_to_ms(seek_time_only),
+                    cycles_to_ms(speed_change_time),
+                    self.cdrom.drive.current_speed,
+                    self.cdrom.drive.mode.speed(),
+                );
                 self.cdrom_continue_cmd(CommandStateV2::ReadNInt3);
                 self.cdrom_queue_response(NOP_TIMING);
             }
@@ -409,10 +419,7 @@ impl<A: Allocator> Emu<A> {
 
                 let mut cycles = self.cdrom.drive.sector_cycles();
                 let seek_time = self.cdrom.drive.current_seek_time();
-                let speed_change_time = self
-                    .cdrom
-                    .drive
-                    .change_speed_time(self.cdrom.drive.mode.speed());
+                let speed_change_time = self.cdrom.drive.change_speed_to_mode();
                 cycles += speed_change_time;
                 if self.cdrom.drive.setloc_armed {
                     cycles += seek_time;
@@ -462,6 +469,7 @@ impl<A: Allocator> Emu<A> {
             }
             CommandStateV2::InitInt2 => {
                 self.cdrom.drive.mode = SetMode::new_with_raw_value(0x20);
+                self.cdrom.drive.change_speed_to_mode();
                 self.cdrom.drive.status_code.reset_state();
                 self.cdrom.drive.spin_up();
                 self.cdrom_send_response_v2(int2(self.cdrom.drive.status_code));
@@ -697,8 +705,11 @@ impl SetModeSectSize {
 }
 
 #[bitenum(u1, exhaustive = true)]
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Endecode, Default, derive_more::Display)]
 pub enum SetModeSpeed {
+    #[default]
+    #[display("1X")]
     Normal = 0x0,
+    #[display("2X")]
     Double = 0x1,
 }

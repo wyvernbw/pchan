@@ -27,6 +27,7 @@ pub struct CdromDrive {
     pub toc:           Option<CueSheet>,
     pub old_cursor:    CdromCursor,
     pub setloc_armed:  bool,
+    pub current_speed: SetModeSpeed,
     pub status_code:   StatusCode,
     pub drive_status:  DriveStatus,
     pub mode:          SetMode,
@@ -58,6 +59,7 @@ impl Clone for CdromDrive {
             setloc_armed:    false,
             cmd_state_v2:    CommandStateV2::Idle,
             toc:             None,
+            current_speed:   SetModeSpeed::Normal,
         }
     }
 }
@@ -110,11 +112,17 @@ impl CdromDrive {
     }
 
     pub(crate) fn change_speed_time(&self, to_speed: SetModeSpeed) -> u64 {
-        if self.mode.speed() == to_speed {
+        if self.current_speed == to_speed {
             0
         } else {
             u64::from(Cpu::CLOCK) * 7 / 10
         }
+    }
+
+    pub(crate) fn change_speed_to_mode(&mut self) -> u64 {
+        let time = self.change_speed_time(self.mode.speed());
+        self.current_speed = self.mode.speed();
+        time
     }
 
     pub fn pause(&mut self) {
@@ -125,7 +133,7 @@ impl CdromDrive {
     pub fn request_data<A: Allocator>(
         &mut self,
         status: &mut CDRomStatusReg,
-        result_fifo: &mut VecDeque<u8, A>,
+        data_fifo: &mut VecDeque<u8, A>,
     ) {
         status.set_data_req(true);
         if let Some(disc) = &mut self.disc {
@@ -150,7 +158,7 @@ impl CdromDrive {
                 SetModeSectSize::DataOnly0x800 => &bytes[0x18..0x18 + 0x800],
                 SetModeSectSize::Whole0x924 => &bytes[0xc..],
             };
-            result_fifo.extend(sector);
+            data_fifo.extend(sector);
         }
     }
 
