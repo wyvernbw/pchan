@@ -64,10 +64,10 @@ impl<A: Allocator + Copy> DmaState<A> {
 
 impl<A: Allocator> DmaState<A> {
     pub fn dump_cdrom_data(&self) {
-        // use std::io::Write;
+        use std::io::Write;
 
-        // let mut f = std::fs::File::create("read_from_cdrom.bin").unwrap();
-        // _ = f.write(&self.debug_cdrom_data);
+        let mut f = std::fs::File::create("read_from_cdrom.bin").unwrap();
+        _ = f.write(&self.debug_cdrom_data);
     }
 }
 
@@ -149,17 +149,17 @@ impl<A: Allocator + Copy> Emu<A> {
             // dma 2
             0x1f8010a0 => Dma2Gpu::write_madr(self, value),
             0x1f8010a4 => Dma2Gpu::write_bcr(self, value),
-            0x1f8010a8 => Dma2Gpu::write_chcr(self, value),
+            0x1f8010a8 | 0x1f8010ac => Dma2Gpu::write_chcr(self, value),
 
             // dma 3
             0x1f8010b0 => Dma3Cdrom::write_madr(self, value),
             0x1f8010b4 => Dma3Cdrom::write_bcr(self, value),
-            0x1f8010b8 => Dma3Cdrom::write_chcr(self, value),
+            0x1f8010b8 | 0x1f8010bc => Dma3Cdrom::write_chcr(self, value),
 
             // dma 4
             0x1f8010c0 => Dma4Spu::write_madr(self, value),
             0x1f8010c4 => Dma4Spu::write_bcr(self, value),
-            0x1f8010c8 => Dma4Spu::write_chcr(self, value),
+            0x1f8010c8 | 0x1f8010cc => Dma4Spu::write_chcr(self, value),
 
             0x1f8010d0..=0x1f8010df => trace_todo!("write at dma5 (pio)"),
 
@@ -176,7 +176,7 @@ impl<A: Allocator + Copy> Emu<A> {
                 tracing::trace!("write at dma6bcr (otc bcr): {:#?}", bcr);
                 Ok(())
             }
-            0x1f8010e8 => {
+            0x1f8010e8 | 0x1f8010ec => {
                 let chcr = DmaChcr::new_with_raw_value(value.io_into_u32());
                 self.dma.dma6.chcr = chcr;
 
@@ -214,6 +214,11 @@ impl<A: Allocator + Copy> Emu<A> {
             }
             _ => Err(UnhandledIO(address)),
         }
+        .inspect(|_| {
+            if size_of::<T>() != 4 {
+                tracing::warn!("non-word write to dma address");
+            }
+        })
     }
 
     #[tracing::instrument(skip(self))]
@@ -691,19 +696,30 @@ impl Transfer for Dma3Cdrom {
     async fn read<A: Allocator + Copy>(&mut self, emu: &mut Emu<A>, range: Range<u32>) {
         let mut fifo = mem::replace(&mut emu.cdrom.data_fifo, VecDeque::new_in(emu.alloc));
         let dest = emu
-            .fastmem_slice_mut::<u8>(range)
+            .fastmem_slice_mut::<u8>(range.clone())
             .expect("dma2 slice outside of fastmem");
 
         let (head, tail) = fifo.as_slices();
         let n = cmp::min(dest.len(), fifo.len());
         let h = cmp::min(head.len(), n);
 
+        tracing::info!(target: "dma", "dma3 ram({}..{})=cdrom.fifo(..{})", hex(range.start), hex(range.end), dest.len());
+
         dest[..h].copy_from_slice(&head[..h]);
         dest[h..n].copy_from_slice(&tail[..n - h]);
 
         let last = dest[n.saturating_sub(1)];
         dest[n..].fill(last);
-        fifo.drain(..n);
+        let _drain = fifo.drain(..n);
+
+        #[cfg(debug_assertions)]
+        {
+            if range.len() == 12 {
+                emu.dma.debug_cdrom_data.extend(_drain);
+            } else {
+                drop(_drain);
+            }
+        }
 
         if n > 0 {
             emu.cdrom.data_last = last;
@@ -1145,7 +1161,10 @@ impl DmaNodeHeader {
 
 #[cfg(test)]
 mod tests {
-    use crate::io::dma::Dicr;
+    use alloc::collections::VecDeque;
+
+    use crate::Emu;
+    use crate::io::dma::{Dicr, Dma3Cdrom, Transfer};
 
     use super::DmaIrqMode;
 
@@ -1160,5 +1179,31 @@ mod tests {
         let dicr = dicr.with_irq_mode(5, DmaIrqMode::OnChunk);
         let dicr = dicr.with_irq_mode(6, DmaIrqMode::OnComplete);
         assert_eq!(dicr.raw_value(), 0b00101100)
+    }
+
+    #[test]
+    fn test_cdrom_fifo_dma() {
+        let mut emu = Emu::new();
+        let mut input = (0..4096u32)
+            .map(|byte| byte as u8)
+            .collect::<VecDeque<u8>>();
+        emu.cdrom.data_fifo = input.clone();
+        smol::block_on(async {
+            // poison
+            emu.fastmem_slice_mut(0..4096).unwrap().fill(0xff);
+            emu.fastmem_slice_mut(4096 + 12..4096 + 4096)
+                .unwrap()
+                .fill(0xff);
+
+            Dma3Cdrom.read(&mut emu, 0..12).await;
+            Dma3Cdrom.read(&mut emu, 4096 + 12..4096 + 4096).await;
+        });
+        let result_a = emu.fastmem_slice::<u8>(0..12).unwrap();
+        let result_b = emu.fastmem_slice::<u8>(4096 + 12..4096 + 4096).unwrap();
+        let expected = input.make_contiguous();
+
+        assert_eq!(result_a, &expected[0..12]);
+        assert_eq!(result_b, &expected[12..]);
+        assert!(!emu.cdrom.status.data_req());
     }
 }
