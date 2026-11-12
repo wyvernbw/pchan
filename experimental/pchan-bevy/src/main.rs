@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use bevy::ecs::system::NonSendMarker;
 use bevy::feathers::theme::ThemeBackgroundColor;
 use bevy::feathers::*;
+use bevy::input::gamepad::GamepadConnectionEvent;
 use bevy::log::{LogPlugin, tracing};
 use bevy::prelude::*;
 use bevy::tasks::AsyncComputeTaskPool;
@@ -19,6 +20,8 @@ use bevy::winit::{EventLoopProxyWrapper, RawWinitWindowEvent, WinitWindows};
 use bevy::{window, winit};
 use muda::accelerator::{Accelerator, Code, Modifiers};
 use muda::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+use pchan_bind::input::PchanButton;
+use pchan_emu::io::sio::Sio0Port;
 use pchan_utils::{AsyncChan, Chan, kanal};
 use rfd::AsyncFileDialog;
 
@@ -464,6 +467,7 @@ fn app_ui_plugin(app: &mut App) {
     app.add_message::<MainMenubarMsg>()
         .add_message::<OpenContentMsg>()
         .add_message::<UpdateMainMenubarMsg>()
+        .add_systems(Update, (on_gamepad_connection, handle_gamepad_events))
         .add_systems(
             Update,
             (
@@ -546,5 +550,84 @@ fn keyboard_shortcuts(
             }
         }
         _ => {}
+    }
+}
+
+fn on_gamepad_connection(
+    mut reader: MessageReader<GamepadConnectionEvent>,
+    mut psx: If<ResMut<Psx>>,
+) {
+    for conn in reader.read() {
+        match &conn.connection {
+            bevy::input::gamepad::GamepadConnection::Connected { name, .. } => {
+                let first_vacant = Sio0Port::iter().find(|port| psx.gamepads[*port].is_none());
+                if let Some(port) = first_vacant {
+                    psx.gamepads[port] = Some(conn.gamepad);
+                    psx.emu.sio.sio0ports.port_mut(port).joypad.plug_in();
+                    tracing::info!("{name} connected on port {}.", port as u8);
+                }
+            }
+            bevy::input::gamepad::GamepadConnection::Disconnected => {
+                let connected_port = Sio0Port::iter()
+                    .find(|port| psx.gamepads[*port].is_some_and(|port| port == conn.gamepad));
+                if let Some(port) = connected_port {
+                    psx.gamepads[port] = None;
+                    psx.emu.sio.sio0ports.port_mut(port).joypad.plug_out();
+                    tracing::info!("port {} disconnected.", port as u8);
+                }
+            }
+        }
+    }
+}
+
+fn handle_gamepad_events(gamepads: Query<&Gamepad>, mut psx: If<ResMut<Psx>>) -> Result<()> {
+    for port in Sio0Port::iter() {
+        let pad = &psx.gamepads[port];
+        let Some(pad) = pad else {
+            continue;
+        };
+        let gamepad = gamepads.get(*pad)?;
+
+        for released in gamepad.get_just_released() {
+            if let Some(btn) = gamepad_button_to_pchan_button(released) {
+                psx.emu
+                    .send_input_event(pchan_bind::input::InputEvent::Release(btn), port);
+            }
+        }
+
+        for pressed in gamepad.get_just_pressed() {
+            if let Some(btn) = gamepad_button_to_pchan_button(pressed) {
+                tracing::info!(?btn);
+                psx.emu
+                    .send_input_event(pchan_bind::input::InputEvent::Press(btn), port);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn gamepad_button_to_pchan_button(btn: &GamepadButton) -> Option<PchanButton> {
+    match btn {
+        GamepadButton::South => Some(PchanButton::X),
+        GamepadButton::East => Some(PchanButton::Circle),
+        GamepadButton::North => Some(PchanButton::Triangle),
+        GamepadButton::West => Some(PchanButton::Square),
+        GamepadButton::C => None,
+        GamepadButton::Z => None,
+        GamepadButton::LeftTrigger => Some(PchanButton::L1),
+        GamepadButton::LeftTrigger2 => Some(PchanButton::L2),
+        GamepadButton::RightTrigger => Some(PchanButton::R1),
+        GamepadButton::RightTrigger2 => Some(PchanButton::R2),
+        GamepadButton::Select => Some(PchanButton::Select),
+        GamepadButton::Start => Some(PchanButton::Start),
+        GamepadButton::Mode => None,
+        GamepadButton::LeftThumb => Some(PchanButton::L3),
+        GamepadButton::RightThumb => Some(PchanButton::R3),
+        GamepadButton::DPadUp => Some(PchanButton::DpadUp),
+        GamepadButton::DPadDown => Some(PchanButton::DpadDown),
+        GamepadButton::DPadLeft => Some(PchanButton::DpadLeft),
+        GamepadButton::DPadRight => Some(PchanButton::DpadRight),
+        GamepadButton::Other(_) => None,
     }
 }

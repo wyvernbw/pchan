@@ -27,9 +27,10 @@ use bevy::ui::UiSystems;
 use bevy::window::{PrimaryWindow, RequestRedraw};
 use pchan_audio::AudioTask;
 use pchan_emu::Emu;
+use pchan_emu::io::sio::Sio0Port;
 use pchan_emu::run::{EmuSpeed, Runner, RunnerConfig, RunnerMode};
 use pchan_gpu::wgpu;
-use pchan_utils::kanal;
+use pchan_utils::{Indexed, kanal};
 
 use crate::{UpdateMainMenubarMsg, app_title};
 
@@ -64,9 +65,10 @@ pub fn emulator_plugin(app: &mut App) {
 
 #[derive(Resource)]
 pub struct Psx {
-    pub emu:     Emu,
-    pub runner:  Runner<Global>,
-    pub elapsed: VecDeque<f32>,
+    pub emu:      Emu,
+    pub runner:   Runner<Global>,
+    pub elapsed:  VecDeque<f32>,
+    pub gamepads: Indexed<[Option<Entity>; 2], Sio0Port>,
 }
 
 #[derive(States, Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
@@ -154,6 +156,7 @@ fn setup_psx(mut cmds: Commands, hwr: Res<Hwr>, mut images: ResMut<Assets<Image>
         emu,
         runner,
         elapsed: VecDeque::with_capacity(EMULATOR_ELAPSED_RINGBUF_SIZE),
+        gamepads: Indexed::from([None; 2]),
     });
 
     let mut image = Image::new_uninit(

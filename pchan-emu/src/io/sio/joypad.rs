@@ -39,6 +39,10 @@ impl Joypad {
         self.connected = true;
         self
     }
+    pub fn plug_out(&mut self) -> &mut Self {
+        self.connected = false;
+        self
+    }
 }
 
 impl Peripheral for Joypad {

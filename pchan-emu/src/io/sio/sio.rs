@@ -591,9 +591,24 @@ enum RxIrqMode {
 
 #[bitenum(u1, exhaustive = true)]
 #[derive(Debug, PartialEq, Eq, Hash)]
+#[repr(u8)]
 pub enum Sio0Port {
     Port1 = 0x0,
     Port2 = 0x1,
+}
+
+impl From<Sio0Port> for usize {
+    fn from(value: Sio0Port) -> Self {
+        usize::from(value as u8)
+    }
+}
+
+impl Sio0Port {
+    pub const ALL: &[Sio0Port] = &[Sio0Port::Port1, Sio0Port::Port2];
+    #[must_use]
+    pub fn iter() -> impl Iterator<Item = Self> {
+        Self::ALL.iter().copied()
+    }
 }
 
 /// # 1F801048h+N*10h - SIO#_MODE (R/W) (eg. 004Eh --> 8N1 with Factor=MUL16)

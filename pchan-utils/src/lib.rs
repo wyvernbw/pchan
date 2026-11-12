@@ -5,6 +5,8 @@
 #![allow(clippy::missing_panics_doc)]
 
 use core::fmt::{self, Display};
+use core::marker::PhantomData;
+use core::ops;
 use core::simd::prelude::Simd;
 use std::simd::SimdElement;
 use std::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
@@ -379,4 +381,40 @@ where
 #[must_use]
 pub fn default<T: Default>() -> T {
     T::default()
+}
+
+#[derive(derive_more::Deref, derive_more::DerefMut)]
+pub struct Indexed<T, I>(
+    #[deref]
+    #[deref_mut]
+    T,
+    PhantomData<I>,
+);
+
+impl<T, I> ops::Index<I> for Indexed<T, I>
+where
+    T: ops::Index<usize>,
+    usize: From<I>,
+{
+    type Output = T::Output;
+
+    fn index(&self, index: I) -> &Self::Output {
+        &self.0[usize::from(index)]
+    }
+}
+
+impl<T, I> ops::IndexMut<I> for Indexed<T, I>
+where
+    T: ops::IndexMut<usize>,
+    usize: From<I>,
+{
+    fn index_mut(&mut self, index: I) -> &mut Self::Output {
+        &mut self.0[usize::from(index)]
+    }
+}
+
+impl<T, I> From<T> for Indexed<T, I> {
+    fn from(value: T) -> Self {
+        Self(value, PhantomData)
+    }
 }
