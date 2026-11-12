@@ -85,6 +85,7 @@ pub struct TimerCounterMode {
     #[bits(1..=2, rw)]
     sync_mode0_1: SyncMode0_1,
     #[bit(3, rw)]
+    #[doc(alias = "ZRET")]
     reset_mode:   TimerResetMode,
 
     #[bit(4, rw)]
@@ -329,6 +330,10 @@ impl<const N: usize> Timer<N> {
         self.mode.set_source(mode.source());
         self.mode.set_prescaler(mode.prescaler());
         self.mode.set_irq(IrqFlag::N);
+
+        self.mode.set_reached_target(false);
+        self.mode.set_reached_overflow(false);
+
         self.value = TimerCounterValue::new_with_raw_value(0);
         self.armed = true;
         self.internal_sync = self.mode.sync_on();
