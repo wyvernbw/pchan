@@ -30,7 +30,7 @@ Games I'm testing:
 - Crash Bandicoot: **playable** 
 - Ridge Racer: **playable**, no music (cdrom issue)
 - FF7: **no boot** (mdec not implemented)
-- Silent Hill: **no boot**
+- Silent Hill: **loading screen**
 
 Progress:
 - [x] memory

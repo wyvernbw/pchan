@@ -358,9 +358,26 @@ impl<A: Allocator + Copy> Emu<A> {
 
                     match direction {
                         TransferDir::DeviceToRam => {
+                            tracing::info!(
+                                target: "dma",
+                                "dma{} Slice {}(..{})->RAM({}..{})",
+                                idx,
+                                T::TRANSPORT_KIND,
+                                range.len(), hex(range.start), hex(range.end)
+                            );
+
                             transfer.read(self, range).await;
                         }
                         TransferDir::RamToDevice => {
+                            tracing::info!(
+                                target: "dma",
+                                "dma{} Slice RAM({}..{})->{}(..{})",
+                                idx,
+                                hex(range.start), hex(range.end),
+                                T::TRANSPORT_KIND,
+                                range.len()
+                            );
+
                             transfer.write(self, range).await;
                         }
                     }
@@ -422,9 +439,26 @@ impl<A: Allocator + Copy> Emu<A> {
                 let range = init_chan.create_range(addr, word_count);
                 match direction {
                     TransferDir::DeviceToRam => {
+                        tracing::info!(
+                            target: "dma",
+                            "dma{} Burst {}(..{})->RAM({}..{})",
+                            idx,
+                            T::TRANSPORT_KIND,
+                            range.len(), hex(range.start), hex(range.end)
+                        );
+
                         transfer.read(self, range).await;
                     }
                     TransferDir::RamToDevice => {
+                        tracing::info!(
+                            target: "dma",
+                            "dma{} Burst RAM({}..{})->{}(..{})",
+                            idx,
+                            hex(range.start), hex(range.end),
+                            T::TRANSPORT_KIND,
+                            range.len()
+                        );
+
                         transfer.write(self, range).await;
                     }
                 }
@@ -703,8 +737,6 @@ impl Transfer for Dma3Cdrom {
         let n = cmp::min(dest.len(), fifo.len());
         let h = cmp::min(head.len(), n);
 
-        tracing::info!(target: "dma", "dma3 ram({}..{})=cdrom.fifo(..{})", hex(range.start), hex(range.end), dest.len());
-
         dest[..h].copy_from_slice(&head[..h]);
         dest[h..n].copy_from_slice(&tail[..n - h]);
 
@@ -712,12 +744,16 @@ impl Transfer for Dma3Cdrom {
         dest[n..].fill(last);
         let _drain = fifo.drain(..n);
 
-        #[cfg(debug_assertions)]
         {
-            if range.len() == 12 {
-                emu.dma.debug_cdrom_data.extend(_drain);
-            } else {
-                drop(_drain);
+            let drain = _drain;
+            if tracing::enabled!(Level::TRACE) {
+                use pchan_utils::{Hex, hex_pref};
+
+                let mut first_n_bytes: [Hex<false>; 32] = [hex_pref(0); _];
+                for (src, dest) in drain.take(32).zip(first_n_bytes.iter_mut()) {
+                    *dest = hex_pref(src);
+                }
+                tracing::info!(target: "dma", "-> first 32 bytes: {:?}", first_n_bytes);
             }
         }
 
@@ -1058,12 +1094,16 @@ pub struct DmaEvent {
     dma_t:     DmaTransportKind,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Endecode, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Endecode, Default, derive_more::Display)]
 pub enum DmaTransportKind {
     #[default]
+    #[display("OTC")]
     Otc,
+    #[display("GPU")]
     Gpu,
+    #[display("CDROM")]
     Cdrom,
+    #[display("SPU")]
     Spu,
 }
 
@@ -1187,13 +1227,18 @@ mod tests {
         let mut input = (0..4096u32)
             .map(|byte| byte as u8)
             .collect::<VecDeque<u8>>();
+        for byte in [0xff].repeat(12) {
+            input.push_front(byte);
+        }
+
         emu.cdrom.data_fifo = input.clone();
+
         smol::block_on(async {
             // poison
-            emu.fastmem_slice_mut(0..4096).unwrap().fill(0xff);
+            emu.fastmem_slice_mut(0..4096).unwrap().fill(0x42);
             emu.fastmem_slice_mut(4096 + 12..4096 + 4096)
                 .unwrap()
-                .fill(0xff);
+                .fill(0x42);
 
             Dma3Cdrom.read(&mut emu, 0..12).await;
             Dma3Cdrom.read(&mut emu, 4096 + 12..4096 + 4096).await;
@@ -1203,7 +1248,7 @@ mod tests {
         let expected = input.make_contiguous();
 
         assert_eq!(result_a, &expected[0..12]);
-        assert_eq!(result_b, &expected[12..]);
+        assert_eq!(result_b, &expected[12..4096]);
         assert!(!emu.cdrom.status.data_req());
     }
 }

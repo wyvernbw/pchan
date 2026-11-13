@@ -2,9 +2,11 @@ use alloc::collections::VecDeque;
 use core::alloc::Allocator;
 use core::cmp;
 use pchan_encode::derive::Endecode;
+use pchan_utils::{Hex, hex_pref};
 use std::fs;
 use std::io::{BufReader, Read, Seek};
 use std::path::{Path, PathBuf};
+use tracing::Level;
 
 use smallvec::{SmallVec, smallvec};
 
@@ -130,12 +132,16 @@ impl CdromDrive {
         self.status_code.reset_state();
     }
 
-    pub fn request_data<A: Allocator>(
+    pub fn request_data_sector<A: Allocator>(
         &mut self,
         status: &mut CDRomStatusReg,
         data_fifo: &mut VecDeque<u8, A>,
     ) {
         status.set_data_req(true);
+
+        // fifo can only hold up to one sector
+        data_fifo.clear();
+
         if let Some(disc) = &mut self.disc {
             // TODO: better reporting
             tracing::info!(
@@ -158,6 +164,19 @@ impl CdromDrive {
                 SetModeSectSize::DataOnly0x800 => &bytes[0x18..0x18 + 0x800],
                 SetModeSectSize::Whole0x924 => &bytes[0xc..],
             };
+
+            if tracing::enabled!(Level::TRACE) {
+                let mut first32bytes: [Hex<false>; 32] = [hex_pref(0); _];
+                for (src, dest) in sector.iter().copied().zip(first32bytes.iter_mut()) {
+                    *dest = hex_pref(src);
+                }
+                tracing::debug!(
+                    target: "cdrom",
+                    "DataSector\t{} first 32 bytes: {first32bytes:?}",
+                    self.cursor.to_mss::<u8>(),
+                );
+            }
+
             data_fifo.extend(sector);
         }
     }

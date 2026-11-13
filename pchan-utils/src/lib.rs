@@ -247,7 +247,9 @@ pub fn hex<T>(x: T) -> Hex<true> {
 }
 
 pub fn hex_pref<T, const PREFIX: bool>(mut x: T) -> Hex<PREFIX> {
-    assert_hex_size::<T>();
+    const {
+        assert_hex_size::<T>();
+    }
 
     let ptr = (&raw mut x).cast::<u8>();
 
@@ -324,8 +326,8 @@ impl<const PREFIX: bool> Hex<PREFIX> {
 }
 const fn assert_hex_size<T>() {
     assert!(
-        size_of::<T>() <= PTR_SIZE,
-        "value passed to hex function is bigger than the pointer size."
+        size_of::<T>() <= PTR_SIZE * 2,
+        "value passed to hex function is bigger than 2 pointers"
     )
 }
 

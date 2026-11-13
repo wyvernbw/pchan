@@ -50,7 +50,7 @@ impl<const N: usize> From<StatusCode> for heapless::Vec<u8, N> {
     }
 }
 
-#[derive(Default, derive_more::Debug, Endecode, PartialEq, Eq)]
+#[derive(Default, derive_more::Debug, Endecode, PartialEq, Eq, Clone)]
 pub(crate) enum CommandStateV2 {
     #[default]
     Idle,
@@ -287,9 +287,22 @@ impl<A: Allocator> Emu<A> {
         self.cdrom_proc_cmd_response();
     }
 
+    /// useful for exit state transitions
+    fn cdrom_cmd_edge(&mut self, old_state: CommandStateV2) {
+        match (old_state, &self.cdrom.drive.cmd_state_v2) {
+            (CommandStateV2::ReadNInt3 | CommandStateV2::ReadNInt1, CommandStateV2::ReadNInt1) => {}
+            (CommandStateV2::ReadNInt3 | CommandStateV2::ReadNInt1, _) => {
+                self.cdrom.drive.status_code.set_seek(false);
+                self.cdrom.drive.status_code.set_read(false);
+            }
+            _ => {}
+        }
+    }
+
     #[allow(clippy::match_same_arms)]
     fn cdrom_proc_cmd_response(&mut self) {
         let status = self.cdrom.drive.status_code;
+        let old_state = self.cdrom.drive.cmd_state_v2.clone();
         match self.cdrom.drive.cmd_state_v2 {
             CommandStateV2::Idle => {}
 
@@ -441,7 +454,7 @@ impl<A: Allocator> Emu<A> {
 
                 self.cdrom
                     .drive
-                    .request_data(&mut self.cdrom.status, &mut self.cdrom.data_fifo);
+                    .request_data_sector(&mut self.cdrom.status, &mut self.cdrom.data_fifo);
             }
 
             CommandStateV2::InitInt3 => {
@@ -589,6 +602,7 @@ impl<A: Allocator> Emu<A> {
                 self.cdrom_end_cmd();
             }
         }
+        self.cdrom_cmd_edge(old_state);
     }
 }
 
