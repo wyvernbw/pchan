@@ -1,3 +1,4 @@
+use arbitrary_int::prelude::*;
 use core::alloc::Allocator;
 
 use bitbybit::bitenum;
@@ -25,16 +26,38 @@ pub struct TimerState {
 }
 
 #[derive(Debug, Clone, Default, Endecode)]
+#[expect(clippy::struct_excessive_bools)]
 pub struct Timer<const N: usize> {
     value:      TimerCounterValue,
     target:     TimerTarget,
     mode:       TimerCounterMode,
-    irq:        Irq,
+    #[expect(unevaluated_default_field_value)]
+    irq:        Irq = timer_irq::<N>(),
     armed:      bool,
     overflowed: bool,
     hit_target: bool,
 
     internal_sync: bool,
+}
+
+const fn timer_irq<const N: usize>() -> Irq {
+    match N {
+        0 => Irq::Irq4Timer0,
+        1 => Irq::Irq5Timer1,
+        2 => Irq::Irq6Timer2,
+        _ => panic!("only valid timers are 0, 1 and 2."),
+    }
+}
+
+#[test]
+#[cfg(test)]
+fn test_irq_default_field() {
+    let tmr = Timer::<0>::default();
+    assert_eq!(tmr.irq, Irq::Irq4Timer0);
+    let tmr = Timer::<1>::default();
+    assert_eq!(tmr.irq, Irq::Irq5Timer1);
+    let tmr = Timer::<2>::default();
+    assert_eq!(tmr.irq, Irq::Irq6Timer2);
 }
 
 #[bitbybit::bitfield(u32, debug)]
@@ -81,12 +104,14 @@ pub struct TimerTarget(TimerCounterValue);
 #[must_use]
 pub struct TimerCounterMode {
     #[bit(0, rw)]
-    sync_on:      bool,
+    sync_on:        bool,
     #[bits(1..=2, rw)]
-    sync_mode0_1: SyncMode0_1,
+    sync_mode0_1:   SyncMode0_1,
+    #[bits(1..=2, rw)]
+    sync_mode2_raw: u2,
     #[bit(3, rw)]
     #[doc(alias = "ZRET")]
-    reset_mode:   TimerResetMode,
+    reset_mode:     TimerResetMode,
 
     #[bit(4, rw)]
     irq_on_target:   bool,
@@ -117,6 +142,11 @@ enum SyncMode0_1 {
     ResetAtBlank         = 0x1,
     ResetAtBlankAndPause = 0x2,
     PauseUntilBlank      = 0x3,
+}
+
+enum SyncMode2 {
+    Pause,
+    FreeRun,
 }
 
 #[bitenum(u1, exhaustive = true)]
@@ -162,13 +192,17 @@ pub struct AdvanceTimerSummary {
     timer_0_new: u16,
 }
 
-impl<A: Allocator> Emu<A> {
-    pub(crate) fn timers_init(&mut self) {
-        self.timers.timer_0.irq = Irq::Irq4Timer0;
-        self.timers.timer_1.irq = Irq::Irq5Timer1;
-        self.timers.timer_2.irq = Irq::Irq6Timer2;
+impl TimerCounterMode {
+    fn sync_mode_2(self) -> SyncMode2 {
+        match self.sync_mode2_raw().value() {
+            0 | 3 => SyncMode2::Pause,
+            1 | 2 => SyncMode2::FreeRun,
+            _ => unreachable!(),
+        }
     }
+}
 
+impl<A: Allocator> Emu<A> {
     pub fn timers_read<T: Copy>(&mut self, address: u32) -> Result<T, UnhandledIO> {
         let address = address & 0x1fffffff;
         match address {
@@ -186,45 +220,43 @@ impl<A: Allocator> Emu<A> {
         // .inspect(|value| tracing::debug!(target: "timers", "r({})={}", hex(address), hex(*value)))
     }
 
-    pub fn timers_write<T: Copy>(&mut self, address: u32, value: T) -> Result<(), UnhandledIO> {
+    pub fn timers_write(&mut self, address: u32, value: u32) -> Result<(), UnhandledIO> {
         let address = address & 0x1fffffff;
         match address {
             0x1f801100 => {
-                self.timers.timer_0.value =
-                    TimerCounterValue::new_with_raw_value(value.io_into_u32());
+                self.timers.timer_0.value = TimerCounterValue::new_with_raw_value(value);
             }
             0x1f801104 => {
                 self.timers
                     .timer_0
-                    .write_mode(TimerCounterMode::new_with_raw_value(value.io_into_u32()));
+                    .write_mode(TimerCounterMode::new_with_raw_value(value));
                 tracing::info!("timer 0 mode: {:#?}", self.timers.timer_0.mode);
             }
             0x1f801108 => {
                 self.timers.timer_0.target =
-                    TimerTarget(TimerCounterValue::new_with_raw_value(value.io_into_u32()));
+                    TimerTarget(TimerCounterValue::new_with_raw_value(value));
             }
             0x1f801110 => {
-                self.timers.timer_1.value =
-                    TimerCounterValue::new_with_raw_value(value.io_into_u32());
+                self.timers.timer_1.value = TimerCounterValue::new_with_raw_value(value);
             }
             0x1f801114 => {
                 self.timers
                     .timer_1
-                    .write_mode(TimerCounterMode::new_with_raw_value(value.io_into_u32()));
+                    .write_mode(TimerCounterMode::new_with_raw_value(value));
                 tracing::info!("timer 1 mode: {:#?}", self.timers.timer_1.mode);
             }
             0x1f801118 => {
                 self.timers.timer_1.target =
-                    TimerTarget(TimerCounterValue::new_with_raw_value(value.io_into_u32()));
+                    TimerTarget(TimerCounterValue::new_with_raw_value(value));
             }
             0x1f801120 => {
-                self.timers.timer_2.value =
-                    TimerCounterValue::new_with_raw_value(value.io_into_u32());
+                self.timers.timer_2.value = TimerCounterValue::new_with_raw_value(value);
             }
             0x1f801124 => {
                 self.timers
                     .timer_2
-                    .write_mode(TimerCounterMode::new_with_raw_value(value.io_into_u32()));
+                    .write_mode(TimerCounterMode::new_with_raw_value(value));
+                tracing::info!("timer 2 mode: {:#?}", self.timers.timer_2.mode);
             }
             0x1f801128 => {
                 self.timers.timer_2.target =
@@ -287,12 +319,20 @@ impl<A: Allocator> Emu<A> {
             self.timers.timer_1.tick_by(d_clock);
         }
 
-        if self.timers.timer_2.mode.prescaler() {
-            let d_clock = cycles + self.timers.timer_2_fract;
-            self.timers.timer_2.tick_by(d_clock / 8);
-            self.timers.timer_2_fract = d_clock % 8;
-        } else {
-            self.timers.timer_2.tick_by(cycles);
+        match (
+            self.timers.timer_2.internal_sync,
+            self.timers.timer_2.mode.sync_mode_2(),
+        ) {
+            (true, SyncMode2::Pause) => {}
+            (true, SyncMode2::FreeRun) | (false, _) => {
+                if self.timers.timer_2.mode.prescaler() {
+                    let d_clock = cycles + self.timers.timer_2_fract;
+                    self.timers.timer_2.tick_by(d_clock / 8);
+                    self.timers.timer_2_fract = d_clock % 8;
+                } else {
+                    self.timers.timer_2.tick_by(cycles);
+                }
+            }
         }
 
         self.timers.hblanks = 0;
