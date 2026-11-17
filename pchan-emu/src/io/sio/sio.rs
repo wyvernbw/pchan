@@ -348,6 +348,13 @@ impl<A: Allocator> Emu<A> {
                 }
                 Some(TxWriteResult::Ok)
             }
+            // SH1 selects these, idk wtf theyre supposed to be though
+            (None, 0x82..=0x84) => {
+                if self.sio.sio0ctrl.rx_on() | self.sio.sio0ctrl.dtr_out_lvl() {
+                    self.sio.sio0_rx.push(0xFF);
+                }
+                Some(TxWriteResult::TransferFinished)
+            }
             (None, byte) => {
                 tracing::warn!("not yet implemented: sio0 select device w/ address byte {byte}");
                 None

@@ -96,7 +96,7 @@ impl<A: Allocator> Emu<A> {
             value=%hex(value.io_into_u32())
         )
     )]
-    pub fn irq_write<T: Copy>(&mut self, address: u32, value: T) -> IOResult<()> {
+    pub fn irq_write(&mut self, address: u32, value: u32) -> IOResult<()> {
         match address {
             0x1f801070 => {
                 let flags = self.irq.i_stat.irq_flags_combined();

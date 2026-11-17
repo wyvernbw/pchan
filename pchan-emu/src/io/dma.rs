@@ -358,7 +358,7 @@ impl<A: Allocator + Copy> Emu<A> {
 
                     match direction {
                         TransferDir::DeviceToRam => {
-                            tracing::info!(
+                            tracing::debug!(
                                 target: "dma",
                                 "dma{} Slice {}(..{})->RAM({}..{})",
                                 idx,
@@ -369,7 +369,7 @@ impl<A: Allocator + Copy> Emu<A> {
                             transfer.read(self, range).await;
                         }
                         TransferDir::RamToDevice => {
-                            tracing::info!(
+                            tracing::debug!(
                                 target: "dma",
                                 "dma{} Slice RAM({}..{})->{}(..{})",
                                 idx,
@@ -439,7 +439,7 @@ impl<A: Allocator + Copy> Emu<A> {
                 let range = init_chan.create_range(addr, word_count);
                 match direction {
                     TransferDir::DeviceToRam => {
-                        tracing::info!(
+                        tracing::debug!(
                             target: "dma",
                             "dma{} Burst {}(..{})->RAM({}..{})",
                             idx,
@@ -450,7 +450,7 @@ impl<A: Allocator + Copy> Emu<A> {
                         transfer.read(self, range).await;
                     }
                     TransferDir::RamToDevice => {
-                        tracing::info!(
+                        tracing::debug!(
                             target: "dma",
                             "dma{} Burst RAM({}..{})->{}(..{})",
                             idx,
@@ -753,7 +753,7 @@ impl Transfer for Dma3Cdrom {
                 for (src, dest) in drain.take(32).zip(first_n_bytes.iter_mut()) {
                     *dest = hex_pref(src);
                 }
-                tracing::info!(target: "dma", "-> first 32 bytes: {:?}", first_n_bytes);
+                tracing::debug!(target: "dma", "-> first 32 bytes: {:?}", first_n_bytes);
             }
         }
 

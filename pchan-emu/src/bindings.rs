@@ -9,7 +9,7 @@ use crate::Emu;
 pub struct NonNullRecv<T>(NonNull<T>);
 
 use crate::cpu::gte::GteBindings;
-use crate::memory::ext;
+use crate::memory::{ExtendExt, ext};
 impl<A: Allocator + Copy> Emu<A> {
     /// # Safety
     pub unsafe extern "C" fn urread32(self: *mut Self, address: u32, overwrite: u32) -> u32 {
@@ -46,50 +46,63 @@ impl<A: Allocator + Copy> Emu<A> {
     /// # Safety
     pub unsafe extern "C" fn write8v2(self: *mut Self, address: u32, value: i32) {
         unsafe {
-            self.as_mut_unchecked()
-                .write::<i8>(address, value.truncate());
+            self.as_mut_unchecked().write::<i8>(address, value as u32);
         }
     }
 
     /// # Safety
     pub unsafe extern "C" fn write16v2(self: *mut Self, address: u32, value: i32) {
         unsafe {
-            self.as_mut_unchecked()
-                .write::<i16>(address, value.truncate());
+            self.as_mut_unchecked().write::<i16>(address, value as u32);
         }
     }
 
     /// # Safety
     pub unsafe extern "C" fn write32v2(self: *mut Self, address: u32, value: i32) {
         unsafe {
-            self.as_mut_unchecked()
-                .write::<i32>(address, value.truncate());
+            self.as_mut_unchecked().write::<i32>(address, value as u32);
         }
     }
 
     /// # Safety
     pub unsafe extern "C" fn readi8v2(self: *mut Self, address: u32) -> i32 {
-        unsafe { self.as_mut_unchecked().read_ext::<i8, ext::Sign>(address) }
+        unsafe {
+            self.as_mut_unchecked()
+                .read::<i8>(address)
+                .ext::<ext::Sign>()
+        }
     }
 
     /// # Safety
     pub unsafe extern "C" fn readu8v2(self: *mut Self, address: u32) -> u32 {
-        unsafe { self.as_mut_unchecked().read_ext::<u8, ext::Zero>(address) }
+        unsafe {
+            self.as_mut_unchecked()
+                .read::<u8>(address)
+                .ext::<ext::Zero>()
+        }
     }
 
     /// # Safety
     pub unsafe extern "C" fn readi16v2(self: *mut Self, address: u32) -> i32 {
-        unsafe { self.as_mut_unchecked().read_ext::<i16, ext::Sign>(address) }
+        unsafe {
+            self.as_mut_unchecked()
+                .read::<i16>(address)
+                .ext::<ext::Sign>()
+        }
     }
 
     /// # Safety
     pub unsafe extern "C" fn readu16v2(self: *mut Self, address: u32) -> u32 {
-        unsafe { self.as_mut_unchecked().read_ext::<u16, ext::Zero>(address) }
+        unsafe {
+            self.as_mut_unchecked()
+                .read::<u16>(address)
+                .ext::<ext::Zero>()
+        }
     }
 
     /// # Safety
     pub unsafe extern "C" fn read32v2(self: *mut Self, address: u32) -> i32 {
-        unsafe { self.as_mut_unchecked().read_ext::<i32, ext::NoExt>(address) }
+        unsafe { self.as_mut_unchecked().read::<i32>(address) }
     }
 
     /// # Safety

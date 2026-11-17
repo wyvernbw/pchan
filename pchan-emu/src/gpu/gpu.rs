@@ -221,16 +221,8 @@ impl<A: Allocator + Copy> Emu<A> {
         }
     }
     #[pchan_macros::instrument(level = "trace", skip(self, value), "gpu:w")]
-    pub fn gpu_write<T: Copy>(&mut self, address: u32, value: T) -> Result<(), UnhandledIO> {
+    pub fn gpu_write(&mut self, address: u32, value: u32) -> Result<(), UnhandledIO> {
         let address = address & 0x1fffffff;
-        // if size_of::<T>() != 4 {
-        //     panic!(
-        //         "write to io gpu register is not word sized. {} has size of {}",
-        //         std::any::type_name::<T>(),
-        //         size_of::<T>()
-        //     )
-        // }
-
         match address {
             0x1f80_1810 => {
                 self.gpu_gp0_cmd(GpuCmd::new_with_raw_value(value.io_into_u32_overwrite(0x0)));

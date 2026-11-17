@@ -5,13 +5,14 @@ use pchan_utils::hex;
 
 use crate::Emu;
 use crate::bootloader::ExeHeader;
-use crate::memory::{Extend, GUEST_MEM_MAP, MEM_MAP};
+use crate::memory::{GUEST_MEM_MAP, MEM_MAP};
 
 #[path = "./cdrom/cdrom.rs"]
 pub mod cdrom;
 pub mod dma;
 pub mod evque;
 pub mod irq;
+pub mod mdec;
 #[path = "./sio/sio.rs"]
 pub mod sio;
 pub mod timers;
@@ -104,22 +105,11 @@ impl<A: Allocator + Copy> Emu<A> {
 
 impl<A: Allocator + Copy> Emu<A> {
     pub fn write_many<T: Copy>(&mut self, mut address: u32, values: &[T]) {
-        for value in values.iter().copied() {
-            self.write(address, value);
+        for value in values {
+            let value = *value;
+            self.write::<T>(address, value.io_into_u32());
             address += 0x4;
         }
-    }
-    pub fn read_ext<T: Copy + Extend<E>, E>(&mut self, address: u32) -> T::Out {
-        let value = self.read::<T>(address);
-        Extend::<E>::extend(value)
-    }
-    pub fn write_ext<T, E>(&mut self, address: u32, value: T)
-    where
-        T::Out: Copy,
-        T: Extend<E>,
-    {
-        let value = Extend::<E>::extend(value);
-        self.write(address, value);
     }
     #[pchan_macros::instrument(level = "trace", skip_all)]
     pub fn try_write32_unaligned_l(&mut self, address: u32, value: u32) -> IOResult<()> {
@@ -139,7 +129,7 @@ impl<A: Allocator + Copy> Emu<A> {
             tracing::trace!(value = %hex(value), mask = %hex(mask));
         }
 
-        self.try_write(aligned_address, value)
+        self.try_write::<u32>(aligned_address, value)
     }
     #[pchan_macros::instrument(level = "trace", skip_all)]
     pub fn try_write32_unaligned_r(&mut self, address: u32, value: u32) -> IOResult<()> {
@@ -154,7 +144,7 @@ impl<A: Allocator + Copy> Emu<A> {
         tracing::trace!(value = %hex(value), mask = %hex(mask));
         let value = value | read_value;
 
-        self.try_write(aligned, value)
+        self.try_write::<u32>(aligned, value)
     }
 
     #[pchan_macros::instrument(level = "trace", skip_all)]
@@ -245,7 +235,7 @@ impl<A: Allocator> Emu<A> {
         fields(address = %hex(address), value = %hex(value.io_into_u32()))
         "cache_ctrl:w"
     )]
-    fn cache_ctrl_write<T: Copy>(&mut self, address: u32, value: T) -> IOResult<()> {
+    fn cache_ctrl_write(&mut self, address: u32, value: u32) -> IOResult<()> {
         match address {
             0xfffe0130 => {
                 self.mem.write_region(
@@ -280,8 +270,8 @@ impl<A: Allocator + Copy> Emu<A> {
         }
     }
 
-    pub fn write<T: Copy>(&mut self, address: u32, value: T) {
-        if let Err(err) = self.try_write(address, value) {
+    pub fn write<T: Copy>(&mut self, address: u32, value: u32) {
+        if let Err(err) = self.try_write::<T>(address, value) {
             self.panic(&format!("{err}"));
         }
     }
@@ -316,6 +306,7 @@ impl<A: Allocator + Copy> Emu<A> {
             .or_else(|_| inspect_read("r(sio)", self.sio_read::<T>(address)))
             .or_else(|_| inspect_read("r(cdrom)", self.cdrom_read::<T>(address)))
             .or_else(|_| inspect_read("r(cache_ctrl)", self.cache_ctrl_read::<T>(address)))
+            .or_else(|_| inspect_read("r(mdec)", self.mdec_read(address)))
             .or_else(|_| inspect_read("r(unknown)", self.generic_read::<T>(address)))
     }
 
@@ -332,7 +323,7 @@ impl<A: Allocator + Copy> Emu<A> {
             .or_else(|_| self.generic_read::<T>(address))
     }
 
-    pub fn try_write<T: Copy>(&mut self, address: u32, value: T) -> IOResult<()> {
+    pub fn try_write<T: Copy>(&mut self, address: u32, value: u32) -> IOResult<()> {
         #[cfg(feature = "debugger-ext")]
         {
             use crate::debug::BreakpointKind;
@@ -340,17 +331,18 @@ impl<A: Allocator + Copy> Emu<A> {
             self.dbg.break_on(address, BreakpointKind::WRITE);
         }
 
-        self.fastmem_write::<T>(address, value)
-            .or_else(|_| self.scratch_write(address, value))
+        self.fastmem_write::<T>(address, value.io_from_u32())
+            .or_else(|_| self.scratch_write::<T>(address, value.io_from_u32()))
             .or_else(|_| self.timers_write(address, value))
             .or_else(|_| self.irq_write(address, value))
             .or_else(|_| self.gpu_write(address, value))
-            .or_else(|_| self.spu_write(address, value))
-            .or_else(|_| self.dma_write(address, value))
-            .or_else(|_| self.sio_write::<T>(address, value))
-            .or_else(|_| self.cdrom_write::<T>(address, value))
-            .or_else(|_| self.cache_ctrl_write::<T>(address, value))
-            .or_else(|_| self.generic_write::<T>(address, value))
+            .or_else(|_| self.spu_write::<T>(address, value.io_from_u32()))
+            .or_else(|_| self.dma_write::<T>(address, value.io_from_u32()))
+            .or_else(|_| self.sio_write::<T>(address, value.io_from_u32()))
+            .or_else(|_| self.cdrom_write::<T>(address, value.io_from_u32()))
+            .or_else(|_| self.cache_ctrl_write(address, value))
+            .or_else(|_| self.mdec_write(address, value))
+            .or_else(|_| self.generic_write::<T>(address, value.io_from_u32()))
     }
 
     #[pchan_macros::instrument(skip_all)]

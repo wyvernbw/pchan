@@ -435,15 +435,15 @@ impl<A: Allocator + Copy> Emu<A> {
             }
             DecodedOp::Nop(_) | DecodedOp::Illegal(_) | DecodedOp::HaltBlock(_) => None,
             DecodedOp::Sb(sb) => {
-                let value = self.get_reg(sb.rt) as u8;
+                let value = self.get_reg(sb.rt);
                 let address = self.get_reg(sb.rs).wrapping_add_signed(i32::from(sb.imm16));
-                self.write(address, value);
+                self.write::<u8>(address, value);
                 None
             }
             DecodedOp::Sh(sh) => {
-                let value = self.get_reg(sh.rt) as u16;
+                let value = self.get_reg(sh.rt);
                 let address = self.get_reg(sh.rs).wrapping_add_signed(i32::from(sh.imm16));
-                self.write(address, value);
+                self.write::<u16>(address, value);
                 None
             }
             DecodedOp::Swl(swl) => {
@@ -457,7 +457,7 @@ impl<A: Allocator + Copy> Emu<A> {
             DecodedOp::Sw(sw) => {
                 let value = self.get_reg(sw.rt);
                 let address = self.get_reg(sw.rs).wrapping_add_signed(i32::from(sw.imm16));
-                self.write(address, value);
+                self.write::<u32>(address, value);
                 None
             }
             DecodedOp::Swr(swr) => {
