@@ -11,7 +11,7 @@ use crate::io::{CastIOFrom, CastIOInto, UnhandledIO};
 
 use super::irq::Irq;
 
-const TIMER_UPDATE_FREQUENCY: u64 = 1000;
+const TIMER_UPDATE_FREQUENCY: u64 = 128;
 
 #[derive(Debug, Clone, Default, Endecode)]
 pub struct TimerState {
