@@ -1,5 +1,6 @@
 use arbitrary_int::prelude::*;
 use core::alloc::Allocator;
+use pchan_utils::hex;
 
 use bitbybit::bitenum;
 use derive_more as d;
@@ -38,6 +39,8 @@ pub struct Timer<const N: usize> {
     hit_target: bool,
 
     internal_sync: bool,
+    /// on write: counter value > target
+    overrun: bool
 }
 
 const fn timer_irq<const N: usize>() -> Irq {
@@ -209,10 +212,24 @@ impl<A: Allocator> Emu<A> {
             0x1f801100 => Ok(self.timers.timer_0.read_value().io_from_u32()),
             0x1f801104 => Ok(self.timers.timer_0.read_mode().io_from_u32()),
             0x1f801108 => Ok(self.timers.timer_0.target.io_from_u32()),
-            0x1f801110 => Ok(self.timers.timer_1.read_value().io_from_u32()),
+            0x1f801110 => {
+                // tracing::info!(
+                //     target: "tmr", "timer #1 read: {}/{}",
+                //     hex(self.timers.timer_1.read_value().value()),
+                //     hex(self.timers.timer_1.target.value())
+                // );
+                Ok(self.timers.timer_1.read_value().io_from_u32())
+            }
             0x1f801114 => Ok(self.timers.timer_1.read_mode().io_from_u32()),
             0x1f801118 => Ok(self.timers.timer_1.target.io_from_u32()),
-            0x1f801120 => Ok(self.timers.timer_2.read_value().io_from_u32()),
+            0x1f801120 => {
+                // tracing::info!(
+                //     target: "tmr", "timer #2 read: {}/{}",
+                //     hex(self.timers.timer_2.read_value().value()),
+                //     hex(self.timers.timer_2.target.value())
+                // );
+                Ok(self.timers.timer_2.read_value().io_from_u32())
+            }
             0x1f801124 => Ok(self.timers.timer_2.read_mode().io_from_u32()),
             0x1f801128 => Ok(self.timers.timer_2.target.io_from_u32()),
             _ => Err(UnhandledIO(address)),
@@ -225,6 +242,7 @@ impl<A: Allocator> Emu<A> {
         match address {
             0x1f801100 => {
                 self.timers.timer_0.value = TimerCounterValue::new_with_raw_value(value);
+                self.timers.timer_0.check_for_overrun();
             }
             0x1f801104 => {
                 self.timers
@@ -238,6 +256,8 @@ impl<A: Allocator> Emu<A> {
             }
             0x1f801110 => {
                 self.timers.timer_1.value = TimerCounterValue::new_with_raw_value(value);
+                self.timers.timer_1.check_for_overrun();
+                tracing::info!(target: "tmr", "timer #1 value write: {} (overrun = {})", hex(self.timers.timer_1.value), self.timers.timer_1.overrun)
             }
             0x1f801114 => {
                 self.timers
@@ -251,6 +271,7 @@ impl<A: Allocator> Emu<A> {
             }
             0x1f801120 => {
                 self.timers.timer_2.value = TimerCounterValue::new_with_raw_value(value);
+                self.timers.timer_2.check_for_overrun();
             }
             0x1f801124 => {
                 self.timers
@@ -294,12 +315,14 @@ impl<A: Allocator> Emu<A> {
                 }
                 SyncMode0_1::ResetAtBlank => {
                     if self.gpu.dp.in_vblank() && !self.timers.in_vblank {
+                        tracing::info!(target: "tmr", "timer 1 sync reset");
                         self.timers.timer_1.reset_value();
                     }
                     d_clock
                 }
                 SyncMode0_1::ResetAtBlankAndPause => {
                     if self.gpu.dp.in_vblank() && !self.timers.in_vblank {
+                        tracing::info!(target: "tmr", "timer 1 sync reset");
                         self.timers.timer_1.reset_value();
                     }
                     if self.gpu.dp.in_vblank() { d_clock } else { 0 }
@@ -409,7 +432,11 @@ impl<const N: usize> Timer<N> {
 
     pub fn trigger_updates(&mut self) -> bool {
         if self.overflowed {
+            self.overrun = false;
             self.mode.set_reached_overflow(true);
+        }
+        if self.overrun {
+            return false;
         }
 
         let mut irq_pending = false;
@@ -418,15 +445,15 @@ impl<const N: usize> Timer<N> {
                 irq_pending |= self.trigger_irq();
             }
             if self.mode.reset_mode() == TimerResetMode::OnOverflow {
-                self.value.set_value(0);
+                self.reset_value();
             }
         }
-        if self.hit_target {
+        if self.hit_target && self.target.value() != 0xffff {
             if self.mode.irq_on_target() {
                 irq_pending |= self.trigger_irq();
             }
             if self.mode.reset_mode() == TimerResetMode::OnTarget {
-                self.value.set_value(0);
+                self.reset_value();
             }
         }
 
@@ -438,6 +465,26 @@ impl<const N: usize> Timer<N> {
         }
 
         irq_pending
+    }
+
+    #[inline(always)]
+    fn reset_if_condition_met(&mut self) {
+        if self.overflowed {
+            if self.mode.reset_mode() == TimerResetMode::OnOverflow {
+                self.reset_value();
+            }
+        }
+        if self.hit_target && self.target.value() != 0xffff {
+            if self.mode.reset_mode() == TimerResetMode::OnTarget {
+                self.reset_value();
+            }
+        }
+    }
+
+    fn check_for_overrun(&mut self) {
+        if self.value.value() >= self.target.value() {
+            self.overrun = true;
+        }
     }
 
     /// consumes `armed`
@@ -453,7 +500,7 @@ impl<const N: usize> Timer<N> {
             }
             TimerIrqLevelMode::Toggle => {
                 self.mode.set_irq(self.mode.irq().inverted());
-                true
+                self.mode.irq() == IrqFlag::Y
             }
         }
     }
