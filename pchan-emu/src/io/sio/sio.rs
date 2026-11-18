@@ -19,7 +19,7 @@ use crate::io::sio::memcard::Memcard;
 use crate::io::{CastIOFrom, CastIOInto, UnhandledIO};
 use crate::{Emu, trace_todo};
 
-const HI_Z: u32 = u32::MAX;
+const HI_Z: u32 = 0xff;
 
 #[derive(Default, derive_more::Debug, Clone, Endecode)]
 pub struct SioState {
