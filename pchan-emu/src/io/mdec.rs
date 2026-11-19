@@ -3,8 +3,6 @@ use bitbybit::*;
 use core::alloc::Allocator;
 use pchan_encode::derive::Endecode;
 
-use pchan_utils::hex;
-
 use crate::io::{CastIOFrom, IOResult, UnhandledIO};
 use crate::{Emu, trace_todo};
 
@@ -47,7 +45,7 @@ impl<A: Allocator> Emu<A> {
         self.mdec.status.set_dreq1(dma1on);
     }
 
-    fn mdec_cmd_send(&mut self, cmd: MDecCmd) {
+    pub(crate) fn mdec_cmd_send(&mut self, cmd: MDecCmd) {
         match &mut self.mdec.cmd {
             MDecCmdState::Idle => match cmd.cmd().value() {
                 2 => {
@@ -60,13 +58,14 @@ impl<A: Allocator> Emu<A> {
                 8.. => unreachable!(),
             },
             MDecCmdState::Cmd2SQT(state) => {
+                let param = cmd.as_u8();
                 match (state.cmd.color(), state.count) {
                     (MDecCmd2SQTColor::Luma | MDecCmd2SQTColor::LumaAndColor, 0..64) => {
-                        // TODO: send luma
+                        self.mdec.luma_table[usize::from(state.count)] = param;
                         state.count += 1;
                     }
                     (MDecCmd2SQTColor::LumaAndColor, 64..128) => {
-                        // TODO: send color
+                        self.mdec.color_table[usize::from(state.count - 64)] = param;
                         state.count += 1;
                     }
                     (MDecCmd2SQTColor::Luma, 64..) | (MDecCmd2SQTColor::LumaAndColor, 128..) => {
@@ -88,6 +87,9 @@ impl MDec {
 pub struct MDec {
     status: MDecStatus,
     cmd:    MDecCmdState,
+
+    luma_table:  [u8; 64] = [0; 64],
+    color_table: [u8; 64] = [0; 64],
 }
 
 /// ```plaintext
@@ -183,6 +185,9 @@ pub struct MDecCmd {
 }
 
 impl MDecCmd {
+    fn as_u8(self) -> u8 {
+        self.raw_value() as u8
+    }
     fn to_cmd2(self) -> MDecCmd2SQT {
         MDecCmd2SQT::new_with_raw_value(self.raw_value())
     }

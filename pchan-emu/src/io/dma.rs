@@ -6,6 +6,7 @@ use crate::gpu::draw_call::DrawCallKind;
 use crate::gpu::{Gp0, GpuCmd};
 use crate::io::evque::{EvCtx, EventId, EventKind, Task};
 use crate::io::irq::Irq;
+use crate::io::mdec::MDecCmd;
 use crate::io::{CastIOFrom, CastIOInto, IOResult, UnhandledIO};
 use crate::memory::mb;
 use crate::{Emu, trace_todo};
@@ -653,7 +654,19 @@ impl Transfer for Dma0MdecIn {
     const TRANSPORT_KIND: DmaTransportKind = DmaTransportKind::MDecIn;
 
     async fn write<A: Allocator + Copy>(&mut self, emu: &mut Emu<A>, slice: Range<u32>) {
-        todo!()
+        let mut staging_buf = mem::replace(&mut emu.dma.staging_buf, Vec::new_in(emu.alloc));
+        let slice = emu
+            .fastmem_slice::<u32>(slice.clone())
+            .expect("dma0 fastmem fail");
+        staging_buf.clear();
+        staging_buf.extend_from_slice(slice);
+
+        for word in staging_buf.iter().copied() {
+            emu.mdec_cmd_send(MDecCmd::new_with_raw_value(word));
+        }
+
+        staging_buf.clear();
+        emu.dma.staging_buf = staging_buf;
     }
 
     async fn read<A: Allocator + Copy>(&mut self, emu: &mut Emu<A>, slice: Range<u32>) {
