@@ -50,6 +50,7 @@ use crate::io::cdrom::CDRomState;
 use crate::io::dma::DmaState;
 use crate::io::evque::Evque;
 use crate::io::irq::IrqState;
+use crate::io::mdec::MDec;
 use crate::io::sio::SioState;
 use crate::io::timers::TimerState;
 use crate::io::tty::Tty;
@@ -97,6 +98,7 @@ pub struct Emu<A: Allocator = Global> {
     pub cdrom:           CDRomState<A>,
     pub sio:             SioState,
     pub irq:             IrqState,
+    pub mdec:            MDec,
     pub evque:           Evque<A>,
     #[endecode(skip)]
     pub tracy:           TracyClient,
@@ -135,6 +137,7 @@ impl<A: Allocator + Copy> Emu<A> {
             evque: Evque::new_in(alloc),
             tracy: TracyClient::default(),
             stats: Stats::default(),
+            mdec: MDec::default(),
             alloc,
         };
         emu.handle_ev_spu_clock(io::evque::EvCtx::default());

@@ -19,13 +19,15 @@ use tracing::Level;
 
 #[derive(derive_more::Debug, Clone, Endecode)]
 pub struct DmaState<A: Allocator> {
-    dpcr: Dpcr,
-    dicr: Dicr,
+    pub dpcr: Dpcr,
+    dicr:     Dicr,
     // TODO: dma channels
-    dma2: DmaChannel,
-    dma3: DmaChannel,
-    dma4: DmaChannel,
-    dma6: DmaChannel,
+    dma0:     DmaChannel,
+    dma1:     DmaChannel,
+    dma2:     DmaChannel,
+    dma3:     DmaChannel,
+    dma4:     DmaChannel,
+    dma6:     DmaChannel,
 
     // events: Slab<DmaEvent>,
     pending_transfers: VecDeque<DmaEvent, A>,
@@ -47,6 +49,8 @@ impl<A: Allocator + Copy> DmaState<A> {
         Self {
             dpcr: Dpcr::new_with_raw_value(0x07654321),
             dicr: Dicr::default(),
+            dma0: DmaChannel::default(),
+            dma1: DmaChannel::default(),
             dma2: DmaChannel::default(),
             dma3: DmaChannel::default(),
             dma4: DmaChannel::default(),
@@ -94,8 +98,22 @@ impl<A: Allocator + Copy> Emu<A> {
     pub fn dma_read<T: Copy>(&self, address: u32) -> IOResult<T> {
         let address = address & 0x1fffffff;
         match address {
-            0x1f801080..=0x1f80108f => trace_todo!(0x0, "read at dma0 (MDECin)"),
-            0x1f801090..=0x1f80109f => trace_todo!(0x0, "read at dma1 (MDECout)"),
+            // dma 0
+            0x1f801080 => Ok(self.dma.dma0.madr.addr().io_from_u32()),
+            0x1f801084 => Ok(self.dma.dma0.bcr.io_from_u32()),
+            0x1f801088 => {
+                let chcr = self.dma.dma0.chcr;
+                tracing::trace!("read at dma0chcr (gpu chcr): {:?}", chcr.transfer());
+                Ok(chcr.io_from_u32())
+            }
+            // dma 1
+            0x1f801090 => Ok(self.dma.dma1.madr.addr().io_from_u32()),
+            0x1f801094 => Ok(self.dma.dma1.bcr.io_from_u32()),
+            0x1f801098 => {
+                let chcr = self.dma.dma1.chcr;
+                tracing::trace!("read at dma1chcr (gpu chcr): {:?}", chcr.transfer());
+                Ok(chcr.io_from_u32())
+            }
 
             // dma 2
             0x1f8010a0 => Ok(self.dma.dma2.madr.addr().io_from_u32()),
@@ -143,8 +161,15 @@ impl<A: Allocator + Copy> Emu<A> {
     pub fn dma_write<T: Copy>(&mut self, address: u32, value: T) -> IOResult<()> {
         let address = address & 0x1fffffff;
         match address {
-            0x1f801080..=0x1f80108f => trace_todo!("write at dma0 (MDECin)"),
-            0x1f801090..=0x1f80109f => trace_todo!("write at dma1 (MDECout)"),
+            // dma 0
+            0x1f801080 => Dma0MdecIn::write_madr(self, value),
+            0x1f801084 => Dma0MdecIn::write_bcr(self, value),
+            0x1f801088 | 0x1f80108c => Dma0MdecIn::write_chcr(self, value),
+
+            // dma 1
+            0x1f801090 => Dma1MdecOut::write_madr(self, value),
+            0x1f801094 => Dma1MdecOut::write_bcr(self, value),
+            0x1f801098 | 0x1f80109c => Dma1MdecOut::write_chcr(self, value),
 
             // dma 2
             0x1f8010a0 => Dma2Gpu::write_madr(self, value),
@@ -270,17 +295,21 @@ impl<A: Allocator + Copy> Emu<A> {
     async fn handle_dma_event(&mut self, event: DmaEvent) {
         tracing::debug!("dma proc");
         match event.dma_t {
-            DmaTransportKind::Otc => {
-                self.dma6_write_data(event);
+            DmaTransportKind::MDecIn => {
+                self.dma_write_data(event, &mut Dma0MdecIn).await;
             }
+            DmaTransportKind::MDecOut => todo!(),
             DmaTransportKind::Gpu => {
-                self.dma2_write_data(event).await;
+                self.dma_write_data(event, &mut Dma2Gpu).await;
             }
             DmaTransportKind::Cdrom => {
-                self.dma3_write_data(event).await;
+                self.dma_write_data(event, &mut Dma3Cdrom).await;
             }
             DmaTransportKind::Spu => {
-                self.dma4_write_data(event).await;
+                self.dma_write_data(event, &mut Dma4Spu).await;
+            }
+            DmaTransportKind::Otc => {
+                self.dma6_write_data(event);
             }
         }
     }
@@ -520,18 +549,6 @@ impl<A: Allocator + Copy> Emu<A> {
         words
     }
 
-    async fn dma2_write_data(&mut self, event: DmaEvent) {
-        self.dma_write_data(event, &mut Dma2Gpu).await;
-    }
-
-    async fn dma3_write_data(&mut self, event: DmaEvent) {
-        self.dma_write_data(event, &mut Dma3Cdrom).await;
-    }
-
-    async fn dma4_write_data(&mut self, event: DmaEvent) {
-        self.dma_write_data(event, &mut Dma4Spu).await;
-    }
-
     fn dma6_write_data(&mut self, event: DmaEvent) {
         let channel = event.init_chan;
         let mut word_count = u32::from(channel.bcr.s0_word_count());
@@ -627,6 +644,42 @@ trait Transfer {
             }
         }
         Ok(())
+    }
+}
+
+struct Dma0MdecIn;
+
+impl Transfer for Dma0MdecIn {
+    const TRANSPORT_KIND: DmaTransportKind = DmaTransportKind::MDecIn;
+
+    async fn write<A: Allocator + Copy>(&mut self, emu: &mut Emu<A>, slice: Range<u32>) {
+        todo!()
+    }
+
+    async fn read<A: Allocator + Copy>(&mut self, emu: &mut Emu<A>, slice: Range<u32>) {
+        todo!()
+    }
+
+    fn channel<A: Allocator>(emu: &mut Emu<A>) -> &mut DmaChannel {
+        &mut emu.dma.dma0
+    }
+}
+
+struct Dma1MdecOut;
+
+impl Transfer for Dma1MdecOut {
+    const TRANSPORT_KIND: DmaTransportKind = DmaTransportKind::MDecOut;
+
+    async fn write<A: Allocator + Copy>(&mut self, emu: &mut Emu<A>, slice: Range<u32>) {
+        todo!()
+    }
+
+    async fn read<A: Allocator + Copy>(&mut self, emu: &mut Emu<A>, slice: Range<u32>) {
+        todo!()
+    }
+
+    fn channel<A: Allocator>(emu: &mut Emu<A>) -> &mut DmaChannel {
+        &mut emu.dma.dma1
     }
 }
 
@@ -1096,6 +1149,10 @@ pub struct DmaEvent {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Endecode, Default, derive_more::Display)]
 pub enum DmaTransportKind {
+    #[display("MDEC_IN")]
+    MDecIn,
+    #[display("MDEC_OUT")]
+    MDecOut,
     #[default]
     #[display("OTC")]
     Otc,
@@ -1111,6 +1168,8 @@ impl DmaTransportKind {
     #[must_use]
     pub fn idx(&self) -> u8 {
         match self {
+            DmaTransportKind::MDecIn => 0,
+            DmaTransportKind::MDecOut => 1,
             DmaTransportKind::Gpu => 2,
             DmaTransportKind::Cdrom => 3,
             DmaTransportKind::Spu => 4,
@@ -1170,7 +1229,11 @@ impl DmaChannel {
 
     fn burst_cycles(&self, dma_t: DmaTransportKind) -> u64 {
         match dma_t {
-            DmaTransportKind::Otc | DmaTransportKind::Gpu => u64::from(self.bcr.s0_word_count()),
+            // 1 clk/word
+            DmaTransportKind::MDecIn
+            | DmaTransportKind::MDecOut
+            | DmaTransportKind::Otc
+            | DmaTransportKind::Gpu => u64::from(self.bcr.s0_word_count()),
             DmaTransportKind::Cdrom => u64::from(self.bcr.s0_word_count()) * 24,
             DmaTransportKind::Spu => u64::from(self.bcr.s0_word_count()) * 4,
         }
