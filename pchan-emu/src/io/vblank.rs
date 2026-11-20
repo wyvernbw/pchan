@@ -4,7 +4,7 @@ use crate::Emu;
 use crate::gpu::{DrawEvenOdd, VBLANK_COUNT};
 use crate::io::irq::Irq;
 
-impl<A: Allocator + Copy> Emu<A> {
+impl Emu {
     pub async fn run_vblank(&mut self) {
         let even_odd = self.gpu.gpustat.even_odd_in_vblank();
         self.gpu

@@ -3,7 +3,6 @@ pub mod adsr;
 mod gauss_interp;
 pub mod reverb;
 
-use core::alloc::Allocator;
 use std::sync::Mutex;
 
 use arbitrary_int::prelude::Integer;
@@ -21,15 +20,15 @@ use crate::spu::adsr::{ADSRState, EnvelopePhase, apply_volume};
 use crate::spu::reverb::Reverb;
 use crate::{Emu, trace_todo};
 
-#[derive(derive_more::Debug, Endecode)]
-pub struct SpuState<A: Allocator> {
-    voices:         Box<[Voice; 24], A>,
+#[derive(derive_more::Debug)]
+pub struct Spu {
+    voices:         Box<[Voice; 24]>,
     adsr:           ADSRState,
     voice_flags:    VoiceFlags,
     ctrl:           SpuCtrl,
-    reverb:         Reverb<A>,
+    reverb:         Reverb,
     #[debug(skip)]
-    pub mem:        Box<[u16], A>,
+    pub mem:        Box<[u16]>,
     pub app_volume: f32,
 
     ram_start:       u16,
@@ -37,19 +36,19 @@ pub struct SpuState<A: Allocator> {
     pub ram_current: usize,
     clock:           u64,
 
-    #[endecode(skip)]
     prod:      Option<Mutex<AudioProducer>>,
     clock_idx: u64,
 }
 
-impl<A: Allocator + Copy> SpuState<A> {
-    pub fn new(alloc: A) -> Self {
+impl Spu {
+    #[must_use]
+    pub fn new() -> Self {
         let mut spu = Self {
-            voices:      Box::new_in(Default::default(), alloc),
+            voices:      Box::default(),
             voice_flags: VoiceFlags::default(),
-            reverb:      Reverb::new(alloc),
+            reverb:      Reverb::new(),
             ctrl:        SpuCtrl::default(),
-            mem:         create_spu_mem(alloc),
+            mem:         create_spu_mem(),
             ram_start:   0,
             ram_current: 0,
             clock:       0,
@@ -65,7 +64,13 @@ impl<A: Allocator + Copy> SpuState<A> {
     }
 }
 
-impl<A: Allocator + Clone> Clone for SpuState<A> {
+impl Default for Spu {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Clone for Spu {
     fn clone(&self) -> Self {
         Self {
             voices:      Box::clone(&self.voices),
@@ -84,7 +89,7 @@ impl<A: Allocator + Clone> Clone for SpuState<A> {
     }
 }
 
-impl<A: Allocator> SpuState<A> {
+impl Spu {
     const MEM_SIZE: usize = kb(512);
     const CLOCK_CYCLES: u64 = 768;
 
@@ -96,10 +101,8 @@ impl<A: Allocator> SpuState<A> {
     }
 }
 
-fn create_spu_mem<A: Allocator>(alloc: A) -> Box<[u16], A> {
-    unsafe {
-        Box::<[u16], A>::new_zeroed_slice_in(SpuState::<A>::MEM_SIZE / 2, alloc).assume_init()
-    }
+fn create_spu_mem() -> Box<[u16]> {
+    unsafe { Box::<[u16]>::new_zeroed_slice(Spu::MEM_SIZE / 2).assume_init() }
 }
 
 #[derive(Default, derive_more::Debug, Clone, Endecode)]
@@ -159,7 +162,7 @@ fn voice_idx(addr: u32, base: u32, stride: u32) -> Option<usize> {
     }
 }
 
-impl<A: Allocator> Emu<A> {
+impl Emu {
     #[pchan_macros::instrument(level = "trace", skip(self), "spu:r")]
     pub fn spu_read<T: Copy>(&mut self, address: u32) -> IOResult<T> {
         let address = address & 0x1fffffff;
@@ -464,12 +467,12 @@ impl<A: Allocator> Emu<A> {
 
     pub fn handle_ev_spu_clock(&mut self, _ctx: EvCtx) {
         self.clock();
-        let last_clock = self.spu.clock_idx * SpuState::<A>::CLOCK_CYCLES;
+        let last_clock = self.spu.clock_idx * Spu::CLOCK_CYCLES;
         self.evque.schedule_from(
             EventKind::SpuClock,
             EventId::default(),
             last_clock,
-            SpuState::<A>::CLOCK_CYCLES,
+            Spu::CLOCK_CYCLES,
         );
         self.spu.clock_idx += 1;
     }
@@ -494,6 +497,18 @@ impl<A: Allocator> Emu<A> {
         let mut mixed_r = 0i32;
         let mut reverb_l = 0i32;
         let mut reverb_r = 0i32;
+
+        if self.spu.ctrl.cd_in_on() {
+            let (cd_l, cd_r) = self.cdrom.audio_sample;
+            // tracing::info!(target:"spu", "cd-in: ({cd_l}, {cd_r})");
+            if self.spu.ctrl.cd_reverb_on() {
+                reverb_l += i32::from(cd_l);
+                reverb_r += i32::from(cd_r);
+            }
+            mixed_l += i32::from(cd_l);
+            mixed_r += i32::from(cd_r);
+        }
+
         for i in 0..24 {
             let voice = &self.spu.voices[i];
             let adsr = &self.spu.adsr;
@@ -545,7 +560,7 @@ impl<A: Allocator> Emu<A> {
     }
 }
 
-impl<A: Allocator> SpuState<A> {
+impl Spu {
     fn key_on(&mut self, idx: usize) {
         self.voices[idx].key_on(&self.mem, &mut self.adsr);
         self.adsr.envelopes.level[idx] = 0;
@@ -661,13 +676,13 @@ impl Voice {
     }
 }
 
-impl<A: Allocator> BindAudioProducer for Emu<A> {
+impl BindAudioProducer for Emu {
     fn bind_producer(&mut self, prod: AudioProducer) {
         self.spu.prod = Some(prod.into());
     }
 }
 
-impl<A: Allocator> SpuState<A> {
+impl Spu {
     fn set_keys<const ON: bool>(&mut self, key_idx: usize, value: u16) {
         let keys = match ON {
             true => &mut self.voice_flags.key_on,
@@ -721,5 +736,9 @@ impl<A: Allocator> SpuState<A> {
 #[derive(Default, Endecode)]
 struct SpuCtrl {
     #[bit(7, rw)]
-    reverb_on: bool,
+    reverb_on:    bool,
+    #[bit(2, rw)]
+    cd_reverb_on: bool,
+    #[bit(0, rw)]
+    cd_in_on:     bool,
 }

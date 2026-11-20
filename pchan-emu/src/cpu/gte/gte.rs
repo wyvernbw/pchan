@@ -1,6 +1,5 @@
 use arbitrary_int::prelude::*;
 use bitbybit::{bitenum, bitfield};
-use core::alloc::Allocator;
 use core::mem::offset_of;
 use core::simd::prelude::*;
 use core::{cmp, ptr, slice};
@@ -46,7 +45,7 @@ macro_rules! trace_calc {
 }
 
 #[repr(C)]
-#[derive(Default, Debug, Endecode, Clone)]
+#[derive(Default, Debug, Clone)]
 pub struct Gte {
     pub data: GteDataRegs,
     pub ctrl: GteCtrlRegs,
@@ -72,8 +71,8 @@ pub struct Gte {
 ///   cop2r28-29 1xU15 IRGB,ORGB             Convert RGB Color (48bit vs 15bit)
 ///   cop2r30-31 2xS32 LZCS,LZCR             Count Leading-Zeroes/Ones (sign bits)
 /// ```
+#[derive(Default, Debug, Clone)]
 #[repr(C)]
-#[derive(Default, Debug, Endecode, Clone)]
 pub struct GteDataRegs {
     vxyz0:     i16x3,
     _vz0_pad:  i16,
@@ -439,44 +438,44 @@ enum GteCmd {
     Ncct  = 0x3f,
 }
 
-type GteFn<A> = fn(&mut Emu<A>, GteCommandField);
+type GteFn = fn(&mut Emu, GteCommandField);
 
 #[repr(C)]
 #[derive(Debug, Clone)]
-pub struct GteBindings<A: Allocator> {
-    rtpt:  GteFn<A>,
-    rtps:  GteFn<A>,
-    nclip: GteFn<A>,
-    op:    GteFn<A>,
-    dpcs:  GteFn<A>,
-    intpl: GteFn<A>,
-    ncs:   GteFn<A>,
-    nct:   GteFn<A>,
-    dcpl:  GteFn<A>,
-    dpct:  GteFn<A>,
-    nccs:  GteFn<A>,
-    ncct:  GteFn<A>,
-    ncds:  GteFn<A>,
-    cdp:   GteFn<A>,
-    ncdt:  GteFn<A>,
-    cc:    GteFn<A>,
-    sqr:   GteFn<A>,
-    avsz3: GteFn<A>,
-    avsz4: GteFn<A>,
-    gpf:   GteFn<A>,
-    gpl:   GteFn<A>,
-    mvmva: GteFn<A>,
+pub struct GteBindings {
+    rtpt:  GteFn,
+    rtps:  GteFn,
+    nclip: GteFn,
+    op:    GteFn,
+    dpcs:  GteFn,
+    intpl: GteFn,
+    ncs:   GteFn,
+    nct:   GteFn,
+    dcpl:  GteFn,
+    dpct:  GteFn,
+    nccs:  GteFn,
+    ncct:  GteFn,
+    ncds:  GteFn,
+    cdp:   GteFn,
+    ncdt:  GteFn,
+    cc:    GteFn,
+    sqr:   GteFn,
+    avsz3: GteFn,
+    avsz4: GteFn,
+    gpf:   GteFn,
+    gpl:   GteFn,
+    mvmva: GteFn,
 
-    write_sxyp: fn(&mut Emu<A>, u32),
-    write_irgb: fn(&mut Emu<A>, u32),
-    write_lzcs: fn(&mut Emu<A>, i32),
-    write_flag: fn(&mut Emu<A>, u32),
+    write_sxyp: fn(&mut Emu, u32),
+    write_irgb: fn(&mut Emu, u32),
+    write_lzcs: fn(&mut Emu, i32),
+    write_flag: fn(&mut Emu, u32),
 
-    read_irgb_orgb: fn(&mut Emu<A>),
+    read_irgb_orgb: fn(&mut Emu),
 }
 
-impl<A: Allocator + Copy> GteBindings<A> {
-    pub const OFFSET: u32 = ExternFnTable::<A>::OFFSET + offset_of!(ExternFnTable<A>, gte) as u32;
+impl GteBindings {
+    pub const OFFSET: u32 = ExternFnTable::OFFSET + offset_of!(ExternFnTable, gte) as u32;
     pub const RTPT: u32 = offset_of!(Self, rtpt) as u32 + Self::OFFSET;
     pub const RTPS: u32 = offset_of!(Self, rtps) as u32 + Self::OFFSET;
     pub const NCLIP: u32 = offset_of!(Self, nclip) as u32 + Self::OFFSET;
@@ -542,7 +541,7 @@ impl<A: Allocator + Copy> GteBindings<A> {
     }
 }
 
-impl<A: Allocator + Copy> Default for GteBindings<A> {
+impl Default for GteBindings {
     fn default() -> Self {
         Self::new()
     }
@@ -917,7 +916,7 @@ impl GteCommandField {
     }
 }
 
-impl<A: Allocator> Emu<A> {
+impl Emu {
     /// ```plain
     /// IR1 = MAC1 = (TRX*1000h + RT11*VX0 + RT12*VY0 + RT13*VZ0) SAR (sf*12)
     /// IR2 = MAC2 = (TRY*1000h + RT21*VX0 + RT22*VY0 + RT23*VZ0) SAR (sf*12)
@@ -1460,32 +1459,32 @@ fn transpose3x3<T: SimdElement>(mat: [Simd<T, 3>; 3]) -> [Simd<T, 3>; 3] {
     ]
 }
 
-impl<A: Allocator + Copy> Emu<A> {
+impl Emu {
     pub(crate) fn gte_function(cmd: GteCommandField) -> Option<u32> {
         let cmd = cmd.cmd().ok()?;
         match cmd {
-            GteCmd::Rtps => Some(GteBindings::<A>::RTPS),
-            GteCmd::Nclip => Some(GteBindings::<A>::NCLIP),
-            GteCmd::Op => Some(GteBindings::<A>::OP),
-            GteCmd::Dpcs => Some(GteBindings::<A>::DPCS),
-            GteCmd::Intpl => Some(GteBindings::<A>::INTPL),
-            GteCmd::Mvmva => Some(GteBindings::<A>::MVMVA),
-            GteCmd::Ncds => Some(GteBindings::<A>::NCDS),
-            GteCmd::Cdp => Some(GteBindings::<A>::CDP),
-            GteCmd::Ncdt => Some(GteBindings::<A>::NCDT),
-            GteCmd::Nccs => Some(GteBindings::<A>::NCCS),
-            GteCmd::Cc => Some(GteBindings::<A>::CC),
-            GteCmd::Ncs => Some(GteBindings::<A>::NCS),
-            GteCmd::Nct => Some(GteBindings::<A>::NCT),
-            GteCmd::Sqr => Some(GteBindings::<A>::SQR),
-            GteCmd::Dcpl => Some(GteBindings::<A>::DCPL),
-            GteCmd::Dpct => Some(GteBindings::<A>::DPCT),
-            GteCmd::Avsz3 => Some(GteBindings::<A>::AVSZ3),
-            GteCmd::Avsz4 => Some(GteBindings::<A>::AVSZ4),
-            GteCmd::Rtpt => Some(GteBindings::<A>::RTPT),
-            GteCmd::Gpf => Some(GteBindings::<A>::GPF),
-            GteCmd::Gpl => Some(GteBindings::<A>::GPL),
-            GteCmd::Ncct => Some(GteBindings::<A>::NCCT),
+            GteCmd::Rtps => Some(GteBindings::RTPS),
+            GteCmd::Nclip => Some(GteBindings::NCLIP),
+            GteCmd::Op => Some(GteBindings::OP),
+            GteCmd::Dpcs => Some(GteBindings::DPCS),
+            GteCmd::Intpl => Some(GteBindings::INTPL),
+            GteCmd::Mvmva => Some(GteBindings::MVMVA),
+            GteCmd::Ncds => Some(GteBindings::NCDS),
+            GteCmd::Cdp => Some(GteBindings::CDP),
+            GteCmd::Ncdt => Some(GteBindings::NCDT),
+            GteCmd::Nccs => Some(GteBindings::NCCS),
+            GteCmd::Cc => Some(GteBindings::CC),
+            GteCmd::Ncs => Some(GteBindings::NCS),
+            GteCmd::Nct => Some(GteBindings::NCT),
+            GteCmd::Sqr => Some(GteBindings::SQR),
+            GteCmd::Dcpl => Some(GteBindings::DCPL),
+            GteCmd::Dpct => Some(GteBindings::DPCT),
+            GteCmd::Avsz3 => Some(GteBindings::AVSZ3),
+            GteCmd::Avsz4 => Some(GteBindings::AVSZ4),
+            GteCmd::Rtpt => Some(GteBindings::RTPT),
+            GteCmd::Gpf => Some(GteBindings::GPF),
+            GteCmd::Gpl => Some(GteBindings::GPL),
+            GteCmd::Ncct => Some(GteBindings::NCCT),
         }
     }
 }

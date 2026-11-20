@@ -1,14 +1,12 @@
-use core::alloc::Allocator;
 use derive_more as d;
 use pchan_utils::hex;
 use std::collections::HashMap;
-use std::hash::RandomState;
 
 #[derive(derive_more::Debug, Clone)]
-pub struct DebuggerState<A: Allocator> {
-    pub breakpoints:     HashMap<u32, Breakpoint, RandomState, A>,
+pub struct DebuggerState {
+    pub breakpoints:     HashMap<u32, Breakpoint>,
     pub stopped_on:      Option<Breakpoint>,
-    pub kernel_fn_stack: Vec<KernelFrame, A>,
+    pub kernel_fn_stack: Vec<KernelFrame>,
 }
 
 #[derive(derive_more::Debug, Clone)]
@@ -62,16 +60,16 @@ impl BreakpointKind {
     }
 }
 
-impl<A: Allocator + Copy> DebuggerState<A> {
-    pub fn new(alloc: A) -> Self {
+impl DebuggerState {
+    pub fn new() -> Self {
         Self {
-            breakpoints:     HashMap::new_in(alloc),
+            breakpoints:     HashMap::new(),
             stopped_on:      None,
-            kernel_fn_stack: Vec::new_in(alloc),
+            kernel_fn_stack: Vec::new(),
         }
     }
 }
-impl<A: Allocator> DebuggerState<A> {
+impl DebuggerState {
     pub fn break_on(&mut self, addr: u32, kind: BreakpointKind) -> bool {
         if let Some(brk) = self.breakpoints.get(&(addr & 0x1fff_ffff)) {
             if !brk.enabled {

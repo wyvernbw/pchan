@@ -1,12 +1,11 @@
 use arbitrary_int::prelude::*;
 use bitbybit::*;
-use core::alloc::Allocator;
 use pchan_encode::derive::Endecode;
 
 use crate::io::{CastIOFrom, IOResult, UnhandledIO};
 use crate::{Emu, trace_todo};
 
-impl<A: Allocator> Emu<A> {
+impl Emu {
     pub(crate) fn mdec_read<T: Copy>(&self, address: u32) -> IOResult<T> {
         let address = address & 0x1fff_ffff;
         match address {
@@ -31,7 +30,7 @@ impl<A: Allocator> Emu<A> {
     }
 }
 
-impl<A: Allocator> Emu<A> {
+impl Emu {
     fn mdec_write_ctrl(&mut self, value: MDecCtrl) {
         if value.reset() {
             // TODO: abort mdec cmd

@@ -1,32 +1,30 @@
-use core::alloc::Allocator;
 use core::str::Utf8Error;
 
-use pchan_encode::derive::Endecode;
 use thiserror::Error;
 
 use crate::memory::kb;
 
 const TTY_CAP: usize = kb(16);
 
-#[derive(derive_more::Debug, Clone, Endecode)]
-pub struct Tty<A: Allocator> {
+#[derive(derive_more::Debug, Clone)]
+pub struct Tty {
     #[debug("buf: {}/{}", self.end, TTY_CAP)]
-    pub buf: Box<[u8], A>,
+    pub buf: Box<[u8]>,
     end:     usize,
     mode:    TtyMode,
 }
 
-#[derive(derive_more::Debug, Clone, Endecode)]
+#[derive(derive_more::Debug, Clone)]
 pub enum TtyMode {
     Stdout,
     Tracing,
     Silent,
 }
 
-impl<A: Allocator + Copy> Tty<A> {
-    pub fn new(alloc: A) -> Self {
+impl Tty {
+    pub fn new() -> Self {
         Self {
-            buf:  unsafe { Box::new_zeroed_slice_in(TTY_CAP, alloc).assume_init() },
+            buf:  unsafe { Box::new_zeroed_slice(TTY_CAP).assume_init() },
             end:  0,
             mode: TtyMode::Stdout,
         }
@@ -41,7 +39,7 @@ pub enum TtyFlushError {
     SendErr(#[from] kanal::SendError),
 }
 
-impl<A: Allocator> Tty<A> {
+impl Tty {
     pub fn putchar(&mut self, c: char) {
         if self.end == TTY_CAP {
             tracing::error!(target: "tty", "(p-chan) tty buffer overflow");

@@ -2,12 +2,11 @@ use crate::cpu::Cpu;
 use crate::cpu::gte::{Gte, GteBindings};
 use crate::dynarec_v2::emitters::{EmitCtx, EmitSummary, emit_call, shadow};
 use crate::dynarec_v2::regalloc::Reg;
-use core::alloc::Allocator;
 use dynasm::dynasm;
 use dynasmrt::DynasmApi;
 
 #[allow(clippy::useless_conversion)]
-pub(crate) fn emit_mtc2_ctc2<A: Allocator + Copy>(mut ctx: EmitCtx<A>, rt: u8, rd: u8) {
+pub(crate) fn emit_mtc2_ctc2(mut ctx: EmitCtx, rt: u8, rd: u8) {
     match rd {
         // trunacte u32 to i16 then sign extend
         1 | 3 | 5 | 8 | 9 | 10 | 11 | 36 | 44 | 52 | 58 | 59 | 61 | 62 => {
@@ -41,7 +40,7 @@ pub(crate) fn emit_mtc2_ctc2<A: Allocator + Copy>(mut ctx: EmitCtx<A>, rt: u8, r
                 dynasm!(
                     dynarec.asm
                     ; .arch aarch64
-                    ; ldr x3, [x0, #GteBindings::<A>::WRITE_SXYP]
+                    ; ldr x3, [x0, #GteBindings::WRITE_SXYP]
                     ; blr x3
                 );
             });
@@ -55,7 +54,7 @@ pub(crate) fn emit_mtc2_ctc2<A: Allocator + Copy>(mut ctx: EmitCtx<A>, rt: u8, r
                     dynarec.asm
                     ; .arch aarch64
                     ; mov w1, W(*rt)
-                    ; ldr x3, [x0, #GteBindings::<A>::WRITE_IRGB]
+                    ; ldr x3, [x0, #GteBindings::WRITE_IRGB]
                     ; blr x3
                 );
             });
@@ -69,7 +68,7 @@ pub(crate) fn emit_mtc2_ctc2<A: Allocator + Copy>(mut ctx: EmitCtx<A>, rt: u8, r
                     dynarec.asm
                     ; .arch aarch64
                     ; mov w1, W(*rt)
-                    ; ldr x3, [x0, #GteBindings::<A>::WRITE_LZCS]
+                    ; ldr x3, [x0, #GteBindings::WRITE_LZCS]
                     ; blr x3
                 );
             });
@@ -82,7 +81,7 @@ pub(crate) fn emit_mtc2_ctc2<A: Allocator + Copy>(mut ctx: EmitCtx<A>, rt: u8, r
                 dynasm!(
                     dynarec.asm
                     ; .arch aarch64
-                    ; ldr x3, [x0, #GteBindings::<A>::WRITE_FLAG]
+                    ; ldr x3, [x0, #GteBindings::WRITE_FLAG]
                     ; blr x3
                 );
             });
@@ -104,7 +103,7 @@ pub(crate) fn emit_mtc2_ctc2<A: Allocator + Copy>(mut ctx: EmitCtx<A>, rt: u8, r
 
 #[allow(clippy::useless_conversion)]
 #[cfg(target_arch = "aarch64")]
-pub(crate) fn emit_mfc2_cfc2<A: Allocator + Copy>(mut ctx: EmitCtx<A>, rt: u8, rd: u8) {
+pub(crate) fn emit_mfc2_cfc2(mut ctx: EmitCtx, rt: u8, rd: u8) {
     let rta = ctx.dynarec.alloc_reg_stackless(rt);
 
     match rd {
@@ -114,7 +113,7 @@ pub(crate) fn emit_mfc2_cfc2<A: Allocator + Copy>(mut ctx: EmitCtx<A>, rt: u8, r
                 dynasm!(
                     dynarec.asm
                     ; .arch aarch64
-                    ; ldr x3, [x0, #GteBindings::<A>::READ_IRGB_ORGB]
+                    ; ldr x3, [x0, #GteBindings::READ_IRGB_ORGB]
                     ; blr x3
                 );
             });

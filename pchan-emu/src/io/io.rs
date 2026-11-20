@@ -31,18 +31,19 @@ macro_rules! trace_todo {
     }};
 }
 
-impl<A: Allocator + Copy> Emu<A> {
+impl Emu {
     #[pchan_macros::instrument(level = "trace", "io", skip_all, fields(pc = %hex(self.cpu.pc)))]
     pub async fn run_io(&mut self) {
         #[cfg(feature = "amidog-tests")]
         {
             use crate::bootloader::AMIDOG_TESTS;
-            self.sideload_exe(AMIDOG_TESTS, self.alloc).unwrap();
+            self.sideload_exe(AMIDOG_TESTS).unwrap();
         }
 
         let d_clock = u64::from(self.cpu.d_clock);
         self.cpu.vblank_timer = self.cpu.vblank_timer.wrapping_add(d_clock as u32);
         self.cpu.cycles = self.cpu.cycles.wrapping_add(d_clock);
+        // TODO: use static memory
         self.evque_advance(d_clock).await;
 
         self.run_video_io(d_clock).await;
@@ -103,7 +104,7 @@ impl<A: Allocator + Copy> Emu<A> {
     }
 }
 
-impl<A: Allocator + Copy> Emu<A> {
+impl Emu {
     pub fn write_many<T: Copy>(&mut self, mut address: u32, values: &[T]) {
         for value in values {
             let value = *value;
@@ -177,7 +178,7 @@ impl<A: Allocator + Copy> Emu<A> {
 
 pub type IOResult<T> = Result<T, UnhandledIO>;
 
-impl<A: Allocator> Emu<A> {
+impl Emu {
     #[pchan_macros::instrument(
         level = "trace",
         skip_all,
@@ -212,7 +213,7 @@ impl<A: Allocator> Emu<A> {
     }
 }
 
-impl<A: Allocator> Emu<A> {
+impl Emu {
     #[pchan_macros::instrument(
         level = "trace",
         skip_all,
@@ -255,7 +256,7 @@ impl<A: Allocator> Emu<A> {
 #[error("unhandled io at address {}", hex(self.0))]
 pub struct UnhandledIO(#[debug("{}", hex(self.0))] pub u32);
 
-impl<A: Allocator + Copy> Emu<A> {
+impl Emu {
     pub fn read<T: Copy>(&mut self, address: u32) -> T {
         match self.try_read(address) {
             Ok(value) => value,

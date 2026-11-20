@@ -1,22 +1,69 @@
+use core::time::Duration;
+
 use bevy::app::Propagate;
 use bevy::feathers::dark_theme::create_dark_theme;
 use bevy::feathers::theme::{ThemeProps, UiTheme};
 use bevy::feathers::{FeathersPlugins, tokens};
 use bevy::prelude::*;
+use bevy::render::RenderApp;
 use bevy::window::RequestRedraw;
-use bevy::winit::WinitSettings;
+use bevy::winit::{UpdateMode, WinitSettings};
 
 pub fn ui_plugin(app: &mut App) {
     let theme = startup_get_theme();
 
+    let on_input = UpdateMode::Reactive {
+        wait:                   Duration::MAX,
+        react_to_device_events: false,
+        react_to_user_events:   true,
+        react_to_window_events: true,
+    };
+
     app.add_plugins(FeathersPlugins)
+        .add_message::<RerenderMsg>()
         .insert_resource(UiTheme(dark_theme()))
-        .insert_resource(WinitSettings::desktop_app())
+        .insert_resource(WinitSettings {
+            focused_mode:   on_input,
+            unfocused_mode: on_input,
+        })
         .insert_resource(theme)
         .add_observer(override_feathers_font_sans_serif)
         .add_observer(add_default_font_color)
         .add_observer(on_txt_color_added)
+        .add_systems(Update, rerender_check)
+        // this should run after rerender_check on the next frame
+        .add_systems(PreUpdate, reset_cameras)
         .insert_resource(RemSize(16.0));
+
+    if let Some(subapp) = app.get_sub_app_mut(RenderApp) {
+        subapp.add_message::<RerenderMsg>();
+    }
+}
+
+#[derive(Component, Clone, Copy, Default)]
+pub struct UiCamera;
+
+#[derive(Message, Clone, Copy, Default)]
+pub struct RerenderMsg;
+
+pub fn rerender_check(
+    mut query_cams: Query<&mut Camera, With<UiCamera>>,
+    mut reader: MessageReader<RerenderMsg>,
+    mut redraw: MessageWriter<RequestRedraw>,
+) {
+    if !reader.is_empty() {
+        for mut cam in query_cams.iter_mut() {
+            cam.is_active = true;
+        }
+        reader.clear();
+        redraw.write(RequestRedraw);
+    }
+}
+
+pub fn reset_cameras(query_cams: Query<&mut Camera, With<UiCamera>>) {
+    for mut cam in query_cams {
+        cam.is_active = false;
+    }
 }
 
 #[must_use]
@@ -26,18 +73,19 @@ pub fn startup_get_theme() -> Theme {
     Theme {
         fg,
         border: fg.darker(0.95),
+        bg: Color::BLACK,
     }
 }
 
 fn override_feathers_font_sans_serif(
     _: On<Add<Text>>,
     mut query: Query<&mut Propagate<TextFont>, Added<Propagate<TextFont>>>,
-    mut ev: MessageWriter<RequestRedraw>,
+    mut ev: MessageWriter<RerenderMsg>,
 ) {
     for mut p in &mut query {
         p.0.font = FontSource::ui_sans_serif();
     }
-    ev.write(RequestRedraw);
+    ev.write(RerenderMsg);
 }
 
 #[derive(Component)]
@@ -79,6 +127,7 @@ pub fn dark_theme() -> ThemeProps {
 #[derive(Resource)]
 pub struct Theme {
     pub fg:     Color,
+    pub bg:     Color,
     pub border: Color,
 }
 

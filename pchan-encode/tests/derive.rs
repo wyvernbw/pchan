@@ -302,3 +302,9 @@ fn test_vram() {
 
     assert_eq!(a.buf, b.buf)
 }
+
+#[derive(Endecode)]
+#[endecode(alloc(is_dyn))]
+struct TestDyn {
+    wow: u32,
+}

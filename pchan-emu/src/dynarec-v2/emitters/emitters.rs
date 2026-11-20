@@ -29,8 +29,8 @@ use dynasmrt::DynasmApi;
 use super::ScheduledEmitter;
 use core::alloc::Allocator;
 
-pub struct EmitCtx<'a, A: Allocator> {
-    pub dynarec:        &'a mut Dynarec<A>,
+pub struct EmitCtx<'a> {
+    pub dynarec:        &'a mut Dynarec,
     pub pc:             u32,
     pub d_clock:        u32,
     pub delay_slot:     bool,
@@ -45,14 +45,14 @@ fn cop_reg(cop: u8, reg: u8) -> u8 {
     }
 }
 
-impl<A: Allocator + Copy> EmitCtx<'_, A> {
+impl EmitCtx<'_> {
     fn schedule_in(
         &mut self,
         ops: u32,
         write: Option<u8>,
-        emitter: impl Fn(EmitCtx<A>) -> EmitSummary + 'static,
+        emitter: impl Fn(EmitCtx) -> EmitSummary + 'static,
     ) {
-        let emitter = SmallBox::new(emitter) as DynEmitter<A>;
+        let emitter = SmallBox::new(emitter) as DynEmitter;
         let at = self.pc + ops * 4;
         self.dynarec
             .scheduler
@@ -133,7 +133,7 @@ pub trait DynarecOp {
     }
 
     #[allow(clippy::useless_conversion)]
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary;
+    fn emit(&self, ctx: EmitCtx) -> EmitSummary;
 
     fn boundary(&self) -> Boundary {
         Boundary::None
@@ -223,7 +223,7 @@ pub enum DecodedOp {
 pub struct Illegal;
 
 impl DynarecOp for Illegal {
-    fn emit<A: Allocator + Copy>(&self, _: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, _: EmitCtx) -> EmitSummary {
         EmitSummary::default()
     }
 
@@ -371,7 +371,7 @@ struct EmitAddImm16Args {
     temp:   Option<Reg>,
 }
 
-impl<A: Allocator + Copy> Dynarec<A> {
+impl Dynarec {
     fn emit_add_imm16(
         &mut self,
         EmitAddImm16Args {
@@ -460,7 +460,7 @@ impl<A: Allocator + Copy> Dynarec<A> {
 }
 
 #[inline(always)]
-fn emit_call<A: Allocator + Copy>(ctx: &mut EmitCtx<A>, emitter: impl Fn(&mut Dynarec<A>)) {
+fn emit_call(ctx: &mut EmitCtx, emitter: impl Fn(&mut Dynarec)) {
     #[cfg(target_arch = "aarch64")]
     dynasm!(
         ctx.dynarec.asm
@@ -476,7 +476,7 @@ fn emit_call<A: Allocator + Copy>(ctx: &mut EmitCtx<A>, emitter: impl Fn(&mut Dy
 }
 
 #[cfg(target_arch = "aarch64")]
-fn emit_call_fn_0_arg<A: Allocator + Copy>(ctx: &mut EmitCtx<A>, offset: u32) {
+fn emit_call_fn_0_arg(ctx: &mut EmitCtx, offset: u32) {
     emit_call(ctx, |dynarec| {
         dynasm!(
             dynarec.asm
@@ -503,12 +503,12 @@ pub struct AluRegs<'a> {
     rt: Rt<'a, AllocResultStackless>,
 }
 
-fn emit_alu_reg<A: Allocator + Copy>(
-    mut ctx: EmitCtx<A>,
+fn emit_alu_reg(
+    mut ctx: EmitCtx,
     rd: u8,
     rs: u8,
     rt: u8,
-    alu_op: impl Fn(&mut EmitCtx<A>, AluRegs),
+    alu_op: impl Fn(&mut EmitCtx, AluRegs),
 ) -> EmitSummary {
     let rsa = ctx.dynarec.emit_load_reg_stackless(rs).lock(ctx.dynarec);
     let rta = ctx.dynarec.emit_load_reg_stackless(rt).lock(ctx.dynarec);
@@ -548,12 +548,12 @@ const fn either_zero(rs: u8, rt: u8) -> EitherZero {
 }
 
 #[allow(clippy::useless_conversion)]
-fn emit_shift_by_reg<A: Allocator + Copy>(
-    ctx: EmitCtx<A>,
+fn emit_shift_by_reg(
+    ctx: EmitCtx,
     rd: u8,
     rs: u8,
     rt: u8,
-    alu_op: impl Fn(&mut EmitCtx<A>, AluRegs),
+    alu_op: impl Fn(&mut EmitCtx, AluRegs),
 ) -> EmitSummary {
     if rd == 0 {
         return EmitSummary::default();
@@ -578,12 +578,12 @@ pub struct ShiftImm<'a> {
     imm: u8,
 }
 
-fn emit_shift_imm<A: Allocator + Copy>(
-    ctx: &mut EmitCtx<A>,
+fn emit_shift_imm(
+    ctx: &mut EmitCtx,
     rd: Guest,
     rt: Guest,
     imm: u8,
-    emitter: impl Fn(&mut Dynarec<A>, ShiftImm),
+    emitter: impl Fn(&mut Dynarec, ShiftImm),
 ) -> EmitSummary {
     if rd == 0 {
         return EmitSummary::default();
@@ -619,12 +619,12 @@ pub struct AluImm<'a> {
     imm: i16,
 }
 
-fn emit_alu_imm<A: Allocator + Copy>(
-    mut ctx: EmitCtx<A>,
+fn emit_alu_imm(
+    mut ctx: EmitCtx,
     rt: Guest,
     rs: Guest,
     imm: i16,
-    alu_op: impl Fn(&mut EmitCtx<A>, AluImm),
+    alu_op: impl Fn(&mut EmitCtx, AluImm),
 ) -> EmitSummary {
     let rsa = ctx.dynarec.emit_load_reg_stackless(rs).lock(ctx.dynarec);
     let rta = ctx.dynarec.alloc_reg_stackless(rt);
@@ -643,7 +643,7 @@ fn emit_alu_imm<A: Allocator + Copy>(
     EmitSummary::default()
 }
 
-impl<A: Allocator + Copy> Dynarec<A> {
+impl Dynarec {
     pub fn emit_set_bt<const VALUE: bool>(&mut self) {
         let cop0reg13 = Cpu::cop0_reg_offset(13) as u32;
         match VALUE {
@@ -699,11 +699,11 @@ impl<A: Allocator + Copy> Dynarec<A> {
 /// );
 /// ```
 #[allow(clippy::useless_conversion)]
-fn emit_branch_zero<A: Allocator + Copy>(
-    mut ctx: EmitCtx<A>,
+fn emit_branch_zero(
+    mut ctx: EmitCtx,
     rs: u8,
     imm: i16,
-    selector: impl Fn(&mut EmitCtx<A>) + 'static,
+    selector: impl Fn(&mut EmitCtx) + 'static,
     link: bool,
 ) -> EmitSummary {
     #[cfg(not(target_arch = "aarch64"))]
@@ -754,7 +754,7 @@ fn emit_branch_zero<A: Allocator + Copy>(
             ; movz w3, branch_dest >> 16, lsl #16
             ; movk w3, branch_dest & 0x0000_ffff
             ;; selector(&mut ctx)
-            ; str w2, [x0, Emu::<A>::PC_OFFSET as _]
+            ; str w2, [x0, Emu::PC_OFFSET as _]
             ;; ctx.dynarec.emit_set_bd::<true>()
         );
 
@@ -779,10 +779,7 @@ struct CopMove {
 }
 
 #[allow(clippy::useless_conversion)]
-fn emit_move_to_cop<A: Allocator + Copy>(
-    mut ctx: EmitCtx<A>,
-    CopMove { cop, rd, rt, kind }: CopMove,
-) -> EmitSummary {
+fn emit_move_to_cop(mut ctx: EmitCtx, CopMove { cop, rd, rt, kind }: CopMove) -> EmitSummary {
     let reg = rd + (kind as u8) * 32;
     match (cop, reg) {
         // N/A
@@ -799,7 +796,7 @@ fn emit_move_to_cop<A: Allocator + Copy>(
                 dynasm!(
                     dynarec.asm
                     ; .arch aarch64
-                    ; ldr x3, [x0, #ExternFnTable::<A>::COP0_SET_CAUSE]
+                    ; ldr x3, [x0, #ExternFnTable::COP0_SET_CAUSE]
                     ; blr x3
                 );
             });
@@ -830,12 +827,12 @@ impl DynarecOp for CopNCmd {
     }
 
     #[allow(clippy::useless_conversion)]
-    fn emit<A: Allocator + Copy>(&self, mut ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, mut ctx: EmitCtx) -> EmitSummary {
         if self.cop == 2 {
             use crate::cpu::gte::GteCommandField;
 
             let cmd = GteCommandField::new_with_raw_value(self.imm26);
-            let Some(func) = Emu::<A>::gte_function(cmd) else {
+            let Some(func) = Emu::gte_function(cmd) else {
                 return default();
             };
 
@@ -858,10 +855,7 @@ impl DynarecOp for CopNCmd {
 
 #[allow(clippy::useless_conversion)]
 #[cfg(target_arch = "aarch64")]
-fn emit_move_from_cop<A: Allocator + Copy>(
-    ctx: EmitCtx<A>,
-    CopMove { cop, rd, rt, kind }: CopMove,
-) {
+fn emit_move_from_cop(ctx: EmitCtx, CopMove { cop, rd, rt, kind }: CopMove) {
     use crate::dynarec_v2::emitters::emitters_gte::emit_mfc2_cfc2;
 
     if rt == 0 {
@@ -891,12 +885,12 @@ fn emit_move_from_cop<A: Allocator + Copy>(
 
 #[cfg(target_arch = "aarch64")]
 #[allow(clippy::useless_conversion)]
-fn emit_load<const ALIGNED: bool, A: Allocator + Copy>(
-    mut ctx: EmitCtx<A>,
+fn emit_load<const ALIGNED: bool>(
+    mut ctx: EmitCtx,
     rt: u8,
     rs: u8,
     imm: i16,
-    func_call: impl Fn(&mut EmitCtx<A>) + 'static,
+    func_call: impl Fn(&mut EmitCtx) + 'static,
 ) -> EmitSummary {
     ctx.dynarec.cancel_next_write(rt);
     ctx.dynarec.emit_load_temp_reg(rs, Reg::W(1));
@@ -962,12 +956,12 @@ fn emit_load<const ALIGNED: bool, A: Allocator + Copy>(
 }
 
 #[allow(clippy::useless_conversion)]
-fn emit_store<A: Allocator + Copy>(
-    mut ctx: EmitCtx<A>,
+fn emit_store(
+    mut ctx: EmitCtx,
     rt: u8,
     rs: u8,
     imm: i16,
-    func_call: impl Fn(&mut EmitCtx<A>) + 'static,
+    func_call: impl Fn(&mut EmitCtx) + 'static,
 ) -> EmitSummary {
     ctx.dynarec.emit_load_temp_reg(rs, Reg::W(1));
     ctx.dynarec.emit_load_temp_reg(rt, Reg::W(2));
@@ -1001,12 +995,12 @@ fn emit_store<A: Allocator + Copy>(
 /// ```
 #[allow(clippy::useless_conversion)]
 #[cfg(target_arch = "aarch64")]
-fn emit_branch<A: Allocator + Copy>(
-    mut ctx: EmitCtx<A>,
+fn emit_branch(
+    mut ctx: EmitCtx,
     rs: u8,
     rt: u8,
     imm: i16,
-    selector: impl Fn(&mut EmitCtx<A>) + 'static,
+    selector: impl Fn(&mut EmitCtx) + 'static,
 ) -> EmitSummary {
     let (s1, _) = ctx.alloc_scratch_pair();
     let s1 = s1 as i32;
@@ -1033,7 +1027,7 @@ fn emit_branch<A: Allocator + Copy>(
             ; movz w3, branch_dest >> 16, lsl #16
             ; movk w3, branch_dest & 0x0000_ffff
             ;; selector(&mut ctx)
-            ; str w2, [x0, Emu::<A>::PC_OFFSET as _]
+            ; str w2, [x0, Emu::PC_OFFSET as _]
             ;; ctx.dynarec.emit_set_bd::<true>()
         );
 
@@ -1052,10 +1046,10 @@ enum Hilo {
 }
 
 #[allow(clippy::useless_conversion)]
-fn emit_mthilo<A: Allocator + Copy>(rs: u8, ctx: EmitCtx<A>, hilo: Hilo) -> EmitSummary {
+fn emit_mthilo(rs: u8, ctx: EmitCtx, hilo: Hilo) -> EmitSummary {
     let offset = match hilo {
-        Hilo::Hi => Emu::<A>::HILO_OFFSET + size_of::<u32>(),
-        Hilo::Lo => Emu::<A>::HILO_OFFSET,
+        Hilo::Hi => Emu::HILO_OFFSET + size_of::<u32>(),
+        Hilo::Lo => Emu::HILO_OFFSET,
     };
     let rs = ctx.dynarec.emit_load_reg_stackless(rs);
     ctx.dynarec.lock_register(&rs);

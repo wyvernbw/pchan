@@ -1,17 +1,17 @@
-use core::alloc::Allocator;
 use core::iter;
 
 use crate::Emu;
 use crate::cpu::{Cpu, cycles_to_ms};
 use crate::io::cdrom::cdrom_drive::PlaySeekResult;
 use crate::io::cdrom::cdrom_format::{Bcd, CdromCursor, Mss};
-use crate::io::cdrom::{CDRomState, DriveStatus};
+use crate::io::cdrom::{CDRom, DriveStatus};
 use crate::io::evque::{EvCtx, EventId, EventKind};
 use bitbybit::{bitenum, bitfield};
 use pchan_encode::derive::Endecode;
 use pchan_utils::hex;
 
 use super::HInt;
+use super::cdrom_drive::AudioPlaybackErr;
 
 #[derive(Debug, Clone)]
 pub struct ResponseV2 {
@@ -58,7 +58,8 @@ pub(crate) enum CommandStateV2 {
     GetIdInt3_5,
     GetIdInt2_5,
 
-    Play(PlaySeekResult),
+    PlayInt3(PlaySeekResult),
+    PlayInt1(PlaySeekResult),
 
     TestHC05BiosDateInt3,
 
@@ -101,7 +102,7 @@ const INIT_TIMING: u32 = 0x0013cce;
 const PAUSE_2X_TIMING: u32 = 0x010bd93;
 const PAUSE_1X_TIMING: u32 = 0x021181c;
 
-impl<A: Allocator> Emu<A> {
+impl Emu {
     pub(super) fn cdrom_send_cmd_v2(&mut self, cmd: u8) {
         self.cdrom.status.set_busy_status(true);
         match cmd {
@@ -125,7 +126,7 @@ impl<A: Allocator> Emu<A> {
                 let track = self.cdrom.get_optional_param::<Bcd>();
                 let seek = self.cdrom.drive.get_play_track_lba(track);
                 tracing::info!(target: "cdrom", "{:<14.14}{:?} seek time: {}ms","Play",track.map(Bcd::unpack), cycles_to_ms(seek.seek_time));
-                self.cdrom_continue_cmd(CommandStateV2::Play(seek));
+                self.cdrom_continue_cmd(CommandStateV2::PlayInt3(seek));
                 self.cdrom_queue_response(NOP_TIMING);
             }
 
@@ -363,16 +364,34 @@ impl<A: Allocator> Emu<A> {
                 self.cdrom_end_cmd();
             }
 
-            CommandStateV2::Play(seek) => {
+            CommandStateV2::PlayInt3(seek) => {
                 self.cdrom.drive.status_code.set_play(true);
                 self.cdrom.drive.status_code.set_spindle_mot(true);
                 self.cdrom.drive.cursor.lba = seek.lba;
 
                 self.cdrom_send_response_v2(int3(status));
                 self.cdrom.status.set_busy_status(false);
+                self.cdrom_queue_response(seek.seek_time as u32);
+                self.cdrom_continue_cmd(CommandStateV2::PlayInt1(seek));
 
                 self.cdrom.drive.seek_to_cursor();
             }
+            CommandStateV2::PlayInt1(_) => match self.cdrom.drive.play_audio(&mut self.evque) {
+                Ok(_) => {
+                    self.cdrom
+                        .drive
+                        .request_data_sector(&mut self.cdrom.status, &mut self.cdrom.sector_buf);
+                    let cycles_per_sector = self.cdrom.drive.sector_cycles();
+                    self.cdrom_queue_response(cycles_per_sector as u32);
+                }
+                Err(AudioPlaybackErr::ReachedEnd) => {
+                    tracing::info!(target: "cdrom", "{:<14.14}End of disc","Play");
+                    self.cdrom.drive.status_code.set_spindle_mot(false);
+                    self.cdrom.drive.status_code.set_play(false);
+                    self.cdrom_send_response_v2(int4(self.cdrom.drive.status_code));
+                    self.cdrom_end_cmd();
+                }
+            },
 
             CommandStateV2::SetlocInt3(mss) => {
                 self.cdrom.drive.setloc(mss);
@@ -651,7 +670,7 @@ impl Default for StatusCode {
     }
 }
 
-impl<A: Allocator> CDRomState<A> {
+impl CDRom {
     fn drain_params(&mut self) -> impl Iterator<Item = u8> {
         iter::from_fn(|| self.param_fifo.pop_front())
     }

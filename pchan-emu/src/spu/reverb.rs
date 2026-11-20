@@ -8,12 +8,12 @@ use pchan_utils::MAX_SIMD_WIDTH;
 
 use crate::spu::adsr::apply_volume_i32;
 
-#[derive(Debug, Clone, Endecode)]
-pub struct Reverb<A: Allocator> {
+#[derive(Debug, Clone)]
+pub struct Reverb {
     pub on_off: ReverbOnOff,
 
-    downsamplers: [VecDeque<i32, A>; 2],
-    upsamplers:   [VecDeque<i32, A>; 2],
+    downsamplers: [VecDeque<i32>; 2],
+    upsamplers:   [VecDeque<i32>; 2],
 
     /// 1F801DA2h ESA      base    Reverb Work Area Start Address in Sound RAM
     pub esa: u16,
@@ -162,12 +162,12 @@ pub fn apply_fir_filter_simd<A: Allocator>(buf: &mut VecDeque<i32, A>) -> i16 {
     (sum >> 15).saturating_truncate()
 }
 
-impl<A: Allocator + Copy> Reverb<A> {
-    pub fn new(alloc: A) -> Self {
+impl Reverb {
+    pub fn new() -> Self {
         let mut r = Self {
             on_off:       ReverbOnOff::default(),
-            downsamplers: core::array::from_fn(|_| VecDeque::with_capacity_in(39, alloc)),
-            upsamplers:   core::array::from_fn(|_| VecDeque::with_capacity_in(39, alloc)),
+            downsamplers: core::array::from_fn(|_| VecDeque::with_capacity(39)),
+            upsamplers:   core::array::from_fn(|_| VecDeque::with_capacity(39)),
             esa:          0,
             io:           ReverbIO::default(),
             bfa:          0,
@@ -180,7 +180,7 @@ impl<A: Allocator + Copy> Reverb<A> {
     }
 }
 
-impl<A: Allocator> Reverb<A> {
+impl Reverb {
     pub fn downsample(&mut self, sl: i16, sr: i16) {
         push_input_sample(&mut self.downsamplers[0], sl);
         push_input_sample(&mut self.downsamplers[1], sr);

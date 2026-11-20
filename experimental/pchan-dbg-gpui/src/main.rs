@@ -454,64 +454,14 @@ impl EmuContext {
     }
 
     fn save_state(&mut self, cx: &mut Context<Self>) -> miette::Result<()> {
-        cx.foreground_executor().block_on(async {
-            self.emu.gpu.task_gpu_flush_draw_calls().await;
-            self.emu.gpu.request_vram().await;
-        });
-        let sink = Vec::new_in(self.alloc);
-        let ser = pchan_encode::encode(&mut self.emu, sink, self.alloc).into_diagnostic()?;
-        let mut f = fs::File::create("/tmp/pchan-save.bin").into_diagnostic()?;
-        f.write_all(ser.bytes()).into_diagnostic()?;
-        {
-            const W: usize = 1024;
-            const H: usize = 512;
-            let expand = |c: u16| -> u8 {
-                let c = (c & 0x1f) as u8;
-                (c << 3) | (c >> 2)
-            };
-
-            let mut ppm = format!("P6\n{W} {H}\n255\n").into_bytes();
-            let vram = cx
-                .foreground_executor()
-                .block_on(pchan_emu::gpu::VRAM.lock());
-            for px in vram.iter().take(W * H) {
-                ppm.extend_from_slice(&[expand(*px), expand(*px >> 5), expand(*px >> 10)]);
-            }
-            fs::write("/tmp/vram-save.ppm", &ppm).into_diagnostic()?;
-        }
+        todo!();
 
         tracing::info!("SAVED");
         Ok(())
     }
 
     fn load_state(&mut self, cx: &mut Context<Self>) -> miette::Result<()> {
-        self.hard_reset();
-        let mut f = fs::File::open("/tmp/pchan-save.bin").into_diagnostic()?;
-        let mut sink = Vec::new();
-        f.read_to_end(&mut sink).into_diagnostic()?;
-        pchan_encode::decode_in_place(&mut self.emu, sink, self.alloc).into_diagnostic()?;
-        self.emu.dynarec_cache.flush();
-        self.emu.gpu.drain_messages();
-        println!("LOADED");
-        tracing::info!("LOADED");
-
-        {
-            const W: usize = 1024;
-            const H: usize = 512;
-            let expand = |c: u16| -> u8 {
-                let c = (c & 0x1f) as u8;
-                (c << 3) | (c >> 2)
-            };
-
-            let mut ppm = format!("P6\n{W} {H}\n255\n").into_bytes();
-            let vram = cx
-                .foreground_executor()
-                .block_on(pchan_emu::gpu::VRAM.lock());
-            for px in vram.iter().take(W * H) {
-                ppm.extend_from_slice(&[expand(*px), expand(*px >> 5), expand(*px >> 10)]);
-            }
-            fs::write("/tmp/vram-load.ppm", &ppm).into_diagnostic()?;
-        }
+        todo!();
 
         Ok(())
     }
@@ -521,11 +471,10 @@ impl EmuContext {
         self.runner.frame_idx = 0;
 
         let bios_path = self.emu.boot.bios_path.clone();
-        let alloc = self.emu.alloc;
         let disc = self.emu.cdrom.take_disc();
-        let mut new = Emu::new_in(alloc);
+        let mut new = Emu::new();
         new.set_bios_path(bios_path);
-        new.load_bios(alloc).unwrap();
+        new.load_bios().unwrap();
         new.cpu.jump_to_bios();
         new.tty.set_tracing();
         new.cdrom.put_disc(disc);
@@ -714,10 +663,7 @@ impl PChanApp {
 
                     view.update(cx, move |view, cx| -> miette::Result<()> {
                         view.emucx.update(cx, |emucx, cx| -> miette::Result<()> {
-                            emucx
-                                .emu
-                                .sideload_exe(&exe, emucx.alloc)
-                                .into_diagnostic()?;
+                            emucx.emu.sideload_exe(&exe).into_diagnostic()?;
                             emucx.content_path = ContentPath::Disc(content_path);
                             Ok(())
                         })?;
@@ -1424,8 +1370,8 @@ enum ContentPath {
 }
 
 pub struct EmuContext {
-    emu:                Emu<alloc::alloc::Global>,
-    runner:             Runner<alloc::alloc::Global>,
+    emu:                Emu,
+    runner:             Runner,
     run_for_one_frame:  bool,
     run_once:           bool,
     running_notify:     event_listener::Event,
@@ -1441,7 +1387,6 @@ pub struct EmuContext {
     pc_history:         StaticRb<u32, 50>,
     content_path:       ContentPath,
     input:              pchan_input::Input,
-    alloc:              alloc::alloc::Global,
 }
 
 struct RenderedFrameEvent;
@@ -1469,9 +1414,9 @@ use crate::game_surface::{GameSurface, SurfaceState, create_target};
 
 impl EmuContext {
     pub fn new(cx: &App) -> miette::Result<Self> {
-        let mut emu = Emu::new_in(alloc::alloc::Global);
+        let mut emu = Emu::new();
         emu.set_bios_path(std::env::var("PCHAN_BIOS").into_diagnostic()?);
-        emu.load_bios(alloc::alloc::Global).into_diagnostic()?;
+        emu.load_bios().into_diagnostic()?;
         emu.cpu.jump_to_bios();
         emu.tty.set_tracing();
 
@@ -1492,11 +1437,10 @@ impl EmuContext {
         let gpu = Arc::new(gpu);
         gpu.clone().start();
 
-        let mut runner =
-            Runner::new_in(alloc::alloc::Global).with_config(pchan_emu::run::RunnerConfig {
-                force_mode: Some(pchan_emu::run::RunnerMode::Dynarec),
-                speed:      pchan_emu::run::EmuSpeed::Percentage(NonZeroU16::new(100).unwrap()),
-            });
+        let mut runner = Runner::new().with_config(pchan_emu::run::RunnerConfig {
+            force_mode: Some(pchan_emu::run::RunnerMode::Dynarec),
+            speed:      pchan_emu::run::EmuSpeed::Percentage(NonZeroU16::new(100).unwrap()),
+        });
         runner.running = false;
 
         Ok(EmuContext {
@@ -1512,7 +1456,6 @@ impl EmuContext {
             cycles_per_run: 0,
             real_time_running: Duration::ZERO,
             run_for_one_frame: false,
-            alloc: alloc::alloc::Global,
             pc_history: StaticRb::default(),
             content_path: ContentPath::None,
             input: pchan_input::Input::new(),

@@ -7,8 +7,6 @@ mod cdrom_format;
 #[path = "./cdrom-ver.rs"]
 mod cdrom_ver;
 
-use core::alloc::Allocator;
-
 use alloc::collections::VecDeque;
 use pchan_encode::derive::Endecode;
 
@@ -25,9 +23,8 @@ use pchan_utils::hex;
 
 use super::evque::EventKind;
 
-#[derive(derive_more::Debug, Clone, Endecode)]
-#[endecode(alloc(default))]
-pub struct CDRomState<A: Allocator> {
+#[derive(derive_more::Debug, Clone, Default)]
+pub struct CDRom {
     pub status:    CDRomStatusReg,
     hint_status:   CDRomHIntSts,
     hint_mask:     CDRomHIntMask,
@@ -37,9 +34,11 @@ pub struct CDRomState<A: Allocator> {
     result_fifo:   heapless::Deque<u8, 16>,
     pub data_last: u8,
     #[debug(skip)]
-    #[endecode(alloc(with = VecDeque::new_in))]
-    pub data_fifo: VecDeque<u8, A>,
+    pub data_fifo: VecDeque<u8>,
     ver:           CDRomVer,
+
+    pub sector_buf:   VecDeque<u8>,
+    pub audio_sample: (i16, i16),
 
     drive: CdromDrive,
     ev_id: u32,
@@ -66,7 +65,7 @@ enum DriveStatus {
 /// - [x] W CD cmd reg
 /// - [x] R CD Irq flag
 /// - [x] R res fifo
-impl<A: Allocator> Emu<A> {
+impl Emu {
     #[pchan_macros::pchan_instrument_write]
     pub fn cdrom_write<T: Copy>(&mut self, address: u32, value: T) -> Result<(), UnhandledIO> {
         let address = address & 0x1fffffff;
@@ -251,7 +250,11 @@ impl CDRomStatusReg {
     }
 }
 
-impl<A: Allocator> CDRomState<A> {
+impl CDRom {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
     #[must_use]
     pub fn bank(&self) -> u8 {
         self.status.bank().as_u8()
@@ -364,7 +367,7 @@ struct CDRomReqRegister {
     bfrd: bool,
 }
 
-impl<A: Allocator> CDRomState<A> {
+impl CDRom {
     fn write_h_clr_ctl(&mut self, hclrctl: CDRomHClrCtl) {
         let hintsts = &mut self.hint_status;
 
@@ -392,9 +395,7 @@ impl<A: Allocator> CDRomState<A> {
         }
         // TODO: smap, reset decoder
     }
-}
 
-impl<A: Allocator> CDRomState<A> {
     fn param_push(&mut self, param: u8) {
         match self.param_fifo.push_back(param) {
             Ok(()) => {

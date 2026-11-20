@@ -1,7 +1,6 @@
 pub mod joypad;
 pub mod memcard;
 
-use core::alloc::Allocator;
 use core::cmp;
 
 use arbitrary_int::prelude::*;
@@ -21,7 +20,7 @@ use crate::{Emu, trace_todo};
 
 const HI_Z: u32 = 0xff;
 
-#[derive(Default, derive_more::Debug, Clone, Endecode)]
+#[derive(Default, derive_more::Debug, Clone)]
 pub struct SioState {
     sio0stat: SioStatusReg,
     sio1stat: SioStatusReg,
@@ -133,7 +132,7 @@ pub struct Sio0Rx(Deque<u8, 4>);
 
 const BD_RATE: u32 = Cpu::CLOCK * 8 / 250_000;
 
-impl<A: Allocator> Emu<A> {
+impl Emu {
     #[pchan_macros::instrument(target = "sio", skip_all, fields(pc = %hex(self.cpu.pc)))]
     pub fn sio_write<T: Copy>(&mut self, address: u32, value: T) -> Result<(), UnhandledIO> {
         let address = address & 0x1fffffff;
@@ -733,7 +732,7 @@ impl SioState {
         false
     }
 
-    fn schedule_proc_tx<A: Allocator>(&mut self, evque: &mut Evque<A>) {
+    fn schedule_proc_tx(&mut self, evque: &mut Evque) {
         self.sio0_proc_tx_id += 1;
         evque.schedule(EventKind::Sio0ProcTx, self.sio0_proc_tx_id, BD_RATE.into());
     }
@@ -745,7 +744,7 @@ impl SioState {
         self.sio0_proc_tx_id += 1;
     }
 
-    fn sio0_tx_pop<A: Allocator>(&mut self, evque: &mut Evque<A>) -> Option<u8> {
+    fn sio0_tx_pop(&mut self, evque: &mut Evque) -> Option<u8> {
         match self.sio0_tx {
             Sio0Tx::Idle => None,
             Sio0Tx::Transferring(value, Some(next)) => {

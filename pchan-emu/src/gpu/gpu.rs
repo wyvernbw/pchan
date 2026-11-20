@@ -88,14 +88,14 @@ pub type VramSink = Mutex<[u16; vram_size::<u16>()]>;
 pub static VRAM: VramSink = Mutex::new([0u16; vram_size::<u16>()]);
 pub static VRAM_REF: &VramSink = &VRAM;
 
-#[derive(derive_more::Debug, Clone, Endecode)]
-pub struct GpuState<A: Allocator> {
+#[derive(derive_more::Debug, Clone)]
+pub struct GpuState {
     #[debug(skip)]
     pub gpustat:      GpuStatReg,
     pub gp0:          Gp0,
     pub gp0read:      [u16; 2],
-    pub gp0read_fifo: VecDeque<u16, A>,
-    pub gp0write:     VecDeque<u32, A>,
+    pub gp0read_fifo: VecDeque<u16>,
+    pub gp0write:     VecDeque<u32>,
     pub dp:           Display,
     /// GP0(0xe2) - Texture Window setting
     pub tex_window:   Gp0TexWindowCmd,
@@ -104,24 +104,17 @@ pub struct GpuState<A: Allocator> {
 
     pending_write:        Option<Gp0HostBlit>,
     pending_read:         Option<Gp0HostBlit>,
-    pending_draw_calls:   VecDeque<DrawCall, A>,
+    pending_draw_calls:   VecDeque<DrawCall>,
     ongoing_read:         Option<Gp0HostBlit>,
     draw_calls_in_flight: bool,
-    #[endecode(skip)]
     pub(crate) draw_idx:  usize,
 
     #[debug(skip)]
-    #[endecode(skip)]
     pub conn:          Conn,
-    #[endecode(skip)]
     pub last_vblank:   Instant,
     pub vblank_signal: bool,
 
-    #[endecode(skip)]
     pub vram_mutation_signal: bool,
-    #[debug(skip)]
-    #[endecode(skip)]
-    alloc:                    A,
 }
 
 #[derive(derive_more::Debug, Clone, Default, Endecode)]
@@ -132,8 +125,8 @@ pub enum GpuModel {
     Gpu208Pin,
 }
 
-impl<A: Allocator + Copy> GpuState<A> {
-    pub fn new(alloc: A) -> Self {
+impl GpuState {
+    pub fn new() -> Self {
         let mut gpustat = GpuStatReg::default();
         gpustat.mock_ready();
         Self {
@@ -152,14 +145,13 @@ impl<A: Allocator + Copy> GpuState<A> {
             last_vblank: Instant::now(),
             vblank_signal: false,
             vram_mutation_signal: false,
-            alloc,
-            gp0write: VecDeque::with_capacity_in(256 * 256 * 2, alloc),
+            gp0write: VecDeque::with_capacity(256 * 256 * 2),
             pending_read: None,
             ongoing_read: None,
             pending_write: None,
-            gp0read_fifo: VecDeque::new_in(alloc),
+            gp0read_fifo: VecDeque::new(),
             draw_idx: 0,
-            pending_draw_calls: VecDeque::new_in(alloc),
+            pending_draw_calls: VecDeque::new(),
         }
     }
 }
@@ -181,7 +173,7 @@ fn set_mask_bit(value: u16, set: bool) -> u16 {
     }
 }
 
-impl<A: Allocator + Copy> Emu<A> {
+impl Emu {
     #[pchan_macros::instrument(level = "trace", skip(self), "gpu:r")]
     pub fn gpu_read<T: Copy>(&mut self, address: u32) -> IOResult<T> {
         let address = address & 0x1fffffff;
@@ -334,7 +326,7 @@ impl<A: Allocator + Copy> Emu<A> {
     }
 
     pub(crate) fn gpu_gp0_drain_write_queue(&mut self) {
-        let mut data = mem::replace(&mut self.gpu.gp0write, VecDeque::new_in(self.alloc));
+        let mut data = mem::take(&mut self.gpu.gp0write);
         while let Some(word) = data.pop_front() {
             self.gpu_gp0_cmd(GpuCmd::new_with_raw_value(word));
         }
@@ -595,10 +587,7 @@ impl<A: Allocator + Copy> Emu<A> {
     }
 
     pub(crate) async fn task_gpu_issue_draw_call(&mut self) {
-        let mut draw_call_kinds = mem::replace(
-            &mut self.gpu.pending_draw_calls,
-            VecDeque::new_in(self.alloc),
-        );
+        let mut draw_call_kinds = mem::take(&mut self.gpu.pending_draw_calls);
         for kind in draw_call_kinds.drain(..) {
             self.gpu.issue_draw_call(kind).await
         }
@@ -613,7 +602,7 @@ impl<A: Allocator + Copy> Emu<A> {
     }
 }
 
-impl<A: Allocator> Emu<A> {
+impl Emu {
     pub(crate) async fn run_gpu(&mut self) {
         if let Some(blit) = &self.gpu.ongoing_read {
             let vram = VRAM.lock().await;
@@ -634,13 +623,13 @@ impl<A: Allocator> Emu<A> {
     }
 }
 
-impl<A: Allocator + Clone> Emu<A> {
-    pub fn gpu_reconnect(&mut self, other: &Emu<A>) {
+impl Emu {
+    pub fn gpu_reconnect(&mut self, other: &Emu) {
         self.gpu.conn = other.gpu.conn.clone();
     }
 }
 
-impl<A: Allocator> GpuState<A> {
+impl GpuState {
     pub fn get_gpu_info_cmd(&self, cmd: GpuCmd) -> Option<GpuInfoCmd> {
         let value = cmd.raw_value();
         let value = match self.model {
@@ -655,7 +644,7 @@ impl<A: Allocator> GpuState<A> {
     }
 }
 
-impl<A: Allocator + Copy> GpuState<A> {
+impl GpuState {
     pub async fn task_gpu_flush_draw_calls(&mut self) {
         self.draw_idx += 1;
         self.conn
@@ -708,7 +697,7 @@ fn vram_get(vram: &[u16], coord: VramCoord) -> u16 {
     vram[addr]
 }
 
-impl<A: Allocator> GpuState<A> {
+impl GpuState {
     pub fn flip_even_odd(&mut self, even_odd: Option<DrawEvenOdd>) {
         if self.gpustat.v_interlace() {
             let even_odd = even_odd.unwrap_or_else(|| self.gpustat.even_odd_in_vblank());
@@ -1216,7 +1205,7 @@ pub enum VideoEventKind {
     Vblank,
 }
 
-impl<A: Allocator> GpuState<A> {
+impl GpuState {
     #[must_use]
     pub fn video_cycles_per_scanline(&self) -> u64 {
         match self.gpustat.video_mode() {
@@ -1303,7 +1292,7 @@ pub struct Display {
 /// are not absolute dot positions, but relative timings tied to HSYNC.
 ///
 /// see <https://psx-spx.consoledev.net/graphicsprocessingunitgpu/#gp106h-horizontal-display-range-on-screen>
-impl<A: Allocator + Copy> Emu<A> {
+impl Emu {
     const fn cpu_cycles_to_video_cycles(&mut self, cycles: u64) -> u64 {
         // this might be based on the actual console hardware not on the
         // video mode you set in the gpu

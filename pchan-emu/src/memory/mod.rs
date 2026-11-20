@@ -1,6 +1,3 @@
-use core::alloc::Allocator;
-
-use pchan_encode::derive::Endecode;
 #[cfg(feature = "trace")]
 use pchan_utils::hex;
 
@@ -27,17 +24,17 @@ pub const fn from_kb(value: usize) -> usize {
     value / 1024
 }
 
-pub fn buffer<A: Allocator + Copy>(size: usize, alloc: A) -> Box<[u8], A> {
+pub fn buffer(size: usize) -> Box<[u8]> {
     // SAFETY: memory is zeroed out
-    unsafe { Box::new_zeroed_slice_in(size, alloc).assume_init() }
+    unsafe { Box::new_zeroed_slice(size).assume_init() }
 }
 
-pub type Buffer<A> = Box<[u8], A>;
+pub type Buffer = Box<[u8]>;
 
-#[derive(derive_more::Debug, Clone, Endecode)]
+#[derive(derive_more::Debug, Clone)]
 #[debug("memory:{}kb", MEM_SIZE/1024)]
-pub struct MemoryState<A: Allocator> {
-    pub buf: Buffer<A>,
+pub struct Memory {
+    pub buf: Buffer,
 }
 
 pub struct MemMap {
@@ -75,15 +72,15 @@ static MEM_SIZE: usize = kb(2048 + 8192) + kb(1) + kb(8) + kb(8) + kb(2048) + kb
 // const MEM_SIZE: usize = 600 * 1024 * 1024;
 static MEM_KB: usize = from_kb(MEM_SIZE) + 1;
 
-impl<A: Allocator + Copy> MemoryState<A> {
-    pub fn new(alloc: A) -> Self {
+impl Memory {
+    pub fn new() -> Self {
         Self {
-            buf: buffer(MEM_SIZE, alloc),
+            buf: buffer(MEM_SIZE),
         }
     }
 }
 
-impl<A: Allocator> MemoryState<A> {
+impl Memory {
     #[inline(always)]
     pub fn read_region<T: Copy>(&self, host_region: usize, guest_region: usize, address: u32) -> T {
         let offset = (address & 0x1fff_ffff) as usize - (guest_region & 0x1fff_ffff);
@@ -108,7 +105,7 @@ impl<A: Allocator> MemoryState<A> {
     }
 }
 
-impl<A: Allocator> Emu<A> {
+impl Emu {
     #[pchan_macros::instrument(
         level = "trace",
         skip_all,

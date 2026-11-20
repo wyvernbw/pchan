@@ -1,6 +1,4 @@
-use alloc::alloc::Global;
 use alloc::sync::Arc;
-use core::alloc::Allocator;
 use core::num::NonZeroU16;
 use core::sync::atomic::{AtomicU32, Ordering};
 use core::time::Duration;
@@ -9,7 +7,7 @@ use std::time::Instant;
 
 use kanal::Sender;
 use pchan_bind::ringbuf::storage::Heap;
-use pchan_bind::ringbuf::traits::{Consumer, Producer, Split};
+use pchan_bind::ringbuf::traits::{Consumer, Split};
 use pchan_bind::ringbuf::wrap::caching::Caching;
 use pchan_bind::ringbuf::{HeapRb, SharedRb};
 use pchan_utils::{Chan, hex};
@@ -23,18 +21,16 @@ use crate::memory::mb;
 use crate::{Emu, dynarec_v2};
 
 #[derive(derive_more::Debug)]
-pub struct Runner<A: Allocator> {
+pub struct Runner {
     interpreter:     Interpreter,
     pub(crate) mode: RunnerMode,
     pub config:      RunnerConfig,
     pub running:     bool,
     pub frame_idx:   u64,
-    transport:       Transport<A>,
+    transport:       Transport,
     // actor_tx:        Caching<Arc<SharedRb<Heap<CompileActorMsg>>>, true, false>,
-    dynarec:         Dynarec<A>,
+    dynarec:         Dynarec,
     actor_handle:    ActorHandle,
-    #[debug(skip)]
-    alloc:           A,
 }
 
 #[derive(Default, Debug, Clone, Copy, PartialEq)]
@@ -67,6 +63,20 @@ impl EmuSpeed {
     pub const fn percentage(p: u16) -> Self {
         EmuSpeed::Percentage(NonZeroU16::new(p).unwrap())
     }
+
+    #[must_use]
+    pub const fn is_unlimited(self) -> bool {
+        matches!(self, Self::Unlimited)
+    }
+
+    #[must_use]
+    pub const fn is_sped_up(self) -> bool {
+        if let EmuSpeed::Percentage(p) = self {
+            p.get() > 100
+        } else {
+            false
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -80,16 +90,16 @@ enum CompileActorMsg {
     Kill,
 }
 
-enum CompileActorResponse<A: Allocator> {
-    Compiled(Result<(u32, fn(*mut Emu<A>)), PipelineCompileError>),
+enum CompileActorResponse {
+    Compiled(Result<(u32, fn(*mut Emu)), PipelineCompileError>),
 }
 
 #[derive(Debug, Clone)]
-struct Transport<A: Allocator> {
-    out_chan: Chan<CompileActorResponse<A>>,
+struct Transport {
+    out_chan: Chan<CompileActorResponse>,
 }
 
-impl<A: Allocator> Transport<A> {
+impl Transport {
     fn new() -> Self {
         Transport {
             out_chan: kanal::bounded(1024),
@@ -97,21 +107,15 @@ impl<A: Allocator> Transport<A> {
     }
 }
 
-impl<A: Allocator> Default for Transport<A> {
+impl Default for Transport {
     fn default() -> Self {
         Transport::new()
     }
 }
 
-impl Runner<Global> {
+impl Runner {
     #[must_use]
     pub fn new() -> Self {
-        Self::new_in(Global)
-    }
-}
-
-impl<A: Allocator + Copy + Clone> Runner<A> {
-    pub fn new_in(alloc: A) -> Self {
         let transport = Transport::new();
         let rb = HeapRb::<CompileActorMsg>::new(mb(32));
         let (prod, _cons) = rb.split();
@@ -130,9 +134,8 @@ impl<A: Allocator + Copy + Clone> Runner<A> {
             config: RunnerConfig::default(),
             transport,
             // actor_tx: prod,
-            dynarec: Dynarec::new(CreateDynarecParams::new(alloc)),
+            dynarec: Dynarec::new(CreateDynarecParams::new()),
             actor_handle,
-            alloc,
             running: true,
             frame_idx: 0,
         }
@@ -144,6 +147,7 @@ impl<A: Allocator + Copy + Clone> Runner<A> {
         self
     }
 
+    #[must_use]
     pub fn config(&self) -> RunnerConfig {
         self.config
     }
@@ -152,11 +156,12 @@ impl<A: Allocator + Copy + Clone> Runner<A> {
         self.config = config;
     }
 
+    #[must_use]
     pub fn mode(&self) -> RunnerMode {
         self.config.force_mode.unwrap_or(RunnerMode::Dynarec)
     }
 
-    pub async fn execute(&mut self, emu: &mut Emu<A>) {
+    pub async fn execute(&mut self, emu: &mut Emu) {
         match self.config.force_mode {
             Some(RunnerMode::Interpreter) => loop {
                 let (result, _, _) = self.interpreter.run_instruction(emu).await;
@@ -229,9 +234,8 @@ impl<A: Allocator + Copy + Clone> Runner<A> {
 
     fn compile_actor(
         mut rx: Caching<Arc<SharedRb<Heap<CompileActorMsg>>>, false, true>,
-        tx: &Sender<CompileActorResponse<A>>,
+        tx: &Sender<CompileActorResponse>,
         handle: &ActorHandle,
-        alloc: A,
     ) {
         enum ActorState {
             Idle,
@@ -258,11 +262,7 @@ impl<A: Allocator + Copy + Clone> Runner<A> {
                     op_count: 0,
                 }
             }
-            pub fn emit_op<A: Allocator + Copy>(
-                &mut self,
-                dynarec: &mut Dynarec<A>,
-                op: DecodedOp,
-            ) {
+            pub fn emit_op(&mut self, dynarec: &mut Dynarec, op: DecodedOp) {
                 self.pc_updated |= op
                     .emit(EmitCtx {
                         dynarec,
@@ -294,11 +294,7 @@ impl<A: Allocator + Copy + Clone> Runner<A> {
                 }
                 self.op_count += 1;
             }
-            pub fn advance<A: Allocator + Copy>(
-                mut self,
-                dynarec: &mut Dynarec<A>,
-                op: DecodedOp,
-            ) -> ActorState {
+            pub fn advance(mut self, dynarec: &mut Dynarec, op: DecodedOp) -> ActorState {
                 self.emit_op(dynarec, op);
                 self = CompileState {
                     pc: self.pc + 4,
@@ -312,7 +308,7 @@ impl<A: Allocator + Copy + Clone> Runner<A> {
         }
 
         let mut state = ActorState::Idle;
-        let mut dynarec = Dynarec::new(CreateDynarecParams::new(alloc));
+        let mut dynarec = Dynarec::new(CreateDynarecParams::new());
         let sleep_duration = Duration::from_millis(2);
         let mut last_packet = Instant::now();
         let mut start = dynarec.asm.offset();
@@ -330,7 +326,7 @@ impl<A: Allocator + Copy + Clone> Runner<A> {
                     match state {
                         ActorState::Idle => {
                             start = dynarec.asm.offset();
-                            dynarec.reset(alloc);
+                            dynarec.reset();
                             dynarec.emit_block_prelude();
                             let compile_state = CompileState::new(pc);
                             handle.currently_compiling.store(pc, Ordering::Release);
@@ -384,8 +380,8 @@ impl<A: Allocator + Copy + Clone> Runner<A> {
 
     pub async fn run_until_vblank_with(
         &mut self,
-        emu: &mut Emu<A>,
-        mut hook: impl FnMut(&Emu<A>) -> bool,
+        emu: &mut Emu,
+        mut hook: impl FnMut(&Emu) -> bool,
     ) -> Option<Duration> {
         if !self.running {
             return None;
@@ -439,7 +435,7 @@ impl<A: Allocator + Copy + Clone> Runner<A> {
         Some(start.elapsed())
     }
 
-    pub async fn run_until_vblank(&mut self, emu: &mut Emu<A>) -> Option<Duration> {
+    pub async fn run_until_vblank(&mut self, emu: &mut Emu) -> Option<Duration> {
         self.run_until_vblank_with(emu, |_| false).await
     }
 
@@ -457,7 +453,7 @@ impl<A: Allocator + Copy + Clone> Runner<A> {
     }
 }
 
-impl Default for Runner<Global> {
+impl Default for Runner {
     fn default() -> Self {
         Self::new()
     }

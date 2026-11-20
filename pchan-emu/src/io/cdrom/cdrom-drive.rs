@@ -17,15 +17,14 @@ use crate::io::cdrom::cdrom_format::{
     Bcd, CdromCursor, CueFormatParseErr, CueSheet, Mss, SECTOR_USER_SIZE, mss_to_lba,
 };
 use crate::io::cdrom::{CDRomStatusReg, DriveStatus};
-use crate::io::evque::EventId;
+use crate::io::evque::{EventId, EventKind, Evque};
 
 use super::cdrom_cmds::SetModeSectSize;
 
-#[derive(Default, derive_more::Debug, Endecode)]
+#[derive(derive_more::Debug, Default)]
 pub struct CdromDrive {
     pub cursor:        CdromCursor,
     pub current_track: Option<u8>,
-    #[endecode(alloc(global))]
     pub toc:           Option<CueSheet>,
     pub old_cursor:    CdromCursor,
     pub setloc_armed:  bool,
@@ -36,11 +35,8 @@ pub struct CdromDrive {
     pub drive_state:   DriveState,
     pub command_state: CommandState,
     pub cmd_state_v2:  CommandStateV2,
-    #[endecode(skip)]
     pub(super) disc:   Option<Disc>,
-    #[endecode(skip)]
     host_disc_err:     Option<std::io::Error>,
-    #[endecode(skip)]
     open_disc_state:   Option<OpenDiscFSM>,
 }
 
@@ -72,6 +68,7 @@ pub enum DriveState {
     Idle,
     ReadN(EventId),
     SeekL(EventId),
+    Playing(EventId),
 }
 
 #[derive(Default, derive_more::Debug, Clone, Endecode)]
@@ -179,6 +176,30 @@ impl CdromDrive {
 
             data_fifo.extend(sector);
         }
+    }
+
+    fn audio_playback_time(&self) -> u64 {
+        match self.mode.speed() {
+            // 44100 Hz / 75 Hz
+            SetModeSpeed::Normal => 588,
+            // 44100 Hz / (2 * 75 Hz)
+            SetModeSpeed::Double => 294,
+        }
+    }
+
+    pub(crate) fn play_audio(&mut self, evque: &mut Evque) -> Result<(), AudioPlaybackErr> {
+        if self.cursor.to_mss::<u8>().min > 74 {
+            return Err(AudioPlaybackErr::ReachedEnd);
+        }
+        match self.drive_state {
+            DriveState::Playing(_) => {}
+            _ => {
+                // TODO: might need to sync with the spu
+                evque.schedule(EventKind::CdromAudioPlayback, 0, self.audio_playback_time());
+                self.drive_state = DriveState::Playing(0);
+            }
+        }
+        Ok(())
     }
 
     pub(super) fn set_command_state(&mut self, state: CommandState) {
@@ -312,6 +333,12 @@ impl CdromDrive {
             }
         }
     }
+}
+
+#[derive(thiserror::Error, Debug)]
+pub(crate) enum AudioPlaybackErr {
+    #[error("reached end of disc")]
+    ReachedEnd,
 }
 
 #[derive(Default, derive_more::Debug, Endecode, Clone, Copy, PartialEq, Eq)]
@@ -476,7 +503,7 @@ pub enum OpenDiscErr {
     InvalidPath(PathBuf),
 }
 
-impl<A: Allocator + Copy> Emu<A> {
+impl Emu {
     pub fn open_disc(
         &mut self,
         path: impl AsRef<Path>,
@@ -489,8 +516,9 @@ impl<A: Allocator + Copy> Emu<A> {
                 let mut buf = String::new();
                 let n = format.read_to_string(&mut buf)?;
                 let buf = &buf[..n];
-                let cue = buf.parse::<CueSheet>()?;
-                Ok(OpenDiscFSM::NeedBin(cue))
+                // let cue = buf.parse::<CueSheet>()?;
+                // Ok(OpenDiscFSM::NeedBin(cue))
+                todo!()
             }
             _ => self
                 .cdrom
@@ -511,19 +539,43 @@ impl<A: Allocator + Copy> Emu<A> {
     ) -> Result<(), OpenDiscErr> {
         match fsm {
             OpenDiscFSM::NeedBin(cue_format) => {
-                let bin_name = &cue_format.filename;
-                let original_path = original_path.as_ref();
-                let path = original_path
-                    .parent()
-                    .ok_or_else(|| OpenDiscErr::InvalidPath(original_path.to_owned()))?
-                    .to_owned();
-                let path = path.join(bin_name);
-                let reader = self.cdrom.drive.open_disc_bin(path, streamed)?;
-                self.cdrom.drive.disc = Some(Disc::CueBin(cue_format, reader));
-                Ok(())
+                // let bin_name = &cue_format.filename;
+                // let original_path = original_path.as_ref();
+                // let path = original_path
+                //     .parent()
+                //     .ok_or_else(|| OpenDiscErr::InvalidPath(original_path.to_owned()))?
+                //     .to_owned();
+                // let path = path.join(bin_name);
+                // let reader = self.cdrom.drive.open_disc_bin(path, streamed)?;
+                // self.cdrom.drive.disc = Some(Disc::CueBin(cue_format, reader));
+                // Ok(())
+                todo!()
             }
             OpenDiscFSM::Done => Ok(()),
         }
+    }
+
+    pub(crate) fn handle_ev_cdrom_audio_playback(&mut self) {
+        let DriveState::Playing(_) = self.cdrom.drive.drive_state else {
+            return;
+        };
+
+        if self.cdrom.sector_buf.len() < 4 {
+            tracing::warn!(target: "cdrom", "cd-da sector buffer underrun.");
+            return;
+        }
+
+        let samples = self.cdrom.sector_buf.drain(..4);
+        let mut sample_buf = [0u8; 4];
+        for (src, dest) in samples.zip(sample_buf.iter_mut()) {
+            *dest = src;
+        }
+        let sample_l = i16::from_le_bytes([sample_buf[0], sample_buf[1]]);
+        let sample_r = i16::from_le_bytes([sample_buf[1], sample_buf[2]]);
+
+        self.cdrom.audio_sample = (sample_l, sample_r);
+        self.cdrom.drive.play_audio(&mut self.evque);
+        tracing::info!(target:"cdrom", "cd-da in: {:?}", self.cdrom.audio_sample);
     }
 }
 

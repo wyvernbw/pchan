@@ -1,10 +1,8 @@
 use arbitrary_int::prelude::*;
-use core::alloc::Allocator;
 use pchan_utils::hex;
 
 use bitbybit::bitenum;
 use derive_more as d;
-use pchan_encode::derive::Endecode;
 
 use crate::Emu;
 use crate::io::{CastIOFrom, CastIOInto, UnhandledIO};
@@ -13,7 +11,7 @@ use super::irq::Irq;
 
 const TIMER_UPDATE_FREQUENCY: u64 = 128;
 
-#[derive(Debug, Clone, Default, Endecode)]
+#[derive(Debug, Clone, Default)]
 pub struct TimerState {
     clock:       u64,
     pub timer_0: Timer<0>,
@@ -26,7 +24,7 @@ pub struct TimerState {
     in_hblank:     bool,
 }
 
-#[derive(Debug, Clone, Default, Endecode)]
+#[derive(Debug, Clone, Default)]
 #[expect(clippy::struct_excessive_bools)]
 pub struct Timer<const N: usize> {
     value:      TimerCounterValue,
@@ -64,14 +62,14 @@ fn test_irq_default_field() {
 }
 
 #[bitbybit::bitfield(u32, debug)]
-#[derive(Default, Endecode)]
+#[derive(Default)]
 #[must_use]
 pub struct TimerCounterValue {
     #[bits(0..=15, rw)]
     value: u16,
 }
 
-#[derive(Debug, Clone, Copy, d::Deref, d::DerefMut, Default, Endecode)]
+#[derive(Debug, Clone, Copy, d::Deref, d::DerefMut, Default)]
 pub struct TimerTarget(TimerCounterValue);
 
 ///```md
@@ -103,7 +101,7 @@ pub struct TimerTarget(TimerCounterValue);
 ///  16-31 Garbage (next opcode)
 /// ```
 #[bitbybit::bitfield(u32, debug)]
-#[derive(Default, Endecode)]
+#[derive(Default)]
 #[must_use]
 pub struct TimerCounterMode {
     #[bit(0, rw)]
@@ -139,7 +137,7 @@ pub struct TimerCounterMode {
 }
 
 #[bitenum(u2, exhaustive = true)]
-#[derive(Debug, Endecode)]
+#[derive(Debug)]
 enum SyncMode0_1 {
     PauseDuringBlank     = 0x0,
     ResetAtBlank         = 0x1,
@@ -205,7 +203,7 @@ impl TimerCounterMode {
     }
 }
 
-impl<A: Allocator> Emu<A> {
+impl Emu {
     pub fn timers_read<T: Copy>(&mut self, address: u32) -> Result<T, UnhandledIO> {
         let address = address & 0x1fffffff;
         match address {

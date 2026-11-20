@@ -8,6 +8,7 @@
 #![allow(clippy::missing_panics_doc)]
 // required for dynasm macro
 #![allow(clippy::semicolon_if_nothing_returned)]
+#![allow(clippy::unused_async_trait_impl)] // worst lint of all time?
 // feature flags
 #![feature(arbitrary_self_types_pointers)]
 #![cfg_attr(test, feature(random))]
@@ -31,6 +32,9 @@
 #![feature(default_field_values)]
 #![feature(vec_push_within_capacity)]
 #![feature(specialization)]
+#![feature(alloc_io)]
+#![feature(core_io)]
+#![feature(clone_from_ref)]
 // allow unused variables in tests to supress the setup tracing warnings
 #![cfg_attr(test, allow(unused_variables))]
 use core::alloc::Allocator;
@@ -46,7 +50,7 @@ use crate::bootloader::BootloaderState;
 use crate::cpu::Cpu;
 use crate::dynarec_v2::DynCache;
 use crate::gpu::GpuState;
-use crate::io::cdrom::CDRomState;
+use crate::io::cdrom::CDRom;
 use crate::io::dma::DmaState;
 use crate::io::evque::Evque;
 use crate::io::irq::IrqState;
@@ -54,8 +58,8 @@ use crate::io::mdec::MDec;
 use crate::io::sio::SioState;
 use crate::io::timers::TimerState;
 use crate::io::tty::Tty;
-use crate::memory::MemoryState;
-use crate::spu::SpuState;
+use crate::memory::Memory;
+use crate::spu::Spu;
 
 pub mod bindings;
 pub mod bootloader;
@@ -73,40 +77,31 @@ pub mod run;
 #[path = "./spu/spu.rs"]
 pub mod spu;
 
-#[derive(derive_more::Debug, Clone, Endecode)]
+#[derive(derive_more::Debug, Clone)]
 #[repr(C)]
-pub struct Emu<A: Allocator = Global> {
+pub struct Emu {
     pub cpu:             Cpu,
     #[debug(skip)]
-    #[endecode(skip)]
-    pub(crate) fn_table: ExternFnTable<A>,
+    pub(crate) fn_table: ExternFnTable,
     #[debug(skip)]
-    #[endecode(skip)]
-    pub dynarec_cache:   DynCache<A>,
-    pub mem:             MemoryState<A>,
-    #[endecode(skip)]
-    pub boot:            BootloaderState<A>,
-    pub tty:             Tty<A>,
-    pub gpu:             GpuState<A>,
-    pub dma:             DmaState<A>,
+    pub dynarec_cache:   DynCache,
+    pub mem:             Memory,
+    pub boot:            BootloaderState,
+    pub tty:             Tty,
+    pub gpu:             GpuState,
+    pub dma:             DmaState,
     pub timers:          TimerState,
     #[debug(skip)]
-    pub spu:             SpuState<A>,
+    pub spu:             Spu,
     #[cfg(feature = "debugger-ext")]
-    #[endecode(skip)]
-    pub dbg:             DebuggerState<A>,
-    pub cdrom:           CDRomState<A>,
+    pub dbg:             DebuggerState,
+    pub cdrom:           CDRom,
     pub sio:             SioState,
     pub irq:             IrqState,
     pub mdec:            MDec,
-    pub evque:           Evque<A>,
-    #[endecode(skip)]
+    pub evque:           Evque,
     pub tracy:           TracyClient,
-    #[endecode(skip)]
     pub stats:           Stats,
-    #[debug(skip)]
-    #[endecode(skip)]
-    pub alloc:           A,
 }
 
 #[derive(Default, derive_more::Debug, Clone)]
@@ -116,39 +111,38 @@ pub struct Stats {
 
     pub dma_transfers_per_frame: u64,
 }
-impl<A: Allocator + Copy> Emu<A> {
-    pub fn new_in(alloc: A) -> Self {
+impl Emu {
+    pub fn new() -> Self {
         let mut emu = Self {
             cpu: Cpu::new(),
             fn_table: ExternFnTable::new(),
-            dynarec_cache: DynCache::new(alloc),
-            mem: MemoryState::new(alloc),
-            boot: BootloaderState::new_in(alloc),
-            tty: Tty::new(alloc),
-            gpu: GpuState::new(alloc),
-            dma: DmaState::new(alloc),
+            dynarec_cache: DynCache::new(),
+            mem: Memory::new(),
+            boot: BootloaderState::new(),
+            tty: Tty::new(),
+            gpu: GpuState::new(),
+            dma: DmaState::new(),
             timers: TimerState::default(),
-            spu: SpuState::new(alloc),
+            spu: Spu::new(),
             #[cfg(feature = "debugger-ext")]
-            dbg: DebuggerState::new(alloc),
-            cdrom: CDRomState::new_in(alloc),
+            dbg: DebuggerState::new(),
+            cdrom: CDRom::new(),
             sio: SioState::default(),
             irq: IrqState::default(),
-            evque: Evque::new_in(alloc),
+            evque: Evque::new(),
             tracy: TracyClient::default(),
             stats: Stats::default(),
             mdec: MDec::default(),
-            alloc,
         };
         emu.handle_ev_spu_clock(io::evque::EvCtx::default());
         emu
     }
 }
 
-impl<A: Allocator> Emu<A> {
-    const PC_OFFSET: usize = offset_of!(Emu<A>, cpu) + Cpu::PC_OFFSET;
-    const D_CLOCK_OFFSET: usize = offset_of!(Emu<A>, cpu) + Cpu::D_CLOCK_OFFSET;
-    const HILO_OFFSET: usize = offset_of!(Emu<A>, cpu) + Cpu::HILO_OFFSET;
+impl Emu {
+    const PC_OFFSET: usize = offset_of!(Emu, cpu) + Cpu::PC_OFFSET;
+    const D_CLOCK_OFFSET: usize = offset_of!(Emu, cpu) + Cpu::D_CLOCK_OFFSET;
+    const HILO_OFFSET: usize = offset_of!(Emu, cpu) + Cpu::HILO_OFFSET;
 
     #[must_use]
     pub fn reg_offset(reg: u8) -> usize {
@@ -170,13 +164,6 @@ impl<A: Allocator> Emu<A> {
     }
 }
 
-impl Emu<Global> {
-    #[must_use]
-    pub fn new() -> Self {
-        Emu::new_in(alloc::alloc::Global)
-    }
-}
-
 impl Stats {
     pub fn pop_frame_blocks_compiled(&mut self) -> u64 {
         let res = self.blocks_compiled;
@@ -190,13 +177,10 @@ impl Stats {
     }
 }
 
-use alloc::alloc::Global;
-use pchan_encode::Allocate;
-use pchan_encode::derive::Endecode;
 use pchan_utils::hex;
 use pchan_utils::tracy::TracyClient;
 
-impl Default for Emu<Global> {
+impl Default for Emu {
     fn default() -> Self {
         Self::new()
     }
@@ -206,11 +190,10 @@ impl Default for Emu<Global> {
 pub mod test_utils {
 
     use crate::Emu;
-    use alloc::alloc::Global;
     use rstest::fixture;
 
     #[fixture]
-    pub fn emulator() -> Emu<Global> {
+    pub fn emulator() -> Emu {
         Emu::new()
     }
 }

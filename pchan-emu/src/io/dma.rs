@@ -1,4 +1,3 @@
-use core::alloc::Allocator;
 use core::ops::{ControlFlow, Range};
 use core::{cmp, mem, slice};
 
@@ -18,8 +17,8 @@ use pchan_macros::{pchan_instrument_read, pchan_instrument_write};
 use pchan_utils::hex;
 use tracing::Level;
 
-#[derive(derive_more::Debug, Clone, Endecode)]
-pub struct DmaState<A: Allocator> {
+#[derive(derive_more::Debug, Clone)]
+pub struct DmaState {
     pub dpcr: Dpcr,
     dicr:     Dicr,
     // TODO: dma channels
@@ -31,43 +30,48 @@ pub struct DmaState<A: Allocator> {
     dma6:     DmaChannel,
 
     // events: Slab<DmaEvent>,
-    pending_transfers: VecDeque<DmaEvent, A>,
-    ongoing_transfers: VecDeque<DmaEvent, A>,
+    pending_transfers: VecDeque<DmaEvent>,
+    ongoing_transfers: VecDeque<DmaEvent>,
 
     #[debug(skip)]
-    #[endecode(skip)]
-    debug_cdrom_data: Vec<u8, A>,
+    debug_cdrom_data: Vec<u8>,
 
-    staging_buf: Vec<u32, A>,
-
-    #[endecode(skip)]
-    #[debug(skip)]
-    alloc: A,
+    staging_buf:   Vec<u32>,
+    visited:       Box<heapless::index_set::FnvIndexSet<u32, 4096>>,
+    dummy_ram_u16: Box<[u16]>,
 }
 
-impl<A: Allocator + Copy> DmaState<A> {
-    pub fn new(alloc: A) -> Self {
+impl DmaState {
+    #[must_use]
+    pub fn new() -> Self {
         Self {
-            dpcr: Dpcr::new_with_raw_value(0x07654321),
-            dicr: Dicr::default(),
-            dma0: DmaChannel::default(),
-            dma1: DmaChannel::default(),
-            dma2: DmaChannel::default(),
-            dma3: DmaChannel::default(),
-            dma4: DmaChannel::default(),
-            dma6: DmaChannel::default(),
+            dpcr:              Dpcr::new_with_raw_value(0x07654321),
+            dicr:              Dicr::default(),
+            dma0:              DmaChannel::default(),
+            dma1:              DmaChannel::default(),
+            dma2:              DmaChannel::default(),
+            dma3:              DmaChannel::default(),
+            dma4:              DmaChannel::default(),
+            dma6:              DmaChannel::default(),
             // queue: DmaQueue::default(),
             // events:           Slab::with_capacity(1024),
-            debug_cdrom_data: Vec::new_in(alloc),
-            pending_transfers: VecDeque::with_capacity_in(6, alloc),
-            ongoing_transfers: VecDeque::with_capacity_in(6, alloc),
-            staging_buf: Vec::with_capacity_in(mb(1) / 4, alloc),
-            alloc,
+            debug_cdrom_data:  Vec::new(),
+            pending_transfers: VecDeque::with_capacity(6),
+            ongoing_transfers: VecDeque::with_capacity(6),
+            staging_buf:       Vec::with_capacity(mb(1) / 4),
+            visited:           Box::default(),
+            dummy_ram_u16:     Box::default(),
         }
     }
 }
 
-impl<A: Allocator> DmaState<A> {
+impl Default for DmaState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DmaState {
     pub fn dump_cdrom_data(&self) {
         use std::io::Write;
 
@@ -94,7 +98,7 @@ impl<A: Allocator> DmaState<A> {
 /// These ports control DMA at the CPU-side. In most cases, you'll additionally
 /// need to initialize an address (and transfer direction, transfer enabled, etc.)
 /// at the remote-side (eg. at the GPU-side for DMA2).
-impl<A: Allocator + Copy> Emu<A> {
+impl Emu {
     #[pchan_instrument_read("dma:r")]
     pub fn dma_read<T: Copy>(&self, address: u32) -> IOResult<T> {
         let address = address & 0x1fffffff;
@@ -584,12 +588,12 @@ impl<A: Allocator + Copy> Emu<A> {
         mut func: impl AsyncFnMut(&mut Self, Address, DmaNodeHeader, Looped) -> ControlFlow<(), Address>,
     ) {
         let mut addr = chan.madr.addr().as_u32();
-        let mut visited = heapless::index_set::FnvIndexSet::<u32, 4096>::new();
+        self.dma.visited.clear();
         loop {
             let header = self.read::<DmaNodeHeader>(addr);
             tracing::trace!(header.next = %hex(header.next()), header.len = header.len());
 
-            let looped = match visited.insert(addr) {
+            let looped = match self.dma.visited.insert(addr) {
                 Ok(true) => false,
                 Err(_) | Ok(false) => true,
             };
@@ -617,22 +621,22 @@ trait Transfer {
     const TRANSPORT_KIND: DmaTransportKind;
 
     /// ram to device
-    async fn write<A: Allocator + Copy>(&mut self, emu: &mut Emu<A>, slice: Range<u32>);
+    async fn write(&mut self, emu: &mut Emu, slice: Range<u32>);
     /// device to ram
-    async fn read<A: Allocator + Copy>(&mut self, emu: &mut Emu<A>, slice: Range<u32>);
-    fn channel<A: Allocator>(emu: &mut Emu<A>) -> &mut DmaChannel;
+    async fn read(&mut self, emu: &mut Emu, slice: Range<u32>);
+    fn channel(emu: &mut Emu) -> &mut DmaChannel;
 
-    fn write_madr<T: Copy, A: Allocator>(emu: &mut Emu<A>, value: T) -> IOResult<()> {
+    fn write_madr<T: Copy>(emu: &mut Emu, value: T) -> IOResult<()> {
         Self::channel(emu).io_set_madr(value);
         Ok(())
     }
 
-    fn write_bcr<T: Copy, A: Allocator>(emu: &mut Emu<A>, value: T) -> IOResult<()> {
+    fn write_bcr<T: Copy>(emu: &mut Emu, value: T) -> IOResult<()> {
         Self::channel(emu).io_set_bcr(value);
         Ok(())
     }
 
-    fn write_chcr<T: Copy, A: Allocator + Copy>(emu: &mut Emu<A>, value: T) -> IOResult<()> {
+    fn write_chcr<T: Copy>(emu: &mut Emu, value: T) -> IOResult<()> {
         let dma = Self::channel(emu);
         let chcr = DmaChcr::new_with_raw_value(value.io_into_u32());
         dma.chcr = chcr;
@@ -653,8 +657,8 @@ struct Dma0MdecIn;
 impl Transfer for Dma0MdecIn {
     const TRANSPORT_KIND: DmaTransportKind = DmaTransportKind::MDecIn;
 
-    async fn write<A: Allocator + Copy>(&mut self, emu: &mut Emu<A>, slice: Range<u32>) {
-        let mut staging_buf = mem::replace(&mut emu.dma.staging_buf, Vec::new_in(emu.alloc));
+    async fn write(&mut self, emu: &mut Emu, slice: Range<u32>) {
+        let mut staging_buf = mem::take(&mut emu.dma.staging_buf);
         let slice = emu
             .fastmem_slice::<u32>(slice.clone())
             .expect("dma0 fastmem fail");
@@ -669,11 +673,11 @@ impl Transfer for Dma0MdecIn {
         emu.dma.staging_buf = staging_buf;
     }
 
-    async fn read<A: Allocator + Copy>(&mut self, emu: &mut Emu<A>, slice: Range<u32>) {
+    async fn read(&mut self, emu: &mut Emu, slice: Range<u32>) {
         todo!()
     }
 
-    fn channel<A: Allocator>(emu: &mut Emu<A>) -> &mut DmaChannel {
+    fn channel(emu: &mut Emu) -> &mut DmaChannel {
         &mut emu.dma.dma0
     }
 }
@@ -683,15 +687,15 @@ struct Dma1MdecOut;
 impl Transfer for Dma1MdecOut {
     const TRANSPORT_KIND: DmaTransportKind = DmaTransportKind::MDecOut;
 
-    async fn write<A: Allocator + Copy>(&mut self, emu: &mut Emu<A>, slice: Range<u32>) {
+    async fn write(&mut self, emu: &mut Emu, slice: Range<u32>) {
         todo!()
     }
 
-    async fn read<A: Allocator + Copy>(&mut self, emu: &mut Emu<A>, slice: Range<u32>) {
+    async fn read(&mut self, emu: &mut Emu, slice: Range<u32>) {
         todo!()
     }
 
-    fn channel<A: Allocator>(emu: &mut Emu<A>) -> &mut DmaChannel {
+    fn channel(emu: &mut Emu) -> &mut DmaChannel {
         &mut emu.dma.dma1
     }
 }
@@ -701,11 +705,12 @@ struct Dma2Gpu;
 impl Transfer for Dma2Gpu {
     const TRANSPORT_KIND: DmaTransportKind = DmaTransportKind::Gpu;
 
-    async fn write<A: Allocator + Copy>(&mut self, emu: &mut Emu<A>, range: Range<u32>) {
+    async fn write(&mut self, emu: &mut Emu, range: Range<u32>) {
         emu.gpu_gp0_drain_write_queue();
 
-        let mut staging_buf = mem::replace(&mut emu.dma.staging_buf, Vec::new_in(emu.alloc));
+        let mut staging_buf = mem::take(&mut emu.dma.staging_buf); // TODO: get rid of this
         let slice = emu
+            .mem
             .fastmem_slice::<u32>(range.clone())
             .expect("dma2 fastmem fail");
         staging_buf.clear();
@@ -755,10 +760,11 @@ impl Transfer for Dma2Gpu {
         emu.dma.staging_buf = staging_buf;
     }
 
-    async fn read<A: Allocator + Copy>(&mut self, emu: &mut Emu<A>, range: Range<u32>) {
-        let mut fifo = mem::replace(&mut emu.gpu.gp0read_fifo, VecDeque::new_in(emu.alloc));
+    async fn read(&mut self, emu: &mut Emu, range: Range<u32>) {
+        let fifo = &mut emu.gpu.gp0read_fifo;
         let dest = emu
-            .fastmem_slice_mut::<u16>(range)
+            .mem
+            .fastmem_slice_mut::<u16>(&mut emu.dynarec_cache, range)
             .expect("dma2 slice outside of fastmem");
 
         let (head, tail) = fifo.as_slices();
@@ -775,11 +781,9 @@ impl Transfer for Dma2Gpu {
             emu.gpu.gpustat.set_ready_recv_cmd(true);
             emu.gpu.gp0 = Gp0::WaitingForCmd;
         }
-
-        emu.gpu.gp0read_fifo = fifo;
     }
 
-    fn channel<A: Allocator>(emu: &mut Emu<A>) -> &mut DmaChannel {
+    fn channel(emu: &mut Emu) -> &mut DmaChannel {
         &mut emu.dma.dma2
     }
 }
@@ -789,14 +793,15 @@ struct Dma3Cdrom;
 impl Transfer for Dma3Cdrom {
     const TRANSPORT_KIND: DmaTransportKind = DmaTransportKind::Cdrom;
 
-    async fn write<A: Allocator>(&mut self, _emu: &mut Emu<A>, _address: Range<u32>) {
+    async fn write(&mut self, _emu: &mut Emu, _address: Range<u32>) {
         todo!()
     }
 
-    async fn read<A: Allocator + Copy>(&mut self, emu: &mut Emu<A>, range: Range<u32>) {
-        let mut fifo = mem::replace(&mut emu.cdrom.data_fifo, VecDeque::new_in(emu.alloc));
+    async fn read(&mut self, emu: &mut Emu, range: Range<u32>) {
+        let fifo = &mut emu.cdrom.data_fifo;
         let dest = emu
-            .fastmem_slice_mut::<u8>(range.clone())
+            .mem
+            .fastmem_slice_mut::<u8>(&mut emu.dynarec_cache, range.clone())
             .expect("dma2 slice outside of fastmem");
 
         let (head, tail) = fifo.as_slices();
@@ -829,11 +834,9 @@ impl Transfer for Dma3Cdrom {
         if fifo.is_empty() {
             emu.cdrom.status.set_data_req(false);
         }
-
-        emu.cdrom.data_fifo = fifo;
     }
 
-    fn channel<A: Allocator>(emu: &mut Emu<A>) -> &mut DmaChannel {
+    fn channel(emu: &mut Emu) -> &mut DmaChannel {
         &mut emu.dma.dma3
     }
 }
@@ -843,34 +846,32 @@ struct Dma4Spu;
 impl Transfer for Dma4Spu {
     const TRANSPORT_KIND: DmaTransportKind = DmaTransportKind::Spu;
 
-    async fn write<A: Allocator + Copy>(&mut self, emu: &mut Emu<A>, range: Range<u32>) {
+    async fn write(&mut self, emu: &mut Emu, range: Range<u32>) {
         let current = emu.spu.ram_current;
-        let mut mem = mem::replace(&mut emu.spu.mem, Box::new_in([], emu.alloc));
         let values = emu
+            .mem
             .fastmem_slice::<u16>(range)
             .expect("address outside of ram/bios");
         let len = values.len();
 
-        mem[current..current + len].copy_from_slice(values);
+        emu.spu.mem[current..current + len].copy_from_slice(values);
         emu.spu.ram_current = current + len;
-        emu.spu.mem = mem;
     }
 
-    async fn read<A: Allocator + Copy>(&mut self, emu: &mut Emu<A>, range: Range<u32>) {
+    async fn read(&mut self, emu: &mut Emu, range: Range<u32>) {
         let current = emu.spu.ram_current;
-        let spu_mem = mem::replace(&mut emu.spu.mem, Box::new_in([], emu.alloc));
         let ram = emu
-            .fastmem_slice_mut::<u16>(range)
+            .mem
+            .fastmem_slice_mut::<u16>(&mut emu.dynarec_cache, range)
             .expect("dma4 transfer outside of fastmem");
         let len = ram.len();
 
-        ram.copy_from_slice(&spu_mem[current..current + len]);
+        ram.copy_from_slice(&emu.spu.mem[current..current + len]);
 
         emu.spu.ram_current += len;
-        emu.spu.mem = spu_mem;
     }
 
-    fn channel<A: Allocator>(emu: &mut Emu<A>) -> &mut DmaChannel {
+    fn channel(emu: &mut Emu) -> &mut DmaChannel {
         &mut emu.dma.dma4
     }
 }
@@ -1202,7 +1203,7 @@ struct SliceTransferState {
 }
 
 impl DmaEvent {
-    async fn cycles<A: Allocator + Copy>(&self, emu: &mut Emu<A>) -> u64 {
+    async fn cycles(&self, emu: &mut Emu) -> u64 {
         let sync_mode = self.init_chan.chcr.sync_mode();
         match sync_mode {
             SyncMode::Burst => self.init_chan.burst_cycles(self.dma_t),
@@ -1214,7 +1215,7 @@ impl DmaEvent {
 }
 
 impl DmaChannel {
-    fn linked_list_cycles<A: Allocator>(&self, emu: &Emu<A>) -> u64 {
+    fn linked_list_cycles(&self, emu: &Emu) -> u64 {
         let mut addr = self.madr.addr().as_u32();
         let mut visited = heapless::index_set::FnvIndexSet::<u32, 2048>::new();
         let mut count = 0;

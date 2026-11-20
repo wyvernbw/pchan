@@ -4,7 +4,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use alloc::alloc::Global;
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use bevy::asset::RenderAssetUsages;
@@ -24,7 +23,7 @@ use bevy::render::texture::GpuImage;
 use bevy::render::{RenderApp, RenderStartup};
 use bevy::tasks::AsyncComputeTaskPool;
 use bevy::ui::UiSystems;
-use bevy::window::{PrimaryWindow, RequestRedraw};
+use bevy::window::PrimaryWindow;
 use pchan_audio::AudioTask;
 use pchan_emu::Emu;
 use pchan_emu::io::sio::Sio0Port;
@@ -32,6 +31,7 @@ use pchan_emu::run::{EmuSpeed, Runner, RunnerConfig, RunnerMode};
 use pchan_gpu::wgpu;
 use pchan_utils::{Indexed, kanal};
 
+use crate::ui::RerenderMsg;
 use crate::{UpdateMainMenubarMsg, app_title};
 
 pub fn emulator_plugin(app: &mut App) {
@@ -39,6 +39,7 @@ pub fn emulator_plugin(app: &mut App) {
 
     app.init_state::<PsxState>()
         .init_state::<HwrState>()
+        .init_state::<PsxLoopKindState>()
         .add_plugins(ExtractResourcePlugin::<DisplayTarget, RenderApp>::default())
         .insert_resource(Time::from_hz(59.826)) // NTSC
         .insert_resource::<HwrChannel>(hwr_chan.clone())
@@ -47,7 +48,19 @@ pub fn emulator_plugin(app: &mut App) {
         .add_systems(OnEnter(HwrState::Ready), setup_psx)
         .add_systems(
             FixedUpdate,
-            psx_loop.run_if(in_state(PsxState::Running).or_else(in_state(PsxState::RunOneFrame))),
+            psx_loop.run_if(
+                in_state(PsxState::Running)
+                    .or_else(in_state(PsxState::RunOneFrame))
+                    .and_then(in_state(PsxLoopKindState::FixedStep)),
+            ),
+        )
+        .add_systems(
+            Update,
+            psx_loop.run_if(
+                in_state(PsxState::Running)
+                    .or_else(in_state(PsxState::RunOneFrame))
+                    .and_then(in_state(PsxLoopKindState::HotLoop)),
+            ),
         )
         .add_systems(Update, track_display_size.after(UiSystems::Layout))
         .add_message::<PsxCmdMsg>()
@@ -66,7 +79,7 @@ pub fn emulator_plugin(app: &mut App) {
 #[derive(Resource)]
 pub struct Psx {
     pub emu:      Emu,
-    pub runner:   Runner<Global>,
+    pub runner:   Runner,
     pub elapsed:  VecDeque<f32>,
     pub gamepads: Indexed<[Option<Entity>; 2], Sio0Port>,
 }
@@ -126,12 +139,17 @@ fn setup_hwr(
 
 pub const EMULATOR_ELAPSED_RINGBUF_SIZE: usize = 240;
 
-fn setup_psx(mut cmds: Commands, hwr: Res<Hwr>, mut images: ResMut<Assets<Image>>) -> Result<()> {
+fn setup_psx(
+    mut cmds: Commands,
+    hwr: Res<Hwr>,
+    mut images: ResMut<Assets<Image>>,
+    mut redraw: MessageWriter<RerenderMsg>,
+) -> Result<()> {
     tracing::info!("setting up psx loop.");
 
     let mut emu = Emu::new();
     emu.set_bios_path(std::env::var("PCHAN_BIOS")?);
-    emu.load_bios(Global)?;
+    emu.load_bios()?;
     emu.cpu.jump_to_bios();
     emu.tty.set_tracing();
 
@@ -142,7 +160,7 @@ fn setup_psx(mut cmds: Commands, hwr: Res<Hwr>, mut images: ResMut<Assets<Image>
 
     hwr.renderer.connect_emu(&mut emu);
 
-    let mut runner = Runner::new_in(Global).with_config(RunnerConfig {
+    let mut runner = Runner::new().with_config(RunnerConfig {
         force_mode: Some(RunnerMode::Dynarec),
         speed:      EmuSpeed::Percentage(NonZeroU16::new(100).unwrap()),
     });
@@ -182,14 +200,23 @@ fn setup_psx(mut cmds: Commands, hwr: Res<Hwr>, mut images: ResMut<Assets<Image>
     let handle = images.add(image);
     cmds.insert_resource(DisplayTarget(handle));
 
+    redraw.write(RerenderMsg);
+
     Ok(())
+}
+
+#[derive(States, Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+enum PsxLoopKindState {
+    #[default]
+    FixedStep,
+    HotLoop,
 }
 
 fn psx_loop(
     mut cmds: Commands,
     mut psx: ResMut<Psx>,
     state: Res<State<PsxState>>,
-    mut ev: MessageWriter<RequestRedraw>,
+    mut ev: MessageWriter<RerenderMsg>,
 ) {
     let state = *state.get();
     match state {
@@ -201,7 +228,7 @@ fn psx_loop(
                 scope.spawn(async {
                     let Psx { emu, runner, .. } = &mut *psx;
                     runner.run_until_vblank(emu).await;
-                    ev.write(RequestRedraw);
+                    ev.write(RerenderMsg);
                 });
             });
             let elapsed = start.elapsed().as_millis_f32();
@@ -318,7 +345,7 @@ impl Psx {
         match path.extension().and_then(|s| s.to_str()) {
             Some("exe") => {
                 let exe = fs::read(path)?;
-                self.emu.sideload_exe(&exe, self.emu.alloc)?;
+                self.emu.sideload_exe(&exe)?;
             }
             _ => {
                 let fsm = self.emu.open_disc(path, true)?;
@@ -337,14 +364,19 @@ impl Psx {
 pub enum PsxCmdMsg {
     OpenContentAt(PathBuf),
     UnloadContent,
+    SetSpeed(EmuSpeed),
 }
 
 fn emu_handle_open_content_at(
+    mut cmds: Commands,
     mut reader: MessageReader<PsxCmdMsg>,
     mut psx: If<ResMut<Psx>>,
     mut win: Option<Single<&mut Window, With<PrimaryWindow>>>,
     mut menubarw: Option<MessageWriter<UpdateMainMenubarMsg>>,
+    mut time: If<ResMut<Time<Fixed>>>,
 ) -> Result<()> {
+    let ntsc60fps = 59.826;
+
     for cmd in reader.read() {
         match cmd {
             PsxCmdMsg::OpenContentAt(path) => {
@@ -362,6 +394,27 @@ fn emu_handle_open_content_at(
                 psx.emu.boot.remove_sideload();
                 if let Some(menubarw) = &mut menubarw {
                     menubarw.write_default();
+                }
+            }
+            PsxCmdMsg::SetSpeed(emu_speed) => {
+                tracing::info!("set speed: {emu_speed:?}");
+                psx.runner.config.speed = *emu_speed;
+                match emu_speed {
+                    EmuSpeed::Unlimited => {
+                        cmds.set_state(PsxLoopKindState::HotLoop);
+                    }
+                    EmuSpeed::Percentage(speed) => {
+                        cmds.set_state(PsxLoopKindState::FixedStep);
+                        **time = Time::from_hz(ntsc60fps * f64::from(speed.get()) / 100.);
+                    }
+                }
+
+                if let Some(win) = &mut win {
+                    if emu_speed.is_unlimited() || emu_speed.is_sped_up() {
+                        win.present_mode = bevy::window::PresentMode::AutoNoVsync;
+                    } else {
+                        win.present_mode = bevy::window::PresentMode::AutoVsync;
+                    }
                 }
             }
         }

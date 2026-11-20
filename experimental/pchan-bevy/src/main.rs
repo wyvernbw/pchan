@@ -1,27 +1,36 @@
 #![feature(duration_millis_float)]
 #![allow(recursion_depth_exceeding_limit)]
+#![allow(clippy::too_many_arguments)]
 
 extern crate alloc;
 
+use core::marker::PhantomData;
+use core::num::NonZero;
+use core::time::Duration;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use bevy::camera::RenderTarget;
 use bevy::ecs::system::NonSendMarker;
 use bevy::feathers::theme::ThemeBackgroundColor;
 use bevy::feathers::*;
 use bevy::input::gamepad::GamepadConnectionEvent;
+use bevy::input::mouse::MouseScrollPixelsPerLine;
 use bevy::log::{LogPlugin, tracing};
 use bevy::prelude::*;
 use bevy::tasks::AsyncComputeTaskPool;
-use bevy::window::{PrimaryWindow, RequestRedraw, WindowEvent};
+use bevy::ui::{LayoutContext, ui_layout_system};
+use bevy::ui_widgets::ScrollArea;
+use bevy::window::{PrimaryWindow, WindowEvent, WindowRef};
 #[cfg(target_os = "macos")]
 use bevy::winit::WINIT_WINDOWS;
-use bevy::winit::{EventLoopProxyWrapper, RawWinitWindowEvent, WinitWindows};
+use bevy::winit::{EventLoopProxyWrapper, RawWinitWindowEvent, UpdateMode, WinitWindows};
 use bevy::{window, winit};
 use muda::accelerator::{Accelerator, Code, Modifiers};
-use muda::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+use muda::{CheckMenuItem, IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use pchan_bind::input::PchanButton;
 use pchan_emu::io::sio::Sio0Port;
+use pchan_emu::run::EmuSpeed;
 use pchan_utils::{AsyncChan, Chan, kanal};
 use rfd::AsyncFileDialog;
 
@@ -29,7 +38,7 @@ mod emulator;
 mod ui;
 
 use crate::emulator::{DisplayNode, DisplayTarget, Psx, PsxCmdMsg, PsxState, emulator_plugin};
-use crate::ui::{Theme, text, ui_plugin, vseparator};
+use crate::ui::{RerenderMsg, Theme, UiCamera, text, ui_plugin, vseparator};
 
 #[cfg(feature = "dhat-heap")]
 #[global_allocator]
@@ -46,6 +55,7 @@ fn main() {
 
     let mut title = String::new();
     app_title(&mut title, None);
+
     App::new()
         .add_plugins(
             DefaultPlugins
@@ -53,11 +63,8 @@ fn main() {
                 .disable::<LogPlugin>()
                 .set(WindowPlugin {
                     primary_window: Some(Window {
-                        titlebar_shown: true,
-                        titlebar_transparent: true,
-                        fullsize_content_view: true,
                         title,
-                        ..default()
+                        ..new_window()
                     }),
                     ..default()
                 }),
@@ -67,6 +74,16 @@ fn main() {
         .add_plugins(emulator_plugin)
         .add_plugins(app_ui_plugin)
         .run();
+}
+
+#[must_use]
+pub fn new_window() -> Window {
+    Window {
+        titlebar_shown: true,
+        titlebar_transparent: true,
+        fullsize_content_view: true,
+        ..default()
+    }
 }
 
 pub fn app_title(sink: &mut String, playing: Option<&str>) {
@@ -91,7 +108,9 @@ struct MenubarChan(Chan<muda::MenuEvent>);
 enum MainMenubarMsg {
     OpenContent,
     UnloadContent,
+    ViewMemory,
     Quit,
+    SetSpeed(EmuSpeed),
 }
 
 #[derive(Deref)]
@@ -111,7 +130,7 @@ impl<Ev> NativeMenubar<Ev> {
     fn get_event(&self, ev: muda::MenuEvent) -> Option<&Ev> {
         self.event_map.get(ev.id())
     }
-    fn menu_item(&mut self, item: MenuItem, ev: Ev) -> MenuItem {
+    fn menu_item<I: IsMenuItem>(&mut self, item: I, ev: Ev) -> I {
         let id = item.id();
         self.event_map.insert(id.clone(), ev);
         item
@@ -129,7 +148,24 @@ impl<Ev> NativeMenubar<Ev> {
     }
 }
 
-fn build_main_menubar(psx: &Psx) -> NativeMenubar<MainMenubarMsg> {
+fn build_main_menubar(
+    psx: &Psx,
+    memview_window: Option<&Single<Entity, With<MemoryViewerWindow>>>,
+) -> NativeMenubar<MainMenubarMsg> {
+    fn speed_option(
+        psx: &Psx,
+        menu: &mut NativeMenubar<MainMenubarMsg>,
+        label: &str,
+        speed: EmuSpeed,
+    ) -> CheckMenuItem {
+        let speed_item_checked = psx.runner.config().speed == speed;
+
+        menu.menu_item(
+            CheckMenuItem::new(label, true, speed_item_checked, None),
+            MainMenubarMsg::SetSpeed(speed),
+        )
+    }
+
     let cmd = cfg_select! {
         target_os = "macos" => Modifiers::META,
         _ => Modifiers::CONTROL,
@@ -178,6 +214,30 @@ fn build_main_menubar(psx: &Psx) -> NativeMenubar<MainMenubarMsg> {
     .unwrap();
     menu.append(&submenu).unwrap();
 
+    let emu_speed_100 = EmuSpeed::Percentage(NonZero::new(100).unwrap());
+    let speed100 = speed_option(psx, &mut menu, "100%", emu_speed_100);
+
+    let emu_speed_200 = EmuSpeed::Percentage(NonZero::new(200).unwrap());
+    let speed200 = speed_option(psx, &mut menu, "200%", emu_speed_200);
+
+    let speed_unlimited = speed_option(psx, &mut menu, "Unlimited", EmuSpeed::Unlimited);
+
+    let set_speed =
+        Submenu::with_items("Speed", true, &[&speed100, &speed200, &speed_unlimited]).unwrap();
+
+    let view_memory = menu.menu_item(
+        CheckMenuItem::new("View Memory", true, memview_window.is_some(), None),
+        MainMenubarMsg::ViewMemory,
+    );
+
+    let debug_menu = Submenu::with_items(
+        "Debug",
+        true,
+        &[&set_speed, &PredefinedMenuItem::separator(), &view_memory],
+    )
+    .unwrap();
+    menu.append(&debug_menu).unwrap();
+
     menu
 }
 
@@ -187,12 +247,13 @@ fn setup(world: &mut World) -> Result<()> {
     world
         .spawn_scene_list(bsn_list! {
              Camera2d
+             UiCamera
              --
              @root(&theme, &display.0)
         })
         .unwrap();
 
-    world.write_message(RequestRedraw);
+    world.write_message(RerenderMsg);
 
     world.insert_resource(AsyncTaskChan(kanal::bounded_async(1)));
 
@@ -212,8 +273,7 @@ fn setup(world: &mut World) -> Result<()> {
     ))]
     todo!("in-engine menubar because linux sucks (jk ily)");
 
-    let psx = world.resource::<Psx>();
-    let menu = build_main_menubar(psx);
+    let menu = NativeMenubar::<MainMenubarMsg>::new();
     menu.init(win);
     world.insert_non_send(menu);
 
@@ -227,6 +287,9 @@ fn setup(world: &mut World) -> Result<()> {
         let _ = menu_chan.0.send(event);
     }));
 
+    world.write_message_default::<UpdateMainMenubarMsg>();
+    world.write_message(RerenderMsg);
+
     Ok(())
 }
 
@@ -238,9 +301,10 @@ fn update_main_menubar(
     psx: If<Res<Psx>>,
     mut reader: MessageReader<UpdateMainMenubarMsg>,
     win: If<Single<&window::RawHandleWrapper, With<PrimaryWindow>>>,
+    memview_window: Option<Single<Entity, With<MemoryViewerWindow>>>,
 ) {
     for _ in reader.read() {
-        **menubar = build_main_menubar(&psx);
+        **menubar = build_main_menubar(&psx, memview_window.as_ref());
         menubar.init(&win);
     }
 }
@@ -262,11 +326,18 @@ fn menubar_channel_forward(
 #[derive(Message)]
 struct OpenContentMsg;
 
+#[derive(Component, Clone, Copy, Default)]
+struct MemoryViewerWindow;
+
 fn handle_menubar_event(
+    mut cmds: Commands,
     mut menu_rx: MessageReader<MainMenubarMsg>,
     mut open_content: MessageWriter<OpenContentMsg>,
     mut psx_cmdw: MessageWriter<PsxCmdMsg>,
     mut exit_tx: MessageWriter<AppExit>,
+    psx: If<Res<Psx>>,
+    theme: Res<Theme>,
+    memview_window: Option<Single<Entity, With<MemoryViewerWindow>>>,
 ) {
     for msg in menu_rx.read() {
         match msg {
@@ -276,9 +347,32 @@ fn handle_menubar_event(
             MainMenubarMsg::UnloadContent => {
                 psx_cmdw.write(PsxCmdMsg::UnloadContent);
             }
+            MainMenubarMsg::SetSpeed(emu_speed) => {
+                psx_cmdw.write(PsxCmdMsg::SetSpeed(*emu_speed));
+            }
             MainMenubarMsg::Quit => {
+                psx.emu.dma.dump_cdrom_data();
                 exit_tx.write_default();
             }
+            MainMenubarMsg::ViewMemory => match &memview_window {
+                Some(entity) => {
+                    cmds.entity(**entity).despawn();
+                }
+                None => {
+                    let win = cmds.spawn((new_window(), MemoryViewerWindow)).id();
+                    let camera = cmds
+                        .spawn((
+                            Camera2d,
+                            UiCamera,
+                            RenderTarget::Window(WindowRef::Entity(win)),
+                        ))
+                        .id();
+                    cmds.spawn_scene(bsn! {
+                        @memview_root(&theme, &psx)
+                        UiTargetCamera(camera)
+                    });
+                }
+            },
         };
     }
 }
@@ -357,6 +451,16 @@ fn on_window_event(
     }
 }
 
+#[must_use]
+pub fn titlebar() -> Node {
+    Node {
+        height: rem(1.75),
+        width: percent(100),
+        padding: UiRect::horizontal(rem(1)),
+        ..default()
+    }
+}
+
 fn root(theme: &Theme, img: &Handle<Image>) -> impl Scene {
     bsn! {
         Node {
@@ -370,11 +474,7 @@ fn root(theme: &Theme, img: &Handle<Image>) -> impl Scene {
         }
         ThemeBackgroundColor(tokens::WINDOW_BG)
         Children [
-            Node {
-                height: rem(1.75),
-                width: percent(100),
-                padding: UiRect::horizontal(rem(1))
-            }
+            titlebar()
             --
             Node {
                 width: percent(100.),
@@ -479,7 +579,9 @@ fn app_ui_plugin(app: &mut App) {
             ),
         )
         .add_systems(PostUpdate, (on_window_event,))
-        .add_systems(PreUpdate, (keyboard_shortcuts, menubar_channel_forward));
+        .add_systems(PreUpdate, (keyboard_shortcuts, menubar_channel_forward))
+        .add_plugins(virtual_list_plugin)
+        .register_list_type::<MemviewList>();
 }
 
 fn update_statusbar(psx: If<Res<Psx>>, items: Query<(&mut Text, &StatusbarItem)>) {
@@ -524,7 +626,7 @@ fn keyboard_shortcuts(
     mut psx: If<ResMut<Psx>>,
     psx_state: Res<State<PsxState>>,
     input: Res<ButtonInput<KeyCode>>,
-    mut ev: MessageWriter<RequestRedraw>,
+    mut ev: MessageWriter<RerenderMsg>,
     mut exit_tx: MessageWriter<AppExit>,
 ) {
     let psx_state = *psx_state.get();
@@ -539,6 +641,7 @@ fn keyboard_shortcuts(
     }
 
     if cmd && input.just_pressed(KeyCode::KeyQ) {
+        psx.emu.dma.dump_cdrom_data();
         exit_tx.write_default();
     }
 
@@ -546,7 +649,7 @@ fn keyboard_shortcuts(
         PsxState::Paused => {
             if cmd && input.pressed(KeyCode::KeyK) {
                 psx.run_one_frame(&mut cmds);
-                ev.write(RequestRedraw);
+                ev.write(RerenderMsg);
             }
         }
         _ => {}
@@ -589,14 +692,14 @@ fn handle_gamepad_events(gamepads: Query<&Gamepad>, mut psx: If<ResMut<Psx>>) ->
         let gamepad = gamepads.get(*pad)?;
 
         for released in gamepad.get_just_released() {
-            if let Some(btn) = gamepad_button_to_pchan_button(released) {
+            if let Some(btn) = gamepad_button_to_pchan_button(*released) {
                 psx.emu
                     .send_input_event(pchan_bind::input::InputEvent::Release(btn), port);
             }
         }
 
         for pressed in gamepad.get_just_pressed() {
-            if let Some(btn) = gamepad_button_to_pchan_button(pressed) {
+            if let Some(btn) = gamepad_button_to_pchan_button(*pressed) {
                 tracing::info!(?btn);
                 psx.emu
                     .send_input_event(pchan_bind::input::InputEvent::Press(btn), port);
@@ -607,27 +710,217 @@ fn handle_gamepad_events(gamepads: Query<&Gamepad>, mut psx: If<ResMut<Psx>>) ->
     Ok(())
 }
 
-fn gamepad_button_to_pchan_button(btn: &GamepadButton) -> Option<PchanButton> {
+fn gamepad_button_to_pchan_button(btn: GamepadButton) -> Option<PchanButton> {
     match btn {
         GamepadButton::South => Some(PchanButton::X),
         GamepadButton::East => Some(PchanButton::Circle),
         GamepadButton::North => Some(PchanButton::Triangle),
         GamepadButton::West => Some(PchanButton::Square),
-        GamepadButton::C => None,
-        GamepadButton::Z => None,
+        GamepadButton::C | GamepadButton::Z | GamepadButton::Mode | GamepadButton::Other(_) => None,
         GamepadButton::LeftTrigger => Some(PchanButton::L1),
         GamepadButton::LeftTrigger2 => Some(PchanButton::L2),
         GamepadButton::RightTrigger => Some(PchanButton::R1),
         GamepadButton::RightTrigger2 => Some(PchanButton::R2),
         GamepadButton::Select => Some(PchanButton::Select),
         GamepadButton::Start => Some(PchanButton::Start),
-        GamepadButton::Mode => None,
         GamepadButton::LeftThumb => Some(PchanButton::L3),
         GamepadButton::RightThumb => Some(PchanButton::R3),
         GamepadButton::DPadUp => Some(PchanButton::DpadUp),
         GamepadButton::DPadDown => Some(PchanButton::DpadDown),
         GamepadButton::DPadLeft => Some(PchanButton::DpadLeft),
         GamepadButton::DPadRight => Some(PchanButton::DpadRight),
-        GamepadButton::Other(_) => None,
     }
+}
+
+#[derive(Component, Default, Clone, Copy)]
+struct VirtualListState {
+    first:        usize,
+    last:         usize,
+    scroll_fract: f32,
+}
+#[derive(Component, Default, Clone, Copy, Deref, DerefMut)]
+#[require(VirtualListState, VirtualScrollPosition)]
+struct VirtualListContainer<T>(T);
+#[derive(Component, Default, Clone, Copy)]
+struct VirtualListInner<T>(PhantomData<T>);
+
+#[derive(Component, Default, Clone, Copy, Deref, DerefMut, Debug)]
+struct VirtualScrollPosition(f32);
+
+#[derive(Component, Default, Clone, Copy)]
+struct MemviewList;
+
+pub fn memview_root(theme: &Theme, psx: &Psx) -> impl Scene {
+    bsn! {
+        Node {
+            width: percent(100),
+            height: percent(100),
+            padding: rem(0.5),
+            display: Display::Flex,
+            flex_direction: FlexDirection::Column,
+            position_type: PositionType::Absolute
+        }
+        BackgroundColor({theme.bg})
+        ThemeBackgroundColor(tokens::WINDOW_BG)
+        Children [
+            titlebar()
+            --
+            Node {
+                height: percent(50),
+                max_height: percent(50),
+                min_height: px(0),
+                display: Display::Flex,
+                flex_direction: FlexDirection::Column,
+                overflow: Overflow::hidden(),
+                border: UiRect::all(px(2))
+            }
+            BorderColor::all(Color::srgb(0.0, 0.5, 1.0))
+            VirtualListContainer<MemviewList>::default()
+            Children [
+                VirtualListInner<MemviewList>::default()
+                Node {
+                    display: Display::Flex,
+                    flex_direction: FlexDirection::Column,
+                    border: UiRect::all(px(2))
+                }
+                BorderColor::all(Color::srgb(0.75, 0.25, 0.))
+            ]
+        ]
+    }
+}
+
+impl VirtualList for MemviewList {
+    fn get_row(&mut self, index: usize) -> Option<impl Scene> {
+        Some(bsn! {
+            @text(format!("hello world! #{index}"))
+        })
+    }
+
+    fn height(&self) -> Val {
+        px(14.)
+    }
+}
+
+pub trait VirtualListPluginExt {
+    fn register_list_type<T: VirtualList>(&mut self);
+}
+
+impl VirtualListPluginExt for App {
+    fn register_list_type<T: VirtualList>(&mut self) {
+        self.add_systems(PostUpdate, virtual_list_init::<T>.after(ui_layout_system))
+            .add_observer(virtual_list_update_rows::<T>);
+    }
+}
+
+impl VirtualListState {
+    fn len(&self) -> usize {
+        self.last.saturating_sub(self.first)
+    }
+}
+
+pub trait VirtualList: Component {
+    fn get_row(&mut self, index: usize) -> Option<impl Scene>;
+    fn height(&self) -> Val;
+}
+
+fn virtual_list_plugin(app: &mut App) {}
+
+fn virtual_list_init<T: VirtualList>(
+    mut cmds: Commands,
+    query_containers: Query<
+        (
+            &ComputedNode,
+            &mut VirtualListState,
+            &Children,
+            &mut VirtualListContainer<T>,
+        ),
+        Added<VirtualListContainer<T>>,
+    >,
+    query_inner: Query<Entity, With<VirtualListInner<T>>>,
+) -> Result<()> {
+    for (container, mut state, children, mut list) in query_containers {
+        let inner = children.iter().find_map(|c| query_inner.get(c).ok());
+        let Some(inner_entity) = inner else {
+            continue;
+        };
+
+        let row_height = list.height().resolve(
+            container.inverse_scale_factor.recip(),
+            container.size.y,
+            container.size,
+            container.em_size,
+            container.rem_size,
+        )?;
+        let row_count = (container.size.y / row_height).floor() as usize;
+        dbg!(container.size.y);
+
+        let old = state.last;
+        state.last += row_count;
+        for idx in old..state.last {
+            let Some(row) = list.0.get_row(idx) else {
+                break;
+            };
+            let scene = cmds.spawn_scene(row).id();
+            cmds.entity(inner_entity).add_child(scene);
+        }
+        dbg!(row_count);
+    }
+    Ok(())
+}
+
+fn virtual_list_update_rows<T: VirtualList>(
+    scroll: On<PointerScroll>,
+    mut cmds: Commands,
+    mut query_containers: Query<(
+        &ComputedNode,
+        &mut VirtualScrollPosition,
+        &mut VirtualListState,
+        &Children,
+        &mut VirtualListContainer<T>,
+    )>,
+    mut query_inner: Query<(Entity, &mut Node, &Children), With<VirtualListInner<T>>>,
+    scroll_conversion_ratio: Res<MouseScrollPixelsPerLine>,
+) -> Result<()> {
+    if let Ok((container, mut scroll_position, mut state, children, mut list)) =
+        query_containers.get_mut(scroll.entity)
+    {
+        let row_height = list.height().resolve(
+            container.inverse_scale_factor.recip(),
+            container.size.y,
+            container.size,
+            container.em_size,
+            container.rem_size,
+        )?;
+        let row_height_unscaled = row_height * container.inverse_scale_factor;
+
+        let entity = children
+            .iter()
+            .find(|c| query_inner.contains(*c))
+            .expect("virtual list container requires an inner element.");
+        let (inner_entity, mut inner_node, inner_children) = query_inner.get_mut(entity)?;
+
+        let scroll_delta = scroll.to_pixels(&scroll_conversion_ratio).y;
+        **scroll_position += scroll_delta;
+        state.scroll_fract += scroll_delta.abs();
+        eprintln!("{:?}", (**scroll_position, state.scroll_fract, row_height));
+
+        inner_node.top = px(**scroll_position);
+
+        let total_height = row_height * inner_children.len() as f32;
+        let new_row_count = (state.scroll_fract / row_height_unscaled).floor() as usize;
+        state.scroll_fract -= new_row_count as f32 * row_height_unscaled;
+
+        // dbg!(state.scroll_fract / row_height);
+
+        let old = state.last;
+        state.last += new_row_count;
+        for idx in old..state.last {
+            let Some(row) = list.0.get_row(idx) else {
+                break;
+            };
+            let scene = cmds.spawn_scene(row).id();
+            cmds.entity(inner_entity).add_child(scene);
+        }
+    }
+    Ok(())
 }

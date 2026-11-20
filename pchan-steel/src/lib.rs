@@ -1,6 +1,5 @@
 extern crate alloc;
 
-use core::alloc::Allocator;
 use core::mem;
 use core::num::ParseIntError;
 use std::collections::HashMap;
@@ -398,12 +397,7 @@ impl SteelExecutor {
         }
     }
 
-    pub fn handle_call<EA: Allocator + Copy, RA: Allocator + Copy>(
-        &mut self,
-        emu: &mut Emu<EA>,
-        runner: &mut Runner<RA>,
-        msg: Call,
-    ) -> ExecSummary {
+    pub fn handle_call(&mut self, emu: &mut Emu, runner: &mut Runner, msg: Call) -> ExecSummary {
         match msg {
             Call::Run => {
                 runner.running = true;
@@ -415,11 +409,10 @@ impl SteelExecutor {
                 runner.frame_idx = 0;
 
                 let bios_path = emu.boot.bios_path.clone();
-                let alloc = emu.alloc;
                 emu.gpu.reset_renderer();
-                let mut new = Emu::new_in(alloc);
+                let mut new = Emu::new();
                 new.set_bios_path(bios_path);
-                new.load_bios(alloc).unwrap();
+                new.load_bios().unwrap();
                 new.cpu.jump_to_bios();
                 new.tty.set_tracing();
 
@@ -498,11 +491,7 @@ impl SteelExecutor {
         default()
     }
 
-    pub fn handle_step<EA: Allocator + Copy, RA: Allocator + Copy>(
-        &mut self,
-        emu: &mut Emu<EA>,
-        runner: &mut Runner<RA>,
-    ) {
+    pub fn handle_step(&mut self, emu: &mut Emu, runner: &mut Runner) {
         let idx = runner.frame_idx;
         self.frame_wakers.retain(|(n, waker)| {
             if *n <= idx {

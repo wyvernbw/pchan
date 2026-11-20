@@ -1,4 +1,3 @@
-use core::alloc::Allocator;
 use pchan_utils::hex;
 
 use crate::Emu;
@@ -64,7 +63,7 @@ pub enum InterpreterResult {
 }
 
 impl Interpreter {
-    fn debugger_exec<A: Allocator + Copy>(#[allow(unused_variables)] emu: &mut Emu<A>) {
+    fn debugger_exec(#[allow(unused_variables)] emu: &mut Emu) {
         #[cfg(feature = "debugger-ext")]
         {
             use crate::debug::BreakpointKind;
@@ -73,16 +72,13 @@ impl Interpreter {
         }
     }
 
-    fn run_delay_slots<A: Allocator + Copy>(&mut self, emu: &mut Emu<A>) {
+    fn run_delay_slots(&mut self, emu: &mut Emu) {
         emu.run_op_delay_slot(core::mem::replace(&mut self.delay_queue[0], DelaySlot::Nop));
         self.delay_queue.swap(0, 1);
         debug_assert_eq!(self.delay_queue[1], DelaySlot::Nop);
     }
 
-    pub async fn run_instruction<A: Allocator + Copy>(
-        &mut self,
-        emu: &mut Emu<A>,
-    ) -> (InterpreterResult, u32, DecodedOp) {
+    pub async fn run_instruction(&mut self, emu: &mut Emu) -> (InterpreterResult, u32, DecodedOp) {
         if !emu.cpu.pc.is_multiple_of(0x4) {
             emu.raise_exception(Exception::AdEl);
             emu.run_io().await;
@@ -143,7 +139,7 @@ impl Interpreter {
     }
 }
 
-impl<A: Allocator + Copy> Emu<A> {
+impl Emu {
     pub(crate) fn set_reg(&mut self, idx: u8, value: u32) {
         self.cpu.gpr[idx as usize] = value;
     }

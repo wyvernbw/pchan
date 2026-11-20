@@ -19,11 +19,9 @@ use crate::memory::ext;
 use dynasm::dynasm;
 use dynasmrt::DynasmApi;
 
-use core::alloc::Allocator;
-
 impl DynarecOp for Addiu {
     #[allow(clippy::useless_conversion)]
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, ctx: EmitCtx) -> EmitSummary {
         // $rt = $zero case
         if self.rt == 0 {
             return EmitSummary::default();
@@ -62,7 +60,7 @@ impl DynarecOp for Addiu {
 }
 
 impl DynarecOp for HaltBlock {
-    fn emit<A: Allocator + Copy>(&self, _: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, _: EmitCtx) -> EmitSummary {
         EmitSummary::default()
     }
 
@@ -77,7 +75,7 @@ impl DynarecOp for HaltBlock {
 
 impl DynarecOp for Sb {
     #[cfg(target_arch = "aarch64")]
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, ctx: EmitCtx) -> EmitSummary {
         use crate::dynarec_v2::emitters::emit_store;
 
         emit_store(ctx, self.rt, self.rs, self.imm16, move |ctx| {
@@ -86,7 +84,7 @@ impl DynarecOp for Sb {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
-                ; ldr x3, [x0, #ExternFnTable::<A>::WRITE8V2]
+                ; ldr x3, [x0, #ExternFnTable::WRITE8V2]
                 ; blr x3
             )
         })
@@ -99,12 +97,12 @@ impl DynarecOp for Sb {
 
 impl DynarecOp for Sh {
     #[cfg(target_arch = "aarch64")]
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, ctx: EmitCtx) -> EmitSummary {
         emit_store(ctx, self.rt, self.rs, self.imm16, move |ctx| {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
-                ; ldr x3, [x0, #ExternFnTable::<A>::WRITE16V2]
+                ; ldr x3, [x0, #ExternFnTable::WRITE16V2]
                 ; blr x3
             )
         })
@@ -116,12 +114,12 @@ impl DynarecOp for Sh {
 
 impl DynarecOp for Sw {
     #[cfg(target_arch = "aarch64")]
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, ctx: EmitCtx) -> EmitSummary {
         emit_store(ctx, self.rt, self.rs, self.imm16, move |ctx| {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
-                ; ldr x3, [x0, #ExternFnTable::<A>::WRITE32V2]
+                ; ldr x3, [x0, #ExternFnTable::WRITE32V2]
                 ; blr x3
             );
         })
@@ -133,12 +131,12 @@ impl DynarecOp for Sw {
 
 impl DynarecOp for Swl {
     #[allow(clippy::useless_conversion)]
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, ctx: EmitCtx) -> EmitSummary {
         emit_store(ctx, self.rt, self.rs, self.imm16, move |ctx| {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
-                ; ldr x3, [x0, #ExternFnTable::<A>::ULWRITE32]
+                ; ldr x3, [x0, #ExternFnTable::ULWRITE32]
                 ; blr x3
             );
         })
@@ -151,12 +149,12 @@ impl DynarecOp for Swl {
 
 impl DynarecOp for Swr {
     #[allow(clippy::useless_conversion)]
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, ctx: EmitCtx) -> EmitSummary {
         emit_store(ctx, self.rt, self.rs, self.imm16, move |ctx| {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
-                ; ldr x3, [x0, #ExternFnTable::<A>::URWRITE32]
+                ; ldr x3, [x0, #ExternFnTable::URWRITE32]
                 ; blr x3
             );
         })
@@ -167,12 +165,12 @@ impl DynarecOp for Swr {
     }
 }
 impl DynarecOp for Lb {
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
-        emit_load::<true, A>(ctx, self.rt, self.rs, self.imm16, move |ctx| {
+    fn emit(&self, ctx: EmitCtx) -> EmitSummary {
+        emit_load::<true>(ctx, self.rt, self.rs, self.imm16, move |ctx| {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
-                ; ldr x3, [x0, #ExternFnTable::<A>::READI8V2]
+                ; ldr x3, [x0, #ExternFnTable::READI8V2]
                 ; blr x3
             );
         })
@@ -186,12 +184,12 @@ impl DynarecOp for Lb {
 }
 
 impl DynarecOp for Lbu {
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
-        emit_load::<true, A>(ctx, self.rt, self.rs, self.imm16, move |ctx| {
+    fn emit(&self, ctx: EmitCtx) -> EmitSummary {
+        emit_load::<true>(ctx, self.rt, self.rs, self.imm16, move |ctx| {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
-                ; ldr x3, [x0, #ExternFnTable::<A>::READU8V2]
+                ; ldr x3, [x0, #ExternFnTable::READU8V2]
                 ; blr x3
             );
         })
@@ -205,12 +203,12 @@ impl DynarecOp for Lbu {
 }
 
 impl DynarecOp for Lh {
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
-        emit_load::<true, A>(ctx, self.rt, self.rs, self.imm16, move |ctx| {
+    fn emit(&self, ctx: EmitCtx) -> EmitSummary {
+        emit_load::<true>(ctx, self.rt, self.rs, self.imm16, move |ctx| {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
-                ; ldr x3, [x0, #ExternFnTable::<A>::READI16V2]
+                ; ldr x3, [x0, #ExternFnTable::READI16V2]
                 ; blr x3
             )
         })
@@ -224,12 +222,12 @@ impl DynarecOp for Lh {
 }
 
 impl DynarecOp for Lhu {
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
-        emit_load::<true, A>(ctx, self.rt, self.rs, self.imm16, move |ctx| {
+    fn emit(&self, ctx: EmitCtx) -> EmitSummary {
+        emit_load::<true>(ctx, self.rt, self.rs, self.imm16, move |ctx| {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
-                ; ldr x3, [x0, #ExternFnTable::<A>::READU16V2]
+                ; ldr x3, [x0, #ExternFnTable::READU16V2]
                 ; blr x3
             )
         })
@@ -243,12 +241,12 @@ impl DynarecOp for Lhu {
 }
 
 impl DynarecOp for Lw {
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
-        emit_load::<true, A>(ctx, self.rt, self.rs, self.imm16, move |ctx| {
+    fn emit(&self, ctx: EmitCtx) -> EmitSummary {
+        emit_load::<true>(ctx, self.rt, self.rs, self.imm16, move |ctx| {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
-                ; ldr x3, [x0, #ExternFnTable::<A>::READ32V2]
+                ; ldr x3, [x0, #ExternFnTable::READ32V2]
                 ; blr x3
             );
         })
@@ -263,12 +261,12 @@ impl DynarecOp for Lw {
 
 impl DynarecOp for Lwl {
     #[allow(clippy::useless_conversion)]
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
-        emit_load::<false, A>(ctx, self.rt, self.rs, self.imm16, |ctx| {
+    fn emit(&self, ctx: EmitCtx) -> EmitSummary {
+        emit_load::<false>(ctx, self.rt, self.rs, self.imm16, |ctx| {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
-                ; ldr x3, [x0, #ExternFnTable::<A>::ULREAD32]
+                ; ldr x3, [x0, #ExternFnTable::ULREAD32]
                 ; blr x3
             )
         })
@@ -283,12 +281,12 @@ impl DynarecOp for Lwl {
 
 impl DynarecOp for Lwr {
     #[allow(clippy::useless_conversion)]
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
-        emit_load::<false, A>(ctx, self.rt, self.rs, self.imm16, |ctx| {
+    fn emit(&self, ctx: EmitCtx) -> EmitSummary {
+        emit_load::<false>(ctx, self.rt, self.rs, self.imm16, |ctx| {
             dynasm!(
                 ctx.dynarec.asm
                 ; .arch aarch64
-                ; ldr x3, [x0, #ExternFnTable::<A>::URREAD32]
+                ; ldr x3, [x0, #ExternFnTable::URREAD32]
                 ; blr x3
             )
         })
@@ -303,7 +301,7 @@ impl DynarecOp for Lwr {
 
 impl DynarecOp for Subu {
     #[allow(clippy::useless_conversion)]
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, ctx: EmitCtx) -> EmitSummary {
         if self.rd == 0 {
             return EmitSummary::default();
         };
@@ -339,7 +337,7 @@ impl DynarecOp for Subu {
 
 impl DynarecOp for Addu {
     #[allow(clippy::useless_conversion)]
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, ctx: EmitCtx) -> EmitSummary {
         if self.rd == 0 {
             return EmitSummary::default();
         };
@@ -365,7 +363,7 @@ impl DynarecOp for Addu {
 
 impl DynarecOp for And {
     #[allow(clippy::useless_conversion)]
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, ctx: EmitCtx) -> EmitSummary {
         if self.rd == 0 {
             return EmitSummary::default();
         }
@@ -388,7 +386,7 @@ impl DynarecOp for And {
 
 impl DynarecOp for Or {
     #[allow(clippy::useless_conversion)]
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, ctx: EmitCtx) -> EmitSummary {
         if self.rd == 0 {
             return EmitSummary::default();
         }
@@ -413,7 +411,7 @@ impl DynarecOp for Or {
 
 impl DynarecOp for Xor {
     #[allow(clippy::useless_conversion)]
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, ctx: EmitCtx) -> EmitSummary {
         if self.rd == 0 {
             return EmitSummary::default();
         }
@@ -438,7 +436,7 @@ impl DynarecOp for Xor {
 
 impl DynarecOp for Nor {
     #[allow(clippy::useless_conversion)]
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, ctx: EmitCtx) -> EmitSummary {
         if self.rd == 0 {
             return EmitSummary::default();
         }
@@ -475,7 +473,7 @@ impl DynarecOp for Nor {
 
 impl DynarecOp for Sllv {
     #[allow(clippy::useless_conversion)]
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, ctx: EmitCtx) -> EmitSummary {
         emit_shift_by_reg(ctx, self.rd, self.rs, self.rt, move |ctx, regs| {
             dynasm!(
                 ctx.dynarec.asm
@@ -488,7 +486,7 @@ impl DynarecOp for Sllv {
 
 impl DynarecOp for Srlv {
     #[allow(clippy::useless_conversion)]
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, ctx: EmitCtx) -> EmitSummary {
         emit_shift_by_reg(ctx, self.rd, self.rs, self.rt, move |ctx, regs| {
             dynasm!(
                 ctx.dynarec.asm
@@ -501,7 +499,7 @@ impl DynarecOp for Srlv {
 
 impl DynarecOp for Srav {
     #[allow(clippy::useless_conversion)]
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, ctx: EmitCtx) -> EmitSummary {
         emit_shift_by_reg(ctx, self.rd, self.rs, self.rt, move |ctx, regs| {
             dynasm!(
                 ctx.dynarec.asm
@@ -514,7 +512,7 @@ impl DynarecOp for Srav {
 
 impl DynarecOp for Sll {
     #[allow(clippy::useless_conversion)]
-    fn emit<A: Allocator + Copy>(&self, mut ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, mut ctx: EmitCtx) -> EmitSummary {
         emit_shift_imm(
             &mut ctx,
             self.rd,
@@ -536,7 +534,7 @@ impl DynarecOp for Sll {
 
 impl DynarecOp for Srl {
     #[allow(clippy::useless_conversion)]
-    fn emit<A: Allocator + Copy>(&self, mut ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, mut ctx: EmitCtx) -> EmitSummary {
         emit_shift_imm(
             &mut ctx,
             self.rd,
@@ -557,7 +555,7 @@ impl DynarecOp for Srl {
 
 impl DynarecOp for Sra {
     #[allow(clippy::useless_conversion)]
-    fn emit<A: Allocator + Copy>(&self, mut ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, mut ctx: EmitCtx) -> EmitSummary {
         emit_shift_imm(
             &mut ctx,
             self.rd,
@@ -578,7 +576,7 @@ impl DynarecOp for Sra {
 
 impl DynarecOp for Andi {
     #[allow(clippy::useless_conversion)]
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, ctx: EmitCtx) -> EmitSummary {
         ctx.dynarec.cancel_next_write(self.rt);
 
         match (self.rt, self.rs, self.imm16) {
@@ -605,7 +603,7 @@ impl DynarecOp for Andi {
 
 impl DynarecOp for Ori {
     #[allow(clippy::useless_conversion)]
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, ctx: EmitCtx) -> EmitSummary {
         ctx.dynarec.cancel_next_write(self.rt);
 
         match self {
@@ -645,7 +643,7 @@ impl DynarecOp for Ori {
 
 impl DynarecOp for Xori {
     #[allow(clippy::useless_conversion)]
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, ctx: EmitCtx) -> EmitSummary {
         ctx.dynarec.cancel_next_write(self.rt);
 
         match self {
@@ -685,7 +683,7 @@ impl DynarecOp for Xori {
 
 impl DynarecOp for Lui {
     #[allow(clippy::useless_conversion)]
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, ctx: EmitCtx) -> EmitSummary {
         if self.rt == 0 {
             return EmitSummary::default();
         }
@@ -706,7 +704,7 @@ impl DynarecOp for Lui {
 }
 
 impl DynarecOp for J {
-    fn emit<A: Allocator + Copy>(&self, mut ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, mut ctx: EmitCtx) -> EmitSummary {
         let new_pc = (self.imm26 << 2) | (ctx.pc & 0xf0000000);
         ctx.schedule_in(1, None, move |ctx| {
             ctx.dynarec.emit_write_pc(Reg::W(1), new_pc);
@@ -741,7 +739,7 @@ impl DynarecOp for Jal {
     fn boundary(&self) -> Boundary {
         Boundary::Soft
     }
-    fn emit<A: Allocator + Copy>(&self, mut ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, mut ctx: EmitCtx) -> EmitSummary {
         let new_pc = (self.imm26 << 2) + (ctx.pc & 0xf0000000);
         let return_address = ctx.pc + 0x8;
         ctx.dynarec.cancel_next_write(RA);
@@ -766,7 +764,7 @@ impl DynarecOp for Jr {
         Boundary::Soft
     }
     #[allow(clippy::useless_conversion)]
-    fn emit<A: Allocator + Copy>(&self, mut ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, mut ctx: EmitCtx) -> EmitSummary {
         let dest = ctx.dynarec.emit_load_reg_stackless(self.rs);
         let s1 = ctx.alloc_scratch();
         #[cfg(target_arch = "aarch64")]
@@ -783,7 +781,7 @@ impl DynarecOp for Jr {
                 ctx.dynarec.asm
                 ; .arch aarch64
                 ; ldr w1, [x0, #s1]
-                ; str w1, [x0, Emu::<A>::PC_OFFSET as _]
+                ; str w1, [x0, Emu::PC_OFFSET as _]
                 ;; ctx.dynarec.emit_set_bd::<true>()
             );
 
@@ -804,7 +802,7 @@ impl DynarecOp for Jalr {
         Boundary::Soft
     }
     #[allow(clippy::useless_conversion)]
-    fn emit<A: Allocator + Copy>(&self, mut ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, mut ctx: EmitCtx) -> EmitSummary {
         let s1 = ctx.alloc_scratch();
         let dest = ctx.dynarec.emit_load_reg_stackless(self.rs);
 
@@ -830,7 +828,7 @@ impl DynarecOp for Jalr {
                 ctx.dynarec.asm
                 ; .arch aarch64
                 ; ldr w1, [x0, #s1]
-                ; str w1, [x0, Emu::<A>::PC_OFFSET as _]
+                ; str w1, [x0, Emu::PC_OFFSET as _]
                 ;; ctx.dynarec.emit_set_bd::<true>()
             );
 
@@ -851,7 +849,7 @@ impl DynarecOp for Beq {
         Boundary::Soft
     }
     #[allow(clippy::useless_conversion)]
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, ctx: EmitCtx) -> EmitSummary {
         {
             // let mut ctx = ctx;
             // let rs = self.rs;
@@ -934,7 +932,7 @@ impl DynarecOp for Bne {
     fn boundary(&self) -> Boundary {
         Boundary::Soft
     }
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, ctx: EmitCtx) -> EmitSummary {
         #[cfg(target_arch = "aarch64")]
         emit_branch(ctx, self.rs, self.rt, self.imm16, move |ctx| {
             dynasm!(
@@ -956,7 +954,7 @@ impl DynarecOp for Bltz {
     fn boundary(&self) -> Boundary {
         Boundary::Soft
     }
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, ctx: EmitCtx) -> EmitSummary {
         #[cfg(target_arch = "aarch64")]
         emit_branch_zero(
             ctx,
@@ -984,7 +982,7 @@ impl DynarecOp for Bgez {
     fn boundary(&self) -> Boundary {
         Boundary::Soft
     }
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, ctx: EmitCtx) -> EmitSummary {
         #[cfg(target_arch = "aarch64")]
         emit_branch_zero(
             ctx,
@@ -1012,7 +1010,7 @@ impl DynarecOp for Blez {
     fn boundary(&self) -> Boundary {
         Boundary::Soft
     }
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, ctx: EmitCtx) -> EmitSummary {
         #[cfg(target_arch = "aarch64")]
         emit_branch_zero(
             ctx,
@@ -1040,7 +1038,7 @@ impl DynarecOp for Bgtz {
     fn boundary(&self) -> Boundary {
         Boundary::Soft
     }
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, ctx: EmitCtx) -> EmitSummary {
         #[cfg(target_arch = "aarch64")]
         emit_branch_zero(
             ctx,
@@ -1067,7 +1065,7 @@ impl DynarecOp for Mtcn {
         }
     }
     #[allow(clippy::useless_conversion)]
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, ctx: EmitCtx) -> EmitSummary {
         emit_move_to_cop(
             ctx,
             CopMove {
@@ -1089,7 +1087,7 @@ impl DynarecOp for Ctcn {
         }
     }
     #[allow(clippy::useless_conversion)]
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, ctx: EmitCtx) -> EmitSummary {
         emit_move_to_cop(
             ctx,
             CopMove {
@@ -1106,14 +1104,14 @@ impl DynarecOp for Nop {
     fn cycles(&self) -> u16 {
         1
     }
-    fn emit<A: Allocator + Copy>(&self, _: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, _: EmitCtx) -> EmitSummary {
         EmitSummary::default()
     }
 }
 
 impl DynarecOp for Sltu {
     #[allow(clippy::useless_conversion)]
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, ctx: EmitCtx) -> EmitSummary {
         if self.rd == 0 {
             return EmitSummary::default();
         }
@@ -1148,7 +1146,7 @@ impl DynarecOp for Sltu {
 
 impl DynarecOp for Sltiu {
     #[allow(clippy::useless_conversion)]
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, ctx: EmitCtx) -> EmitSummary {
         if self.rt == 0 {
             return EmitSummary::default();
         }
@@ -1203,7 +1201,7 @@ impl DynarecOp for Sltiu {
 
 impl DynarecOp for Slt {
     #[allow(clippy::useless_conversion)]
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, ctx: EmitCtx) -> EmitSummary {
         if self.rd == 0 {
             return EmitSummary::default();
         }
@@ -1239,7 +1237,7 @@ impl DynarecOp for Slt {
 
 impl DynarecOp for Slti {
     #[allow(clippy::useless_conversion)]
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, ctx: EmitCtx) -> EmitSummary {
         if self.rt == 0 {
             return EmitSummary::default();
         }
@@ -1293,7 +1291,7 @@ impl DynarecOp for Slti {
 
 impl DynarecOp for Mfcn {
     #[allow(clippy::useless_conversion)]
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, ctx: EmitCtx) -> EmitSummary {
         emit_move_from_cop(
             ctx,
             CopMove {
@@ -1309,7 +1307,7 @@ impl DynarecOp for Mfcn {
 
 impl DynarecOp for Cfcn {
     #[allow(clippy::useless_conversion)]
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, ctx: EmitCtx) -> EmitSummary {
         emit_move_from_cop(
             ctx,
             CopMove {
@@ -1325,7 +1323,7 @@ impl DynarecOp for Cfcn {
 
 impl DynarecOp for Div {
     #[allow(clippy::useless_conversion)]
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, ctx: EmitCtx) -> EmitSummary {
         let rs = ctx
             .dynarec
             .emit_load_reg_stackless(self.rs)
@@ -1350,7 +1348,7 @@ impl DynarecOp for Div {
             ; csinv w3, w3, w1, lt
             ; cmp WSP(*rt), 0
             ; csel w1, w3, w1, eq
-            ; stp w1, w2, [x0, Emu::<A>::HILO_OFFSET as _]
+            ; stp w1, w2, [x0, Emu::HILO_OFFSET as _]
         );
         rs.unlock(ctx.dynarec);
         EmitSummary::default()
@@ -1366,7 +1364,7 @@ impl DynarecOp for Div {
 
 impl DynarecOp for Divu {
     #[allow(clippy::useless_conversion)]
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, ctx: EmitCtx) -> EmitSummary {
         let rs = ctx
             .dynarec
             .emit_load_reg_stackless(self.rs)
@@ -1388,7 +1386,7 @@ impl DynarecOp for Divu {
             ; cmp WSP(*rt), 0
             ; csinv w1, w1, wzr, ne
 
-            ; stp w1, w2, [x0, Emu::<A>::HILO_OFFSET as _]
+            ; stp w1, w2, [x0, Emu::HILO_OFFSET as _]
         );
 
         rs.unlock(ctx.dynarec);
@@ -1412,13 +1410,13 @@ impl DynarecOp for Multu {
         9
     }
     #[allow(clippy::useless_conversion)]
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, ctx: EmitCtx) -> EmitSummary {
         match (self.rs, self.rt) {
             (0, _) | (_, 0) => {
                 #[cfg(target_arch = "aarch64")]
                 dynasm!(
                     ctx.dynarec.asm
-                    ; str xzr, [x0, Emu::<A>::HILO_OFFSET as _]
+                    ; str xzr, [x0, Emu::HILO_OFFSET as _]
                 );
             }
             (_, _) => {
@@ -1432,7 +1430,7 @@ impl DynarecOp for Multu {
                 dynasm!(
                     ctx.dynarec.asm
                     ; umull x1, W(*rs), W(*rt)
-                    ; str x1, [x0, Emu::<A>::HILO_OFFSET as _]
+                    ; str x1, [x0, Emu::HILO_OFFSET as _]
                 );
 
                 rs.unlock(ctx.dynarec);
@@ -1450,13 +1448,13 @@ impl DynarecOp for Mult {
         9
     }
     #[allow(clippy::useless_conversion)]
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, ctx: EmitCtx) -> EmitSummary {
         match (self.rs, self.rt) {
             (0, _) | (_, 0) => {
                 #[cfg(target_arch = "aarch64")]
                 dynasm!(
                     ctx.dynarec.asm
-                    ; str xzr, [x0, Emu::<A>::HILO_OFFSET as _]
+                    ; str xzr, [x0, Emu::HILO_OFFSET as _]
                 );
             }
             (_, _) => {
@@ -1470,7 +1468,7 @@ impl DynarecOp for Mult {
                 dynasm!(
                     ctx.dynarec.asm
                     ; smull x1, W(*rs), W(*rt)
-                    ; str x1, [x0, Emu::<A>::HILO_OFFSET as _]
+                    ; str x1, [x0, Emu::HILO_OFFSET as _]
                 );
 
                 rs.unlock(ctx.dynarec);
@@ -1482,7 +1480,7 @@ impl DynarecOp for Mult {
 
 impl DynarecOp for Mflo {
     #[allow(clippy::useless_conversion)]
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, ctx: EmitCtx) -> EmitSummary {
         if self.rd == 0 {
             return EmitSummary::default();
         }
@@ -1495,7 +1493,7 @@ impl DynarecOp for Mflo {
         dynasm!(
             ctx.dynarec.asm
             ; .arch aarch64
-            ; ldr W(*rd), [x0, Emu::<A>::HILO_OFFSET as _]
+            ; ldr W(*rd), [x0, Emu::HILO_OFFSET as _]
         );
 
         ctx.dynarec.mark_dirty(self.rd);
@@ -1506,7 +1504,7 @@ impl DynarecOp for Mflo {
 
 impl DynarecOp for Mfhi {
     #[allow(clippy::useless_conversion)]
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, ctx: EmitCtx) -> EmitSummary {
         if self.rd == 0 {
             return EmitSummary::default();
         }
@@ -1519,7 +1517,7 @@ impl DynarecOp for Mfhi {
         dynasm!(
             ctx.dynarec.asm
             ; .arch aarch64
-            ; ldr W(*rd), [x0, (Emu::<A>::HILO_OFFSET + size_of::<u32>()) as _]
+            ; ldr W(*rd), [x0, (Emu::HILO_OFFSET + size_of::<u32>()) as _]
         );
 
         ctx.dynarec.mark_dirty(self.rd);
@@ -1533,7 +1531,7 @@ impl DynarecOp for Syscall {
         Boundary::Hard
     }
     #[allow(clippy::useless_conversion)]
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, ctx: EmitCtx) -> EmitSummary {
         assert!(!ctx.delay_slot);
         #[cfg(target_arch = "aarch64")]
         dynasm!(
@@ -1543,7 +1541,7 @@ impl DynarecOp for Syscall {
             ;; ctx.dynarec.emit_save_critical_registers()
             ; movz w1, u32::from(ctx.pc) >> 16, lsl #16
             ; movk w1, u32::from(ctx.pc) & 0x0000_ffff
-            ; ldr x3, [x0, #ExternFnTable::<A>::HANDLE_SYSCALL]
+            ; ldr x3, [x0, #ExternFnTable::HANDLE_SYSCALL]
             ; blr x3
             ; nop
             ;; ctx.dynarec.emit_restore_critical_registers()
@@ -1558,7 +1556,7 @@ impl DynarecOp for Brk {
         Boundary::Hard
     }
     #[allow(clippy::useless_conversion)]
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, ctx: EmitCtx) -> EmitSummary {
         #[cfg(target_arch = "aarch64")]
         dynasm!(
             ctx.dynarec.asm
@@ -1567,7 +1565,7 @@ impl DynarecOp for Brk {
             ;; ctx.dynarec.emit_save_critical_registers()
             ; movz w1, u32::from(ctx.pc) >> 16, lsl #16
             ; movk w1, u32::from(ctx.pc) & 0x0000_ffff
-            ; ldr x3, [x0, #ExternFnTable::<A>::HANDLE_BREAK]
+            ; ldr x3, [x0, #ExternFnTable::HANDLE_BREAK]
             ; blr x3
             ;; ctx.dynarec.emit_restore_critical_registers()
         );
@@ -1578,13 +1576,13 @@ impl DynarecOp for Brk {
 
 impl DynarecOp for Rfe {
     #[allow(clippy::useless_conversion)]
-    fn emit<A: Allocator + Copy>(&self, mut ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, mut ctx: EmitCtx) -> EmitSummary {
         emit_call(&mut ctx, |dynarec| {
             dynasm!(
                 dynarec.asm
                 ;; let saved = dynarec.emit_save_volatile_registers()
                 ;; dynarec.emit_writeback_all()
-                ; ldr x3, [x0, #ExternFnTable::<A>::HANDLE_RFE]
+                ; ldr x3, [x0, #ExternFnTable::HANDLE_RFE]
                 ; blr x3
                 ;; dynarec.emit_restore_saved_registers(saved.into_iter())
             )
@@ -1595,21 +1593,21 @@ impl DynarecOp for Rfe {
 
 impl DynarecOp for Mtlo {
     #[allow(clippy::useless_conversion)]
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, ctx: EmitCtx) -> EmitSummary {
         emit_mthilo(self.rs, ctx, Hilo::Lo)
     }
 }
 
 impl DynarecOp for Mthi {
     #[allow(clippy::useless_conversion)]
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, ctx: EmitCtx) -> EmitSummary {
         emit_mthilo(self.rs, ctx, Hilo::Hi)
     }
 }
 
 impl DynarecOp for Lwcn {
     #[allow(clippy::useless_conversion)]
-    fn emit<A: Allocator + Copy>(&self, mut ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, mut ctx: EmitCtx) -> EmitSummary {
         if self.cop != 2 && self.cop != 0 {
             return default();
         }
@@ -1633,7 +1631,7 @@ impl DynarecOp for Lwcn {
                 ;; ctx.dynarec.reg_alloc.dealloc_all()
                 ;; ctx.dynarec.emit_save_critical_registers()
                 ; ldr w1, [x0, #s1]
-                ; ldr x3, [x0, #ExternFnTable::<A>::READ32V2]
+                ; ldr x3, [x0, #ExternFnTable::READ32V2]
                 ; blr x3
                 ; mov w1, w0
                 ;; ctx.dynarec.emit_restore_critical_registers()
@@ -1656,7 +1654,7 @@ impl DynarecOp for Lwcn {
 
 impl DynarecOp for Swcn {
     #[allow(clippy::useless_conversion)]
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, ctx: EmitCtx) -> EmitSummary {
         if self.cop != 2 && self.cop != 0 {
             return default();
         }
@@ -1671,7 +1669,7 @@ impl DynarecOp for Swcn {
             ;; ctx.dynarec.emit_writeback_all()
             ;; ctx.dynarec.reg_alloc.dealloc_all()
             ;; ctx.dynarec.emit_save_critical_registers()
-            ; ldr x3, [x0, #ExternFnTable::<A>::WRITE32V2]
+            ; ldr x3, [x0, #ExternFnTable::WRITE32V2]
             ; blr x3
             ;; ctx.dynarec.emit_restore_critical_registers()
         );
@@ -1699,7 +1697,7 @@ impl DynarecOp for Bltzal {
         Boundary::Soft
     }
     #[allow(clippy::useless_conversion)]
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, ctx: EmitCtx) -> EmitSummary {
         ctx.dynarec.cancel_next_write(RA);
         #[cfg(target_arch = "aarch64")]
         emit_branch_zero(
@@ -1728,7 +1726,7 @@ impl DynarecOp for Bgezal {
     fn boundary(&self) -> Boundary {
         Boundary::Soft
     }
-    fn emit<A: Allocator + Copy>(&self, ctx: EmitCtx<A>) -> EmitSummary {
+    fn emit(&self, ctx: EmitCtx) -> EmitSummary {
         ctx.dynarec.cancel_next_write(RA);
         #[cfg(target_arch = "aarch64")]
         emit_branch_zero(

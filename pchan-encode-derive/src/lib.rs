@@ -48,6 +48,7 @@ struct AllocInner {
     /// marks this variant as default
     default: Option<()>,
     global:  Option<()>,
+    is_dyn:  Option<()>,
 }
 
 #[derive(Default, Debug, Clone, FromMeta)]
@@ -317,9 +318,30 @@ impl ToTokens for NamedStructOpts {
             }
         });
 
+        let (endecode_impl, alloc_type) = match self.alloc.as_ref().and_then(|alloc| alloc.is_dyn) {
+            Some(_) => {
+                let alloc_type = quote! {
+                    &'alloc dyn #allocator_bound
+                };
+                let endecode_impl = quote! {
+                    impl<'alloc, #(#const_params,)*, #(#type_params)*> ::pchan_encode::Endecode<#alloc_type> for #type_w_generics #where_clause
+                };
+                dbg!((endecode_impl, alloc_type))
+            }
+            None => {
+                let alloc_type = quote! {
+                    A
+                };
+                let endecode_impl = quote! {
+                     impl<#(#const_params,)* A: #allocator_bound + Clone, #(#type_params)*> ::pchan_encode::Endecode<A> for #type_w_generics #where_clause
+                };
+                (endecode_impl, alloc_type)
+            }
+        };
+
         let mut result = quote! {
-            impl<#(#const_params,)* A: #allocator_bound + Clone, #(#type_params)*> ::pchan_encode::Endecode<A> for #type_w_generics #where_clause {
-                fn endecode(&mut self, sink: &mut impl ::pchan_encode::Stream, alloc: A) -> Result<(), ::pchan_encode::EndecodeError> {
+            #endecode_impl {
+                fn endecode(&mut self, sink: &mut impl ::pchan_encode::Stream, alloc: #alloc_type) -> Result<(), ::pchan_encode::EndecodeError> {
                     #fields_set
                     Ok(())
                 }

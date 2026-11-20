@@ -1,9 +1,7 @@
-use core::alloc::Allocator;
 use core::cmp;
 
 use heapless::BinaryHeap;
 use heapless::binary_heap::Min;
-use pchan_encode::Allocate;
 use pchan_encode::derive::Endecode;
 
 use crate::Emu;
@@ -27,6 +25,7 @@ pub enum EventKind {
     // cdrom
     CdromResponse(u32),
     CdromIrq,
+    CdromAudioPlayback,
 }
 
 #[derive(Debug, Clone, Copy, Endecode, Default)]
@@ -44,13 +43,13 @@ pub enum Task {
 }
 
 /// `pchan` event queue
-#[derive(derive_more::Debug, Clone, Endecode)]
-pub struct Evque<A: Allocator> {
+#[derive(derive_more::Debug, Clone)]
+pub struct Evque {
     clock: u64,
     #[debug(skip)]
-    queue: Box<BinaryHeap<PchanEvent, Min, 512>, A>,
+    queue: Box<BinaryHeap<PchanEvent, Min, 512>>,
     #[debug(skip)]
-    tasks: Vec<Task, A>,
+    tasks: Vec<Task>,
 }
 
 #[derive(Default)]
@@ -68,12 +67,13 @@ pub struct PchanEvent {
     id:       u64,
 }
 
-impl<A: Allocator + Copy> Allocate<A> for Evque<A> {
-    fn new_in(alloc: A) -> Self {
+impl Evque {
+    #[must_use]
+    pub fn new() -> Self {
         Evque {
             clock: 0,
-            queue: Box::new_in(BinaryHeap::new(), alloc),
-            tasks: Vec::with_capacity_in(4096, alloc),
+            queue: Box::new(BinaryHeap::new()),
+            tasks: Vec::with_capacity(4096),
         }
     }
 }
@@ -98,7 +98,7 @@ impl PartialEq for PchanEvent {
 
 impl Eq for PchanEvent {}
 
-impl<A: Allocator + Copy> Emu<A> {
+impl Emu {
     pub async fn evque_advance(&mut self, d_clock: u64) {
         self.evque.clock = self.evque.clock.wrapping_add(d_clock);
         let clock = self.cpu.cycles;
@@ -134,6 +134,7 @@ impl<A: Allocator + Copy> Emu<A> {
                 EventKind::CdromIrq => {
                     self.handle_ev_cdrom_irq(ctx);
                 }
+                EventKind::CdromAudioPlayback => self.handle_ev_cdrom_audio_playback(),
             };
         }
         let mut i = 0;
@@ -164,7 +165,7 @@ impl<A: Allocator + Copy> Emu<A> {
     }
 }
 
-impl<A: Allocator> Evque<A> {
+impl Evque {
     fn pop_next(&mut self) -> Option<PchanEvent> {
         match self.queue.peek() {
             Some(ev) if ev.at_cycle <= self.clock => self.queue.pop(),

@@ -18,27 +18,18 @@ use crate::{Emu, cpu};
 pub static AMIDOG_TESTS: &[u8] =
     include_bytes!("../../tests/assets/amidog_psxtest_cpu/psxtest_cpu.exe");
 
-#[derive(derive_more::Debug, Clone)]
-pub struct BootloaderState<A: Allocator> {
+#[derive(derive_more::Debug, Clone, Default)]
+pub struct BootloaderState {
     #[cfg(feature = "std")]
     pub bios_path: PathBuf,
-    sideload:      Option<Exe<'static, Vec<u8, A>>>,
-    #[debug(skip)]
-    alloc:         A,
+    sideload:      Option<Exe<'static, Vec<u8>>>,
 }
 
-impl<A: Allocator> Allocate<A> for BootloaderState<A> {
-    fn new_in(alloc: A) -> Self {
-        let bios_path = std::env::var("PCHAN_BIOS").unwrap_or("./SCPH1001.BIN".to_owned());
-        BootloaderState {
-            bios_path: bios_path.into(),
-            sideload: None,
-            alloc,
-        }
+impl BootloaderState {
+    pub fn new() -> Self {
+        Self::default()
     }
-}
 
-impl<A: Allocator> BootloaderState<A> {
     pub fn remove_sideload(&mut self) {
         self.sideload = None;
     }
@@ -56,12 +47,12 @@ pub enum BootError {
     SideloadErr(#[from] ExeHeaderParseErr),
 }
 
-impl<A: Allocator + Copy> Emu<A> {
+impl Emu {
     #[cfg(feature = "std")]
-    pub fn load_bios(&mut self, alloc: A) -> Result<(), BootError> {
+    pub fn load_bios(&mut self) -> Result<(), BootError> {
         let mut bios_file =
             fs::File::open(&self.boot.bios_path).map_err(BootError::BiosFileOpenError)?;
-        let mut bios = buffer(kb(524), alloc);
+        let mut bios = buffer(kb(524));
         let _ = bios_file
             .read(&mut bios)
             .map_err(BootError::BiosReadError)?;
@@ -82,7 +73,7 @@ impl<A: Allocator + Copy> Emu<A> {
     }
 }
 
-impl<A: Allocator> Emu<A> {
+impl Emu {
     pub fn set_bios_path(&mut self, path: impl AsRef<Path>) {
         self.boot.bios_path = path.as_ref().to_path_buf();
     }
@@ -92,20 +83,20 @@ impl<A: Allocator> Emu<A> {
         }
     }
 
-    pub fn sideload_exe(&mut self, exe: &[u8], alloc: A) -> Result<(), BootError> {
+    pub fn sideload_exe(&mut self, exe: &[u8]) -> Result<(), BootError> {
         let exe = Exe::parse(exe)?;
         if let Some(sideload) = &self.boot.sideload {
             if exe.header == sideload.header {
                 return Ok(());
             }
         }
-        let exe = exe.to_owned_code(alloc);
+        let exe = exe.to_owned_code();
         tracing::info!("parsed executable");
         self.boot.sideload = Some(exe);
         Ok(())
     }
 
-    pub fn sideloaded_exe(&self) -> Option<&Exe<'_, Vec<u8, A>>> {
+    pub fn sideloaded_exe(&self) -> Option<&Exe<'_, Vec<u8>>> {
         self.boot.sideload.as_ref()
     }
 
@@ -273,8 +264,8 @@ impl<'a> Exe<'a, Cow<'a, [u8]>> {
         })
     }
 
-    fn to_owned_code<A: Allocator>(&self, alloc: A) -> Exe<'static, Vec<u8, A>> {
-        let vec = self.code.to_vec_in(alloc);
+    fn to_owned_code(&self) -> Exe<'static, Vec<u8>> {
+        let vec = self.code.to_vec();
         Exe {
             header: self.header.clone(),
             code:   vec,

@@ -1,8 +1,10 @@
 use core::alloc::Allocator;
 use core::fmt;
+use core::marker::PhantomData;
 use core::str::FromStr;
 use std::marker::Destruct;
 
+use alloc::io;
 use arbitrary_int::prelude::*;
 use bitbybit::bitfield;
 use pchan_encode::derive::Endecode;
@@ -74,12 +76,12 @@ impl<T> Mss<T> {
 
 pub const SECTOR_USER_SIZE: usize = 0x930;
 
-pub const fn mss_to_lba<T: [const] Into<u8> + [const] Destruct>(mss: Mss<T>) -> u32 {
+pub fn mss_to_lba<T: Into<u8>>(mss: Mss<T>) -> u32 {
     CdromCursor::from_mss(mss).lba
 }
 
 impl CdromCursor {
-    pub const fn from_mss<T: [const] Into<u8> + [const] Destruct>(mss: Mss<T>) -> Self {
+    pub fn from_mss<T: Into<u8> + Destruct>(mss: Mss<T>) -> Self {
         let min = mss.min.into() as u32;
         let sec = mss.sec.into() as u32;
         let sect = mss.sect.into() as u32;
@@ -114,12 +116,10 @@ impl CdromCursor {
 }
 
 /// TODO: add support for multiple tracks
-#[derive(Debug, Clone, PartialEq, Eq, Endecode)]
-#[endecode(alloc(default, global))]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CueSheet {
-    pub filename: String,
-    #[endecode(alloc(global))]
-    pub tracks:   Vec<Track>,
+    pub files:  Vec<CueFile>,
+    pub tracks: Vec<Track>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Endecode)]
@@ -143,25 +143,101 @@ pub enum CueFormatParseErr {
     #[error("expected `FILE` attribute")]
     ExpectedFile,
     #[error("expected filename in double quotes")]
-    ExpectedQuotes,
+    ExpectedFilename,
     #[error("expected track number for TRACK")]
     ExpectedTrackNumber,
     #[error("`INDEX` attribute must be followed by a number")]
     MissingIndexNumber,
     #[error("`INDEX` number must be followed by a timestamp")]
     MissingTimestamp,
+    #[error("io error: {0}")]
+    IOError(core::io::ErrorKind),
 }
 
-impl FromStr for CueSheet {
-    type Err = CueFormatParseErr;
+impl From<io::Error> for CueFormatParseErr {
+    fn from(value: io::Error) -> Self {
+        Self::IOError(value.kind())
+    }
+}
 
+pub trait File {
+    fn size(&self) -> usize;
+}
+
+impl File for std::fs::File {
+    fn size(&self) -> usize {
+        self.metadata()
+            .map(|meta| meta.len() as usize)
+            .unwrap_or_default()
+    }
+}
+
+pub struct CueParser<'s, T = cue::Parsing> {
+    _typestate:   PhantomData<T>,
+    buf:          &'s str,
+    files:        Vec<CueFile>,
+    tracks:       Vec<Track>,
+    file_builder: CueFileBuilder,
+}
+
+type TrackIdx = u8;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CueFile {
+    filename: String,
+    tracks:   Vec<TrackIdx>,
+}
+
+struct CueFileBuilder {
+    filename: String,
+    tracks:   Vec<Track>,
+}
+
+mod cue {
+    pub struct Parsing;
+    pub struct RequestFile;
+}
+
+pub enum CueParserState<'a> {
+    RequestFile(CueParser<'a, cue::RequestFile>),
+    Done(CueSheet),
+}
+
+impl<'a> CueParser<'a, cue::Parsing> {
+    fn advance(mut self) -> Result<CueParserState<'a>, CueFormatParseErr> {
+        match self.buf.lines().next() {
+            None => return Ok(CueParserState::Done(todo!())),
+            Some(line) => {
+                let Some(line) = line.strip_prefix("FILE ") else {
+                    return Err(CueFormatParseErr::ExpectedFile);
+                };
+
+                let Some(filename) = line.split('"').next() else {
+                    return Err(CueFormatParseErr::ExpectedFilename);
+                };
+
+                self.file_builder.filename = filename.to_owned();
+            }
+        }
+
+        Ok(CueParserState::Done(todo!()))
+    }
+}
+
+impl<'a> CueParser<'a, cue::RequestFile> {
+    fn advance(mut self, file: &dyn File) -> CueParserState<'a> {
+        CueParserState::Done(todo!())
+    }
+}
+
+impl CueSheet {
     /// parse cue format
     /// ```cue
     /// FILE "test.bin" BINARY
     ///   TRACK 01 MODE2/2352
     ///     INDEX 01 00:00:00
     /// ```
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
+    fn parse(s: &str) -> Result<Self, CueFormatParseErr> {
         let s = s.trim();
         // FILE
         let s = match s.strip_prefix("FILE") {
@@ -176,7 +252,7 @@ impl FromStr for CueSheet {
                 let quote_end = s.find('"')?;
                 Some(&s[..quote_end])
             })
-            .ok_or(CueFormatParseErr::ExpectedQuotes)?;
+            .ok_or(CueFormatParseErr::ExpectedFilename)?;
 
         let track_list = s
             .split("TRACK ")
@@ -224,10 +300,7 @@ impl FromStr for CueSheet {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        Ok(CueSheet {
-            filename: filename.to_owned(),
-            tracks:   track_list,
-        })
+        Ok(todo!())
     }
 }
 
@@ -361,20 +434,7 @@ mod cuetests {
               TRACK 01 MODE2/2352
                 INDEX 01 00:00:00
             "#;
-        assert_eq!(
-            string.parse::<CueSheet>(),
-            Ok(CueSheet {
-                filename: "Valkyrie Profile (USA) (Disc 1).bin".to_string(),
-                tracks:   vec![Track {
-                    number:     1,
-                    index_list: vec![CueIndex {
-                        sect:   1,
-                        min:    00,
-                        second: 00,
-                    }],
-                }],
-            })
-        );
+        todo!()
     }
 
     #[test]
@@ -386,29 +446,6 @@ mod cuetests {
               TRACK 02 MODE2/2352
                 INDEX 01 00:04:00
             "#;
-        assert_eq!(
-            string.parse::<CueSheet>(),
-            Ok(CueSheet {
-                filename: "Valkyrie Profile (USA) (Disc 1).bin".to_string(),
-                tracks:   vec![
-                    Track {
-                        number:     1,
-                        index_list: vec![CueIndex {
-                            sect:   1,
-                            min:    00,
-                            second: 2,
-                        }],
-                    },
-                    Track {
-                        number:     2,
-                        index_list: vec![CueIndex {
-                            sect:   1,
-                            min:    00,
-                            second: 4,
-                        }],
-                    }
-                ],
-            })
-        );
+        todo!()
     }
 }

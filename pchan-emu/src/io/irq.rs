@@ -1,5 +1,3 @@
-use core::alloc::Allocator;
-
 use arbitrary_int::prelude::*;
 use bitbybit::{bitenum, bitfield};
 use derive_more as d;
@@ -8,7 +6,7 @@ use pchan_encode::derive::Endecode;
 use crate::Emu;
 use crate::io::{CastIOFrom, CastIOInto, IOResult, UnhandledIO};
 
-#[derive(Debug, Clone, Copy, Hash, Default, Endecode)]
+#[derive(Debug, Clone, Copy, Hash, Default)]
 pub struct IrqState {
     pub i_stat: IrqField,
     pub i_mask: IrqField,
@@ -69,7 +67,7 @@ impl IrqState {
 #[cfg(feature = "trace")]
 use pchan_utils::hex;
 
-impl<A: Allocator> Emu<A> {
+impl Emu {
     pub fn irq_trigger(&mut self, irq: Irq) {
         self.irq.irq_trigger(irq);
         self.run_irq_io();

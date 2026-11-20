@@ -525,7 +525,7 @@ impl Renderer {
         Self::try_new().await.unwrap()
     }
 
-    pub fn connect_emu<A: Allocator + Copy>(&self, emu: &mut Emu<A>) {
+    pub fn connect_emu(&self, emu: &mut Emu) {
         emu.gpu.conn = self.conn.clone();
     }
 
