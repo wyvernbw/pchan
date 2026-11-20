@@ -1,9 +1,7 @@
 use alloc::borrow::Cow;
 use alloc::string::FromUtf8Error;
 use byteorder::{LE, ReadBytesExt};
-use core::alloc::Allocator;
 use core::marker::PhantomData;
-use pchan_encode::Allocate;
 use pchan_macros::instrument;
 use pchan_utils::hex;
 use std::fs;

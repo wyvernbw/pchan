@@ -12,7 +12,6 @@ use crate::{Emu, trace_todo};
 use alloc::collections::VecDeque;
 use arbitrary_int::prelude::*;
 use bitbybit::{bitenum, bitfield};
-use pchan_encode::derive::Endecode;
 use pchan_macros::{pchan_instrument_read, pchan_instrument_write};
 use pchan_utils::hex;
 use tracing::Level;
@@ -897,7 +896,7 @@ impl Transfer for Dma4Spu {
 ///  31    No effect, should be CPU memory access enable (R/W)
 /// ```
 #[bitfield(u32, debug)]
-#[derive(Default, Endecode)]
+#[derive(Default)]
 #[must_use]
 pub struct Dpcr {
     #[bits(0..=2, rw)]
@@ -955,7 +954,7 @@ pub struct Dpcr {
 ///   24-30 Channel 0-6 interrupt flags. (R, write 1 to reset)
 ///   31    Master interrupt flag (R)
 #[bitfield(u32)]
-#[derive(Debug, Default, Endecode)]
+#[derive(Debug, Default)]
 #[must_use]
 pub struct Dicr {
     #[bit(0, rw)]
@@ -990,7 +989,7 @@ enum DmaIrqMode {
 ///   0-23  Memory Address where the DMA will start reading from/writing to
 ///   24-31 Not used (always zero)
 #[bitfield(u32, debug)]
-#[derive(Default, PartialEq, Eq, Endecode)]
+#[derive(Default, PartialEq, Eq)]
 #[must_use]
 pub struct DmaMadr {
     #[bits(0..=23, rw)]
@@ -1013,7 +1012,7 @@ pub struct DmaMadr {
 ///
 ///   0-31  0     Not used (should be zero) (transfer ends at END-CODE in list)
 #[bitfield(u32, debug)]
-#[derive(Default, PartialEq, Eq, Endecode)]
+#[derive(Default, PartialEq, Eq)]
 #[must_use]
 pub struct DmaBcr {
     // s0
@@ -1057,7 +1056,7 @@ pub struct DmaBcr {
 ///   31    Unused
 /// ```
 #[bitfield(u32, debug)]
-#[derive(Default, PartialEq, Eq, Endecode)]
+#[derive(Default, PartialEq, Eq)]
 #[must_use]
 pub struct DmaChcr {
     #[bit(0, rw)]
@@ -1119,7 +1118,7 @@ pub enum TransferState {
     StartBusy        = 0x1,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Endecode)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DmaChannel {
     pub madr: DmaMadr,
     pub bcr:  DmaBcr,
@@ -1152,8 +1151,7 @@ impl DmaChannel {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Endecode)]
-#[endecode(alloc(default))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DmaEvent {
     in_cycles: u64,
     init_chan: DmaChannel,
@@ -1161,7 +1159,7 @@ pub struct DmaEvent {
     dma_t:     DmaTransportKind,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Endecode, Default, derive_more::Display)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, derive_more::Display)]
 pub enum DmaTransportKind {
     #[display("MDEC_IN")]
     MDecIn,
@@ -1195,8 +1193,7 @@ impl DmaTransportKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OTC;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Endecode)]
-#[endecode(alloc(default))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SliceTransferState {
     addr: u32,
     idx:  u32,

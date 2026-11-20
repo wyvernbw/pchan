@@ -5,15 +5,13 @@ use core::iter;
 use core::mem::transmute;
 use derive_more as d;
 use glam::prelude::{I16Vec2, U16Vec2};
-use pchan_encode::derive::Endecode;
 
 use crate::gpu::Vram;
 
-#[derive(Copy, PartialEq, PartialOrd, Ord, Eq, d::Mul, d::MulAssign, Endecode)]
+#[derive(Copy, PartialEq, PartialOrd, Ord, Eq, d::Mul, d::MulAssign)]
 #[derive_const(Clone, d::Add, d::AddAssign, Default, d::Debug)]
 #[repr(C)]
 #[mul(forward)]
-#[endecode(alloc(default))]
 #[debug("({x},{y})")]
 pub struct VramCoord {
     pub x: u16,
@@ -101,9 +99,7 @@ const impl From<u32> for VramCoord {
     }
 }
 
-#[derive(
-    Debug, Clone, Copy, d::Add, d::AddAssign, PartialEq, PartialOrd, Ord, Eq, Default, Endecode,
-)]
+#[derive(Debug, Clone, Copy, d::Add, d::AddAssign, PartialEq, PartialOrd, Ord, Eq, Default)]
 #[repr(C)]
 pub struct IVramCoord {
     pub x: i16,
@@ -117,9 +113,7 @@ impl IVramCoord {
     }
 }
 
-#[derive(
-    Debug, Clone, Copy, d::Add, d::AddAssign, PartialEq, PartialOrd, Ord, Eq, Endecode, Default,
-)]
+#[derive(Debug, Clone, Copy, d::Add, d::AddAssign, PartialEq, PartialOrd, Ord, Eq, Default)]
 pub struct VramCursor {
     start:  VramCoord,
     curr:   VramCoord,

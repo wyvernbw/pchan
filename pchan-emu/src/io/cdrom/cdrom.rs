@@ -8,7 +8,6 @@ mod cdrom_format;
 mod cdrom_ver;
 
 use alloc::collections::VecDeque;
-use pchan_encode::derive::Endecode;
 
 use crate::io::cdrom::cdrom_cmds::ResponseV2;
 use crate::io::cdrom::cdrom_drive::{CdromDrive, Disc};
@@ -44,7 +43,7 @@ pub struct CDRom {
     ev_id: u32,
 }
 
-#[derive(Default, derive_more::Debug, Clone, Endecode)]
+#[derive(Default, derive_more::Debug, Clone)]
 enum DriveStatus {
     LidOpen,
     SpinUp,
@@ -212,7 +211,6 @@ impl Emu {
 /// value. Likewise, the low 2 bits of this address can be read to get the current
 /// bank.
 #[bitfield(u8, debug)]
-#[derive(Endecode)]
 #[must_use]
 pub struct CDRomStatusReg {
     #[bits(0..=1, rw)]
@@ -270,7 +268,6 @@ impl CDRom {
 ///  5-7 -      Reserved                              (always 1)
 /// ```
 #[bitfield(u8, default = 0x0, debug)]
-#[derive(Endecode)]
 struct CDRomHIntSts {
     #[bits(0..=2, rw)]
     intsts:    HInt,
@@ -283,7 +280,6 @@ struct CDRomHIntSts {
 }
 
 #[bitfield(u8, default = 0xe0, debug)]
-#[derive(Endecode)]
 struct CDRomHIntMask {
     #[bits(0..=2, rw)]
     intsts:    HInt,
@@ -361,7 +357,7 @@ struct CDRomHClrCtl {
 ///   7   BFRD Request sector buffer read                  (1=prepare for reads from RDDATA)
 /// ```
 #[bitfield(u8, debug)]
-#[derive(Default, Endecode)]
+#[derive(Default)]
 struct CDRomReqRegister {
     #[bit(7, rw)]
     bfrd: bool,

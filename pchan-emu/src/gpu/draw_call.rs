@@ -8,7 +8,6 @@ use alloc::alloc::Global;
 use arbitrary_int::prelude::*;
 use bitbybit::{bitenum, bitfield};
 use glam::{I16Vec2, U8Vec2, U8Vec3, U16Vec2};
-use pchan_encode::derive::Endecode;
 use pchan_utils::default;
 use smallvec::SmallVec;
 
@@ -22,8 +21,7 @@ pub struct DrawCallCollection<A: Allocator = Global> {
     pub vram:       Option<VramMsg<A>>,
 }
 
-#[derive(Debug, Clone, Endecode)]
-#[endecode(alloc(default))]
+#[derive(Debug, Clone)]
 pub struct DrawCall {
     pub gpustat:    GpuStatReg,
     pub tex_window: Gp0TexWindowCmd,
@@ -32,21 +30,19 @@ pub struct DrawCall {
     pub inner:      DrawCallKind,
 }
 
-#[derive(Debug, Clone, Endecode)]
-#[endecode(alloc(default))]
+#[derive(Debug, Clone)]
 pub enum DrawCallKind {
-    #[endecode(alloc(default))]
     Nop,
     Rect(DrawRect),
     Polygon(DrawPolygon),
     Line(DrawLine),
     BlitVram2Vram(Gp0VramBlit),
-    BlitCpu2Vram(Gp0HostBlit, #[endecode(alloc(global))] Vec<u8, Global>),
+    BlitCpu2Vram(Gp0HostBlit, Vec<u8, Global>),
     BlitVram2Cpu(Gp0HostBlit),
     QuickFill(Gp0QuickFill),
 }
 
-#[derive(Debug, Clone, Endecode, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Gp0QuickFill {
     pub pos:   VramCoord,
     pub size:  VramCoord,
@@ -75,7 +71,7 @@ impl DrawCallKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, Endecode)]
+#[derive(Debug, Clone, Copy)]
 pub enum DrawRectDecoder {
     Header {
         header: DrawRectHeader,
@@ -103,7 +99,7 @@ impl Default for DrawRectDecoder {
     }
 }
 
-#[derive(Debug, Clone, Endecode)]
+#[derive(Debug, Clone)]
 #[derive_const(Default)]
 pub struct DrawRect {
     pub header:   DrawRectHeader,
@@ -112,9 +108,8 @@ pub struct DrawRect {
     pub var_size: Option<VramCoord>,
 }
 
-#[derive(Debug, Clone, Copy, Default, Endecode)]
+#[derive(Debug, Clone, Copy, Default)]
 #[repr(C)]
-#[endecode(alloc(default))]
 pub struct Uv {
     pub uv:    U8Vec2,
     pub extra: u16,
@@ -183,7 +178,7 @@ pub struct Gp0SetMaskBitCmd {
     draw_pixels: DrawPixels,
 }
 
-#[derive(Debug, Clone, Default, Endecode)]
+#[derive(Debug, Clone, Default)]
 pub struct GpuInternalDrawReg {
     pub draw_area_top_left:     VramCoord,
     pub draw_area_bottom_right: VramCoord,
@@ -202,7 +197,6 @@ pub struct GpuInternalDrawReg {
 /// Credits to PSX-SPX by Martin Korth [Gpu Status Register](https://problemkaputt.de/psx-spx.htm#gpustatusregister)
 #[bitfield(u32, debug)]
 #[derive_const(Default)]
-#[derive(Endecode)]
 #[must_use]
 pub struct DrawRectHeader {
     #[bits(0..=23, rw)]
@@ -299,7 +293,7 @@ impl DrawCallDecoder for DrawRectDecoder {
     }
 }
 
-#[derive(Debug, Clone, Endecode, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct DrawPolygon {
     pub header:  DrawPolygonHeader,
     pub attrs:   heapless::Vec<DrawPolygonAttribute, 4>,
@@ -333,8 +327,7 @@ impl DrawPolygon {
     }
 }
 
-#[derive(Debug, Clone, Endecode, Default)]
-#[endecode(alloc(default))]
+#[derive(Debug, Clone, Default)]
 pub struct DrawPolygonAttribute {
     pub color:  Option<U8Vec3>,
     pub vertex: I16Vec2,
@@ -352,7 +345,7 @@ pub struct DrawPolygonAttribute {
 ///   23-0        rgb    first color value.
 /// ```
 #[bitfield(u32, debug)]
-#[derive(Default, Endecode)]
+#[derive(Default)]
 #[must_use]
 pub struct DrawPolygonHeader {
     #[bits(0..=23, rw)]
@@ -397,14 +390,14 @@ pub enum Shading {
     Gouraud = 0x1,
 }
 
-#[derive(Debug, Clone, Default, Endecode)]
+#[derive(Debug, Clone, Default)]
 pub struct DrawPolygonDecoder {
     header:       DrawPolygonHeader,
     attrs:        heapless::Vec<DrawPolygonAttribute, 4>,
     current_attr: DrawPolygonAttributeDecoder,
 }
 
-#[derive(Debug, Clone, Default, Endecode)]
+#[derive(Debug, Clone, Default)]
 enum DrawPolygonAttributeDecoder {
     #[default]
     IdleGoraudUntextured,
@@ -573,7 +566,7 @@ fn draw_polygon_decode_goraud_untextured_triangle() {
     println!("{poly:#?}");
 }
 
-#[derive(Debug, Clone, Endecode, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct DrawLine {
     pub header: DrawLineHeader,
     // most lines are 2 vertices, for poly-lines
@@ -590,7 +583,7 @@ pub struct DrawLine {
 ///   23-0        rgb    first color value.
 /// ```
 #[bitfield(u32, debug)]
-#[derive(Default, Endecode)]
+#[derive(Default)]
 #[must_use]
 pub struct DrawLineHeader {
     #[bits(0..=23, rw)]
@@ -603,14 +596,13 @@ pub struct DrawLineHeader {
     shading:          Shading,
 }
 
-#[derive(Debug, Clone, Endecode, Default)]
-#[endecode(alloc(default))]
+#[derive(Debug, Clone, Default)]
 pub struct DrawLineAttribute {
     pub color:  Option<u32>,
     pub vertex: I16Vec2,
 }
 
-#[derive(Debug, Clone, Default, Endecode)]
+#[derive(Debug, Clone, Default)]
 pub enum DrawLineAttributeDecoder {
     #[default]
     Flat,
@@ -651,7 +643,7 @@ impl DrawLineAttributeDecoder {
     }
 }
 
-#[derive(Debug, Clone, Default, Endecode)]
+#[derive(Debug, Clone, Default)]
 pub struct DrawLineDecoder {
     header:       DrawLineHeader,
     attrs:        SmallVec<[DrawLineAttribute; 2]>,
@@ -709,18 +701,16 @@ impl DrawLineDecoder {
     }
 }
 
-#[derive(Debug, Clone, Endecode, Default)]
+#[derive(Debug, Clone, Default)]
 pub enum Gp0HostBlitDecoder {
     #[default]
-    #[endecode(alloc(default))]
     RecvDest,
     RecvSize {
         dest: VramCoord,
     },
 }
 
-#[derive(Debug, Clone, Endecode, Default, Copy)]
-#[endecode(alloc(default))]
+#[derive(Debug, Clone, Default, Copy)]
 pub struct Gp0HostBlit {
     pub dest: VramCoord,
     pub size: VramCoord,
@@ -753,7 +743,7 @@ impl DrawCallDecoder for Gp0HostBlitDecoder {
     }
 }
 
-#[derive(Debug, Clone, Endecode, Default)]
+#[derive(Debug, Clone, Default)]
 pub enum Gp0VramBlitDecoder {
     #[default]
     RecvSrc,
@@ -766,7 +756,7 @@ pub enum Gp0VramBlitDecoder {
     },
 }
 
-#[derive(Debug, Clone, Endecode, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Gp0VramBlit {
     pub src:  VramCoord,
     pub dest: VramCoord,
@@ -814,7 +804,7 @@ impl BlitCmd for Gp0VramBlit {
     }
 }
 
-#[derive(Debug, Clone, Endecode)]
+#[derive(Debug, Clone)]
 pub enum QuickFillDecoder {
     Color { color: U8Vec3 },
     Pos { color: U8Vec3, pos: VramCoord },

@@ -1,8 +1,7 @@
 use derive_more as d;
-use pchan_encode::derive::Endecode;
 use pchan_utils::hex;
 
-#[derive(d::Deref, d::DerefMut, Clone, Copy, d::Debug, Endecode)]
+#[derive(d::Deref, d::DerefMut, Clone, Copy, d::Debug)]
 #[debug("{}", hex(self.0))]
 pub struct CDRomVer([u8; 4]);
 

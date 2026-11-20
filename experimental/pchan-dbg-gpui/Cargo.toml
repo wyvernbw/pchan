@@ -26,7 +26,6 @@ objc2-metal = { version = "0.3.2", features = ["objc2-io-surface"] }
 pchan-audio.workspace = true
 pchan-bind.workspace = true
 pchan-emu = { workspace = true, features = ["debugger-ext"] }
-pchan-encode.workspace = true
 pchan-gpu.workspace = true
 pchan-input = { version = "0.1.0", path = "../../pchan-input" }
 pchan-macros.workspace = true

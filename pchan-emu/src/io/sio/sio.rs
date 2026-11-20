@@ -7,7 +7,6 @@ use arbitrary_int::prelude::*;
 use bitbybit::{bitenum, bitfield};
 use derive_more as d;
 use heapless::Deque;
-use pchan_encode::derive::Endecode;
 use pchan_utils::hex;
 
 use crate::cpu::Cpu;
@@ -78,15 +77,13 @@ impl Ord for ScheduledSioEvent {
     }
 }
 
-#[derive(derive_more::Debug, Clone, Copy, Endecode)]
-#[endecode(alloc(default))]
+#[derive(derive_more::Debug, Clone, Copy)]
 pub enum PeripheralKind {
-    #[endecode(alloc(default))]
     Joypad,
     Memcard,
 }
 
-#[derive(derive_more::Debug, Clone, Default, Endecode)]
+#[derive(derive_more::Debug, Clone, Default)]
 pub struct Sio0Ports {
     selected: Option<PeripheralKind>,
     ports:    [PortState; 2],
@@ -102,7 +99,7 @@ impl Sio0Ports {
     }
 }
 
-#[derive(Default, derive_more::Debug, Clone, Endecode)]
+#[derive(Default, derive_more::Debug, Clone)]
 #[non_exhaustive]
 pub struct PortState {
     pub joypad:  Joypad,
@@ -127,7 +124,7 @@ pub trait Peripheral {
     fn deselect(&mut self);
 }
 
-#[derive(d::Deref, d::DerefMut, Debug, Default, Clone, Endecode)]
+#[derive(d::Deref, d::DerefMut, Debug, Default, Clone)]
 pub struct Sio0Rx(Deque<u8, 4>);
 
 const BD_RATE: u32 = Cpu::CLOCK * 8 / 250_000;
@@ -479,7 +476,6 @@ const fn sio_idx(addr: u32, base: u32, stride: u32) -> Option<usize> {
 /// number of bits actually used by the baud rate timer is probably affected by
 /// the reload factor set in `SIO_MODE`.
 #[bitfield(u32, debug, default = 0b101)]
-#[derive(Endecode)]
 struct SioStatusReg {
     /// `SIO_STAT.0`
     #[bit(0, rw)]
@@ -546,7 +542,6 @@ struct SioStatusReg {
 /// all SIO0 interrupts, as the kernel's controller driver only ever uses the
 /// DSR (/ACK) interrupt.
 #[bitfield(u32, debug, default = 0x0)]
-#[derive(Endecode)]
 #[must_use]
 pub struct SioCtrlReg {
     #[bit(0, rw)]
@@ -634,7 +629,6 @@ impl Sio0Port {
 /// and parity should be disabled, as all controllers and memory cards expect these
 /// settings.
 #[bitfield(u16, debug, default = 0x0)]
-#[derive(Endecode)]
 struct SioModeReg {
     #[bits(0..=1, rw)]
     bdrate_reload_factor: BdrateReloadFactor,
@@ -694,7 +688,7 @@ enum Sio0ClockPolarity {
     Low  = 0x1,
 }
 
-#[derive(Debug, Clone, Copy, Default, Endecode)]
+#[derive(Debug, Clone, Copy, Default)]
 enum Sio0Tx {
     #[default]
     Idle,

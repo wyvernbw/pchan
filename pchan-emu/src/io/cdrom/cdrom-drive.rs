@@ -1,7 +1,6 @@
 use alloc::collections::VecDeque;
 use core::alloc::Allocator;
 use core::cmp;
-use pchan_encode::derive::Endecode;
 use pchan_utils::{Hex, hex_pref};
 use std::fs;
 use std::io::{BufReader, Read, Seek};
@@ -62,7 +61,7 @@ impl Clone for CdromDrive {
     }
 }
 
-#[derive(Default, derive_more::Debug, Clone, Endecode)]
+#[derive(Default, derive_more::Debug, Clone)]
 pub enum DriveState {
     #[default]
     Idle,
@@ -71,7 +70,7 @@ pub enum DriveState {
     Playing(EventId),
 }
 
-#[derive(Default, derive_more::Debug, Clone, Endecode)]
+#[derive(Default, derive_more::Debug, Clone)]
 pub(super) enum CommandState {
     #[default]
     Idle,
@@ -341,7 +340,7 @@ pub(crate) enum AudioPlaybackErr {
     ReachedEnd,
 }
 
-#[derive(Default, derive_more::Debug, Endecode, Clone, Copy, PartialEq, Eq)]
+#[derive(Default, derive_more::Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlaySeekResult {
     pub lba:       u32,
     pub seek_time: u64,

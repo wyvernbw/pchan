@@ -9,7 +9,6 @@ use arbitrary_int::prelude::Integer;
 use bitbybit::bitfield;
 use pchan_bind::ringbuf::traits::Producer;
 use pchan_bind::{AudioProducer, BindAudioProducer};
-use pchan_encode::derive::Endecode;
 use pchan_utils::hex;
 
 use crate::io::evque::{EvCtx, EventId, EventKind};
@@ -105,8 +104,7 @@ fn create_spu_mem() -> Box<[u16]> {
     unsafe { Box::<[u16]>::new_zeroed_slice(Spu::MEM_SIZE / 2).assume_init() }
 }
 
-#[derive(Default, derive_more::Debug, Clone, Endecode)]
-#[endecode(alloc(default))]
+#[derive(Default, derive_more::Debug, Clone)]
 struct Voice {
     start:       ADPCMStart,
     current:     ADPCMCurrent,
@@ -132,7 +130,7 @@ struct Voice {
     current_idx:    u8,
 }
 
-#[derive(Default, derive_more::Debug, Clone, Endecode)]
+#[derive(Default, derive_more::Debug, Clone)]
 struct VoiceFlags {
     key_on:  [VoiceOnOff; 2],
     key_off: [VoiceOnOff; 2],
@@ -140,14 +138,13 @@ struct VoiceFlags {
 }
 
 #[bitfield(u16, debug)]
-#[derive(Default, Endecode)]
+#[derive(Default)]
 struct VoiceOnOff {
     #[bit(0, rw)]
     on: [bool; 16],
 }
 
 #[bitfield(u32, debug, default = 0xffffffff)]
-#[derive(Endecode)]
 struct Endx {
     #[bit(0, rw)]
     on: [bool; 24],
@@ -733,7 +730,7 @@ impl Spu {
 ///  0     I2SA (CD-ROM) Input Enable  (0=Off, 1=On) (for CD-DA and XA-ADPCM)
 /// ```
 #[bitfield(u16, debug)]
-#[derive(Default, Endecode)]
+#[derive(Default)]
 struct SpuCtrl {
     #[bit(7, rw)]
     reverb_on:    bool,

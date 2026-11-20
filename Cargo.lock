@@ -8739,7 +8739,6 @@ dependencies = [
  "pchan-audio",
  "pchan-bind",
  "pchan-emu",
- "pchan-encode",
  "pchan-gpu",
  "pchan-input",
  "pchan-macros",
@@ -8769,7 +8768,6 @@ dependencies = [
  "heapless",
  "kanal",
  "pchan-bind",
- "pchan-encode",
  "pchan-macros",
  "pchan-utils",
  "pretty_assertions",
@@ -8782,30 +8780,6 @@ dependencies = [
  "thiserror 2.0.21",
  "tracing",
  "tracy-client",
-]
-
-[[package]]
-name = "pchan-encode"
-version = "0.1.0"
-dependencies = [
- "derive_more",
- "glam 0.34.1",
- "heapless",
- "pchan-encode",
- "pchan-encode-derive",
- "slotmap",
- "smallvec",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "pchan-encode-derive"
-version = "0.1.0"
-dependencies = [
- "darling",
- "proc-macro2",
- "quote",
- "syn 3.0.9",
 ]
 
 [[package]]

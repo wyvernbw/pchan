@@ -7,7 +7,6 @@ use crate::io::cdrom::cdrom_format::{Bcd, CdromCursor, Mss};
 use crate::io::cdrom::{CDRom, DriveStatus};
 use crate::io::evque::{EvCtx, EventId, EventKind};
 use bitbybit::{bitenum, bitfield};
-use pchan_encode::derive::Endecode;
 use pchan_utils::hex;
 
 use super::HInt;
@@ -50,7 +49,7 @@ impl<const N: usize> From<StatusCode> for heapless::Vec<u8, N> {
     }
 }
 
-#[derive(Default, derive_more::Debug, Endecode, PartialEq, Eq, Clone)]
+#[derive(Default, derive_more::Debug, PartialEq, Eq, Clone)]
 pub(crate) enum CommandStateV2 {
     #[default]
     Idle,
@@ -636,7 +635,6 @@ impl Emu {
 ///  0  Error         Invalid Command/parameters (followed by Error Byte)
 /// ```
 #[bitfield(u8, debug)]
-#[derive(Endecode)]
 pub struct StatusCode {
     #[bit(0, rw)]
     err:         bool,
@@ -695,7 +693,7 @@ impl CDRom {
 ///  0   CDDA        (0=Off, 1=Allow to Read CD-DA Sectors; ignore missing EDC)
 /// ```
 #[bitfield(u8, debug)]
-#[derive(Default, Endecode, PartialEq, Eq)]
+#[derive(Default, PartialEq, Eq)]
 pub struct SetMode {
     #[bit(0, rw)]
     cdda:       bool,
@@ -738,7 +736,7 @@ impl SetModeSectSize {
 }
 
 #[bitenum(u1, exhaustive = true)]
-#[derive(Debug, PartialEq, Eq, Endecode, Default, derive_more::Display)]
+#[derive(Debug, PartialEq, Eq, Default, derive_more::Display)]
 pub enum SetModeSpeed {
     #[default]
     #[display("1X")]

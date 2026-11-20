@@ -12,7 +12,7 @@ members = ["experimental/pchan-bevy",
     "experimental/pchan-mini",
     "pchan-audio",
     "pchan-bind",
-    "pchan-emu", "pchan-encode", "pchan-encode-derive",
+    "pchan-emu",
     "pchan-executor",
     "pchan-gpu",
     "pchan-input",
@@ -64,8 +64,6 @@ pchan-executor = { path = "./pchan-executor" }
 pchan-gpu = { path = "./pchan-gpu" }
 pchan-macros = { path = "./pchan-macros" }
 pchan-utils = { path = "./pchan-utils", default-features = false }
-pchan-encode = { path = "./pchan-encode" }
-pchan-encode-derive = { path = "./pchan-encode-derive" }
 dynasmrt = { path = "./dynasmrt" }
 dynasm = { path = "./dynasm" }
 smol = "2.0.2"

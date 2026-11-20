@@ -5,7 +5,6 @@ use core::simd::{Select, Simd};
 
 use arbitrary_int::prelude::*;
 use bitbybit::{bitenum, bitfield};
-use pchan_encode::derive::Endecode;
 use pchan_utils::MAX_SIMD_WIDTH;
 
 /// # `1f801c08h+N*10h` Voice 0..23 Attack/Decay/Sustain/Release (ADSR) (32bit)
@@ -33,7 +32,7 @@ use pchan_utils::MAX_SIMD_WIDTH;
 ///   -     Release Step      (Fixed, always "-8")
 /// ```
 #[bitfield(u32, debug)]
-#[derive(Default, Endecode)]
+#[derive(Default)]
 #[must_use]
 pub struct ADSRRegister {
     // accessors for IO
@@ -128,7 +127,6 @@ enum VolumeMode {
 
 #[bitfield(u16, default = 0x0, debug)]
 #[must_use]
-#[derive(Endecode)]
 pub struct VolumeRegister {
     #[bit(15, rw)]
     mode: VolumeMode,
@@ -192,7 +190,7 @@ impl VolumeRegister {
 }
 
 #[repr(align(64))]
-#[derive(derive_more::Debug, Clone, Endecode)]
+#[derive(derive_more::Debug, Clone)]
 pub struct VolumeState<const N: usize> {
     pub registers:     [VolumeRegister; N],
     pub queued_vol:    [i16; N],
@@ -296,7 +294,7 @@ impl<const N: usize> VolumeState<N> {
     }
 }
 
-#[derive(derive_more::Debug, Default, Clone, Endecode)]
+#[derive(derive_more::Debug, Default, Clone)]
 pub struct ADSRState {
     pub adsr:        [ADSRRegister; 24],
     pub envelopes:   EnvelopeState,
@@ -306,7 +304,7 @@ pub struct ADSRState {
     pub main_r:      VolumeState<1>,
 }
 
-#[derive(derive_more::Debug, Default, Clone, Endecode)]
+#[derive(derive_more::Debug, Default, Clone)]
 #[repr(align(64))]
 pub struct EnvelopeState {
     pub level:         [i16; 24],
@@ -315,7 +313,7 @@ pub struct EnvelopeState {
     pub counter:       [u32; 24],
 }
 
-#[derive(derive_more::Debug, Default, Clone, PartialEq, Eq, Endecode)]
+#[derive(derive_more::Debug, Default, Clone, PartialEq, Eq)]
 #[repr(u16)]
 pub enum EnvelopePhase {
     Attack,

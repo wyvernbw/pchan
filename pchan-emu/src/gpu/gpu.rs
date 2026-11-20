@@ -13,7 +13,6 @@ use alloc::collections::VecDeque;
 use arbitrary_int::prelude::*;
 use bitbybit::{bitenum, bitfield};
 use glam::{U8Vec2, U8Vec3, U16Vec2, U64Vec2, u64vec2};
-use pchan_encode::derive::Endecode;
 use pchan_utils::{AsyncChan, hex};
 use smol::lock::Mutex;
 use tracing::Level;
@@ -74,10 +73,9 @@ pub struct VramPayload<A: Allocator = Global> {
     pub draw_idx: usize,
 }
 
-#[derive(derive_more::Debug, Clone, Endecode)]
-#[endecode(alloc(with = create_vram))]
+#[derive(derive_more::Debug, Clone)]
 pub enum Vram<A: Allocator> {
-    Mapped(#[endecode(alloc(with = create_vram))] Box<[u16], A>),
+    Mapped(Box<[u16], A>),
     Lent,
 }
 
@@ -117,7 +115,7 @@ pub struct GpuState {
     pub vram_mutation_signal: bool,
 }
 
-#[derive(derive_more::Debug, Clone, Default, Endecode)]
+#[derive(derive_more::Debug, Clone, Default)]
 pub enum GpuModel {
     #[default]
     Gpu160Pin,
@@ -729,7 +727,7 @@ pub fn halfwords(word: u32) -> [u16; 2] {
     [word as u16, (word >> 16) as u16]
 }
 
-#[derive(Debug, Clone, Endecode, Default)]
+#[derive(Debug, Clone, Default)]
 pub enum Gp0 {
     #[default]
     WaitingForCmd,
@@ -744,7 +742,6 @@ pub enum Gp0 {
     BlitCpuToVramDecoding(Gp0HostBlitDecoder),
     OffloadBlitCpuToVram {
         cmd:  Gp0HostBlit,
-        #[endecode(alloc(global))]
         data: Vec<u8>,
     },
     BlitVramToCpuDecoding(Gp0HostBlitDecoder),
@@ -797,7 +794,7 @@ pub struct GpuCmd {
 /// Credits to PSX-SPX by Martin Korth [Gpu Status Register](https://problemkaputt.de/psx-spx.htm#gpustatusregister)
 ///
 #[bitfield(u32, debug)]
-#[derive(Default, derive_more::Into, Endecode)]
+#[derive(Default, derive_more::Into)]
 #[must_use]
 pub struct GpuStatReg {
     #[bits(0..=3, rw)]
@@ -975,8 +972,7 @@ impl ops::Not for DrawEvenOdd {
 /// [Link to PSX-SPX](https://problemkaputt.de/psx-spx.htm#gpuioportsdmachannelscommandsvram:~:text=GP0%28E1h%29%20%2D%20Draw%20Mode%20setting%20%28aka%20%22Texpage%22%29)
 ///
 #[bitfield(u32)]
-#[derive(derive_more::Debug, Default, derive_more::Into, Endecode)]
-#[endecode(alloc(default))]
+#[derive(derive_more::Debug, Default, derive_more::Into)]
 #[debug("{}", hex(self.raw_value))]
 #[must_use]
 pub struct TexpageCmd {
@@ -1101,7 +1097,7 @@ pub enum GpuInfoCmd {
 ///   20-23  Not used (zero)
 ///   24-31  Command  (E2h)
 #[bitfield(u32, debug)]
-#[derive(Default, Endecode)]
+#[derive(Default)]
 #[must_use]
 pub struct Gp0TexWindowCmd {
     #[bits(0..=4, r)]
@@ -1269,7 +1265,7 @@ impl GpuState {
     }
 }
 
-#[derive(derive_more::Debug, Clone, Default, Endecode)]
+#[derive(derive_more::Debug, Clone, Default)]
 pub struct Display {
     /// video event queue
     pub video_cycle:             u64,

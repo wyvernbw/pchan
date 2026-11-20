@@ -1,6 +1,5 @@
 use arbitrary_int::prelude::*;
 use bitbybit::*;
-use pchan_encode::derive::Endecode;
 
 use crate::io::{CastIOFrom, IOResult, UnhandledIO};
 use crate::{Emu, trace_todo};
@@ -82,7 +81,7 @@ impl MDec {
     }
 }
 
-#[derive(Default, Debug, Endecode, Clone)]
+#[derive(Default, Debug, Clone)]
 pub struct MDec {
     status: MDecStatus,
     cmd:    MDecCmdState,
@@ -105,7 +104,7 @@ pub struct MDec {
 ///  15-0  ?      Number of Parameter Words remaining minus 1  (FFFFh=None)  ;CMD.Bit0-15
 /// ```
 #[bitfield(u32)]
-#[derive(Default, Debug, Endecode)]
+#[derive(Default, Debug)]
 struct MDecStatus {
     #[bit(31, rw)]
     fifo1: bool,
@@ -166,7 +165,7 @@ enum MDecBlock {
 /// ```
 #[bitfield(u32)]
 #[must_use]
-#[derive(Debug, Endecode)]
+#[derive(Debug)]
 pub struct MDecCtrl {
     #[bit(31, r)]
     reset:           bool,
@@ -192,14 +191,14 @@ impl MDecCmd {
     }
 }
 
-#[derive(Debug, Default, Endecode, Clone)]
+#[derive(Debug, Default, Clone)]
 enum MDecCmdState {
     #[default]
     Idle,
     Cmd2SQT(MDecCmd2SQTState),
 }
 
-#[derive(Debug, Default, Endecode, Clone)]
+#[derive(Debug, Default, Clone)]
 struct MDecCmd2SQTState {
     cmd:   MDecCmd2SQT,
     count: u8,
@@ -226,7 +225,7 @@ pub struct MDecCmd1Decode {}
 /// ```
 #[bitfield(u32, debug)]
 #[must_use]
-#[derive(Default, Endecode)]
+#[derive(Default)]
 pub struct MDecCmd2SQT {
     #[bits(25..=28, rw)]
     sqt_cpy_src: u4,

@@ -1,9 +1,8 @@
-use pchan_encode::derive::Endecode;
 use pchan_utils::hex;
 
 use crate::io::sio::{Peripheral, SioCtrlReg};
 
-#[derive(Default, derive_more::Debug, Clone, Endecode)]
+#[derive(Default, derive_more::Debug, Clone)]
 pub struct Memcard {
     pub connected: bool,
 }

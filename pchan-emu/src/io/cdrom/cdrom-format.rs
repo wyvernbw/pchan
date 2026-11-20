@@ -1,17 +1,13 @@
-use core::alloc::Allocator;
 use core::fmt;
 use core::marker::PhantomData;
-use core::str::FromStr;
 use std::marker::Destruct;
 
 use alloc::io;
 use arbitrary_int::prelude::*;
 use bitbybit::bitfield;
-use pchan_encode::derive::Endecode;
-use pchan_encode::{Endecode, EndecodeError, Stream};
 
 #[bitfield(u8, debug)]
-#[derive(Endecode, PartialEq, Eq, Default)]
+#[derive(PartialEq, Eq, Default)]
 pub struct Bcd {
     /// the least significant digit
     #[bits(0..=3, rw)]
@@ -53,14 +49,14 @@ const impl From<u8> for Bcd {
     }
 }
 
-#[derive(Default, derive_more::Debug, Clone, Copy, Endecode)]
+#[derive(Default, derive_more::Debug, Clone, Copy)]
 pub struct CdromCursor {
     pub lba:  u32,
     pub byte: u32,
 }
 
 /// (minute, second, sector) tuple
-#[derive(Debug, Clone, Copy, derive_more::Display, Default, Endecode, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, derive_more::Display, Default, PartialEq, Eq)]
 #[display("{min:02}:{sec:02}:{sect:02}")]
 pub struct Mss<T> {
     pub min:  T,
@@ -122,16 +118,13 @@ pub struct CueSheet {
     pub tracks: Vec<Track>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Endecode)]
-#[endecode(alloc(default, global))]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Track {
     pub number:     u8,
-    #[endecode(alloc(global))]
     pub index_list: Vec<CueIndex>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Endecode, Default)]
-#[endecode(alloc(default))]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CueIndex {
     pub sect:   u8,
     pub min:    u8,
@@ -313,7 +306,6 @@ impl CueSheet {
 ///  818h 4    EDC (checksum across [010h..817h])
 ///  81Ch 114h ECC (error correction codes)
 /// ```
-#[derive(Endecode)]
 pub struct Form1SectorMetadata {
     sync:      SyncHeader,
     header:    Header,
@@ -327,31 +319,18 @@ static SYNC_HEADER: &[u8] = &[
 ];
 const SYNC_HEADER_LEN: usize = SYNC_HEADER.len();
 
-impl<A: Allocator + Clone> Endecode<A> for SyncHeader {
-    fn endecode(&mut self, sink: &mut impl Stream, alloc: A) -> Result<(), EndecodeError> {
-        let mut buf = [0u8; SYNC_HEADER_LEN];
-        buf.endecode(sink, alloc)
-    }
-
-    fn size() -> Result<Option<usize>, EndecodeError> {
-        Ok(Some(SYNC_HEADER.len()))
-    }
-}
-
 /// `4 Header (Minute,Second,Sector,Mode)`
-#[derive(Endecode)]
 struct Header {
     mss:  Mss<Bcd>,
     mode: HeaderMode,
 }
 
-#[derive(Debug, Clone, Copy, Endecode)]
+#[derive(Debug, Clone, Copy)]
 enum HeaderMode {
     Mode2 = 0x02,
 }
 
 /// `4 Sub-Header (File, Channel, Submode AND DFh, Codinginfo)`
-#[derive(Endecode)]
 struct Subheader {
     file:    FileNumber,
     channel: ChannelNumber,
@@ -372,7 +351,6 @@ struct Subheader {
 /// 7   End of File (EOF) (or end of Directory/PathTable/VolumeTerminator)
 /// ```
 #[bitfield(u8)]
-#[derive(Endecode)]
 pub struct Submode {
     #[bit(0, rw)]
     eor:     bool,
@@ -407,7 +385,6 @@ pub struct Submode {
 ///   7   Reserved        (0)
 /// ```
 #[bitfield(u8, default = 0x00)]
-#[derive(Endecode)]
 struct CodingInfo {
     #[bits(0..=1, rw)]
     mono_stereo: u2,
@@ -417,10 +394,8 @@ struct CodingInfo {
 }
 
 /// # 1st Subheader byte - File Number (FN)
-#[derive(Endecode)]
 struct FileNumber(u8);
 /// # 2nd Subheader byte - Channel Number (CN)
-#[derive(Endecode)]
 struct ChannelNumber(u8);
 
 #[cfg(test)]

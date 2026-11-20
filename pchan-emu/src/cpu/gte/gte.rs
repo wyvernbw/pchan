@@ -4,7 +4,6 @@ use core::mem::offset_of;
 use core::simd::prelude::*;
 use core::{cmp, ptr, slice};
 use glam::prelude::*;
-use pchan_encode::derive::Endecode;
 use std::simd::SimdElement;
 
 use crate::Emu;
@@ -168,7 +167,7 @@ use types::*;
 ///  cop2r63      U20 FLAG             Returns any calculation errors   ;cnt31
 /// ```
 #[repr(C)]
-#[derive(Default, Debug, Endecode, Clone)]
+#[derive(Default, Debug, Clone)]
 pub struct GteCtrlRegs {
     rt_mat:  [i16x3; 3],
     _rt_pad: i16,
@@ -242,7 +241,7 @@ const _: () = const {
 /// ```
 #[repr(C)]
 #[bitfield(u32)]
-#[derive(Endecode, Debug, Default)]
+#[derive(Debug, Default)]
 struct Flag {
     #[bit(31, rw)]
     err:      bool,

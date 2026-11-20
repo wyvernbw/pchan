@@ -2,14 +2,13 @@ use core::cmp;
 
 use heapless::BinaryHeap;
 use heapless::binary_heap::Min;
-use pchan_encode::derive::Endecode;
 
 use crate::Emu;
 
 /// for compatiblity with older code
 pub type EventId = u64;
 
-#[derive(Debug, Clone, Copy, Endecode, Default)]
+#[derive(Debug, Clone, Copy, Default)]
 pub enum EventKind {
     #[default]
     Nop,
@@ -28,11 +27,9 @@ pub enum EventKind {
     CdromAudioPlayback,
 }
 
-#[derive(Debug, Clone, Copy, Endecode, Default)]
-#[endecode(alloc(default))]
+#[derive(Debug, Clone, Copy, Default)]
 pub enum Task {
     #[default]
-    #[endecode(alloc(default))]
     Nop,
 
     GpuFlushDrawCalls,
@@ -59,8 +56,7 @@ pub struct EvCtx {
     pub overshoot: u64,
 }
 
-#[derive(Debug, Clone, Endecode)]
-#[endecode(alloc(default))]
+#[derive(Debug, Clone)]
 pub struct PchanEvent {
     at_cycle: u64,
     event:    EventKind,
