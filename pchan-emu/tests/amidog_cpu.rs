@@ -13,8 +13,8 @@ fn run() -> color_eyre::Result<()> {
 
     setup_tracing();
     let mut emu = Emu::default();
-    let mut runner = Runner::new_in(Global);
-    emu.load_bios(Global)?;
+    let mut runner = Runner::new();
+    emu.load_bios()?;
     emu.cpu.jump_to_bios();
     emu.tty.set_tracing();
 

@@ -51,7 +51,7 @@ fn write_to_address(setup_tracing: (), #[case] base: u32, #[case] size: usize) {
     use pchan_emu::cpu::program;
 
     let mut emu = Emu::default();
-    let mut dynarec = Dynarec::new(CreateDynarecParams::new(Global));
+    let mut dynarec = Dynarec::new(CreateDynarecParams::new());
     let count = size / 4;
     emu.cpu.pc = 0x0000_0000;
     let main = program([
@@ -84,7 +84,7 @@ fn write_to_address(setup_tracing: (), #[case] base: u32, #[case] size: usize) {
         address += 4;
     }
 
-    emu.write(0x80008670, 0x0000_1234u32);
+    emu.write::<u32>(0x80008670, 0x0000_1234u32);
     let written = emu
         .mem
         .read_region::<u32>(MEM_MAP.ram, MEM_MAP.ram, 0x80008670);

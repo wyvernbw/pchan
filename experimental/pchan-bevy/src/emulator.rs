@@ -26,6 +26,7 @@ use bevy::ui::UiSystems;
 use bevy::window::PrimaryWindow;
 use pchan_audio::AudioTask;
 use pchan_emu::Emu;
+use pchan_emu::io::cdrom::OpenDiscState;
 use pchan_emu::io::sio::Sio0Port;
 use pchan_emu::run::{EmuSpeed, Runner, RunnerConfig, RunnerMode};
 use pchan_gpu::wgpu;
@@ -347,9 +348,38 @@ impl Psx {
                 let exe = fs::read(path)?;
                 self.emu.sideload_exe(&exe)?;
             }
+            Some("cue" | "CUE") => {
+                let cue_content = fs::read_to_string(path)?;
+                let mut fsm = self.emu.open_disc_with_cue(&cue_content, true)?;
+                let root = path.parent().unwrap_or(Path::new(""));
+                loop {
+                    match fsm {
+                        OpenDiscState::Done(fsm) => {
+                            fsm.commit(&mut self.emu);
+                            break;
+                        }
+                        OpenDiscState::Opening(next) => {
+                            fsm = next.advance()?;
+                        }
+                        OpenDiscState::NeedCue(next) => {
+                            fsm = next.advance(&cue_content)?;
+                        }
+                        OpenDiscState::NeedFile(next) => {
+                            let path = root.join(next.requested_filename);
+                            tracing::info!("opening {}", path.display());
+
+                            let file = fs::File::open(path)?;
+                            let file = Box::new(file);
+                            fsm = OpenDiscState::Opening(next.advance(file as _)?);
+                        }
+                    }
+                }
+                tracing::info!("opened: {:#?}", self.emu.cdrom.cue_sheet());
+            }
             _ => {
-                let fsm = self.emu.open_disc(path, true)?;
-                self.emu.advance_open_disc(path, fsm, true)?;
+                let file = fs::File::open(path)?;
+                let file = Box::new(file);
+                self.emu.open_disc_raw(file, true)?;
             }
         }
         Ok(())

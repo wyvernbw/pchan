@@ -11,6 +11,7 @@ use alloc::collections::VecDeque;
 
 use crate::io::cdrom::cdrom_cmds::ResponseV2;
 use crate::io::cdrom::cdrom_drive::{CdromDrive, Disc};
+use crate::io::cdrom::cdrom_format::CueSheet;
 use crate::io::cdrom::cdrom_ver::CDRomVer;
 use crate::io::evque::{EvCtx, EventId};
 use crate::io::irq::{self};
@@ -21,6 +22,8 @@ use bitbybit::{bitenum, bitfield};
 use pchan_utils::hex;
 
 use super::evque::EventKind;
+
+pub use cdrom_drive::OpenDiscState;
 
 #[derive(derive_more::Debug, Clone, Default)]
 pub struct CDRom {
@@ -249,6 +252,7 @@ impl CDRomStatusReg {
 }
 
 impl CDRom {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -256,6 +260,11 @@ impl CDRom {
     #[must_use]
     pub fn bank(&self) -> u8 {
         self.status.bank().as_u8()
+    }
+
+    #[must_use]
+    pub fn cue_sheet(&self) -> Option<&CueSheet> {
+        self.drive.toc.as_ref()
     }
 }
 

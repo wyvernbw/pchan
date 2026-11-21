@@ -1,5 +1,7 @@
-use core::fmt;
 use core::marker::PhantomData;
+use core::ops::Range;
+use core::str::FromStr;
+use core::{fmt, mem};
 use std::marker::Destruct;
 
 use alloc::io;
@@ -78,9 +80,9 @@ pub fn mss_to_lba<T: Into<u8>>(mss: Mss<T>) -> u32 {
 
 impl CdromCursor {
     pub fn from_mss<T: Into<u8> + Destruct>(mss: Mss<T>) -> Self {
-        let min = mss.min.into() as u32;
-        let sec = mss.sec.into() as u32;
-        let sect = mss.sect.into() as u32;
+        let min = u32::from(mss.min.into());
+        let sec = u32::from(mss.sec.into());
+        let sect = u32::from(mss.sect.into());
         Self {
             lba:  (min * (60 * 75) + sec * 75 + sect),
             byte: 0,
@@ -114,21 +116,32 @@ impl CdromCursor {
 /// TODO: add support for multiple tracks
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CueSheet {
-    pub files:  Vec<CueFile>,
-    pub tracks: Vec<Track>,
+    pub files:     Vec<CueFile>,
+    pub tracks:    Vec<Track>,
+    pub indices:   Vec<CueIndex>,
+    /// cd track number -> vector index
+    pub tracklist: Vec<TrackIdx>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TrackKind {
+    Audio,
+    Mode2_2352,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Track {
-    pub number:     u8,
-    pub index_list: Vec<CueIndex>,
+    pub number:  u8,
+    pub kind:    TrackKind,
+    pub indices: Range<u8>,
+    pub abs_lba: u32,
+    pub rel_lba: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CueIndex {
-    pub sect:   u8,
-    pub min:    u8,
-    pub second: u8,
+    pub timestamp: Mss<u8>,
+    pub number:    u8,
 }
 
 #[derive(thiserror::Error, Debug, PartialEq, Eq)]
@@ -137,12 +150,16 @@ pub enum CueFormatParseErr {
     ExpectedFile,
     #[error("expected filename in double quotes")]
     ExpectedFilename,
+    #[error("expected `TRACK` attribute")]
+    ExpectedTrack,
     #[error("expected track number for TRACK")]
     ExpectedTrackNumber,
+    #[error("expected track kind (eg. 'AUDIO' or 'MODE2/2352')")]
+    ExpectedTrackKind,
     #[error("`INDEX` attribute must be followed by a number")]
-    MissingIndexNumber,
+    ExpectedIndexNumber,
     #[error("`INDEX` number must be followed by a timestamp")]
-    MissingTimestamp,
+    ExpectedTimestamp,
     #[error("io error: {0}")]
     IOError(core::io::ErrorKind),
 }
@@ -153,147 +170,333 @@ impl From<io::Error> for CueFormatParseErr {
     }
 }
 
+impl FromStr for TrackKind {
+    type Err = CueFormatParseErr;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s.eq_ignore_ascii_case("AUDIO") {
+            Ok(Self::Audio)
+        } else if s.eq_ignore_ascii_case("MODE2/2352") {
+            Ok(Self::Mode2_2352)
+        } else {
+            Err(CueFormatParseErr::ExpectedTrackKind)
+        }
+    }
+}
+
 pub trait File {
-    fn size(&self) -> usize;
+    fn size(&self) -> u64;
 }
 
 impl File for std::fs::File {
-    fn size(&self) -> usize {
-        self.metadata()
-            .map(|meta| meta.len() as usize)
-            .unwrap_or_default()
+    fn size(&self) -> u64 {
+        self.metadata().map_or_default(|meta| meta.len())
     }
 }
 
 pub struct CueParser<'s, T = cue::Parsing> {
-    _typestate:   PhantomData<T>,
-    buf:          &'s str,
-    files:        Vec<CueFile>,
-    tracks:       Vec<Track>,
-    file_builder: CueFileBuilder,
+    _typestate: PhantomData<T>,
+    buf:        &'s str,
+    files:      Vec<CueFile>,
+    tracks:     Vec<Track>,
+    indices:    Vec<CueIndex>,
+
+    parsing:       CueParserItem,
+    file_builder:  Option<CueFileBuilder>,
+    track_builder: Option<Track>,
+
+    file_lba:  u32,
+    track_lba: u32,
+    index_lba: u32,
+
+    pub requested_filename: Option<&'s str>,
+}
+
+enum CueParserItem {
+    None,
+    File,
+    Track,
+    Index,
 }
 
 type TrackIdx = u8;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CueFile {
-    filename: String,
-    tracks:   Vec<TrackIdx>,
+    filename:  String,
+    tracks:    Range<u8>,
+    bytes_len: u64,
+    lba:       u32,
 }
 
 struct CueFileBuilder {
-    filename: String,
-    tracks:   Vec<Track>,
+    filename:  String,
+    tracks:    Vec<Track>,
+    bytes_len: u64,
 }
 
-mod cue {
+pub(crate) mod cue {
     pub struct Parsing;
     pub struct RequestFile;
 }
 
 pub enum CueParserState<'a> {
+    /// useful for storing intermediary fsms, but
+    /// nothing actually returns it.
+    Parsing(CueParser<'a, cue::Parsing>),
     RequestFile(CueParser<'a, cue::RequestFile>),
     Done(CueSheet),
 }
 
-impl<'a> CueParser<'a, cue::Parsing> {
-    fn advance(mut self) -> Result<CueParserState<'a>, CueFormatParseErr> {
-        match self.buf.lines().next() {
-            None => return Ok(CueParserState::Done(todo!())),
-            Some(line) => {
-                let Some(line) = line.strip_prefix("FILE ") else {
-                    return Err(CueFormatParseErr::ExpectedFile);
-                };
-
-                let Some(filename) = line.split('"').next() else {
-                    return Err(CueFormatParseErr::ExpectedFilename);
-                };
-
-                self.file_builder.filename = filename.to_owned();
-            }
+impl<'a, T> CueParser<'a, T> {
+    pub(crate) fn next<U>(self) -> CueParser<'a, U> {
+        CueParser {
+            _typestate:         PhantomData,
+            buf:                self.buf,
+            files:              self.files,
+            tracks:             self.tracks,
+            file_builder:       self.file_builder,
+            track_builder:      self.track_builder,
+            parsing:            self.parsing,
+            indices:            self.indices,
+            requested_filename: self.requested_filename,
+            file_lba:           self.file_lba,
+            track_lba:          self.track_lba,
+            index_lba:          self.index_lba,
         }
-
-        Ok(CueParserState::Done(todo!()))
     }
 }
 
+fn take_until<'a, P: core::str::pattern::Pattern>(str: &mut &'a str, pat: P) -> Option<&'a str> {
+    let Some((token, rest)) = str.split_once(pat) else {
+        *str = "";
+        return None;
+    };
+    *str = rest;
+    Some(token)
+}
+
+fn take_until_whitespace<'a>(str: &mut &'a str) -> Option<&'a str> {
+    take_until(str, char::is_whitespace)
+}
+
+fn take_separated<'a, P: core::str::pattern::Pattern + Copy>(
+    str: &mut &'a str,
+    sep: P,
+) -> Option<&'a str> {
+    let _ = take_until(str, sep);
+
+    take_until(str, sep)
+}
+
+impl<'a> CueParser<'a, cue::Parsing> {
+    pub fn new(buf: &'a str) -> Self {
+        CueParser {
+            _typestate: PhantomData,
+            buf,
+            files: Vec::new(),
+            tracks: Vec::new(),
+            indices: Vec::new(),
+            parsing: CueParserItem::None,
+            file_builder: None,
+            track_builder: None,
+            requested_filename: None,
+            file_lba: 0,
+            track_lba: 0,
+            index_lba: 0,
+        }
+    }
+
+    fn push_file(&mut self) {
+        if let Some(fb) = &mut self.file_builder {
+            let start = self.tracks.len() as u8;
+            let end = start + fb.tracks.len() as u8;
+            self.tracks.extend_from_slice(&fb.tracks);
+
+            self.files.push(CueFile {
+                filename:  mem::take(&mut fb.filename),
+                bytes_len: fb.bytes_len,
+                tracks:    start..end,
+                lba:       self.file_lba,
+            });
+
+            self.file_lba += (fb.bytes_len / SECTOR_USER_SIZE as u64) as u32;
+        }
+    }
+
+    fn push_track(&mut self) {
+        if let Some((tb, fb)) = self.track_builder.take().zip(self.file_builder.as_mut()) {
+            self.index_lba = 0;
+            fb.tracks.push(tb);
+        }
+    }
+
+    fn finish(mut self) -> CueSheet {
+        self.push_track();
+        self.push_file();
+
+        let tracklist = self
+            .files
+            .iter()
+            .flat_map(|f| f.tracks.clone())
+            .collect::<Vec<_>>();
+
+        CueSheet {
+            files: self.files,
+            tracks: self.tracks,
+            indices: self.indices,
+            tracklist,
+        }
+    }
+
+    pub fn advance(mut self) -> Result<CueParserState<'a>, CueFormatParseErr> {
+        loop {
+            self.buf = self.buf.trim_start();
+            if self.buf.is_empty() {
+                return Ok(CueParserState::Done(self.finish()));
+            }
+
+            match self.parsing {
+                CueParserItem::None => {
+                    let Some(token) = take_until_whitespace(&mut self.buf) else {
+                        continue;
+                    };
+
+                    if token.eq_ignore_ascii_case("FILE") {
+                        self.parsing = CueParserItem::File;
+                    } else if token.eq_ignore_ascii_case("TRACK") {
+                        self.parsing = CueParserItem::Track;
+                    } else if token.eq_ignore_ascii_case("INDEX") {
+                        self.parsing = CueParserItem::Index;
+                    }
+                }
+                CueParserItem::File => {
+                    // push old tracks into file, then push old file
+                    self.push_track();
+                    self.push_file();
+
+                    self.buf = self.buf.trim_start();
+                    let filename = take_separated(&mut self.buf, '"')
+                        .ok_or(CueFormatParseErr::ExpectedFilename)?;
+
+                    self.buf = self.buf.trim_start();
+                    let _file_type = take_until_whitespace(&mut self.buf);
+
+                    self.file_builder = Some(CueFileBuilder {
+                        filename:  filename.to_owned(),
+                        tracks:    Vec::new(),
+                        bytes_len: 0,
+                    });
+
+                    self.parsing = CueParserItem::None;
+                    self.requested_filename = Some(filename);
+                    return Ok(CueParserState::RequestFile(self.next()));
+                }
+                CueParserItem::Track => {
+                    self.file_builder
+                        .as_ref()
+                        .ok_or(CueFormatParseErr::ExpectedFile)?;
+
+                    // push old track
+                    self.push_track();
+
+                    self.buf = self.buf.trim_start();
+                    let number = take_until_whitespace(&mut self.buf)
+                        .ok_or(CueFormatParseErr::ExpectedTrackNumber)
+                        .and_then(|num| {
+                            num.parse::<u8>()
+                                .map_err(|_| CueFormatParseErr::ExpectedTrackNumber)
+                        })?;
+                    self.buf = self.buf.trim_start();
+                    let track_kind = take_until_whitespace(&mut self.buf)
+                        .and_then(|kind| kind.parse::<TrackKind>().ok())
+                        .ok_or(CueFormatParseErr::ExpectedTrackKind)?;
+
+                    let start = self.indices.len() as u8;
+                    self.track_builder = Some(Track {
+                        number,
+                        kind: track_kind,
+                        indices: start..start,
+                        abs_lba: self.file_lba + self.track_lba,
+                        rel_lba: self.track_lba,
+                    });
+
+                    self.parsing = CueParserItem::None;
+                }
+                CueParserItem::Index => {
+                    let tb = self
+                        .track_builder
+                        .as_mut()
+                        .ok_or(CueFormatParseErr::ExpectedTrack)?;
+
+                    self.buf = self.buf.trim_start();
+                    let number = take_until_whitespace(&mut self.buf)
+                        .and_then(|num| num.parse::<u8>().ok())
+                        .ok_or(CueFormatParseErr::ExpectedIndexNumber)?;
+
+                    self.buf = self.buf.trim_start();
+                    let timestamp = take_until_whitespace(&mut self.buf)
+                        .and_then(|t| {
+                            let mut t = t.split(':');
+                            let min = t.next()?.parse::<u8>().ok()?;
+                            let sec = t.next()?.parse::<u8>().ok()?;
+                            let sect = t.next()?.parse::<u8>().ok()?;
+                            let t = Mss::new(min, sec, sect);
+                            Some(t)
+                        })
+                        .ok_or(CueFormatParseErr::ExpectedTimestamp)?;
+
+                    self.indices.push(CueIndex { timestamp, number });
+                    self.track_lba += mss_to_lba(timestamp);
+                    tb.indices.end += 1;
+
+                    self.parsing = CueParserItem::None;
+                }
+            }
+        }
+    }
+
+    fn parse(
+        buf: &'a str,
+        cb: impl Fn(CueParserStep<'a>) -> Result<CueParser<'a, cue::Parsing>, CueFormatParseErr>,
+    ) -> Result<CueSheet, CueFormatParseErr> {
+        let mut parser = Self::new(buf);
+
+        loop {
+            match parser.advance()? {
+                CueParserState::RequestFile(cue_parser) => {
+                    parser = cb(CueParserStep::RequestFile(cue_parser))?;
+                }
+                CueParserState::Done(cue_sheet) => return Ok(cue_sheet),
+                CueParserState::Parsing(_) => unreachable!(),
+            }
+        }
+    }
+}
+
+enum CueParserStep<'a> {
+    RequestFile(CueParser<'a, cue::RequestFile>),
+}
+
 impl<'a> CueParser<'a, cue::RequestFile> {
-    fn advance(mut self, file: &dyn File) -> CueParserState<'a> {
-        CueParserState::Done(todo!())
+    pub fn requested_filename(&self) -> &'a str {
+        self.requested_filename
+            .expect("invalid state: requested_filename is None")
+    }
+
+    pub fn advance<'f>(mut self, file: &'f dyn File) -> CueParser<'a, cue::Parsing> {
+        let fb = self.file_builder.as_mut().expect("no file builder!");
+        fb.bytes_len = file.size();
+        self.requested_filename = None;
+        self.next()
     }
 }
 
 impl CueSheet {
-    /// parse cue format
-    /// ```cue
-    /// FILE "test.bin" BINARY
-    ///   TRACK 01 MODE2/2352
-    ///     INDEX 01 00:00:00
-    /// ```
-    fn parse(s: &str) -> Result<Self, CueFormatParseErr> {
-        let s = s.trim();
-        // FILE
-        let s = match s.strip_prefix("FILE") {
-            Some(rest) => Ok(rest),
-            None => Err(CueFormatParseErr::ExpectedFile),
-        }?;
-        let s = s.trim();
-
-        let filename = s
-            .strip_prefix(r#"""#)
-            .and_then(|s| {
-                let quote_end = s.find('"')?;
-                Some(&s[..quote_end])
-            })
-            .ok_or(CueFormatParseErr::ExpectedFilename)?;
-
-        let track_list = s
-            .split("TRACK ")
-            .skip(1)
-            .map(|s| {
-                let Some(num) = s.split_whitespace().next() else {
-                    return Err(CueFormatParseErr::ExpectedTrackNumber);
-                };
-
-                let num = num
-                    .parse::<u8>()
-                    .map_err(|_| CueFormatParseErr::ExpectedTrackNumber)?;
-
-                let index_list = s
-                    .split("INDEX ")
-                    .skip(1)
-                    .map(|s| {
-                        let mut index = s.split_whitespace().take(2);
-                        let num = index
-                            .next()
-                            .and_then(|num| num.parse::<u8>().ok())
-                            .ok_or(CueFormatParseErr::MissingIndexNumber)?;
-                        let (min, sec) = index
-                            .next()
-                            .map(|time| time.split(':').take(2))
-                            .and_then(|mut split| split.next().zip(split.next()))
-                            .ok_or(CueFormatParseErr::MissingTimestamp)?;
-                        let min = min
-                            .parse::<u8>()
-                            .map_err(|_| CueFormatParseErr::MissingTimestamp)?;
-                        let sec = sec
-                            .parse::<u8>()
-                            .map_err(|_| CueFormatParseErr::MissingTimestamp)?;
-                        Ok(CueIndex {
-                            sect: num,
-                            min,
-                            second: sec,
-                        })
-                    })
-                    .collect::<Result<Vec<_>, CueFormatParseErr>>()?;
-                Ok(Track {
-                    number: num,
-                    index_list,
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-
-        Ok(todo!())
+    pub fn index(&self, track: u8, idx: u8) -> &CueIndex {
+        let track_idx = self.tracklist[usize::from(track)];
+        let start = self.tracks[usize::from(track_idx)].indices.start;
+        &self.indices[usize::from(idx + start)]
     }
 }
 
@@ -373,10 +576,13 @@ pub struct Submode {
 /// # 4th Subheader byte - Codinginfo (CI)
 ///
 /// When used for Data sectors:
+///
 /// ```plaintext
 ///   0-7 Reserved (00h)
 /// ```
+///
 /// When used for XA-ADPCM audio sectors:
+///
 /// ```plaintext
 ///   0-1 Mono/Stereo     (0=Mono, 1=Stereo, 2-3=Reserved)
 ///   2-2 Sample Rate     (0=37800Hz, 1=18900Hz, 2-3=Reserved)
@@ -400,7 +606,14 @@ struct ChannelNumber(u8);
 
 #[cfg(test)]
 mod cuetests {
-    use crate::io::cdrom::cdrom_format::{CueIndex, CueSheet, Track};
+    use std::fs;
+
+    use crate::io::cdrom::cdrom_format::TrackKind::{self, Audio};
+    use crate::io::cdrom::cdrom_format::{
+        CueFile, CueFormatParseErr, CueIndex, CueParser, CueParserStep, CueSheet, File, Mss,
+        SECTOR_USER_SIZE, Track,
+    };
+    use pretty_assertions::assert_eq;
 
     #[test]
     fn test_basic_cue() {
@@ -422,5 +635,40 @@ mod cuetests {
                 INDEX 01 00:04:00
             "#;
         todo!()
+    }
+
+    #[test]
+    fn test_new_cue_parser() {
+        struct MockFile;
+
+        impl File for MockFile {
+            fn size(&self) -> u64 {
+                32 * SECTOR_USER_SIZE as u64
+            }
+        }
+
+        let string = r#"
+            FILE "Ridge Racer (Japan) (Track 01).bin" BINARY
+            TRACK 01 MODE2/2352
+                INDEX 01 00:00:00
+            FILE "Ridge Racer (Japan) (Track 02).bin" BINARY
+            TRACK 02 AUDIO
+                INDEX 00 00:00:00
+                INDEX 01 00:02:00
+            FILE "Ridge Racer (Japan) (Track 03).bin" BINARY
+            TRACK 03 AUDIO
+                INDEX 00 00:00:00
+                INDEX 01 00:02:00
+            "#;
+
+        let result = CueParser::parse(string, |step| match step {
+            CueParserStep::RequestFile(cue_parser) => {
+                let advance = cue_parser.advance(&MockFile);
+                Ok(advance)
+            }
+        })
+        .unwrap();
+
+        println!("{result:#?}");
     }
 }

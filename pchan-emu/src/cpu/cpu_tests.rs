@@ -4,13 +4,11 @@ use crate::Emu;
 use crate::cpu::ops::*;
 use crate::cpu::program;
 use crate::dynarec_v2::regalloc::Guest;
-use alloc::alloc::Global;
+use crate::io::CastIOInto;
 use pchan_utils::setup_tracing;
 use rstest::{fixture, rstest};
 
-use crate::run::{Runner as RunnerInner, RunnerConfig, RunnerMode};
-
-type Runner = RunnerInner<Global>;
+use crate::run::{Runner, RunnerConfig, RunnerMode};
 
 #[fixture]
 fn interp() -> Runner {
@@ -145,7 +143,7 @@ fn load_delay_04(#[values(dynarec(), interp())] mut runner: Runner) {
     setup_tracing();
     let mut emu: Emu = Emu::default();
     emu.cpu.pc = 0x0;
-    emu.write(0x200, 3);
+    emu.write::<u32>(0x200, 3);
     emu.write_many(
         0x0,
         &program([
@@ -606,7 +604,7 @@ fn test_j(
         ]),
     );
     let new_pc = (jump_imm << 2) + (emu.cpu.pc & 0xf0000000);
-    emu.write(new_pc, OpCode::HALT);
+    emu.write::<u32>(new_pc, OpCode::HALT.io_into_u32());
     runner.execute(&mut emu);
     tracing::info!(?emu.cpu);
     assert_eq!(emu.cpu.gpr[9], 69);
@@ -737,7 +735,7 @@ fn test_lwcn(
     setup_tracing();
     let mut emu = Emu::default();
     emu.cpu.gpr[rs as usize] = 0x100;
-    emu.write(0x100, 0xcafebabe_u32);
+    emu.write::<u32>(0x100, 0xcafebabe_u32);
 
     emu.write_many(
         0x0,
@@ -762,7 +760,7 @@ fn test_branch_in_branch_delay_slot(#[values(dynarec(), interp())] mut runner: R
         0x0,
         &program([OpCode::HALT, nop(), beq(0, 0, -3), beq(0, 0, 10)]),
     );
-    emu.write(56, OpCode::HALT);
+    emu.write::<u32>(56, OpCode::HALT.io_into_u32());
 
     runner.execute(&mut emu);
     tracing::info!(?emu.cpu);
@@ -774,7 +772,7 @@ fn test_branch_in_branch_delay_slot(#[values(dynarec(), interp())] mut runner: R
         0x0,
         &program([OpCode::HALT, nop(), beq(0, 0, -3), jal(0x100)]),
     );
-    emu.write(0x100 << 2, OpCode::HALT);
+    emu.write::<u32>(0x100 << 2, OpCode::HALT.io_into_u32());
 
     runner.execute(&mut emu);
     tracing::info!(?emu.cpu);
@@ -841,7 +839,7 @@ mod test_unaligned_load_stores {
         emu.cpu.gpr[9] = 0xffff_ffff;
         emu.cpu.gpr[10] = 0xffff_ffff;
         for i in 0x0..0x10 {
-            emu.write(emu.cpu["$sp"] + i, i);
+            emu.write::<u8>(emu.cpu["$sp"] + i, i);
         }
         let prog = [prog.as_slice(), [OpCode::HALT.raw_value()].as_slice()].concat();
         emu.write_many(0x0, &prog);
@@ -880,7 +878,7 @@ mod test_unaligned_load_stores {
         emu.cpu["$sp"] = 0x8000_00f0;
         emu.cpu.gpr[9] = 0xffff_ffff;
         for i in 0x0..0x10 {
-            emu.write(emu.cpu["$sp"] + i, i);
+            emu.write::<u8>(emu.cpu["$sp"] + i, i);
         }
         let prog = [prog.as_slice(), [OpCode::HALT.raw_value()].as_slice()].concat();
         emu.write_many(0x0, &prog);
@@ -958,7 +956,7 @@ fn load_and_compare(#[values(dynarec(), interp())] mut runner: Runner) {
     let mut emu = Emu::default();
     emu.cpu.pc = 0x0;
     emu.set_reg(10, 420); // poison
-    emu.write(0x100, 420);
+    emu.write::<u32>(0x100, 420);
     emu.write_many(
         0x0,
         &program([
@@ -1002,7 +1000,7 @@ fn test_jalr(
             OpCode::HALT,
         ]),
     );
-    emu.write(rs.1, OpCode::HALT);
+    emu.write::<u32>(rs.1, OpCode::HALT.io_into_u32());
     runner.execute(&mut emu);
     tracing::info!(?emu.cpu);
     assert_eq!(emu.cpu.gpr[9], 69);

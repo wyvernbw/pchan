@@ -35,6 +35,7 @@
 #![feature(alloc_io)]
 #![feature(core_io)]
 #![feature(clone_from_ref)]
+#![feature(pattern)]
 // allow unused variables in tests to supress the setup tracing warnings
 #![cfg_attr(test, allow(unused_variables))]
 use core::alloc::Allocator;

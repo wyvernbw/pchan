@@ -1,40 +1,19 @@
-use crate::bindings::ExternFnTable;
-use crate::cpu::gte::GteBindings;
-use crate::cpu::{Cpu, RA, SP, program};
-#[cfg(target_arch = "aarch64")]
-use crate::dynarec_v2::emitters::emit_branch_zero;
-use crate::dynarec_v2::emitters::{
-    AluImm, Boundary, CopMove, CopRegisterKind, DynarecOp, EitherZero, EmitAddImm16Args, EmitCtx,
-    EmitSummary, ShiftImm, either_zero, emit_alu_imm, emit_alu_reg, emit_move_to_cop,
-    emit_shift_by_reg, emit_shift_imm, shadow,
-};
-use crate::dynarec_v2::regalloc::AllocResultStackless;
+use crate::cpu;
+use crate::cpu::{SP, program};
+use crate::dynarec_v2::Guest;
 #[cfg(test)]
 use crate::dynarec_v2::{CreateDynarecParams, run_step};
-use crate::dynarec_v2::{DynEmitter, Guest};
-use crate::{Emu, cpu};
 #[cfg(test)]
 use core::fmt;
-use core::num::NonZeroU8;
 
-use arbitrary_int::traits::Integer;
-use enum_dispatch::enum_dispatch;
-
-use pchan_utils::default;
 #[cfg(test)]
 use rstest::rstest;
-use smallbox::SmallBox;
 
 use crate::cpu::ops::prelude::*;
-use crate::dynarec_v2::{Dynarec, LoadedReg, Reg};
-#[cfg(test)]
-use crate::memory;
+use crate::dynarec_v2::Dynarec;
 use crate::memory::ext;
-use dynasm::dynasm;
-use dynasmrt::DynasmApi;
-
-use super::ScheduledEmitter;
-use core::alloc::Allocator;
+#[cfg(test)]
+use crate::memory::{self, ExtendExt};
 
 #[cfg(test)]
 #[rstest]
@@ -154,7 +133,7 @@ where
     assert_eq!(emu.cpu.d_clock, 3);
     assert_eq!(emu.cpu.pc, 0x8);
     assert_eq!(
-        emu.read_ext::<T, ext::Zero>(0x801ffed0 + 2),
+        emu.read::<T>(0x801ffed0 + 2).ext::<ext::Zero>(),
         ext::zero(value)
     );
 
@@ -223,7 +202,7 @@ fn test_loads(
     setup_tracing();
     let mut emu = Emu::default();
     emu.cpu.gpr[11] = 0x801ffed0;
-    emu.write(0x801ffed0 + 2, value);
+    emu.write::<u32>(0x801ffed0 + 2, value);
     emu.write_many(0x0, &program([instr(10, 11, 2), OpCode::HALT]));
 
     let mut dynarec = Dynarec::new(CreateDynarecParams::default());
@@ -327,7 +306,7 @@ fn test_load_delay(#[case] instr: impl Fn(u8, u8, i16) -> OpCode) {
     setup_tracing();
     let mut emu = Emu::default();
     emu.cpu.gpr[11] = 0x100;
-    emu.write(0x100 + 2, 69);
+    emu.write::<u32>(0x100 + 2, 69);
     emu.write_many(
         0x0,
         &program([
@@ -834,7 +813,7 @@ fn test_lwcn(#[case] cop: u8, #[case] rt: u8, #[case] rs: u8) -> color_eyre::Res
     setup_tracing();
     let mut emu = Emu::default();
     emu.cpu.gpr[rs as usize] = 0x100;
-    emu.write(0x100, 0xcafebabe_u32);
+    emu.write::<u32>(0x100, 0xcafebabe_u32);
 
     emu.write_many(0x0, &program([lwcn(cop, rt, rs, 0x0), OpCode::HALT]));
 
@@ -960,7 +939,7 @@ fn test_par_lwl_lwr<const N: usize>(
     emu.cpu.gpr[9] = 0xffff_ffff;
     emu.cpu.gpr[10] = 0xffff_ffff;
     for i in 0x0..0x10 {
-        emu.write(emu.cpu["$sp"] + i, i);
+        emu.write::<u32>(emu.cpu["$sp"] + i, i);
     }
     let prog = [prog.as_slice(), [OpCode::HALT.raw_value()].as_slice()].concat();
     emu.write_many(0x0, &prog);
@@ -1002,7 +981,7 @@ fn test_seq_lwl_lwr<const N: usize>(
     emu.cpu["$sp"] = 0x8000_00f0;
     emu.cpu.gpr[9] = 0xffff_ffff;
     for i in 0x0..0x10 {
-        emu.write(emu.cpu["$sp"] + i, i);
+        emu.write::<u32>(emu.cpu["$sp"] + i, i);
     }
     let prog = [prog.as_slice(), [OpCode::HALT.raw_value()].as_slice()].concat();
     emu.write_many(0x0, &prog);
