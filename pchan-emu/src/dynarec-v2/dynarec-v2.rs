@@ -16,7 +16,6 @@ use std::time::Instant;
 use thiserror::Error;
 use tracing::Instrument;
 
-use crate::Emu;
 use crate::cpu::Cpu;
 use crate::cpu::exceptions::Exception;
 use crate::cpu::ops::OpCode;
@@ -25,6 +24,7 @@ use crate::dynarec_v2::regalloc::{
     AllocResult, AllocResultStackless, Guest, Reg, RegAlloc, RegAllocError, RegAllocErrorStackless,
 };
 use crate::memory::kb;
+use crate::{Emu, pin_await};
 
 #[path = "./emitters/emitters.rs"]
 pub mod emitters;
@@ -205,7 +205,7 @@ pub async fn run_block(block: fn(*mut Emu), emu: &mut Emu, instrument: bool) {
         if !emu.cpu.pc.is_multiple_of(0x4) {
             emu.raise_exception(Exception::AdEl);
         }
-        emu.run_io().await;
+        pin_await!(emu.run_io());
         emu.cpu.drain_jump_queue();
         if !emu.cpu.pc.is_multiple_of(0x4) {
             emu.raise_exception(Exception::AdEl);
@@ -902,7 +902,7 @@ pub async fn run_step(emu: &mut Emu, dynarec: &mut Dynarec) {
             block
         }
     };
-    run_block(block, emu, false).await;
+    pin_await!(run_block(block, emu, false));
     emu.stats.blocks_ran += 1;
 }
 

@@ -1,4 +1,4 @@
-use core::alloc::Allocator;
+use core::pin::Pin;
 use core::{any, mem, ptr};
 
 use pchan_utils::hex;
@@ -31,6 +31,25 @@ macro_rules! trace_todo {
     }};
 }
 
+/// Using this instead of `.await` directly avoids an unfortunate situation
+/// where the compiler inserts a bunch of memcpys to initialize the future's state.
+///
+/// These memcpys only appear in debug mode. Release mode is unaffected.
+///
+/// Code using this macro looks like ass but it almost doubles the performance in some
+/// cases in debug mode :(
+#[macro_export]
+macro_rules! pin_await {
+    ($value:expr) => {{
+        let mut p = $value;
+        unsafe {
+            use core::pin::Pin;
+            let p = Pin::new_unchecked(&mut p);
+            p.await
+        }
+    }};
+}
+
 impl Emu {
     #[pchan_macros::instrument(level = "trace", "io", skip_all, fields(pc = %hex(self.cpu.pc)))]
     pub async fn run_io(&mut self) {
@@ -43,11 +62,11 @@ impl Emu {
         let d_clock = u64::from(self.cpu.d_clock);
         self.cpu.vblank_timer = self.cpu.vblank_timer.wrapping_add(d_clock as u32);
         self.cpu.cycles = self.cpu.cycles.wrapping_add(d_clock);
-        // TODO: use static memory
-        self.evque_advance(d_clock).await;
 
-        self.run_video_io(d_clock).await;
-        self.run_gpu().await;
+        pin_await!(self.evque_advance(d_clock));
+        pin_await!(self.run_video_io(d_clock));
+        pin_await!(self.run_gpu());
+
         self.run_sio_bdtimers(d_clock);
 
         let mut d_clock = d_clock;

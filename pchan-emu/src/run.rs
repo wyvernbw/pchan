@@ -18,7 +18,7 @@ use crate::dynarec_v2::{
     CreateDynarecParams, Dynarec, PipelineCompileError, cache_hitrate, run_block, run_step,
 };
 use crate::memory::mb;
-use crate::{Emu, dynarec_v2};
+use crate::{Emu, dynarec_v2, pin_await};
 
 #[derive(derive_more::Debug)]
 pub struct Runner {
@@ -171,7 +171,7 @@ impl Runner {
                 }
             },
             Some(RunnerMode::Dynarec) => {
-                run_step(emu, &mut self.dynarec).await;
+                pin_await!(run_step(emu, &mut self.dynarec));
             }
             None => loop {
                 if let Ok(Some(CompileActorResponse::Compiled(Ok((pc, block))))) =
@@ -390,7 +390,7 @@ impl Runner {
         let _span = tracing::info_span!("", frame = self.frame_idx).entered();
         let start = Instant::now();
         while !emu.consume_vblank_signal() {
-            self.execute(emu).await;
+            pin_await!(self.execute(emu));
             if hook(emu) {
                 break;
             }
@@ -436,9 +436,10 @@ impl Runner {
     }
 
     pub async fn run_until_vblank(&mut self, emu: &mut Emu) -> Option<Duration> {
-        self.run_until_vblank_with(emu, |_| false).await
+        pin_await!(self.run_until_vblank_with(emu, |_| false))
     }
 
+    #[must_use]
     pub fn frame_time_limit(&self) -> Duration {
         match self.config.speed {
             EmuSpeed::Unlimited => Duration::ZERO,
@@ -448,6 +449,7 @@ impl Runner {
         }
     }
 
+    #[must_use]
     pub fn sleep_time(&self, elapsed: Duration) -> Duration {
         self.frame_time_limit().saturating_sub(elapsed)
     }
