@@ -1254,6 +1254,7 @@ impl GpuState {
             .unwrap();
     }
 
+    #[must_use]
     pub fn create_draw_call(&self, kind: DrawCallKind) -> DrawCall {
         DrawCall {
             gpustat:    self.gpustat,

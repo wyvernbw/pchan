@@ -468,8 +468,8 @@ impl Renderer {
                 readback,
             },
             conn: Conn {
-                draw_call_chan: kanal::bounded_async(128),
-                vram_out_chan: kanal::bounded_async(128),
+                draw_call_chan: kanal::bounded_async(1024),
+                vram_out_chan: kanal::bounded_async(1024),
             },
             tracy: TracyClient::default(),
             display_uniforms: DisplayUniforms::default(),
