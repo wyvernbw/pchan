@@ -2,7 +2,7 @@ use core::iter;
 
 use crate::Emu;
 use crate::cpu::{Cpu, cycles_to_ms};
-use crate::io::cdrom::cdrom_drive::PlaySeekResult;
+use crate::io::cdrom::cdrom_drive::{PlaySeekResult, SectorKind};
 use crate::io::cdrom::cdrom_format::{Bcd, CdromCursor, Mss};
 use crate::io::cdrom::{CDRom, DriveStatus};
 use crate::io::evque::{EvCtx, EventId, EventKind};
@@ -377,9 +377,11 @@ impl Emu {
             }
             CommandStateV2::PlayInt1(_) => match self.cdrom.drive.play_audio(&mut self.evque) {
                 Ok(_) => {
-                    self.cdrom
-                        .drive
-                        .request_data_sector(&mut self.cdrom.status, &mut self.cdrom.sector_buf);
+                    self.cdrom.drive.request_sector(
+                        SectorKind::CDDASector,
+                        &mut self.cdrom.status,
+                        &mut self.cdrom.sector_buf,
+                    );
                     let cycles_per_sector = self.cdrom.drive.sector_cycles();
                     self.cdrom_queue_response(cycles_per_sector as u32);
                 }
@@ -470,9 +472,11 @@ impl Emu {
                 self.cdrom_continue_cmd(CommandStateV2::ReadNInt1);
                 self.cdrom_queue_response(cycles_per_sector as u32);
 
-                self.cdrom
-                    .drive
-                    .request_data_sector(&mut self.cdrom.status, &mut self.cdrom.data_fifo);
+                self.cdrom.drive.request_sector(
+                    SectorKind::DataSector,
+                    &mut self.cdrom.status,
+                    &mut self.cdrom.data_fifo,
+                );
             }
 
             CommandStateV2::InitInt3 => {
@@ -546,7 +550,7 @@ impl Emu {
                     .read_toc()
                     .expect("todo: called GetTN without a disc. error int5");
                 let first = 1;
-                let last = cue_sheet.tracks.last().map_or(1, |track| track.number);
+                let last = cue_sheet.track_count();
 
                 tracing::info!(target: "cdrom", "{:<14.14}{first},{last}", "GetTN");
 
@@ -566,19 +570,19 @@ impl Emu {
                 let idx = n.unpack();
 
                 let track = if idx == 0 {
-                    *cue_sheet.tracklist.last().expect("no tracks on disc")
+                    cue_sheet.track_count()
                 } else {
-                    cue_sheet.tracklist[usize::from(idx)]
+                    idx
                 };
 
                 let index = cue_sheet.index(track, 0);
-                let min = index.timestamp.min;
-                let sec = index.timestamp.sec;
+                let min = index.abs_timestamp.min;
+                let sec = index.abs_timestamp.sec;
 
                 tracing::info!(target: "cdrom", "{:<14.14}{min:02},{sec:02}", "GetTD");
 
-                let min = Bcd::from_binary(index.timestamp.min);
-                let sec = Bcd::from_binary(index.timestamp.sec);
+                let min = Bcd::from_binary(index.abs_timestamp.min);
+                let sec = Bcd::from_binary(index.abs_timestamp.sec);
 
                 self.cdrom_send_response_v2(int3([
                     status.raw_value(),
@@ -596,7 +600,7 @@ impl Emu {
                     .expect("todo: called GetTN without a disc. error int5");
 
                 // move drive head to start of first track
-                let start = cue_sheet.index(0, 0).timestamp.clone();
+                let start = cue_sheet.index(0, 0).abs_timestamp;
                 self.cdrom.drive.setloc(start);
                 self.cdrom.drive.setloc_armed = true;
                 self.cdrom.drive.seek_to_cursor();

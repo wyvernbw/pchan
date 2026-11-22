@@ -1,11 +1,13 @@
 use alloc::collections::VecDeque;
 use core::alloc::Allocator;
+use core::hint::cold_path;
 use core::marker::PhantomData;
-use core::{cmp, io};
+use core::{cmp, fmt, io};
 use pchan_utils::{Hex, hex_pref};
-use std::fs;
+
+// FIXME: replace with non-std compatible versions
 use std::io::{BufReader, Read, Seek};
-use std::path::{Path, PathBuf};
+
 use tracing::Level;
 
 use smallvec::{SmallVec, smallvec};
@@ -37,7 +39,17 @@ pub struct CdromDrive {
     pub command_state: CommandState,
     pub cmd_state_v2:  CommandStateV2,
     pub(super) disc:   Option<Disc>,
-    host_disc_err:     Option<std::io::Error>,
+    host_disc_err:     Option<DiscError>,
+}
+
+#[derive(thiserror::Error, Debug)]
+enum DiscError {
+    #[error(transparent)]
+    OpenDisc(#[from] OpenDiscErr),
+    #[error(transparent)]
+    AudioPlayback(#[from] AudioPlaybackErr),
+    #[error(transparent)]
+    Io(#[from] io::Error),
 }
 
 impl Clone for CdromDrive {
@@ -81,6 +93,29 @@ const CYCLES_PER_BYTE: u64 = Cpu::CLOCK as u64 / (SECTOR_USER_SIZE as u64 * 75);
 const CYCLES_PER_BYTE_2X: u64 = CYCLES_PER_BYTE / 2;
 const CYCLES_PER_WORD: u64 = CYCLES_PER_BYTE * 4;
 
+pub type Lba = u64;
+
+#[derive(Debug, Clone, Copy)]
+pub enum SectorKind {
+    DataSector,
+    CDDASector,
+}
+
+impl SectorKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            SectorKind::DataSector => "DataSector",
+            SectorKind::CDDASector => "CDDASector",
+        }
+    }
+}
+
+impl fmt::Display for SectorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.as_str().fmt(f)
+    }
+}
+
 impl CdromDrive {
     pub fn setloc<T>(&mut self, mss: Mss<T>)
     where
@@ -96,7 +131,7 @@ impl CdromDrive {
         self.setloc_armed = false;
         if let Some(disc) = &mut self.disc {
             let res = disc.seek(self.cursor);
-            self.host_disc_err = res.err();
+            self.host_disc_err = res.err().map(|err| err.into());
         }
     }
 
@@ -128,8 +163,9 @@ impl CdromDrive {
         self.status_code.reset_state();
     }
 
-    pub fn request_data_sector<A: Allocator>(
+    pub fn request_sector<A: Allocator>(
         &mut self,
+        sector_kind: SectorKind,
         status: &mut CDRomStatusReg,
         data_fifo: &mut VecDeque<u8, A>,
     ) {
@@ -142,16 +178,16 @@ impl CdromDrive {
             // TODO: better reporting
             tracing::info!(
                 target: "cdrom",
-                "DataSector\t{} lba={} size={}",
-                self.cursor.to_mss::<u8>(),
-                self.cursor.lba,
-                self.mode.sect_size().raw_value(),
+                "{sector_kind:<14.14}{cursor} lba={lba} size={size}",
+                cursor = self.cursor.to_mss::<u8>(),
+                lba = self.cursor.lba,
+                size = self.mode.sect_size().raw_value(),
             );
 
             let bytes = match disc.readn::<SECTOR_USER_SIZE>(&mut self.cursor) {
                 Ok(res) => res,
                 Err(err) => {
-                    self.host_disc_err = Some(err);
+                    self.host_disc_err = Some(err.into());
                     return;
                 }
             };
@@ -317,7 +353,7 @@ impl CdromDrive {
             };
 
             let index = toc.index(track, 0);
-            let lba = mss_to_lba(index.timestamp);
+            let lba = mss_to_lba(index.rel_timestamp);
             let seek_time = drive.seek_time(drive.cursor.lba, lba);
 
             Some(PlaySeekResult { lba, seek_time })
@@ -377,10 +413,10 @@ pub struct StreamedDiskReader {
 }
 
 impl DiscReader {
-    pub fn seek(&mut self, to: u64) -> std::io::Result<()> {
+    pub fn seek(&mut self, toc: &CueSheet, to: CdromCursor) -> io::Result<()> {
         match self {
-            DiscReader::Streamed(streamed_disk_reader) => streamed_disk_reader.seek(to),
-            DiscReader::InMemory(in_memory_disk_reader) => in_memory_disk_reader.seek(to),
+            DiscReader::Streamed(streamed_disk_reader) => streamed_disk_reader.seek(toc, to),
+            DiscReader::InMemory(in_memory_disk_reader) => in_memory_disk_reader.seek(toc, to),
         }
     }
 
@@ -388,7 +424,7 @@ impl DiscReader {
         &mut self,
         toc: &CueSheet,
         cursor: &mut CdromCursor,
-    ) -> std::io::Result<[u8; BYTES]> {
+    ) -> io::Result<[u8; BYTES]> {
         match self {
             DiscReader::Streamed(streamed_disk_reader) => streamed_disk_reader.readn(toc, cursor),
             DiscReader::InMemory(in_memory_disk_reader) => in_memory_disk_reader.readn(toc, cursor),
@@ -397,9 +433,26 @@ impl DiscReader {
 }
 
 impl StreamedDiskReader {
-    fn seek(&mut self, to: u64) -> std::io::Result<()> {
-        self.readers[self.current_file].seek(std::io::SeekFrom::Start(to))?;
-        Ok(())
+    fn seek(&mut self, toc: &CueSheet, to: CdromCursor) -> io::Result<()> {
+        debug_assert_eq!(
+            self.readers.len(),
+            toc.files.len(),
+            "mismatch between toc and disc file readers."
+        );
+
+        let (file, byte) = toc.lba_to_byte(to.lba);
+        self.current_file = file;
+
+        let reader = &mut self.readers[self.current_file];
+
+        if let Some(seek_by) = byte.checked_signed_diff(reader.stream_position()?) {
+            BufReader::seek_relative(reader, seek_by)
+        } else {
+            cold_path();
+
+            reader.seek(io::SeekFrom::Start(byte))?;
+            Ok(())
+        }
     }
 
     #[tracing::instrument(target = "cdrom", skip(self), err)]
@@ -407,9 +460,26 @@ impl StreamedDiskReader {
         &mut self,
         toc: &CueSheet,
         cursor: &mut CdromCursor,
-    ) -> std::io::Result<[u8; BYTES]> {
+    ) -> io::Result<[u8; BYTES]> {
         let mut buf = [0u8; BYTES];
-        self.readers[self.current_file].read_exact(&mut buf)?;
+        loop {
+            let io_result = self.readers[self.current_file].read_exact(&mut buf);
+            let err = io_result.as_ref().map_err(|err| err.kind());
+            match err {
+                Ok(_) => break,
+                Err(io::ErrorKind::Interrupted) => {} // non fatal
+                // if we reach eof, move to the next file. if there is no next file,
+                // return an error.
+                Err(io::ErrorKind::UnexpectedEof) => {
+                    if self.current_file < self.readers.len() - 1 {
+                        self.current_file += 1;
+                        break;
+                    }
+                    io_result?
+                }
+                Err(_) => io_result?,
+            }
+        }
 
         cursor.lba += (BYTES / SECTOR_USER_SIZE) as u32;
         cursor.byte += (BYTES % SECTOR_USER_SIZE) as u32;
@@ -422,17 +492,18 @@ impl StreamedDiskReader {
 
 impl InMemoryDiskReader {
     #[expect(clippy::unnecessary_wraps)]
-    fn seek(&mut self, to: u64) -> std::io::Result<()> {
-        self.cursor = to;
+    fn seek(&mut self, _toc: &CueSheet, to: CdromCursor) -> io::Result<()> {
+        // all files are merged into a single buffer so this works fine i think
+        self.cursor = to.to_byte();
         Ok(())
     }
 
     #[expect(clippy::unnecessary_wraps)]
     fn readn<const BYTES: usize>(
         &mut self,
-        toc: &CueSheet,
+        _toc: &CueSheet,
         cursor: &mut CdromCursor,
-    ) -> std::io::Result<[u8; BYTES]> {
+    ) -> io::Result<[u8; BYTES]> {
         let mut buf = [0u8; BYTES];
 
         let buf_cursor = usize::try_from(self.cursor).unwrap();
@@ -456,18 +527,14 @@ pub struct Disc {
 }
 
 impl Disc {
-    pub fn seek(&mut self, to: CdromCursor) -> std::io::Result<()> {
-        // TODO: get padding from toc
-        let padding =
-            (u32::from(self.toc.index(0, 0).timestamp.sec) * 75) * SECTOR_USER_SIZE as u32;
-        let byte = (padding + to.to_byte()).saturating_sub(150 * SECTOR_USER_SIZE as u32);
-        self.reader.seek(u64::from(byte))
+    pub fn seek(&mut self, to: CdromCursor) -> io::Result<()> {
+        self.reader.seek(&self.toc, to)
     }
 
     pub fn readn<const BYTES: usize>(
         &mut self,
         cursor: &mut CdromCursor,
-    ) -> std::io::Result<[u8; BYTES]> {
+    ) -> io::Result<[u8; BYTES]> {
         self.reader.readn(&self.toc, cursor)
     }
 
@@ -507,11 +574,11 @@ pub enum OpenDiscState<'a> {
 #[derive(thiserror::Error, Debug)]
 pub enum OpenDiscErr {
     #[error("fs: {0}")]
-    IOErr(#[from] std::io::Error),
+    IOErr(#[from] io::Error),
     #[error(transparent)]
     CueParseErr(#[from] CueFormatParseErr),
     #[error("invalid path: {0}")]
-    InvalidPath(PathBuf),
+    InvalidPath(String),
 }
 
 impl<'a, T> OpenDiscFSM<'a, T> {
@@ -655,6 +722,7 @@ impl Emu {
         Ok(fsm)
     }
 
+    #[expect(unused, unreachable_code, clippy::diverging_sub_expression)]
     pub fn open_disc_raw(
         &mut self,
         reader: Box<dyn DiscFile>,
@@ -688,7 +756,9 @@ impl Emu {
         let sample_r = i16::from_le_bytes([sample_buf[1], sample_buf[2]]);
 
         self.cdrom.audio_sample = (sample_l, sample_r);
-        self.cdrom.drive.play_audio(&mut self.evque);
+        if let Err(err) = self.cdrom.drive.play_audio(&mut self.evque) {
+            self.cdrom.drive.host_disc_err = Some(err.into());
+        }
         tracing::info!(target:"cdrom", "cd-da in: {:?}", self.cdrom.audio_sample);
     }
 }

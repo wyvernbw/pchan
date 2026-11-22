@@ -77,8 +77,15 @@ pub const SECTOR_USER_SIZE: usize = 0x930;
 pub fn mss_to_lba<T: Into<u8>>(mss: Mss<T>) -> u32 {
     CdromCursor::from_mss(mss).lba
 }
+pub fn lba_to_mss<T: From<u8>>(lba: u32) -> Mss<T> {
+    CdromCursor::new(lba, 0).to_mss()
+}
 
 impl CdromCursor {
+    pub const fn new(lba: u32, byte: u32) -> Self {
+        Self { lba, byte }
+    }
+
     pub fn from_mss<T: Into<u8> + Destruct>(mss: Mss<T>) -> Self {
         let min = u32::from(mss.min.into());
         let sec = u32::from(mss.sec.into());
@@ -103,8 +110,8 @@ impl CdromCursor {
         }
     }
 
-    pub const fn to_byte(self) -> u32 {
-        self.lba * SECTOR_USER_SIZE as u32 + self.byte
+    pub const fn to_byte(self) -> u64 {
+        u64::from(self.lba) * SECTOR_USER_SIZE as u64 + u64::from(self.byte)
     }
 
     pub const fn advance_by(&mut self, by_sectors: u32, by_bytes: u32) {
@@ -140,8 +147,10 @@ pub struct Track {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CueIndex {
-    pub timestamp: Mss<u8>,
-    pub number:    u8,
+    pub rel_timestamp: Mss<u8>,
+    pub abs_timestamp: Mss<u8>,
+    pub abs_lba:       u32,
+    pub number:        u8,
 }
 
 #[derive(thiserror::Error, Debug, PartialEq, Eq)]
@@ -368,6 +377,8 @@ impl<'a> CueParser<'a, cue::Parsing> {
                         self.parsing = CueParserItem::Track;
                     } else if token.eq_ignore_ascii_case("INDEX") {
                         self.parsing = CueParserItem::Index;
+                    } else if token.eq_ignore_ascii_case("PREGAP") {
+                        todo!("cue parser: handle pregap item");
                     }
                 }
                 CueParserItem::File => {
@@ -446,8 +457,16 @@ impl<'a> CueParser<'a, cue::Parsing> {
                         })
                         .ok_or(CueFormatParseErr::ExpectedTimestamp)?;
 
-                    self.indices.push(CueIndex { timestamp, number });
+                    let abs_lba = self.file_lba + self.track_lba + mss_to_lba(timestamp);
+                    let abs_timestamp = lba_to_mss(abs_lba);
+                    self.indices.push(CueIndex {
+                        rel_timestamp: timestamp,
+                        number,
+                        abs_timestamp,
+                        abs_lba,
+                    });
                     self.track_lba += mss_to_lba(timestamp);
+
                     tb.indices.end += 1;
 
                     self.parsing = CueParserItem::None;
@@ -492,11 +511,37 @@ impl<'a> CueParser<'a, cue::RequestFile> {
     }
 }
 
+pub type FileIdx = usize;
+
 impl CueSheet {
+    pub fn track_count(&self) -> u8 {
+        self.tracklist.len() as u8
+    }
     pub fn index(&self, track: u8, idx: u8) -> &CueIndex {
-        let track_idx = self.tracklist[usize::from(track)];
+        debug_assert!(track != 0, "track cannot be 0");
+
+        let track_idx = self.tracklist[usize::from(track - 1)];
         let start = self.tracks[usize::from(track_idx)].indices.start;
         &self.indices[usize::from(idx + start)]
+    }
+
+    pub fn lba_to_byte(&self, lba: u32) -> (FileIdx, u64) {
+        let file_idx = self
+            .files
+            .iter()
+            .position(|file| file.lba > lba)
+            .map_or(self.files.len().saturating_sub(1), |idx| {
+                idx.saturating_sub(1)
+            });
+
+        let relative_lba = lba - self.files[file_idx].lba;
+        let relative_lba = relative_lba.saturating_sub(150);
+
+        let byte = CdromCursor::new(relative_lba, 0).to_byte();
+
+        tracing::info!(?lba, ?relative_lba, ?file_idx);
+
+        (file_idx, byte)
     }
 }
 
@@ -606,9 +651,7 @@ struct ChannelNumber(u8);
 
 #[cfg(test)]
 mod cuetests {
-    use std::fs;
 
-    use crate::io::cdrom::cdrom_format::TrackKind::{self, Audio};
     use crate::io::cdrom::cdrom_format::{
         CueFile, CueFormatParseErr, CueIndex, CueParser, CueParserStep, CueSheet, File, Mss,
         SECTOR_USER_SIZE, Track,
