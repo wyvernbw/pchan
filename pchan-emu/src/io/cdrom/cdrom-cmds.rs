@@ -377,7 +377,7 @@ impl Emu {
             }
             CommandStateV2::PlayInt1(_) => match self.cdrom.drive.play_audio(&mut self.evque) {
                 Ok(_) => {
-                    self.cdrom.drive.request_sector(
+                    self.cdrom.drive.request_raw_sector(
                         SectorKind::CDDASector,
                         &mut self.cdrom.status,
                         &mut self.cdrom.sector_buf,
@@ -575,14 +575,14 @@ impl Emu {
                     idx
                 };
 
-                let index = cue_sheet.index(track, 0);
+                let index = cue_sheet.index(track, 1);
                 let min = index.abs_timestamp.min;
-                let sec = index.abs_timestamp.sec;
+                let sec = index.abs_timestamp.sec + 2; // account for 150 lba offset
 
                 tracing::info!(target: "cdrom", "{:<14.14}{min:02},{sec:02}", "GetTD");
 
                 let min = Bcd::from_binary(index.abs_timestamp.min);
-                let sec = Bcd::from_binary(index.abs_timestamp.sec);
+                let sec = Bcd::from_binary(index.abs_timestamp.sec + 2);
 
                 self.cdrom_send_response_v2(int3([
                     status.raw_value(),
@@ -600,7 +600,8 @@ impl Emu {
                     .expect("todo: called GetTN without a disc. error int5");
 
                 // move drive head to start of first track
-                let start = cue_sheet.index(0, 0).abs_timestamp;
+                let mut start = cue_sheet.index(1, 1).abs_timestamp;
+                start.sec += 2;
                 self.cdrom.drive.setloc(start);
                 self.cdrom.drive.setloc_armed = true;
                 self.cdrom.drive.seek_to_cursor();

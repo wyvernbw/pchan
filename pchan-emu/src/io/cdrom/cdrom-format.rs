@@ -138,11 +138,12 @@ pub enum TrackKind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Track {
-    pub number:  u8,
-    pub kind:    TrackKind,
-    pub indices: Range<u8>,
-    pub abs_lba: u32,
-    pub rel_lba: u32,
+    pub number:         u8,
+    pub kind:           TrackKind,
+    pub indices:        Range<u8>,
+    pub index_0_pregap: bool,
+    pub abs_lba:        u32,
+    pub rel_lba:        u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -430,6 +431,7 @@ impl<'a> CueParser<'a, cue::Parsing> {
                         indices: start..start,
                         abs_lba: self.file_lba + self.track_lba,
                         rel_lba: self.track_lba,
+                        index_0_pregap: false,
                     });
 
                     self.parsing = CueParserItem::None;
@@ -465,9 +467,14 @@ impl<'a> CueParser<'a, cue::Parsing> {
                         abs_timestamp,
                         abs_lba,
                     });
-                    self.track_lba += mss_to_lba(timestamp);
-
                     tb.indices.end += 1;
+                    if number == 0 {
+                        tb.index_0_pregap = true;
+                    }
+
+                    if number != 1 || (!tb.index_0_pregap && number != 0) {
+                        self.track_lba += mss_to_lba(timestamp);
+                    }
 
                     self.parsing = CueParserItem::None;
                 }
@@ -519,10 +526,19 @@ impl CueSheet {
     }
     pub fn index(&self, track: u8, idx: u8) -> &CueIndex {
         debug_assert!(track != 0, "track cannot be 0");
+        debug_assert!(idx != 0, "index cannot be 0");
 
         let track_idx = self.tracklist[usize::from(track - 1)];
-        let start = self.tracks[usize::from(track_idx)].indices.start;
-        &self.indices[usize::from(idx + start)]
+        let track = &self.tracks[usize::from(track_idx)];
+
+        let start = track.indices.start;
+        let end = track.indices.end;
+
+        let indices = &self.indices[usize::from(idx + start - 1)..usize::from(idx + end - 1)];
+        indices
+            .iter()
+            .find(|index| index.number == idx)
+            .expect("todo: index not found")
     }
 
     pub fn lba_to_byte(&self, lba: u32) -> (FileIdx, u64) {

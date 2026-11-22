@@ -116,6 +116,41 @@ impl fmt::Display for SectorKind {
     }
 }
 
+pub trait CDRomSink {
+    fn clear(&mut self);
+    fn write(&mut self, data: &[u8]);
+}
+
+impl CDRomSink for VecDeque<u8> {
+    fn clear(&mut self) {
+        self.clear();
+    }
+
+    fn write(&mut self, data: &[u8]) {
+        self.extend(data);
+    }
+}
+
+impl CDRomSink for &mut [u8] {
+    fn clear(&mut self) {
+        self.fill(0);
+    }
+
+    fn write(&mut self, data: &[u8]) {
+        self.copy_from_slice(data);
+    }
+}
+
+impl<const N: usize> CDRomSink for [u8; N] {
+    fn clear(&mut self) {
+        self.fill(0);
+    }
+
+    fn write(&mut self, data: &[u8]) {
+        self.copy_from_slice(data);
+    }
+}
+
 impl CdromDrive {
     pub fn setloc<T>(&mut self, mss: Mss<T>)
     where
@@ -163,19 +198,47 @@ impl CdromDrive {
         self.status_code.reset_state();
     }
 
-    pub fn request_sector<A: Allocator>(
+    pub fn request_sector(
         &mut self,
         sector_kind: SectorKind,
         status: &mut CDRomStatusReg,
-        data_fifo: &mut VecDeque<u8, A>,
+        data_fifo: &mut dyn CDRomSink,
     ) {
-        status.set_data_req(true);
-
         // fifo can only hold up to one sector
         data_fifo.clear();
 
+        let mut bytes = [0u8; SECTOR_USER_SIZE];
+        self.request_raw_sector(sector_kind, status, &mut bytes);
+
+        let sector = match self.mode.sect_size() {
+            SetModeSectSize::DataOnly0x800 => &bytes[0x18..0x18 + 0x800],
+            SetModeSectSize::Whole0x924 => &bytes[0xc..],
+        };
+
+        if tracing::enabled!(Level::TRACE) {
+            let mut first32bytes: [Hex<false>; 32] = [hex_pref(0); _];
+            for (src, dest) in sector.iter().copied().zip(first32bytes.iter_mut()) {
+                *dest = hex_pref(src);
+            }
+            tracing::debug!(
+                target: "cdrom",
+                "DataSector\t{} first 32 bytes: {first32bytes:?}",
+                self.cursor.to_mss::<u8>(),
+            );
+        }
+
+        data_fifo.write(sector);
+    }
+
+    pub fn request_raw_sector(
+        &mut self,
+        sector_kind: SectorKind,
+        status: &mut CDRomStatusReg,
+        sink: &mut dyn CDRomSink,
+    ) {
+        status.set_data_req(true);
+
         if let Some(disc) = &mut self.disc {
-            // TODO: better reporting
             tracing::info!(
                 target: "cdrom",
                 "{sector_kind:<14.14}{cursor} lba={lba} size={size}",
@@ -192,24 +255,7 @@ impl CdromDrive {
                 }
             };
 
-            let sector = match self.mode.sect_size() {
-                SetModeSectSize::DataOnly0x800 => &bytes[0x18..0x18 + 0x800],
-                SetModeSectSize::Whole0x924 => &bytes[0xc..],
-            };
-
-            if tracing::enabled!(Level::TRACE) {
-                let mut first32bytes: [Hex<false>; 32] = [hex_pref(0); _];
-                for (src, dest) in sector.iter().copied().zip(first32bytes.iter_mut()) {
-                    *dest = hex_pref(src);
-                }
-                tracing::debug!(
-                    target: "cdrom",
-                    "DataSector\t{} first 32 bytes: {first32bytes:?}",
-                    self.cursor.to_mss::<u8>(),
-                );
-            }
-
-            data_fifo.extend(sector);
+            sink.write(&bytes);
         }
     }
 
@@ -226,14 +272,9 @@ impl CdromDrive {
         if self.cursor.to_mss::<u8>().min > 74 {
             return Err(AudioPlaybackErr::ReachedEnd);
         }
-        match self.drive_state {
-            DriveState::Playing(_) => {}
-            _ => {
-                // TODO: might need to sync with the spu
-                evque.schedule(EventKind::CdromAudioPlayback, 0, self.audio_playback_time());
-                self.drive_state = DriveState::Playing(0);
-            }
-        }
+        // TODO: might need to sync with the spu
+        evque.schedule(EventKind::CdromAudioPlayback, 0, self.audio_playback_time());
+        self.drive_state = DriveState::Playing(0);
         Ok(())
     }
 
@@ -352,7 +393,7 @@ impl CdromDrive {
                 return None;
             };
 
-            let index = toc.index(track, 0);
+            let index = toc.index(track, 1);
             let lba = mss_to_lba(index.rel_timestamp);
             let seek_time = drive.seek_time(drive.cursor.lba, lba);
 
@@ -739,11 +780,12 @@ impl Emu {
 
     pub(crate) fn handle_ev_cdrom_audio_playback(&mut self) {
         let DriveState::Playing(_) = self.cdrom.drive.drive_state else {
+            tracing::warn!(target:"cdrom", "cdda playback dropped.");
             return;
         };
 
         if self.cdrom.sector_buf.len() < 4 {
-            tracing::warn!(target: "cdrom", "cd-da sector buffer underrun.");
+            self.cdrom.sector_buf.clear();
             return;
         }
 
@@ -757,9 +799,9 @@ impl Emu {
 
         self.cdrom.audio_sample = (sample_l, sample_r);
         if let Err(err) = self.cdrom.drive.play_audio(&mut self.evque) {
+            tracing::warn!(target:"cdrom", %err);
             self.cdrom.drive.host_disc_err = Some(err.into());
         }
-        tracing::info!(target:"cdrom", "cd-da in: {:?}", self.cdrom.audio_sample);
     }
 }
 
