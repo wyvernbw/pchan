@@ -262,9 +262,9 @@ impl CdromDrive {
     fn audio_playback_time(&self) -> u64 {
         match self.mode.speed() {
             // 44100 Hz / 75 Hz
-            SetModeSpeed::Normal => 588,
+            SetModeSpeed::Normal => spu::CLOCK_CYCLES,
             // 44100 Hz / (2 * 75 Hz)
-            SetModeSpeed::Double => 294,
+            SetModeSpeed::Double => spu::CLOCK_CYCLES / 2,
         }
     }
 
