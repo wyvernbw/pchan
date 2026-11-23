@@ -7,3 +7,5 @@ bios-decomp/
 
 *.BIN
 *.log
+
+audio-dump.pcm

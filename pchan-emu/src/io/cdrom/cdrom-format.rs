@@ -130,7 +130,7 @@ pub struct CueSheet {
     pub tracklist: Vec<TrackIdx>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrackKind {
     Audio,
     Mode2_2352,
@@ -160,6 +160,8 @@ pub enum CueFormatParseErr {
     ExpectedFile,
     #[error("expected filename in double quotes")]
     ExpectedFilename,
+    #[error("expected file type (eg. BINARY)")]
+    ExpectedFileType,
     #[error("expected `TRACK` attribute")]
     ExpectedTrack,
     #[error("expected track number for TRACK")]
@@ -233,16 +235,18 @@ type TrackIdx = u8;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CueFile {
-    filename:  String,
-    tracks:    Range<u8>,
-    bytes_len: u64,
-    lba:       u32,
+    filename:   String,
+    tracks:     Range<u8>,
+    bytes_len:  u64,
+    lba:        u32,
+    has_pregap: bool,
 }
 
 struct CueFileBuilder {
-    filename:  String,
-    tracks:    Vec<Track>,
-    bytes_len: u64,
+    filename:   String,
+    tracks:     Vec<Track>,
+    bytes_len:  u64,
+    has_pregap: bool,
 }
 
 pub(crate) mod cue {
@@ -324,18 +328,23 @@ impl<'a> CueParser<'a, cue::Parsing> {
             self.tracks.extend_from_slice(&fb.tracks);
 
             self.files.push(CueFile {
-                filename:  mem::take(&mut fb.filename),
-                bytes_len: fb.bytes_len,
-                tracks:    start..end,
-                lba:       self.file_lba,
+                filename:   mem::take(&mut fb.filename),
+                bytes_len:  fb.bytes_len,
+                tracks:     start..end,
+                lba:        self.file_lba,
+                has_pregap: fb.has_pregap,
             });
 
             self.file_lba += (fb.bytes_len / SECTOR_USER_SIZE as u64) as u32;
+            self.track_lba = 0;
         }
     }
 
     fn push_track(&mut self) {
         if let Some((tb, fb)) = self.track_builder.take().zip(self.file_builder.as_mut()) {
+            if tb.index_0_pregap {
+                fb.has_pregap = true;
+            }
             self.index_lba = 0;
             fb.tracks.push(tb);
         }
@@ -392,12 +401,14 @@ impl<'a> CueParser<'a, cue::Parsing> {
                         .ok_or(CueFormatParseErr::ExpectedFilename)?;
 
                     self.buf = self.buf.trim_start();
-                    let _file_type = take_until_whitespace(&mut self.buf);
+                    let _file_type = take_until_whitespace(&mut self.buf)
+                        .ok_or(CueFormatParseErr::ExpectedFileType)?;
 
                     self.file_builder = Some(CueFileBuilder {
-                        filename:  filename.to_owned(),
-                        tracks:    Vec::new(),
-                        bytes_len: 0,
+                        has_pregap: false,
+                        filename:   filename.to_owned(),
+                        tracks:     Vec::new(),
+                        bytes_len:  0,
                     });
 
                     self.parsing = CueParserItem::None;
@@ -424,6 +435,11 @@ impl<'a> CueParser<'a, cue::Parsing> {
                         .and_then(|kind| kind.parse::<TrackKind>().ok())
                         .ok_or(CueFormatParseErr::ExpectedTrackKind)?;
 
+                    // data pregap
+                    if !self.files.is_empty() && track_kind == TrackKind::Mode2_2352 {
+                        self.track_lba += 150;
+                    }
+
                     let start = self.indices.len() as u8;
                     self.track_builder = Some(Track {
                         number,
@@ -433,6 +449,11 @@ impl<'a> CueParser<'a, cue::Parsing> {
                         rel_lba: self.track_lba,
                         index_0_pregap: false,
                     });
+
+                    // data postgap
+                    if track_kind == TrackKind::Mode2_2352 {
+                        self.track_lba += 150;
+                    }
 
                     self.parsing = CueParserItem::None;
                 }
@@ -542,6 +563,16 @@ impl CueSheet {
     }
 
     pub fn lba_to_byte(&self, lba: u32) -> (FileIdx, u64) {
+        let (file_idx, relative_lba) = self.relative_lba(lba);
+
+        let byte = CdromCursor::new(relative_lba, 0).to_byte();
+
+        tracing::info!(?lba, ?relative_lba, ?file_idx);
+
+        (file_idx, byte)
+    }
+
+    pub fn relative_lba(&self, lba: u32) -> (FileIdx, u32) {
         let file_idx = self
             .files
             .iter()
@@ -550,14 +581,11 @@ impl CueSheet {
                 idx.saturating_sub(1)
             });
 
-        let relative_lba = lba - self.files[file_idx].lba;
+        let file = &self.files[file_idx];
+        let relative_lba = lba - file.lba;
         let relative_lba = relative_lba.saturating_sub(150);
 
-        let byte = CdromCursor::new(relative_lba, 0).to_byte();
-
-        tracing::info!(?lba, ?relative_lba, ?file_idx);
-
-        (file_idx, byte)
+        (file_idx, relative_lba)
     }
 }
 

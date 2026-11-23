@@ -1,5 +1,4 @@
 use alloc::collections::VecDeque;
-use core::alloc::Allocator;
 use core::hint::cold_path;
 use core::marker::PhantomData;
 use core::{cmp, fmt, io};
@@ -12,34 +11,36 @@ use tracing::Level;
 
 use smallvec::{SmallVec, smallvec};
 
-use crate::Emu;
 use crate::cpu::Cpu;
 use crate::io::cdrom::cdrom_cmds::{CommandStateV2, SetMode, SetModeSpeed, StatusCode};
 use crate::io::cdrom::cdrom_format::{
     self, Bcd, CdromCursor, CueFormatParseErr, CueParser, CueParserState, CueSheet, Mss,
-    SECTOR_USER_SIZE, mss_to_lba,
+    SECTOR_USER_SIZE, lba_to_mss, mss_to_lba,
 };
 use crate::io::cdrom::{CDRomStatusReg, DriveStatus};
 use crate::io::evque::{EventId, EventKind, Evque};
+use crate::{Emu, spu};
 
 use super::cdrom_cmds::SetModeSectSize;
 
 #[derive(derive_more::Debug, Default)]
 pub struct CdromDrive {
-    pub cursor:        CdromCursor,
-    pub current_track: Option<u8>,
-    pub toc:           Option<CueSheet>,
-    pub old_cursor:    CdromCursor,
-    pub setloc_armed:  bool,
-    pub current_speed: SetModeSpeed,
-    pub status_code:   StatusCode,
-    pub drive_status:  DriveStatus,
-    pub mode:          SetMode,
-    pub drive_state:   DriveState,
-    pub command_state: CommandState,
-    pub cmd_state_v2:  CommandStateV2,
-    pub(super) disc:   Option<Disc>,
-    host_disc_err:     Option<DiscError>,
+    pub cursor:           CdromCursor,
+    pub current_track:    Option<u8>,
+    pub toc:              Option<CueSheet>,
+    pub old_cursor:       CdromCursor,
+    pub setloc_armed:     bool,
+    pub current_speed:    SetModeSpeed,
+    pub status_code:      StatusCode,
+    pub drive_status:     DriveStatus,
+    pub cdda_pending:     bool,
+    pub mode:             SetMode,
+    pub drive_state:      DriveState,
+    pub command_state:    CommandState,
+    pub cmd_state_v2:     CommandStateV2,
+    pub(super) disc:      Option<Disc>,
+    host_disc_err:        Option<DiscError>,
+    pub(crate) dbg_audio: VecDeque<u8>,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -69,6 +70,8 @@ impl Clone for CdromDrive {
             cmd_state_v2:  CommandStateV2::Idle,
             toc:           None,
             current_speed: SetModeSpeed::Normal,
+            dbg_audio:     VecDeque::with_capacity(1024),
+            cdda_pending:  self.cdda_pending,
         }
     }
 }
@@ -80,6 +83,7 @@ pub enum DriveState {
     ReadN(EventId),
     SeekL(EventId),
     Playing(EventId),
+    PlayPending,
 }
 
 #[derive(Default, derive_more::Debug, Clone)]
@@ -239,13 +243,29 @@ impl CdromDrive {
         status.set_data_req(true);
 
         if let Some(disc) = &mut self.disc {
-            tracing::info!(
-                target: "cdrom",
-                "{sector_kind:<14.14}{cursor} lba={lba} size={size}",
-                cursor = self.cursor.to_mss::<u8>(),
-                lba = self.cursor.lba,
-                size = self.mode.sect_size().raw_value(),
-            );
+            match sector_kind {
+                SectorKind::DataSector => {
+                    tracing::info!(
+                        target: "cdrom",
+                        "{sector_kind:<14.14}{cursor} lba={lba} size={size} file=#{file}",
+                        cursor = self.cursor.to_mss::<u8>(),
+                        lba = self.cursor.lba,
+                        size = self.mode.sect_size().raw_value(),
+                        file = disc.current_file()+1
+                    );
+                }
+                SectorKind::CDDASector => {
+                    let (_, rel_lba) = disc.toc.relative_lba(self.cursor.lba);
+                    let rel_time = lba_to_mss::<u8>(rel_lba);
+                    tracing::info!(
+                        target: "cdrom",
+                        "{sector_kind:<14.14}{cursor} lba={lba} file=#{file} rel={rel_time}",
+                        lba = self.cursor.lba,
+                        cursor = self.cursor.to_mss::<u8>(),
+                        file = disc.current_file()+1
+                    );
+                }
+            }
 
             let bytes = match disc.readn::<SECTOR_USER_SIZE>(&mut self.cursor) {
                 Ok(res) => res,
@@ -272,8 +292,8 @@ impl CdromDrive {
         if self.cursor.to_mss::<u8>().min > 74 {
             return Err(AudioPlaybackErr::ReachedEnd);
         }
-        // TODO: might need to sync with the spu
-        evque.schedule(EventKind::CdromAudioPlayback, 0, self.audio_playback_time());
+        // signals to the spu to start scheduling events. ensures sync
+        self.cdda_pending = true;
         self.drive_state = DriveState::Playing(0);
         Ok(())
     }
@@ -298,11 +318,15 @@ impl CdromDrive {
     }
 
     pub fn sector_cycles(&self) -> u64 {
+        self.sector_cycles_with_size(self.mode.sect_size().len() as u64)
+    }
+
+    pub fn sector_cycles_with_size(&self, size: u64) -> u64 {
         let mult = match self.mode.speed() {
             SetModeSpeed::Normal => CYCLES_PER_BYTE,
             SetModeSpeed::Double => CYCLES_PER_BYTE_2X,
         };
-        self.mode.sect_size().len() as u64 * mult
+        size * mult
     }
 
     pub fn spinup_time(&self) -> u64 {
@@ -514,7 +538,9 @@ impl StreamedDiskReader {
                 Err(io::ErrorKind::UnexpectedEof) => {
                     if self.current_file < self.readers.len() - 1 {
                         self.current_file += 1;
-                        break;
+                        self.seek(toc, *cursor)?;
+                        tracing::info!(target:"cdrom", "read past eof, moving to next file: {}->{}", self.current_file - 1, self.current_file);
+                        continue;
                     }
                     io_result?
                 }
@@ -557,6 +583,8 @@ impl InMemoryDiskReader {
         cursor.lba += (BYTES / SECTOR_USER_SIZE) as u32;
         cursor.byte += (BYTES % SECTOR_USER_SIZE) as u32;
 
+        self.cursor = cursor.to_byte();
+
         Ok(buf)
     }
 }
@@ -581,6 +609,13 @@ impl Disc {
 
     pub fn get_toc(&mut self) -> &CueSheet {
         &self.toc
+    }
+
+    pub fn current_file(&self) -> usize {
+        match &self.reader {
+            DiscReader::Streamed(reader) => reader.current_file,
+            DiscReader::InMemory(_) => 0,
+        }
     }
 }
 
@@ -798,9 +833,11 @@ impl Emu {
         let sample_r = i16::from_le_bytes([sample_buf[2], sample_buf[3]]);
 
         self.cdrom.audio_sample = (sample_l, sample_r);
+        self.cdrom.drive.dbg_audio.extend(sample_buf);
         if let Err(err) = self.cdrom.drive.play_audio(&mut self.evque) {
             tracing::warn!(target:"cdrom", %err);
             self.cdrom.drive.host_disc_err = Some(err.into());
+            self.cdrom.drive.drive_state = DriveState::Idle;
         }
     }
 }

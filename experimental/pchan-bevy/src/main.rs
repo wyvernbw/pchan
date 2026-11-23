@@ -335,7 +335,7 @@ fn handle_menubar_event(
     mut open_content: MessageWriter<OpenContentMsg>,
     mut psx_cmdw: MessageWriter<PsxCmdMsg>,
     mut exit_tx: MessageWriter<AppExit>,
-    psx: If<Res<Psx>>,
+    mut psx: If<ResMut<Psx>>,
     theme: Res<Theme>,
     memview_window: Option<Single<Entity, With<MemoryViewerWindow>>>,
 ) {
@@ -352,6 +352,7 @@ fn handle_menubar_event(
             }
             MainMenubarMsg::Quit => {
                 psx.emu.dma.dump_cdrom_data();
+                psx.emu.cdrom.dump_audio_data();
                 exit_tx.write_default();
             }
             MainMenubarMsg::ViewMemory => match &memview_window {

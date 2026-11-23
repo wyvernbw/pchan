@@ -41,9 +41,19 @@ pub struct CDRom {
 
     pub sector_buf:   VecDeque<u8>,
     pub audio_sample: (i16, i16),
+    pub vol_staging:  CDDAVolumes,
+    pub vol:          CDDAVolumes,
 
     drive: CdromDrive,
     ev_id: u32,
+}
+
+#[derive(derive_more::Debug, Clone, Default, Copy)]
+pub struct CDDAVolumes {
+    pub l_to_l: u8,
+    pub l_to_r: u8,
+    pub r_to_r: u8,
+    pub r_to_l: u8,
 }
 
 #[derive(Default, derive_more::Debug, Clone)]
@@ -90,9 +100,8 @@ impl Emu {
             (0x1f801801, 1) => Ok(()), // unused
             (0x1f801801, 2) => Ok(()), // unused
             (0x1f801801, 3) => {
-                trace_todo!(
-                    "todo(cdrom): write to cd audio volume for right-cd-out to right-spu-in"
-                )
+                self.cdrom.vol_staging.r_to_r = value;
+                Ok(())
             }
 
             (0x1f801802, 0) => {
@@ -106,10 +115,12 @@ impl Emu {
                 Ok(())
             }
             (0x1f801802, 2) => {
-                trace_todo!("todo(cdrom): write to cd audio volume for left-cd-out to left-spu-in")
+                self.cdrom.vol_staging.l_to_l = value;
+                Ok(())
             }
             (0x1f801802, 3) => {
-                trace_todo!("todo(cdrom): write to cd audio volume for right-cd-out to left-spu-in")
+                self.cdrom.vol_staging.r_to_l = value;
+                Ok(())
             }
 
             (0x1f801803, 0) => {
@@ -123,10 +134,15 @@ impl Emu {
                 Ok(())
             }
             (0x1f801803, 2) => {
-                trace_todo!("todo(cdrom): write to cd audio volume for left-cd-out to right-spu-in")
+                self.cdrom.vol_staging.l_to_r = value;
+                Ok(())
             }
             (0x1f801803, 3) => {
-                trace_todo!("todo(cdrom): write to cd audio volume apply")
+                let adpctl = CDRomADPCTL::new_with_raw_value(value);
+                if adpctl.chngatv() {
+                    self.cdrom.vol = self.cdrom.vol_staging;
+                }
+                Ok(())
             }
             _ => Err(UnhandledIO(address)),
         }
@@ -266,6 +282,17 @@ impl CDRom {
     pub fn cue_sheet(&self) -> Option<&CueSheet> {
         self.drive.toc.as_ref()
     }
+
+    pub fn dump_audio_data(&mut self) {
+        use std::fs;
+        fs::write("./audio-dump.wav", self.drive.dbg_audio.make_contiguous()).unwrap();
+    }
+
+    pub fn consume_cdda_pending(&mut self) -> bool {
+        let p = self.drive.cdda_pending;
+        self.drive.cdda_pending = false;
+        p
+    }
 }
 
 /// # `0x1f801803` (read, banks 1 and 3): HINTSTS
@@ -370,6 +397,23 @@ struct CDRomHClrCtl {
 struct CDRomReqRegister {
     #[bit(7, rw)]
     bfrd: bool,
+}
+
+/// # 0x1f801803 (write, bank 3): ADPCTL
+///
+/// ```plaintext
+///   0    ADPMUTE Mute XA-ADPCM           (1=mute)
+///   1-4  -       Reserved                (should be 0)
+///   5    CHNGATV Apply ATV0-ATV3 changes (0=no change, 1=apply)
+///   6-7  -       Reserved                (should be 0)
+/// ```
+#[bitfield(u8, debug)]
+#[derive(Default)]
+pub struct CDRomADPCTL {
+    #[bit(0, rw)]
+    adpmute: bool,
+    #[bit(5, rw)]
+    chngatv: bool,
 }
 
 impl CDRom {

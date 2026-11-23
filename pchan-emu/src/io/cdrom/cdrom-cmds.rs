@@ -2,15 +2,14 @@ use core::iter;
 
 use crate::Emu;
 use crate::cpu::{Cpu, cycles_to_ms};
-use crate::io::cdrom::cdrom_drive::{PlaySeekResult, SectorKind};
-use crate::io::cdrom::cdrom_format::{Bcd, CdromCursor, Mss};
+use crate::io::cdrom::cdrom_drive::{DriveState, PlaySeekResult, SectorKind};
+use crate::io::cdrom::cdrom_format::{Bcd, CdromCursor, Mss, SECTOR_USER_SIZE};
 use crate::io::cdrom::{CDRom, DriveStatus};
 use crate::io::evque::{EvCtx, EventId, EventKind};
 use bitbybit::{bitenum, bitfield};
 use pchan_utils::hex;
 
 use super::HInt;
-use super::cdrom_drive::AudioPlaybackErr;
 
 #[derive(Debug, Clone)]
 pub struct ResponseV2 {
@@ -370,29 +369,50 @@ impl Emu {
 
                 self.cdrom_send_response_v2(int3(status));
                 self.cdrom.status.set_busy_status(false);
+
                 self.cdrom_queue_response(seek.seek_time as u32);
                 self.cdrom_continue_cmd(CommandStateV2::PlayInt1(seek));
 
                 self.cdrom.drive.seek_to_cursor();
+                self.cdrom.drive.drive_state = DriveState::PlayPending;
             }
-            CommandStateV2::PlayInt1(_) => match self.cdrom.drive.play_audio(&mut self.evque) {
-                Ok(_) => {
-                    self.cdrom.drive.request_raw_sector(
-                        SectorKind::CDDASector,
-                        &mut self.cdrom.status,
-                        &mut self.cdrom.sector_buf,
-                    );
-                    let cycles_per_sector = self.cdrom.drive.sector_cycles();
-                    self.cdrom_queue_response(cycles_per_sector as u32);
+            CommandStateV2::PlayInt1(_) => {
+                if let DriveState::PlayPending = self.cdrom.drive.drive_state {
+                    match self.cdrom.drive.play_audio(&mut self.evque) {
+                        Ok(_) => {
+                            tracing::info!(target: "cdrom", "started audio playback.");
+                        }
+                        Err(_) => todo!("played past end of file"),
+                    }
                 }
-                Err(AudioPlaybackErr::ReachedEnd) => {
-                    tracing::info!(target: "cdrom", "{:<14.14}End of disc","Play");
-                    self.cdrom.drive.status_code.set_spindle_mot(false);
-                    self.cdrom.drive.status_code.set_play(false);
-                    self.cdrom_send_response_v2(int4(self.cdrom.drive.status_code));
-                    self.cdrom_end_cmd();
+
+                match self.cdrom.drive.drive_state {
+                    DriveState::Playing(_) => {
+                        // if self.cdrom.sector_buf.len() > 8 {
+                        //     tracing::warn!(target:"cdrom", "sector buffer truncated: {} bytes dropped", self.cdrom.sector_buf.len());
+                        //     self.cdrom.sector_buf.clear();
+                        // }
+                        self.cdrom.drive.request_raw_sector(
+                            SectorKind::CDDASector,
+                            &mut self.cdrom.status,
+                            &mut self.cdrom.sector_buf,
+                        );
+                        let cycles_per_sector = self
+                            .cdrom
+                            .drive
+                            .sector_cycles_with_size(SECTOR_USER_SIZE as u64);
+                        self.cdrom_queue_response(cycles_per_sector as u32);
+                    }
+                    DriveState::Idle => {
+                        tracing::info!(target: "cdrom", "{:<14.14}End of disc","Play");
+                        self.cdrom.drive.status_code.set_spindle_mot(false);
+                        self.cdrom.drive.status_code.set_play(false);
+                        self.cdrom_send_response_v2(int4(self.cdrom.drive.status_code));
+                        self.cdrom_end_cmd();
+                    }
+                    _ => {}
                 }
-            },
+            }
 
             CommandStateV2::SetlocInt3(mss) => {
                 self.cdrom.drive.setloc(mss);
