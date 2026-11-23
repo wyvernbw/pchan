@@ -795,7 +795,7 @@ impl Emu {
             *dest = src;
         }
         let sample_l = i16::from_le_bytes([sample_buf[0], sample_buf[1]]);
-        let sample_r = i16::from_le_bytes([sample_buf[1], sample_buf[2]]);
+        let sample_r = i16::from_le_bytes([sample_buf[2], sample_buf[3]]);
 
         self.cdrom.audio_sample = (sample_l, sample_r);
         if let Err(err) = self.cdrom.drive.play_audio(&mut self.evque) {
