@@ -15,7 +15,7 @@ use crate::io::evque::{EvCtx, EventId, EventKind};
 use crate::io::{CastIOFrom, CastIOInto, IOResult, UnhandledIO};
 use crate::memory::kb;
 use crate::spu::adpcm::{ADPCMCurrent, ADPCMHeader, ADPCMRepeat, ADPCMSampleRate, ADPCMStart};
-use crate::spu::adsr::{ADSRState, EnvelopePhase, apply_volume};
+use crate::spu::adsr::{ADSRState, EnvelopePhase, apply_volume, apply_volume_cdda};
 use crate::spu::reverb::Reverb;
 use crate::{Emu, trace_todo};
 
@@ -29,6 +29,9 @@ pub struct Spu {
     #[debug(skip)]
     pub mem:        Box<[u16]>,
     pub app_volume: f32,
+
+    pub avoll: i16,
+    pub avolr: i16,
 
     ram_start:       u16,
     /// internal register
@@ -55,6 +58,8 @@ impl Spu {
             adsr:        ADSRState::default(),
             clock_idx:   0,
             app_volume:  1.0,
+            avoll:       0,
+            avolr:       0,
         };
         for (i, voice) in spu.voices.iter_mut().enumerate() {
             voice.idx = i;
@@ -84,13 +89,16 @@ impl Clone for Spu {
             adsr:        self.adsr.clone(),
             clock_idx:   0,
             app_volume:  self.app_volume,
+            avoll:       0,
+            avolr:       0,
         }
     }
 }
 
+pub const CLOCK_CYCLES: u64 = 768;
+
 impl Spu {
     const MEM_SIZE: usize = kb(512);
-    const CLOCK_CYCLES: u64 = 768;
 
     pub fn take_prod(&mut self) -> Option<Mutex<AudioProducer>> {
         self.prod.take()
@@ -211,6 +219,9 @@ impl Emu {
             0x1f801da4 => trace_todo!(0, "w(spu): write at interrupt register"),
 
             0x1f801daa => Ok(self.spu.ctrl.io_from_u32()),
+
+            0x1f801db0 => Ok(self.spu.avoll.io_from_u32()),
+            0x1f801db2 => Ok(self.spu.avolr.io_from_u32()),
 
             0x1f801db8 => Ok(self.spu.adsr.main_l.internal[0].io_from_u32()),
             0x1f801dba => Ok(self.spu.adsr.main_r.internal[0].io_from_u32()),
@@ -344,6 +355,15 @@ impl Emu {
                 Ok(())
             }
 
+            0x1f801db0 => {
+                self.spu.avoll = value as i16;
+                Ok(())
+            }
+            0x1f801db2 => {
+                self.spu.avolr = value as i16;
+                Ok(())
+            }
+
             0x1f801db8 => {
                 self.spu.adsr.main_l.internal[0] = value as i16;
                 Ok(())
@@ -464,12 +484,22 @@ impl Emu {
 
     pub fn handle_ev_spu_clock(&mut self, _ctx: EvCtx) {
         self.clock();
-        let last_clock = self.spu.clock_idx * Spu::CLOCK_CYCLES;
+        let last_clock = self.spu.clock_idx * CLOCK_CYCLES;
+
+        if self.cdrom.consume_cdda_pending() {
+            self.evque.schedule_from(
+                EventKind::CdromAudioPlayback,
+                EventId::default(),
+                last_clock,
+                CLOCK_CYCLES,
+            );
+        }
+
         self.evque.schedule_from(
             EventKind::SpuClock,
             EventId::default(),
             last_clock,
-            Spu::CLOCK_CYCLES,
+            CLOCK_CYCLES,
         );
         self.spu.clock_idx += 1;
     }
@@ -490,21 +520,39 @@ impl Emu {
                 }
             });
 
-        let mut mixed_l = 0i32;
-        let mut mixed_r = 0i32;
+        let mut mixed_cd_l = 0i16;
+        let mut mixed_cd_r = 0i16;
+
         let mut reverb_l = 0i32;
         let mut reverb_r = 0i32;
 
         if self.spu.ctrl.cd_in_on() {
             let (cd_l, cd_r) = self.cdrom.audio_sample;
-            // tracing::info!(target:"spu", "cd-in: ({cd_l}, {cd_r})");
+            let cd_l = apply_volume(cd_l, self.spu.avoll);
+            let cd_r = apply_volume(cd_r, self.spu.avolr);
+
+            let cd_l_l = apply_volume_cdda(cd_l, self.cdrom.vol.l_to_l);
+            let cd_l_r = apply_volume_cdda(cd_l, self.cdrom.vol.l_to_r);
+            let cd_r_l = apply_volume_cdda(cd_r, self.cdrom.vol.r_to_l);
+            let cd_r_r = apply_volume_cdda(cd_r, self.cdrom.vol.r_to_r);
+
+            let cd_l = cd_l_l + cd_r_l;
+            let cd_r = cd_r_r + cd_l_r;
+
+            let cd_l = cd_l.clamp(-0x8000, 0x7fff).truncate::<i16>();
+            let cd_r = cd_r.clamp(-0x8000, 0x7fff).truncate::<i16>();
+
             if self.spu.ctrl.cd_reverb_on() {
                 reverb_l += i32::from(cd_l);
                 reverb_r += i32::from(cd_r);
             }
-            mixed_l += i32::from(cd_l);
-            mixed_r += i32::from(cd_r);
+
+            mixed_cd_l += cd_l;
+            mixed_cd_r += cd_r;
         }
+
+        let mut mixed_l = 0i32;
+        let mut mixed_r = 0i32;
 
         for i in 0..24 {
             let voice = &self.spu.voices[i];
@@ -547,6 +595,13 @@ impl Emu {
 
         let mixed_l = apply_volume(mixed_l, self.spu.adsr.main_l.internal[0]);
         let mixed_r = apply_volume(mixed_r, self.spu.adsr.main_r.internal[0]);
+
+        let mixed_l = (i32::from(mixed_l) + i32::from(mixed_cd_l))
+            .clamp(-0x8000, 0x7fff)
+            .truncate::<i16>();
+        let mixed_r = (i32::from(mixed_r) + i32::from(mixed_cd_r))
+            .clamp(-0x8000, 0x7fff)
+            .truncate::<i16>();
 
         if let Some(prod) = &mut self.spu.prod {
             let mixed_l = f32::from(mixed_l) * self.spu.app_volume;

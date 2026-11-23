@@ -325,13 +325,18 @@ pub enum EnvelopePhase {
 
 #[inline(always)]
 #[must_use]
-pub fn apply_volume(sample: i16, volume: i16) -> i16 {
+pub const fn apply_volume(sample: i16, volume: i16) -> i16 {
     ((i32::from(sample) * i32::from(volume)) >> 15) as i16
 }
 #[inline(always)]
 #[must_use]
-pub fn apply_volume_i32(sample: i32, volume: i32) -> i32 {
+pub const fn apply_volume_i32(sample: i32, volume: i32) -> i32 {
     (sample * volume) >> 15
+}
+#[inline(always)]
+#[must_use]
+pub const fn apply_volume_cdda(sample: i16, volume: u8) -> i32 {
+    (i32::from(sample) * i32::from(volume)) >> 7
 }
 
 struct EnvelopePhaseParams {

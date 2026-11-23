@@ -162,6 +162,7 @@ pub fn apply_fir_filter_simd<A: Allocator>(buf: &mut VecDeque<i32, A>) -> i16 {
 }
 
 impl Reverb {
+    #[must_use]
     pub fn new() -> Self {
         let mut r = Self {
             on_off:       ReverbOnOff::default(),
@@ -176,6 +177,12 @@ impl Reverb {
         r.upsamplers[0].resize(39, 0);
         r.upsamplers[1].resize(39, 0);
         r
+    }
+}
+
+impl Default for Reverb {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
