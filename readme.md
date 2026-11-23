@@ -28,7 +28,7 @@ Games I'm testing:
 
 - MK2: **playable**
 - Crash Bandicoot: **playable** 
-- Ridge Racer: **playable**, no music (cdrom issue)
+- Ridge Racer: **playable**
 - FF7: **no boot** (mdec not implemented)
 - Silent Hill: **loading screen**
 
@@ -62,13 +62,15 @@ Progress:
   - [x] basic registers
   - [x] fifo
   - [ ] commands
-  - [ ] cd-xa (music)
+  - [x] cdda audio playback (music)
+  - [ ] cd-xa adpcm (music compressed)
 - [ ] spu
   - [x] basic spu & gauss interpolation
   - [x] audio thread 
   - [x] volume
   - [x] adsr envelope
   - [x] reverb
+  - [x] cdda
   - [ ] noise generator
 - [ ] sio
   - [x] input
