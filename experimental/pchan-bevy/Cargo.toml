@@ -45,6 +45,7 @@ pchan-bind.workspace = true
 muda = "0.21.2"
 rfd = "0.18.0"
 pchan-macros.workspace = true
+pchan-input = { version = "0.1.0", path = "../../pchan-input" }
 
 [lints]
 workspace = true

@@ -8,6 +8,7 @@ mod cdrom_format;
 mod cdrom_ver;
 
 use alloc::collections::VecDeque;
+use tracing::Level;
 
 use crate::io::cdrom::cdrom_cmds::ResponseV2;
 use crate::io::cdrom::cdrom_drive::{CdromDrive, Disc};
@@ -284,8 +285,10 @@ impl CDRom {
     }
 
     pub fn dump_audio_data(&mut self) {
-        use std::fs;
-        fs::write("./audio-dump.wav", self.drive.dbg_audio.make_contiguous()).unwrap();
+        if tracing::enabled!(Level::DEBUG) {
+            use std::fs;
+            fs::write("./audio-dump.pcm", self.drive.dbg_audio.make_contiguous()).unwrap();
+        }
     }
 
     pub fn consume_cdda_pending(&mut self) -> bool {

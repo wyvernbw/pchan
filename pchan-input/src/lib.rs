@@ -1,5 +1,7 @@
+use core::cell::RefCell;
+use std::collections::HashMap;
 use std::collections::hash_map::Entry;
-use std::collections::{HashMap, HashSet};
+use std::sync::LazyLock;
 
 use pchan_bind::input::{InputEvent, PchanButton};
 use pchan_emu::Emu;
@@ -13,6 +15,14 @@ pub struct Input {
     controllers: HashMap<u32, GameController>,
     ports:       HashMap<Sio0Port, u32>,
     subsystem:   GameControllerSubsystem,
+}
+
+thread_local! {
+    static INPUT: RefCell<Input> = RefCell::new(Input::new());
+}
+
+pub fn drive_gamepads(emu: &mut Emu) {
+    INPUT.with(|input| input.borrow_mut().drive_gamepads(emu));
 }
 
 impl Input {
@@ -62,7 +72,7 @@ impl Input {
                 }
                 _ => {}
             }
-            if let Some((event, which)) = sdl2_to_pchan_input(event) {
+            if let Some((event, which)) = sdl2_to_pchan_input(event, &self.controllers) {
                 for (port, id) in &self.ports {
                     if *id == which {
                         tracing::info!(?event);
@@ -80,8 +90,12 @@ impl Default for Input {
     }
 }
 
-fn sdl2_button_to_pchan_button(button: SdlButton) -> Option<PchanButton> {
+fn sdl2_button_to_pchan_button(button: SdlButton, nintendo_layout: bool) -> Option<PchanButton> {
     match button {
+        SdlButton::A if nintendo_layout => Some(PchanButton::Circle),
+        SdlButton::B if nintendo_layout => Some(PchanButton::X),
+        SdlButton::X if nintendo_layout => Some(PchanButton::Triangle),
+        SdlButton::Y if nintendo_layout => Some(PchanButton::Square),
         SdlButton::A => Some(PchanButton::X),
         SdlButton::B => Some(PchanButton::Circle),
         SdlButton::X => Some(PchanButton::Square),
@@ -112,8 +126,16 @@ fn sdl2_axis_to_pchan_button(axis: Axis, value: i16) -> Option<InputEvent> {
     })
 }
 
+fn is_nintendo_layout(pads: &HashMap<u32, GameController>, which: u32) -> bool {
+    pads.get(&which)
+        .is_some_and(|pad| pad.vendor_id() == Some(1406))
+}
+
 #[must_use]
-pub fn sdl2_to_pchan_input(sdl2event: Event) -> Option<(InputEvent, u32)> {
+pub fn sdl2_to_pchan_input(
+    sdl2event: Event,
+    pads: &HashMap<u32, GameController>,
+) -> Option<(InputEvent, u32)> {
     match sdl2event {
         Event::ControllerAxisMotion {
             timestamp: _,
@@ -125,12 +147,14 @@ pub fn sdl2_to_pchan_input(sdl2event: Event) -> Option<(InputEvent, u32)> {
             timestamp: _,
             which,
             button,
-        } => sdl2_button_to_pchan_button(button).map(|btn| (InputEvent::Press(btn), which)),
+        } => sdl2_button_to_pchan_button(button, is_nintendo_layout(pads, which))
+            .map(|btn| (InputEvent::Press(btn), which)),
         Event::ControllerButtonUp {
             timestamp: _,
             which,
             button,
-        } => sdl2_button_to_pchan_button(button).map(|btn| (InputEvent::Release(btn), which)),
+        } => sdl2_button_to_pchan_button(button, is_nintendo_layout(pads, which))
+            .map(|btn| (InputEvent::Release(btn), which)),
         _ => None,
     }
 }

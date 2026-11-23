@@ -833,7 +833,9 @@ impl Emu {
         let sample_r = i16::from_le_bytes([sample_buf[2], sample_buf[3]]);
 
         self.cdrom.audio_sample = (sample_l, sample_r);
-        self.cdrom.drive.dbg_audio.extend(sample_buf);
+        if tracing::enabled!(Level::DEBUG) {
+            self.cdrom.drive.dbg_audio.extend(sample_buf);
+        }
         if let Err(err) = self.cdrom.drive.play_audio(&mut self.evque) {
             tracing::warn!(target:"cdrom", %err);
             self.cdrom.drive.host_disc_err = Some(err.into());

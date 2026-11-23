@@ -2,6 +2,7 @@ use core::mem;
 use core::num::NonZeroU16;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::Instant;
 
 use alloc::collections::VecDeque;
@@ -30,6 +31,7 @@ use pchan_emu::io::cdrom::OpenDiscState;
 use pchan_emu::io::sio::Sio0Port;
 use pchan_emu::run::{EmuSpeed, Runner, RunnerConfig, RunnerMode};
 use pchan_gpu::wgpu;
+use pchan_input::Input;
 use pchan_utils::{Indexed, kanal};
 
 use crate::ui::RerenderMsg;
@@ -228,6 +230,7 @@ fn psx_loop(
             pool.scope(|scope| {
                 scope.spawn(async {
                     let Psx { emu, runner, .. } = &mut *psx;
+                    pchan_input::drive_gamepads(emu);
                     runner.run_until_vblank(emu).await;
                     ev.write(RerenderMsg);
                 });
