@@ -2,7 +2,6 @@ use core::mem;
 use core::num::NonZeroU16;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::time::Instant;
 
 use alloc::collections::VecDeque;
@@ -27,11 +26,10 @@ use bevy::ui::UiSystems;
 use bevy::window::PrimaryWindow;
 use pchan_audio::AudioTask;
 use pchan_emu::Emu;
-use pchan_emu::io::cdrom::OpenDiscState;
-use pchan_emu::io::sio::Sio0Port;
+use pchan_emu::cdrom::OpenDiscState;
 use pchan_emu::run::{EmuSpeed, Runner, RunnerConfig, RunnerMode};
+use pchan_emu::sio::Sio0Port;
 use pchan_gpu::wgpu;
-use pchan_input::Input;
 use pchan_utils::{Indexed, kanal};
 
 use crate::ui::RerenderMsg;

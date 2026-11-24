@@ -1,10 +1,5 @@
 cargo-features = ["profile-rustflags"]
 
-[package]
-name = "pchan"
-version = "0.1.0"
-edition = "2024"
-
 [workspace]
 resolver = "3"
 members = ["experimental/pchan-bevy",
@@ -69,9 +64,6 @@ dynasm = { path = "./dynasm" }
 smol = "2.0.2"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
-
-[lints]
-workspace = true
 
 [profile.dev]
 opt-level = "s"

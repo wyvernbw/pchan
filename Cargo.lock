@@ -8680,10 +8680,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pchan"
-version = "0.1.0"
-
-[[package]]
 name = "pchan-audio"
 version = "0.1.0"
 dependencies = [
