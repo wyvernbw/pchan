@@ -23,6 +23,7 @@ use crate::{Emu, spu};
 
 use super::cdrom_cmds::SetModeSectSize;
 use super::cdrom_cue_parser;
+use super::cdrom_format::XaAdpcmChannelFormat;
 
 #[derive(derive_more::Debug, Default)]
 pub struct CdromDrive {
@@ -35,6 +36,7 @@ pub struct CdromDrive {
     pub status_code:      StatusCode,
     pub drive_status:     DriveStatus,
     pub cdda_pending:     bool,
+    pub xa_adpcm_pending: bool,
     pub mode:             SetMode,
     pub drive_state:      DriveState,
     pub command_state:    CommandState,
@@ -57,22 +59,23 @@ enum DiscError {
 impl Clone for CdromDrive {
     fn clone(&self) -> Self {
         Self {
-            cursor:        self.cursor,
-            current_track: None,
-            old_cursor:    self.old_cursor,
-            status_code:   self.status_code,
-            drive_status:  self.drive_status.clone(),
-            mode:          self.mode,
-            drive_state:   self.drive_state.clone(),
-            command_state: self.command_state.clone(),
-            disc:          None,
-            host_disc_err: None,
-            setloc_armed:  false,
-            cmd_state_v2:  CommandStateV2::Idle,
-            toc:           None,
-            current_speed: SetModeSpeed::Normal,
-            dbg_audio:     VecDeque::with_capacity(1024),
-            cdda_pending:  self.cdda_pending,
+            cursor:           self.cursor,
+            current_track:    None,
+            old_cursor:       self.old_cursor,
+            status_code:      self.status_code,
+            drive_status:     self.drive_status.clone(),
+            mode:             self.mode,
+            drive_state:      self.drive_state.clone(),
+            command_state:    self.command_state.clone(),
+            disc:             None,
+            host_disc_err:    None,
+            setloc_armed:     false,
+            cmd_state_v2:     CommandStateV2::Idle,
+            toc:              None,
+            current_speed:    SetModeSpeed::Normal,
+            dbg_audio:        VecDeque::with_capacity(1024),
+            cdda_pending:     self.cdda_pending,
+            xa_adpcm_pending: self.xa_adpcm_pending,
         }
     }
 }
@@ -81,7 +84,7 @@ impl Clone for CdromDrive {
 pub enum DriveState {
     #[default]
     Idle,
-    ReadN(EventId),
+    Reading,
     SeekL(EventId),
     Playing(EventId),
     PlayPending,
@@ -104,6 +107,7 @@ pub type Lba = u64;
 pub enum SectorKind {
     DataSector,
     CDDASector,
+    XaAdpcmSector,
 }
 
 impl SectorKind {
@@ -111,6 +115,7 @@ impl SectorKind {
         match self {
             SectorKind::DataSector => "DataSector",
             SectorKind::CDDASector => "CDDASector",
+            SectorKind::XaAdpcmSector => "XAADPCMSector",
         }
     }
 }
@@ -245,7 +250,7 @@ impl CdromDrive {
 
         if let Some(disc) = &mut self.disc {
             match sector_kind {
-                SectorKind::DataSector => {
+                SectorKind::DataSector | SectorKind::XaAdpcmSector => {
                     tracing::info!(
                         target: "cdrom",
                         "{sector_kind:<14.14}{cursor} lba={lba} size={size} file=#{file}",
@@ -296,6 +301,19 @@ impl CdromDrive {
         // signals to the spu to start scheduling events. ensures sync
         self.cdda_pending = true;
         self.drive_state = DriveState::Playing(0);
+        Ok(())
+    }
+
+    pub(crate) fn play_xa_audio(&mut self) -> Result<(), AudioPlaybackErr> {
+        let DriveState::Reading = self.drive_state else {
+            return Err(AudioPlaybackErr::XaAdpcmNotReading);
+        };
+        if self.cursor.to_mss::<u8>().min > 74 {
+            return Err(AudioPlaybackErr::ReachedEnd);
+        }
+
+        // signals to the spu to start scheduling events. ensures sync
+        self.xa_adpcm_pending = true;
         Ok(())
     }
 
@@ -440,6 +458,8 @@ impl CdromDrive {
 pub(crate) enum AudioPlaybackErr {
     #[error("reached end of disc")]
     ReachedEnd,
+    #[error("attempted to started xa-adpcm playback, but drive is not reading.")]
+    XaAdpcmNotReading,
 }
 
 #[derive(Default, derive_more::Debug, Clone, Copy, PartialEq, Eq)]
@@ -814,7 +834,36 @@ impl Emu {
         Ok(())
     }
 
-    pub(crate) fn handle_ev_cdrom_audio_playback(&mut self) {
+    pub(crate) fn handle_ev_cdrom_xa_adpcm_playback(&mut self) {
+        let DriveState::Reading = self.cdrom.drive.drive_state else {
+            return;
+        };
+
+        if self.cdrom.xa_adpcm_idx + 1 >= self.cdrom.xa_adpcm_buf.len() {
+            return;
+        }
+
+        let audio_sample = match self.cdrom.xa_adpcm_meta.subheader.cinfo.mono_stereo() {
+            XaAdpcmChannelFormat::Mono => {
+                let sample = self.cdrom.xa_adpcm_buf[self.cdrom.xa_adpcm_idx];
+                let samples = (sample, sample);
+                self.cdrom.xa_adpcm_idx += 1;
+                samples
+            }
+            XaAdpcmChannelFormat::Stereo => {
+                let samples = (
+                    self.cdrom.xa_adpcm_buf[self.cdrom.xa_adpcm_idx],
+                    self.cdrom.xa_adpcm_buf[self.cdrom.xa_adpcm_idx + 1],
+                );
+                self.cdrom.xa_adpcm_idx += 2;
+                samples
+            }
+        };
+
+        self.cdrom.audio_sample = audio_sample;
+    }
+
+    pub(crate) fn handle_ev_cdrom_cdda_playback(&mut self) {
         let DriveState::Playing(_) = self.cdrom.drive.drive_state else {
             tracing::warn!(target:"cdrom", "cdda playback dropped.");
             return;

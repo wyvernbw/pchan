@@ -15,6 +15,7 @@ use tracing::Level;
 use crate::cdrom::cdrom_cmds::ResponseV2;
 use crate::cdrom::cdrom_cue_parser::CueSheet;
 use crate::cdrom::cdrom_drive::{CdromDrive, Disc};
+use crate::cdrom::cdrom_format::{Form1SectorMetadata, XA_ADPCM_SECTION_DATA};
 use crate::cdrom::cdrom_ver::CDRomVer;
 use crate::cpu::irq::{self};
 use crate::evque::{EvCtx, EventId, EventKind};
@@ -40,10 +41,13 @@ pub struct CDRom {
     pub data_fifo: VecDeque<u8>,
     ver:           CDRomVer,
 
-    pub sector_buf:   VecDeque<u8>,
-    pub audio_sample: (i16, i16),
-    pub vol_staging:  CDDAVolumes,
-    pub vol:          CDDAVolumes,
+    pub sector_buf:    VecDeque<u8>,
+    pub xa_adpcm_buf:  Vec<i16>,
+    pub xa_adpcm_idx:  usize,
+    pub xa_adpcm_meta: Form1SectorMetadata,
+    pub audio_sample:  (i16, i16),
+    pub vol_staging:   CDDAVolumes,
+    pub vol:           CDDAVolumes,
 
     drive: CdromDrive,
     ev_id: u32,
@@ -66,6 +70,16 @@ enum DriveStatus {
     NoDisk,
     AudioDisk,
     LicensedMode2,
+}
+
+impl CDRom {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            xa_adpcm_buf: vec![0; XA_ADPCM_SECTION_DATA],
+            ..Default::default()
+        }
+    }
 }
 
 /// Current todo:
@@ -99,7 +113,7 @@ impl Emu {
                 Ok(())
             }
             (0x1f801801, 1) => Ok(()), // unused
-            (0x1f801801, 2) => Ok(()), // unused
+            (0x1f801801, 2) => Ok(()), // TODO: CI
             (0x1f801801, 3) => {
                 self.cdrom.vol_staging.r_to_r = value;
                 Ok(())
@@ -270,11 +284,6 @@ impl CDRomStatusReg {
 
 impl CDRom {
     #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    #[must_use]
     pub fn bank(&self) -> u8 {
         self.status.bank().as_u8()
     }
@@ -294,6 +303,12 @@ impl CDRom {
     pub fn consume_cdda_pending(&mut self) -> bool {
         let p = self.drive.cdda_pending;
         self.drive.cdda_pending = false;
+        p
+    }
+
+    pub fn consume_xa_adpcm_pending(&mut self) -> bool {
+        let p = self.drive.xa_adpcm_pending;
+        self.drive.xa_adpcm_pending = false;
         p
     }
 }

@@ -25,6 +25,7 @@ pub enum EventKind {
     CdromResponse(u32),
     CdromIrq,
     CdromAudioPlayback,
+    CdromXaAdpcmPlayback,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -136,7 +137,8 @@ impl Emu {
                 EventKind::CdromIrq => {
                     self.handle_ev_cdrom_irq(ctx);
                 }
-                EventKind::CdromAudioPlayback => self.handle_ev_cdrom_audio_playback(),
+                EventKind::CdromAudioPlayback => self.handle_ev_cdrom_cdda_playback(),
+                EventKind::CdromXaAdpcmPlayback => self.handle_ev_cdrom_xa_adpcm_playback(),
             };
         }
         let mut i = 0;

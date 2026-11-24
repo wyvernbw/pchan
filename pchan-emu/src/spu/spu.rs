@@ -4,6 +4,8 @@ pub mod adsr;
 mod gauss_interp;
 pub mod reverb;
 
+pub use adpcm::{NEG_ADPCM_TABLE, POS_ADPCM_TABLE};
+
 use std::sync::Mutex;
 
 use arbitrary_int::prelude::Integer;
@@ -494,6 +496,11 @@ impl Emu {
                 last_clock,
                 CLOCK_CYCLES,
             );
+        }
+
+        if self.cdrom.consume_xa_adpcm_pending() {
+            self.evque
+                .schedule_from(EventKind::CdromXaAdpcmPlayback, 0, last_clock, CLOCK_CYCLES);
         }
 
         self.evque.schedule_from(

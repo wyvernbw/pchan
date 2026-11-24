@@ -2,7 +2,9 @@ use core::iter;
 
 use crate::Emu;
 use crate::cdrom::cdrom_drive::{DriveState, PlaySeekResult, SectorKind};
-use crate::cdrom::cdrom_format::{Bcd, CdromCursor, Mss, SECTOR_TOTAL_SIZE};
+use crate::cdrom::cdrom_format::{
+    Bcd, CdromCursor, Mss, SECTOR_TOTAL_SIZE, XaAdpcmDecoder, XaAdpcmSector,
+};
 use crate::cdrom::{CDRom, DriveStatus};
 use crate::cpu::{Cpu, cycles_to_ms};
 use crate::evque::{EvCtx, EventId, EventKind};
@@ -439,7 +441,6 @@ impl Emu {
                 self.cdrom.drive.setmode(setmode);
                 self.cdrom_send_response_v2(int3(status));
                 self.cdrom_end_cmd();
-                debug_assert!(!setmode.xa_adpcm(), "xa-adpcm not yet implemented");
             }
 
             CommandStateV2::PauseInt3 => {
@@ -491,12 +492,28 @@ impl Emu {
                 self.cdrom_send_response_v2(int1(status));
                 self.cdrom_continue_cmd(CommandStateV2::ReadNInt1);
                 self.cdrom_queue_response(cycles_per_sector as u32);
+                self.cdrom.drive.drive_state = DriveState::Reading;
 
-                self.cdrom.drive.request_sector(
-                    SectorKind::DataSector,
-                    &mut self.cdrom.status,
-                    &mut self.cdrom.data_fifo,
-                );
+                if !self.cdrom.drive.mode.xa_adpcm() {
+                    self.cdrom.drive.request_sector(
+                        SectorKind::DataSector,
+                        &mut self.cdrom.status,
+                        &mut self.cdrom.data_fifo,
+                    );
+                } else {
+                    let mut read_buf = [0u8; SECTOR_TOTAL_SIZE];
+                    self.cdrom.drive.request_raw_sector(
+                        SectorKind::DataSector,
+                        &mut self.cdrom.status,
+                        &mut read_buf,
+                    );
+
+                    let sector = XaAdpcmSector::new(&read_buf).expect("todo: failed to decode?");
+                    let mut decoder = XaAdpcmDecoder::default();
+                    decoder.decode_xaadpcm_sector(&sector, &mut self.cdrom.xa_adpcm_buf);
+                    self.cdrom.xa_adpcm_idx = 0;
+                    self.cdrom.xa_adpcm_meta = sector.meta;
+                }
             }
 
             CommandStateV2::InitInt3 => {
