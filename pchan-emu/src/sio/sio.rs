@@ -10,17 +10,17 @@ use heapless::Deque;
 use pchan_utils::hex;
 
 use crate::cpu::Cpu;
-use crate::io::evque::{EvCtx, EventId, EventKind, Evque};
-use crate::io::irq::Irq;
-use crate::io::sio::joypad::Joypad;
-use crate::io::sio::memcard::Memcard;
+use crate::cpu::irq::Irq;
+use crate::evque::{EvCtx, EventId, EventKind, Evque};
 use crate::io::{CastIOFrom, CastIOInto, UnhandledIO};
+use crate::sio::joypad::Joypad;
+use crate::sio::memcard::Memcard;
 use crate::{Emu, trace_todo};
 
 const HI_Z: u32 = 0xff;
 
 #[derive(Default, derive_more::Debug, Clone)]
-pub struct SioState {
+pub struct Sio {
     sio0stat: SioStatusReg,
     sio1stat: SioStatusReg,
     sio0ctrl: SioCtrlReg,
@@ -433,7 +433,7 @@ struct SerialPortViewMut<'a> {
     rx:   &'a mut Sio0Rx,
 }
 
-impl SioState {
+impl Sio {
     fn view_serial_port(&mut self, port: Sio0Port) -> SerialPortViewMut<'_> {
         SerialPortViewMut {
             port: &mut self.sio0ports.ports[port as usize],
@@ -606,7 +606,6 @@ impl From<Sio0Port> for usize {
 
 impl Sio0Port {
     pub const ALL: &[Sio0Port] = &[Sio0Port::Port1, Sio0Port::Port2];
-    #[must_use]
     pub fn iter() -> impl Iterator<Item = Self> {
         Self::ALL.iter().copied()
     }
@@ -696,7 +695,7 @@ enum Sio0Tx {
     Transferring(u8, Option<u8>),
 }
 
-impl SioState {
+impl Sio {
     fn sio0_tx_send(&mut self, value: u8) {
         self.sio0stat.set_tx_idle(false);
         self.sio0stat.set_tx_not_full(false);

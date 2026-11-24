@@ -6,7 +6,6 @@ extern crate alloc;
 
 use core::marker::PhantomData;
 use core::num::NonZero;
-use core::time::Duration;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -14,22 +13,18 @@ use bevy::camera::RenderTarget;
 use bevy::ecs::system::NonSendMarker;
 use bevy::feathers::theme::ThemeBackgroundColor;
 use bevy::feathers::*;
-use bevy::input::gamepad::GamepadConnectionEvent;
 use bevy::input::mouse::MouseScrollPixelsPerLine;
 use bevy::log::{LogPlugin, tracing};
 use bevy::prelude::*;
 use bevy::tasks::AsyncComputeTaskPool;
-use bevy::ui::{LayoutContext, ui_layout_system};
-use bevy::ui_widgets::ScrollArea;
+use bevy::ui::ui_layout_system;
 use bevy::window::{PrimaryWindow, WindowEvent, WindowRef};
+use bevy::winit::EventLoopProxyWrapper;
 #[cfg(target_os = "macos")]
 use bevy::winit::WINIT_WINDOWS;
-use bevy::winit::{EventLoopProxyWrapper, RawWinitWindowEvent, UpdateMode, WinitWindows};
 use bevy::{window, winit};
 use muda::accelerator::{Accelerator, Code, Modifiers};
 use muda::{CheckMenuItem, IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
-use pchan_bind::input::PchanButton;
-use pchan_emu::io::sio::Sio0Port;
 use pchan_emu::run::EmuSpeed;
 use pchan_utils::{AsyncChan, Chan, kanal};
 use rfd::AsyncFileDialog;
@@ -645,14 +640,9 @@ fn keyboard_shortcuts(
         exit_tx.write_default();
     }
 
-    match psx_state {
-        PsxState::Paused => {
-            if cmd && input.pressed(KeyCode::KeyK) {
-                psx.run_one_frame(&mut cmds);
-                ev.write(RerenderMsg);
-            }
-        }
-        _ => {}
+    if psx_state == PsxState::Paused && cmd && input.pressed(KeyCode::KeyK) {
+        psx.run_one_frame(&mut cmds);
+        ev.write(RerenderMsg);
     }
 }
 

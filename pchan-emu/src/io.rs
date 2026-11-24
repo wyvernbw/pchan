@@ -1,4 +1,3 @@
-use core::pin::Pin;
 use core::{any, mem, ptr};
 
 use pchan_utils::hex;
@@ -6,18 +5,6 @@ use pchan_utils::hex;
 use crate::Emu;
 use crate::bootloader::ExeHeader;
 use crate::memory::{GUEST_MEM_MAP, MEM_MAP};
-
-#[path = "./cdrom/cdrom.rs"]
-pub mod cdrom;
-pub mod dma;
-pub mod evque;
-pub mod irq;
-pub mod mdec;
-#[path = "./sio/sio.rs"]
-pub mod sio;
-pub mod timers;
-pub mod tty;
-pub mod vblank;
 
 #[macro_export]
 macro_rules! trace_todo {

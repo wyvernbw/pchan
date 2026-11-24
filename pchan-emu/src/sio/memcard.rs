@@ -1,6 +1,6 @@
 use pchan_utils::hex;
 
-use crate::io::sio::{Peripheral, SioCtrlReg};
+use crate::sio::{Peripheral, SioCtrlReg};
 
 #[derive(Default, derive_more::Debug, Clone)]
 pub struct Memcard {

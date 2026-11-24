@@ -1,11 +1,10 @@
 use core::cell::RefCell;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
-use std::sync::LazyLock;
 
 use pchan_bind::input::{InputEvent, PchanButton};
 use pchan_emu::Emu;
-use pchan_emu::io::sio::Sio0Port;
+use pchan_emu::sio::Sio0Port;
 use sdl2::controller::{Axis, Button as SdlButton, GameController};
 use sdl2::event::Event;
 use sdl2::{EventPump, GameControllerSubsystem};

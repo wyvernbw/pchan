@@ -17,7 +17,9 @@ mod cpu_tests;
 #[path = "./gte/gte.rs"]
 pub mod gte;
 pub mod interp;
+pub mod irq;
 pub mod ops;
+pub mod timers;
 
 #[derive(Default, derive_more::Debug, Clone)]
 #[repr(C)]

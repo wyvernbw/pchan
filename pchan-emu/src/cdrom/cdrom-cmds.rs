@@ -1,11 +1,11 @@
 use core::iter;
 
 use crate::Emu;
+use crate::cdrom::cdrom_drive::{DriveState, PlaySeekResult, SectorKind};
+use crate::cdrom::cdrom_format::{Bcd, CdromCursor, Mss, SECTOR_TOTAL_SIZE};
+use crate::cdrom::{CDRom, DriveStatus};
 use crate::cpu::{Cpu, cycles_to_ms};
-use crate::io::cdrom::cdrom_drive::{DriveState, PlaySeekResult, SectorKind};
-use crate::io::cdrom::cdrom_format::{Bcd, CdromCursor, Mss, SECTOR_USER_SIZE};
-use crate::io::cdrom::{CDRom, DriveStatus};
-use crate::io::evque::{EvCtx, EventId, EventKind};
+use crate::evque::{EvCtx, EventId, EventKind};
 use bitbybit::{bitenum, bitfield};
 use pchan_utils::hex;
 
@@ -378,7 +378,7 @@ impl Emu {
             }
             CommandStateV2::PlayInt1(_) => {
                 if let DriveState::PlayPending = self.cdrom.drive.drive_state {
-                    match self.cdrom.drive.play_audio(&mut self.evque) {
+                    match self.cdrom.drive.play_audio() {
                         Ok(_) => {
                             tracing::info!(target: "cdrom", "started audio playback.");
                         }
@@ -400,7 +400,7 @@ impl Emu {
                         let cycles_per_sector = self
                             .cdrom
                             .drive
-                            .sector_cycles_with_size(SECTOR_USER_SIZE as u64);
+                            .sector_cycles_with_size(SECTOR_TOTAL_SIZE as u64);
                         self.cdrom_queue_response(cycles_per_sector as u32);
                     }
                     DriveState::Idle => {

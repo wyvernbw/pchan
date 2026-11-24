@@ -11,17 +11,18 @@ use tracing::Level;
 
 use smallvec::{SmallVec, smallvec};
 
-use crate::cpu::Cpu;
-use crate::io::cdrom::cdrom_cmds::{CommandStateV2, SetMode, SetModeSpeed, StatusCode};
-use crate::io::cdrom::cdrom_format::{
-    self, Bcd, CdromCursor, CueFormatParseErr, CueParser, CueParserState, CueSheet, Mss,
-    SECTOR_USER_SIZE, lba_to_mss, mss_to_lba,
+use crate::cdrom::cdrom_cmds::{CommandStateV2, SetMode, SetModeSpeed, StatusCode};
+use crate::cdrom::cdrom_cue_parser::{CueFormatParseErr, CueParser, CueParserState, CueSheet};
+use crate::cdrom::cdrom_format::{
+    Bcd, CdromCursor, Mss, SECTOR_TOTAL_SIZE, lba_to_mss, mss_to_lba,
 };
-use crate::io::cdrom::{CDRomStatusReg, DriveStatus};
-use crate::io::evque::{EventId, EventKind, Evque};
+use crate::cdrom::{CDRomStatusReg, DriveStatus};
+use crate::cpu::Cpu;
+use crate::evque::EventId;
 use crate::{Emu, spu};
 
 use super::cdrom_cmds::SetModeSectSize;
+use super::cdrom_cue_parser;
 
 #[derive(derive_more::Debug, Default)]
 pub struct CdromDrive {
@@ -93,7 +94,7 @@ pub(super) enum CommandState {
     Responding(SmallVec<[EventId; 2]>),
 }
 
-const CYCLES_PER_BYTE: u64 = Cpu::CLOCK as u64 / (SECTOR_USER_SIZE as u64 * 75);
+const CYCLES_PER_BYTE: u64 = Cpu::CLOCK as u64 / (SECTOR_TOTAL_SIZE as u64 * 75);
 const CYCLES_PER_BYTE_2X: u64 = CYCLES_PER_BYTE / 2;
 const CYCLES_PER_WORD: u64 = CYCLES_PER_BYTE * 4;
 
@@ -211,7 +212,7 @@ impl CdromDrive {
         // fifo can only hold up to one sector
         data_fifo.clear();
 
-        let mut bytes = [0u8; SECTOR_USER_SIZE];
+        let mut bytes = [0u8; SECTOR_TOTAL_SIZE];
         self.request_raw_sector(sector_kind, status, &mut bytes);
 
         let sector = match self.mode.sect_size() {
@@ -267,7 +268,7 @@ impl CdromDrive {
                 }
             }
 
-            let bytes = match disc.readn::<SECTOR_USER_SIZE>(&mut self.cursor) {
+            let bytes = match disc.readn::<SECTOR_TOTAL_SIZE>(&mut self.cursor) {
                 Ok(res) => res,
                 Err(err) => {
                     self.host_disc_err = Some(err.into());
@@ -288,7 +289,7 @@ impl CdromDrive {
         }
     }
 
-    pub(crate) fn play_audio(&mut self, evque: &mut Evque) -> Result<(), AudioPlaybackErr> {
+    pub(crate) fn play_audio(&mut self) -> Result<(), AudioPlaybackErr> {
         if self.cursor.to_mss::<u8>().min > 74 {
             return Err(AudioPlaybackErr::ReachedEnd);
         }
@@ -467,8 +468,8 @@ pub struct InMemoryDiskReader {
     cursor: u64,
 }
 
-pub trait DiscFile: Read + Seek + Send + Sync + cdrom_format::File {}
-impl<T> DiscFile for T where T: Read + Seek + Send + Sync + cdrom_format::File {}
+pub trait DiscFile: Read + Seek + Send + Sync + cdrom_cue_parser::File {}
+impl<T> DiscFile for T where T: Read + Seek + Send + Sync + cdrom_cue_parser::File {}
 
 #[derive(derive_more::Debug)]
 pub struct StreamedDiskReader {
@@ -548,10 +549,10 @@ impl StreamedDiskReader {
             }
         }
 
-        cursor.lba += (BYTES / SECTOR_USER_SIZE) as u32;
-        cursor.byte += (BYTES % SECTOR_USER_SIZE) as u32;
-        cursor.lba += cursor.byte / SECTOR_USER_SIZE as u32;
-        cursor.byte %= SECTOR_USER_SIZE as u32;
+        cursor.lba += (BYTES / SECTOR_TOTAL_SIZE) as u32;
+        cursor.byte += (BYTES % SECTOR_TOTAL_SIZE) as u32;
+        cursor.lba += cursor.byte / SECTOR_TOTAL_SIZE as u32;
+        cursor.byte %= SECTOR_TOTAL_SIZE as u32;
 
         Ok(buf)
     }
@@ -580,8 +581,8 @@ impl InMemoryDiskReader {
 
         buf[..dest_end].copy_from_slice(slice);
 
-        cursor.lba += (BYTES / SECTOR_USER_SIZE) as u32;
-        cursor.byte += (BYTES % SECTOR_USER_SIZE) as u32;
+        cursor.lba += (BYTES / SECTOR_TOTAL_SIZE) as u32;
+        cursor.byte += (BYTES % SECTOR_TOTAL_SIZE) as u32;
 
         self.cursor = cursor.to_byte();
 
@@ -836,7 +837,7 @@ impl Emu {
         if tracing::enabled!(Level::DEBUG) {
             self.cdrom.drive.dbg_audio.extend(sample_buf);
         }
-        if let Err(err) = self.cdrom.drive.play_audio(&mut self.evque) {
+        if let Err(err) = self.cdrom.drive.play_audio() {
             tracing::warn!(target:"cdrom", %err);
             self.cdrom.drive.host_disc_err = Some(err.into());
             self.cdrom.drive.drive_state = DriveState::Idle;

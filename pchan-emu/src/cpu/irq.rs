@@ -6,7 +6,7 @@ use crate::Emu;
 use crate::io::{CastIOFrom, CastIOInto, IOResult, UnhandledIO};
 
 #[derive(Debug, Clone, Copy, Hash, Default)]
-pub struct IrqState {
+pub struct Irqs {
     pub i_stat: IrqField,
     pub i_mask: IrqField,
 }
@@ -53,7 +53,7 @@ pub enum Irq {
     Irq8Sio              = 0x8,
 }
 
-impl IrqState {
+impl Irqs {
     pub fn irq_trigger(&mut self, irq: Irq) {
         if irq != Irq::Irq0Vblank {
             let masked_out = !self.i_mask.irq_flag(irq as usize);

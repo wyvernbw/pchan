@@ -2,7 +2,7 @@ use bitbybit::{bitenum, bitfield};
 use pchan_bind::input::{InputEvent, PchanButton};
 
 use crate::Emu;
-use crate::io::sio::{Peripheral, Sio0Port, SioCtrlReg, TxWriteResult};
+use crate::sio::{Peripheral, Sio0Port, SioCtrlReg, TxWriteResult};
 
 use super::Sio0Rx;
 

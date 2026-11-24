@@ -1,8 +1,6 @@
-use core::alloc::Allocator;
-
 use crate::Emu;
+use crate::cpu::irq::Irq;
 use crate::gpu::{DrawEvenOdd, VBLANK_COUNT};
-use crate::io::irq::Irq;
 
 impl Emu {
     pub async fn run_vblank(&mut self) {

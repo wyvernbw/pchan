@@ -1,5 +1,7 @@
 #[path = "./cdrom-cmds.rs"]
 mod cdrom_cmds;
+#[path = "./cdrom-cue-parser.rs"]
+mod cdrom_cue_parser;
 #[path = "./cdrom-drive.rs"]
 mod cdrom_drive;
 #[path = "./cdrom-format.rs"]
@@ -10,19 +12,17 @@ mod cdrom_ver;
 use alloc::collections::VecDeque;
 use tracing::Level;
 
-use crate::io::cdrom::cdrom_cmds::ResponseV2;
-use crate::io::cdrom::cdrom_drive::{CdromDrive, Disc};
-use crate::io::cdrom::cdrom_format::CueSheet;
-use crate::io::cdrom::cdrom_ver::CDRomVer;
-use crate::io::evque::{EvCtx, EventId};
-use crate::io::irq::{self};
+use crate::cdrom::cdrom_cmds::ResponseV2;
+use crate::cdrom::cdrom_cue_parser::CueSheet;
+use crate::cdrom::cdrom_drive::{CdromDrive, Disc};
+use crate::cdrom::cdrom_ver::CDRomVer;
+use crate::cpu::irq::{self};
+use crate::evque::{EvCtx, EventId, EventKind};
 use crate::io::{CastIOFrom, CastIOInto, UnhandledIO};
 use crate::{Emu, trace_todo};
 use arbitrary_int::prelude::*;
 use bitbybit::{bitenum, bitfield};
 use pchan_utils::hex;
-
-use super::evque::EventKind;
 
 pub use cdrom_drive::OpenDiscState;
 
@@ -412,6 +412,7 @@ struct CDRomReqRegister {
 /// ```
 #[bitfield(u8, debug)]
 #[derive(Default)]
+#[must_use]
 pub struct CDRomADPCTL {
     #[bit(0, rw)]
     adpmute: bool,
@@ -458,7 +459,7 @@ impl CDRom {
                 // overwrite last
                 _ = self.param_fifo.pop_back();
                 // basically guaranteed to only recurse once
-                return self.param_push(param);
+                self.param_push(param);
             }
         }
     }
@@ -477,7 +478,7 @@ impl CDRom {
                 _ = self.result_fifo.pop_back();
                 // this will never recurse more than once, could use become but that
                 // breaks cranelift compiles.
-                return self.result_push(result);
+                self.result_push(result);
             }
         }
     }
@@ -500,6 +501,7 @@ impl CDRom {
         self.status.set_result_rready(false);
     }
 
+    #[must_use]
     pub fn disc(&self) -> Option<&Disc> {
         self.drive.disc.as_ref()
     }

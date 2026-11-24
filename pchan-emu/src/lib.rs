@@ -24,7 +24,6 @@
 #![feature(iter_intersperse)]
 #![feature(const_array)]
 #![feature(portable_simd)]
-#![feature(explicit_tail_calls)]
 #![feature(const_destruct)]
 #![feature(arbitrary_self_types)]
 #![feature(integer_widen_truncate)]
@@ -34,49 +33,56 @@
 #![feature(specialization)]
 #![feature(alloc_io)]
 #![feature(core_io)]
-#![feature(clone_from_ref)]
 #![feature(pattern)]
 // allow unused variables in tests to supress the setup tracing warnings
 #![cfg_attr(test, allow(unused_variables))]
-use core::alloc::Allocator;
 use std::mem::offset_of;
 
 extern crate alloc;
 
 use crate::bindings::ExternFnTable;
+use crate::cpu::irq::Irqs;
+use crate::cpu::timers::TimerState;
 #[cfg(feature = "debugger-ext")]
 use crate::debug::DebuggerState;
 
 use crate::bootloader::BootloaderState;
+use crate::cdrom::CDRom;
 use crate::cpu::Cpu;
+use crate::dma::DmaController;
 use crate::dynarec_v2::DynCache;
-use crate::gpu::GpuState;
-use crate::io::cdrom::CDRom;
-use crate::io::dma::DmaState;
-use crate::io::evque::Evque;
-use crate::io::irq::IrqState;
-use crate::io::mdec::MDec;
-use crate::io::sio::SioState;
-use crate::io::timers::TimerState;
-use crate::io::tty::Tty;
+use crate::evque::Evque;
+use crate::gpu::Gpu;
+use crate::mdec::MDec;
 use crate::memory::Memory;
+use crate::sio::Sio;
 use crate::spu::Spu;
+use crate::tty::Tty;
 
 pub mod bindings;
 pub mod bootloader;
+#[path = "./cdrom/cdrom.rs"]
+pub mod cdrom;
+#[path = "./cpu/cpu.rs"]
 pub mod cpu;
 #[cfg(feature = "debugger-ext")]
 pub mod debug;
+pub mod dma;
 #[path = "./dynarec-v2/dynarec-v2.rs"]
 pub mod dynarec_v2;
+pub mod evque;
 #[path = "./gpu/gpu.rs"]
 pub mod gpu;
-#[path = "./io/io.rs"]
 pub mod io;
+pub mod mdec;
+#[path = "./memory/memory.rs"]
 pub mod memory;
 pub mod run;
+#[path = "./sio/sio.rs"]
+pub mod sio;
 #[path = "./spu/spu.rs"]
 pub mod spu;
+pub mod tty;
 
 #[derive(derive_more::Debug, Clone)]
 #[repr(C)]
@@ -89,16 +95,16 @@ pub struct Emu {
     pub mem:             Memory,
     pub boot:            BootloaderState,
     pub tty:             Tty,
-    pub gpu:             GpuState,
-    pub dma:             DmaState,
+    pub gpu:             Gpu,
+    pub dma:             DmaController,
     pub timers:          TimerState,
     #[debug(skip)]
     pub spu:             Spu,
     #[cfg(feature = "debugger-ext")]
     pub dbg:             DebuggerState,
     pub cdrom:           CDRom,
-    pub sio:             SioState,
-    pub irq:             IrqState,
+    pub sio:             Sio,
+    pub irq:             Irqs,
     pub mdec:            MDec,
     pub evque:           Evque,
     pub tracy:           TracyClient,
@@ -113,6 +119,7 @@ pub struct Stats {
     pub dma_transfers_per_frame: u64,
 }
 impl Emu {
+    #[must_use]
     pub fn new() -> Self {
         let mut emu = Self {
             cpu: Cpu::new(),
@@ -121,21 +128,21 @@ impl Emu {
             mem: Memory::new(),
             boot: BootloaderState::new(),
             tty: Tty::new(),
-            gpu: GpuState::new(),
-            dma: DmaState::new(),
+            gpu: Gpu::new(),
+            dma: DmaController::new(),
             timers: TimerState::default(),
             spu: Spu::new(),
             #[cfg(feature = "debugger-ext")]
             dbg: DebuggerState::new(),
             cdrom: CDRom::new(),
-            sio: SioState::default(),
-            irq: IrqState::default(),
+            sio: Sio::default(),
+            irq: Irqs::default(),
             evque: Evque::new(),
             tracy: TracyClient::default(),
             stats: Stats::default(),
             mdec: MDec::default(),
         };
-        emu.handle_ev_spu_clock(io::evque::EvCtx::default());
+        emu.handle_ev_spu_clock(evque::EvCtx::default());
         emu
     }
 }

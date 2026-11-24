@@ -27,7 +27,6 @@ use dynasm::dynasm;
 use dynasmrt::DynasmApi;
 
 use super::ScheduledEmitter;
-use core::alloc::Allocator;
 
 pub struct EmitCtx<'a> {
     pub dynarec:        &'a mut Dynarec,

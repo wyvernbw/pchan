@@ -154,3 +154,8 @@ in comparision with duckstation dynarec, fails:
 - [ ] batch vram to vram blits
 - [ ] get rid of per-primitive data duplicated per-vertex
 
+# CD-XA ADPCM Todos
+
+- [ ] decode xa adpcm data
+- [ ] send xa adpcm data to spu cd input
+- [ ] setfilter command

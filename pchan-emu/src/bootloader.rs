@@ -24,6 +24,7 @@ pub struct BootloaderState {
 }
 
 impl BootloaderState {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }

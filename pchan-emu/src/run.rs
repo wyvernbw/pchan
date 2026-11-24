@@ -118,7 +118,7 @@ impl Runner {
     pub fn new() -> Self {
         let transport = Transport::new();
         let rb = HeapRb::<CompileActorMsg>::new(mb(32));
-        let (prod, _cons) = rb.split();
+        let (_prod, _cons) = rb.split();
         let _transport_2 = transport.clone();
         let actor_handle = ActorHandle {
             currently_compiling: Arc::new(AtomicU32::new(u32::MAX)),
@@ -195,7 +195,7 @@ impl Runner {
                         return;
                     }
                     RunnerMode::Interpreter => {
-                        let (result, pc, op) = self.interpreter.run_instruction(emu).await;
+                        let (result, pc, _op) = self.interpreter.run_instruction(emu).await;
 
                         if self
                             .actor_handle

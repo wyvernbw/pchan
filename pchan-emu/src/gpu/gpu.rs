@@ -1,4 +1,5 @@
 pub mod draw_call;
+mod vblank;
 pub mod vram;
 
 use core::alloc::Allocator;
@@ -18,14 +19,14 @@ use smol::lock::Mutex;
 use tracing::Level;
 
 use crate::Emu;
+use crate::cpu::irq::Irq;
+use crate::evque::Task;
 use crate::gpu::draw_call::{
     DrawCall, DrawCallDecoder, DrawCallKind, DrawLineDecoder, DrawPolygonDecoder, DrawRectDecoder,
     Gp0HostBlit, Gp0HostBlitDecoder, Gp0SetDrawAreaCmd, Gp0SetDrawOffsetCmd, Gp0SetMaskBitCmd,
     Gp0VramBlitDecoder, GpuInternalDrawReg, QuickFillDecoder,
 };
 use crate::gpu::vram::{VramCoord, VramCursor};
-use crate::io::evque::Task;
-use crate::io::irq::Irq;
 use crate::io::{CastIOFrom, CastIOInto, IOResult, UnhandledIO};
 use crate::memory::{kb, mb};
 
@@ -87,7 +88,7 @@ pub static VRAM: VramSink = Mutex::new([0u16; vram_size::<u16>()]);
 pub static VRAM_REF: &VramSink = &VRAM;
 
 #[derive(derive_more::Debug, Clone)]
-pub struct GpuState {
+pub struct Gpu {
     #[debug(skip)]
     pub gpustat:      GpuStatReg,
     pub gp0:          Gp0,
@@ -123,7 +124,8 @@ pub enum GpuModel {
     Gpu208Pin,
 }
 
-impl GpuState {
+impl Gpu {
+    #[must_use]
     pub fn new() -> Self {
         let mut gpustat = GpuStatReg::default();
         gpustat.mock_ready();
@@ -151,6 +153,12 @@ impl GpuState {
             draw_idx: 0,
             pending_draw_calls: VecDeque::new(),
         }
+    }
+}
+
+impl Default for Gpu {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -627,7 +635,8 @@ impl Emu {
     }
 }
 
-impl GpuState {
+impl Gpu {
+    #[must_use]
     pub fn get_gpu_info_cmd(&self, cmd: GpuCmd) -> Option<GpuInfoCmd> {
         let value = cmd.raw_value();
         let value = match self.model {
@@ -642,7 +651,7 @@ impl GpuState {
     }
 }
 
-impl GpuState {
+impl Gpu {
     pub async fn task_gpu_flush_draw_calls(&mut self) {
         self.draw_idx += 1;
         self.conn
@@ -671,14 +680,11 @@ impl GpuState {
     pub fn compute_dma_request(&mut self) {
         let direction = self.gpustat.dma_direction();
         match direction {
-            DmaDirection::Off => {
-                self.gpustat.set_dma_request(false);
-            }
             DmaDirection::Unknown => {
                 // let fifo_available = !self.gp0cmd_queue.is_full();
                 self.gpustat.set_dma_request(true);
             }
-            DmaDirection::CpuToGp0 => {
+            DmaDirection::Off | DmaDirection::CpuToGp0 => {
                 self.gpustat.set_dma_request(false);
             }
             DmaDirection::CpuReadToCpu => {
@@ -695,7 +701,7 @@ fn vram_get(vram: &[u16], coord: VramCoord) -> u16 {
     vram[addr]
 }
 
-impl GpuState {
+impl Gpu {
     pub fn flip_even_odd(&mut self, even_odd: Option<DrawEvenOdd>) {
         if self.gpustat.v_interlace() {
             let even_odd = even_odd.unwrap_or_else(|| self.gpustat.even_odd_in_vblank());
@@ -1201,7 +1207,7 @@ pub enum VideoEventKind {
     Vblank,
 }
 
-impl GpuState {
+impl Gpu {
     #[must_use]
     pub fn video_cycles_per_scanline(&self) -> u64 {
         match self.gpustat.video_mode() {

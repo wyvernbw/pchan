@@ -1,5 +1,6 @@
 mod adpcm;
 pub mod adsr;
+#[path = "./gauss-interp.rs"]
 mod gauss_interp;
 pub mod reverb;
 
@@ -11,7 +12,7 @@ use pchan_bind::ringbuf::traits::Producer;
 use pchan_bind::{AudioProducer, BindAudioProducer};
 use pchan_utils::hex;
 
-use crate::io::evque::{EvCtx, EventId, EventKind};
+use crate::evque::{EvCtx, EventId, EventKind};
 use crate::io::{CastIOFrom, CastIOInto, IOResult, UnhandledIO};
 use crate::memory::kb;
 use crate::spu::adpcm::{ADPCMCurrent, ADPCMHeader, ADPCMRepeat, ADPCMSampleRate, ADPCMStart};

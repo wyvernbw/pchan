@@ -22,12 +22,19 @@ pub enum TtyMode {
 }
 
 impl Tty {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             buf:  unsafe { Box::new_zeroed_slice(TTY_CAP).assume_init() },
             end:  0,
             mode: TtyMode::Stdout,
         }
+    }
+}
+
+impl Default for Tty {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

@@ -74,6 +74,12 @@ impl Evque {
     }
 }
 
+impl Default for Evque {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Ord for PchanEvent {
     fn cmp(&self, other: &Self) -> cmp::Ordering {
         self.at_cycle.cmp(&other.at_cycle)

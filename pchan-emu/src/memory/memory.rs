@@ -24,6 +24,7 @@ pub const fn from_kb(value: usize) -> usize {
     value / 1024
 }
 
+#[must_use]
 pub fn buffer(size: usize) -> Box<[u8]> {
     // SAFETY: memory is zeroed out
     unsafe { Box::new_zeroed_slice(size).assume_init() }
@@ -73,6 +74,7 @@ static MEM_SIZE: usize = kb(2048 + 8192) + kb(1) + kb(8) + kb(8) + kb(2048) + kb
 static MEM_KB: usize = from_kb(MEM_SIZE) + 1;
 
 impl Memory {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             buf: buffer(MEM_SIZE),
@@ -80,8 +82,15 @@ impl Memory {
     }
 }
 
+impl Default for Memory {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Memory {
     #[inline(always)]
+    #[must_use]
     pub fn read_region<T: Copy>(&self, host_region: usize, guest_region: usize, address: u32) -> T {
         let offset = (address & 0x1fff_ffff) as usize - (guest_region & 0x1fff_ffff);
         let idx = host_region + offset;

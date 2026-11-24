@@ -1,12 +1,12 @@
 use core::ops::{ControlFlow, Range};
 use core::{cmp, mem, slice};
 
+use crate::cpu::irq::Irq;
+use crate::evque::{EvCtx, EventId, EventKind, Task};
 use crate::gpu::draw_call::DrawCallKind;
 use crate::gpu::{Gp0, GpuCmd};
-use crate::io::evque::{EvCtx, EventId, EventKind, Task};
-use crate::io::irq::Irq;
-use crate::io::mdec::MDecCmd;
 use crate::io::{CastIOFrom, CastIOInto, IOResult, UnhandledIO};
+use crate::mdec::MDecCmd;
 use crate::memory::mb;
 use crate::{Emu, trace_todo};
 use alloc::collections::VecDeque;
@@ -17,7 +17,7 @@ use pchan_utils::hex;
 use tracing::Level;
 
 #[derive(derive_more::Debug, Clone)]
-pub struct DmaState {
+pub struct DmaController {
     pub dpcr: Dpcr,
     dicr:     Dicr,
     // TODO: dma channels
@@ -40,7 +40,7 @@ pub struct DmaState {
     dummy_ram_u16: Box<[u16]>,
 }
 
-impl DmaState {
+impl DmaController {
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -64,13 +64,13 @@ impl DmaState {
     }
 }
 
-impl Default for DmaState {
+impl Default for DmaController {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl DmaState {
+impl DmaController {
     pub fn dump_cdrom_data(&self) {
         use std::io::Write;
 
@@ -672,7 +672,7 @@ impl Transfer for Dma0MdecIn {
         emu.dma.staging_buf = staging_buf;
     }
 
-    async fn read(&mut self, emu: &mut Emu, slice: Range<u32>) {
+    async fn read(&mut self, _emu: &mut Emu, _slice: Range<u32>) {
         todo!()
     }
 
@@ -686,11 +686,11 @@ struct Dma1MdecOut;
 impl Transfer for Dma1MdecOut {
     const TRANSPORT_KIND: DmaTransportKind = DmaTransportKind::MDecOut;
 
-    async fn write(&mut self, emu: &mut Emu, slice: Range<u32>) {
+    async fn write(&mut self, _emu: &mut Emu, _slice: Range<u32>) {
         todo!()
     }
 
-    async fn read(&mut self, emu: &mut Emu, slice: Range<u32>) {
+    async fn read(&mut self, _emu: &mut Emu, _slice: Range<u32>) {
         todo!()
     }
 
@@ -1278,7 +1278,7 @@ mod tests {
     use alloc::collections::VecDeque;
 
     use crate::Emu;
-    use crate::io::dma::{Dicr, Dma3Cdrom, Transfer};
+    use crate::dma::{Dicr, Dma3Cdrom, Transfer};
 
     use super::DmaIrqMode;
 
