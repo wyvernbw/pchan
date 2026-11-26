@@ -9,7 +9,7 @@ use crate::io::{CastIOFrom, CastIOInto, UnhandledIO};
 
 use super::irq::Irq;
 
-const TIMER_UPDATE_FREQUENCY: u64 = 128;
+const TIMER_UPDATE_FREQUENCY: u64 = 4;
 
 #[derive(Debug, Clone, Default)]
 pub struct TimerState {
@@ -246,7 +246,7 @@ impl Emu {
                 self.timers
                     .timer_0
                     .write_mode(TimerCounterMode::new_with_raw_value(value));
-                tracing::info!("timer 0 mode: {:#?}", self.timers.timer_0.mode);
+                tracing::debug!("timer 0 mode: {:#?}", self.timers.timer_0.mode);
             }
             0x1f801108 => {
                 self.timers.timer_0.target =
@@ -255,7 +255,7 @@ impl Emu {
             0x1f801110 => {
                 self.timers.timer_1.value = TimerCounterValue::new_with_raw_value(value);
                 self.timers.timer_1.check_for_overrun();
-                tracing::info!(target: "tmr", "timer #1 value write: {} (overrun = {})", hex(self.timers.timer_1.value), self.timers.timer_1.overrun)
+                tracing::debug!(target: "tmr", "timer #1 value write: {} (overrun = {})", hex(self.timers.timer_1.value), self.timers.timer_1.overrun)
             }
             0x1f801114 => {
                 self.timers
@@ -292,8 +292,8 @@ impl Emu {
         if self.timers.clock < TIMER_UPDATE_FREQUENCY {
             return;
         }
-        self.timers.clock -= TIMER_UPDATE_FREQUENCY;
-        let cycles = TIMER_UPDATE_FREQUENCY as u16;
+        let cycles = self.timers.clock as u16;
+        self.timers.clock = 0;
 
         // FIXME: add dotclock source
         if self.timers.timer_0.mode.source() {
@@ -313,14 +313,14 @@ impl Emu {
                 }
                 SyncMode0_1::ResetAtBlank => {
                     if self.gpu.dp.in_vblank() && !self.timers.in_vblank {
-                        tracing::info!(target: "tmr", "timer 1 sync reset");
+                        tracing::debug!(target: "tmr", "timer 1 sync reset");
                         self.timers.timer_1.reset_value();
                     }
                     d_clock
                 }
                 SyncMode0_1::ResetAtBlankAndPause => {
                     if self.gpu.dp.in_vblank() && !self.timers.in_vblank {
-                        tracing::info!(target: "tmr", "timer 1 sync reset");
+                        tracing::debug!(target: "tmr", "timer 1 sync reset");
                         self.timers.timer_1.reset_value();
                     }
                     if self.gpu.dp.in_vblank() { d_clock } else { 0 }
