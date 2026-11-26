@@ -12,15 +12,15 @@ mod cdrom_ver;
 use alloc::collections::VecDeque;
 use tracing::Level;
 
+use crate::Emu;
 use crate::cdrom::cdrom_cmds::ResponseV2;
 use crate::cdrom::cdrom_cue_parser::CueSheet;
 use crate::cdrom::cdrom_drive::{CdromDrive, Disc};
-use crate::cdrom::cdrom_format::{Form1SectorMetadata, XA_ADPCM_SECTION_DATA};
+use crate::cdrom::cdrom_format::{Mode2SectorMetadata, XA_ADPCM_SECTION_DATA};
 use crate::cdrom::cdrom_ver::CDRomVer;
 use crate::cpu::irq::{self};
 use crate::evque::{EvCtx, EventId, EventKind};
 use crate::io::{CastIOFrom, CastIOInto, UnhandledIO};
-use crate::{Emu, trace_todo};
 use arbitrary_int::prelude::*;
 use bitbybit::{bitenum, bitfield};
 use pchan_utils::hex;
@@ -44,7 +44,7 @@ pub struct CDRom {
     pub sector_buf:    VecDeque<u8>,
     pub xa_adpcm_buf:  Vec<i16>,
     pub xa_adpcm_idx:  usize,
-    pub xa_adpcm_meta: Form1SectorMetadata,
+    pub xa_adpcm_meta: Mode2SectorMetadata,
     pub audio_sample:  (i16, i16),
     pub vol_staging:   CDDAVolumes,
     pub vol:           CDDAVolumes,
@@ -165,7 +165,7 @@ impl Emu {
     }
 
     #[pchan_macros::pchan_instrument_read]
-    pub fn cdrom_read<T>(&mut self, address: u32) -> Result<T, UnhandledIO> {
+    pub fn cdrom_read<T: Copy>(&mut self, address: u32) -> Result<T, UnhandledIO> {
         let address = address & 0x1fffffff;
         let bank = self.cdrom.bank();
         match (address, bank) {
@@ -181,7 +181,17 @@ impl Emu {
                 None => Ok(0.io_from_u32()),
             },
 
-            (0x1f801802, _) => trace_todo!(0u32, "todo(cdrom): read from data fifo"),
+            (0x1f801802, _) => {
+                let mut buf = [0u8; 2];
+                let len = size_of::<T>().min(2);
+                self.cdrom_read_buffered_data(&mut buf[..len]);
+                // 0: lsbs
+                // 1: msbs
+                let value = u16::from_le_bytes(buf);
+                let value: T = value.io_from_u32();
+                tracing::info!(target:"cdrom", "RDDATA{len} {}", hex(value));
+                Ok(value)
+            }
 
             (0x1f801803, 0 | 2) => Ok(self.cdrom.hint_mask.io_from_u32()),
             (0x1f801803, 1 | 3) => Ok(self.cdrom.hint_status.io_from_u32()),
@@ -211,9 +221,14 @@ impl Emu {
         self.irq_trigger(irq::Irq::Irq2CDRom);
     }
 
-    pub fn cdrom_read_buffered_data<const BYTES: usize>(&mut self) -> [u8; BYTES] {
+    pub fn cdrom_read_buffered_data_chunk<const BYTES: usize>(&mut self) -> [u8; BYTES] {
         let mut buf = [0u8; BYTES];
-        for byte in &mut buf {
+        self.cdrom_read_buffered_data(&mut buf);
+        buf
+    }
+
+    pub fn cdrom_read_buffered_data(&mut self, sink: &mut [u8]) {
+        for byte in sink {
             let value = self
                 .cdrom
                 .data_fifo
@@ -225,7 +240,6 @@ impl Emu {
         if self.cdrom.data_fifo.is_empty() {
             self.cdrom.status.set_data_req(false);
         }
-        buf
     }
 }
 
@@ -530,5 +544,19 @@ impl CDRom {
         // TODO: detect audio CD
         self.drive.drive_status = DriveStatus::LicensedMode2;
         self.drive.disc = disc;
+    }
+}
+
+pub trait RingbufferExt {
+    fn extend_and_overwrite(&mut self, capacity: usize, buf: &[u8]);
+}
+
+impl RingbufferExt for VecDeque<u8> {
+    fn extend_and_overwrite(&mut self, capacity: usize, buf: &[u8]) {
+        self.extend(buf);
+        if self.len() > capacity {
+            let diff = 1 + self.len() - capacity;
+            self.drain(..diff);
+        }
     }
 }

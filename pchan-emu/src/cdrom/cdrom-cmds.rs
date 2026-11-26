@@ -5,7 +5,7 @@ use crate::cdrom::cdrom_drive::{DriveState, PlaySeekResult, SectorKind};
 use crate::cdrom::cdrom_format::{
     Bcd, CdromCursor, Mss, SECTOR_TOTAL_SIZE, XaAdpcmDecoder, XaAdpcmSector,
 };
-use crate::cdrom::{CDRom, DriveStatus};
+use crate::cdrom::{CDRom, DriveStatus, RingbufferExt};
 use crate::cpu::{Cpu, cycles_to_ms};
 use crate::evque::{EvCtx, EventId, EventKind};
 use bitbybit::{bitenum, bitfield};
@@ -131,7 +131,8 @@ impl Emu {
             }
 
             // `ReadN` - Command 06h --> INT3(stat) --> INT1(stat) --> datablock
-            0x06 => {
+            // also `ReadS`
+            0x06 | 0x1b => {
                 let seek_time_only = self.cdrom.drive.current_seek_time();
                 let speed_change_time = self
                     .cdrom
@@ -394,15 +395,10 @@ impl Emu {
                         //     tracing::warn!(target:"cdrom", "sector buffer truncated: {} bytes dropped", self.cdrom.sector_buf.len());
                         //     self.cdrom.sector_buf.clear();
                         // }
-                        self.cdrom.drive.request_raw_sector(
-                            SectorKind::CDDASector,
-                            &mut self.cdrom.status,
-                            &mut self.cdrom.sector_buf,
-                        );
-                        let cycles_per_sector = self
-                            .cdrom
+                        self.cdrom
                             .drive
-                            .sector_cycles_with_size(SECTOR_TOTAL_SIZE as u64);
+                            .request_raw_sector(SectorKind::CDDASector, &mut self.cdrom.sector_buf);
+                        let cycles_per_sector = self.cdrom.drive.cdda_or_cdxa_time();
                         self.cdrom_queue_response(cycles_per_sector as u32);
                     }
                     DriveState::Idle => {
@@ -487,33 +483,68 @@ impl Emu {
             }
             CommandStateV2::ReadNInt1 => {
                 self.cdrom.drive.status_code.set_seek(false);
-
-                let cycles_per_sector = self.cdrom.drive.sector_cycles();
-                self.cdrom_send_response_v2(int1(status));
-                self.cdrom_continue_cmd(CommandStateV2::ReadNInt1);
-                self.cdrom_queue_response(cycles_per_sector as u32);
+                self.cdrom.drive.status_code.set_read(true);
+                self.cdrom.status.set_adpcm_busy(false);
                 self.cdrom.drive.drive_state = DriveState::Reading;
 
-                if !self.cdrom.drive.mode.xa_adpcm() {
+                let mut is_adpcm = true;
+
+                let cycles_per_sector = if !self.cdrom.drive.mode.xa_adpcm() {
+                    is_adpcm = false;
                     self.cdrom.drive.request_sector(
                         SectorKind::DataSector,
                         &mut self.cdrom.status,
                         &mut self.cdrom.data_fifo,
                     );
+                    let cycles_per_sector = self.cdrom.drive.sector_cycles();
+                    cycles_per_sector
                 } else {
+                    self.cdrom.data_fifo.clear();
                     let mut read_buf = [0u8; SECTOR_TOTAL_SIZE];
-                    self.cdrom.drive.request_raw_sector(
-                        SectorKind::DataSector,
-                        &mut self.cdrom.status,
-                        &mut read_buf,
-                    );
+                    self.cdrom
+                        .drive
+                        .request_raw_sector(SectorKind::CdXaSector, &mut read_buf);
 
                     let sector = XaAdpcmSector::new(&read_buf).expect("todo: failed to decode?");
-                    let mut decoder = XaAdpcmDecoder::default();
-                    decoder.decode_xaadpcm_sector(&sector, &mut self.cdrom.xa_adpcm_buf);
-                    self.cdrom.xa_adpcm_idx = 0;
-                    self.cdrom.xa_adpcm_meta = sector.meta;
+                    let mut decode_adpcm = true;
+
+                    if !sector.meta.subheader.submode.realtime_audio() {
+                        is_adpcm = false;
+                        decode_adpcm = false;
+                    }
+
+                    assert!(
+                        !self.cdrom.drive.mode.xa_filter(),
+                        "not yet implemented: xa-filter"
+                    );
+
+                    if decode_adpcm {
+                        let mut decoder = XaAdpcmDecoder::default();
+                        decoder.decode_xaadpcm_sector(&sector, &mut self.cdrom.xa_adpcm_buf);
+                        self.cdrom.xa_adpcm_idx = 0;
+                        self.cdrom.xa_adpcm_meta = sector.meta;
+
+                        self.cdrom.drive.play_xa_audio(&mut self.cdrom.status);
+                    } else {
+                        self.cdrom.status.set_data_req(true);
+                        self.cdrom
+                            .data_fifo
+                            .extend(self.cdrom.drive.slice_sector_bytes(&read_buf));
+                    }
+
+                    self.cdrom.drive.cdda_or_cdxa_time()
+                };
+
+                // If XA-ADPCM (and/or XA-Filter) is enabled via Setmode,
+                // then INT1 is generated only for non-ADPCM sectors.
+                if !is_adpcm
+                    || !(self.cdrom.drive.mode.xa_adpcm() || self.cdrom.drive.mode.xa_filter())
+                {
+                    self.cdrom_send_response_v2(int1(status));
                 }
+
+                self.cdrom_continue_cmd(CommandStateV2::ReadNInt1);
+                self.cdrom_queue_response(cycles_per_sector as u32);
             }
 
             CommandStateV2::InitInt3 => {

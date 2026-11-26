@@ -50,7 +50,8 @@ const impl From<u8> for Bcd {
     }
 }
 
-#[derive(Default, derive_more::Debug, Clone, Copy)]
+#[derive(Default, derive_more::Debug, derive_more::Display, Clone, Copy)]
+#[display("{}", &self.to_mss::<u8>())]
 pub struct CdromCursor {
     pub lba:  u32,
     pub byte: u32,
@@ -122,6 +123,16 @@ impl CdromCursor {
 /// ```plaintext
 ///  000h 0Ch  Sync   (00h,FFh,FFh,FFh,FFh,FFh,FFh,FFh,FFh,FFh,FFh,00h)
 ///  00Ch 4    Header (Minute,Second,Sector,Mode=02h)
+/// ```
+#[derive(Default, Debug, Clone)]
+pub struct DataSectorHeader {
+    pub sync:   SyncHeader,
+    pub header: Header,
+}
+
+/// ```plaintext
+///  000h 0Ch  Sync   (00h,FFh,FFh,FFh,FFh,FFh,FFh,FFh,FFh,FFh,FFh,00h)
+///  00Ch 4    Header (Minute,Second,Sector,Mode=02h)
 ///  010h 4    Sub-Header (File, Channel, Submode AND DFh, Codinginfo)
 ///  014h 4    Copy of Sub-Header
 ///  018h 800h Data (2048 bytes)
@@ -129,9 +140,8 @@ impl CdromCursor {
 ///  81Ch 114h ECC (error correction codes)
 /// ```
 #[derive(Default, Debug, Clone)]
-pub struct Form1SectorMetadata {
-    pub sync:      SyncHeader,
-    pub header:    Header,
+pub struct Mode2SectorMetadata {
+    pub common:    DataSectorHeader,
     pub subheader: Subheader,
 }
 
@@ -146,12 +156,12 @@ const SYNC_HEADER_LEN: usize = SYNC_HEADER.len();
 /// `4 Header (Minute,Second,Sector,Mode)`
 #[derive(Default, Debug, Clone)]
 pub struct Header {
-    mss:  Mss<u8>,
-    mode: HeaderMode,
+    pub mss:  Mss<Bcd>,
+    pub mode: SectorMode,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
-pub enum HeaderMode {
+pub enum SectorMode {
     #[default]
     Mode2 = 0x02,
 }
@@ -159,10 +169,10 @@ pub enum HeaderMode {
 /// `4 Sub-Header (File, Channel, Submode AND DFh, Codinginfo)`
 #[derive(Debug, Clone, Default)]
 pub struct Subheader {
-    file:      FileNumber,
-    channel:   ChannelNumber,
-    submode:   Submode,
-    pub cinfo: CodingInfo,
+    file:        FileNumber,
+    channel:     ChannelNumber,
+    pub submode: Submode,
+    pub cinfo:   CodingInfo,
 }
 
 /// # 3rd Subheader byte - Submode (SM)
@@ -196,6 +206,12 @@ pub struct Submode {
     rt:      bool,
     #[bit(7, rw)]
     eof:     bool,
+}
+
+impl Submode {
+    pub fn realtime_audio(&self) -> bool {
+        self.rt() && self.audio()
+    }
 }
 
 /// # 4th Subheader byte - Codinginfo (CI)
@@ -283,7 +299,7 @@ pub struct XaAdpcmSectorData<'buf> {
 }
 
 pub struct XaAdpcmSector<'buf> {
-    pub meta: Form1SectorMetadata,
+    pub meta: Mode2SectorMetadata,
     pub data: XaAdpcmSectorData<'buf>,
 }
 
@@ -293,16 +309,16 @@ pub enum XaAdpcmSectorDecodeError {
     Underflow(#[from] CursorErr),
 }
 
-struct Cursor<'a> {
+pub struct ByteCursor<'a> {
     buf: &'a [u8],
 }
 
 #[derive(thiserror::Error, Debug)]
 #[error("cursor overflowed buffer.")]
-struct CursorErr;
+pub struct CursorErr;
 
-impl<'a> Cursor<'a> {
-    fn new(buf: &'a [u8]) -> Self {
+impl<'a> ByteCursor<'a> {
+    pub fn new(buf: &'a [u8]) -> Self {
         Self { buf }
     }
 
@@ -324,52 +340,72 @@ impl<'a> Cursor<'a> {
 
 impl<'buf> XaAdpcmSector<'buf> {
     pub fn new(buf: &'buf [u8]) -> Result<Self, XaAdpcmSectorDecodeError> {
-        Self::decode(&mut Cursor::new(buf))
+        Self::decode(&mut ByteCursor::new(buf))
     }
-    pub fn decode(buf: &mut Cursor<'buf>) -> Result<Self, XaAdpcmSectorDecodeError> {
+    pub fn decode(buf: &mut ByteCursor<'buf>) -> Result<Self, XaAdpcmSectorDecodeError> {
         Ok(Self {
-            meta: Form1SectorMetadata::decode(buf)?,
+            meta: Mode2SectorMetadata::decode(buf)?,
             data: XaAdpcmSectorData::decode(buf)?,
         })
     }
 }
 
-impl Form1SectorMetadata {
-    pub fn decode(buf: &mut Cursor) -> Result<Self, CursorErr> {
+impl DataSectorHeader {
+    pub fn decode(buf: &mut ByteCursor) -> Result<Self, CursorErr> {
         Ok(Self {
-            sync:      SyncHeader::decode(buf)?,
-            header:    Header::decode(buf)?,
-            subheader: Subheader::decode(buf)?,
+            sync:   SyncHeader::decode(buf)?,
+            header: Header::decode(buf)?,
         })
     }
 }
 
+impl Mode2SectorMetadata {
+    pub fn decode_partial(
+        header: DataSectorHeader,
+        buf: &mut ByteCursor,
+    ) -> Result<Self, CursorErr> {
+        let meta = Self {
+            common:    header,
+            subheader: Subheader::decode(buf)?,
+        };
+        // copy of subheader
+        let _ = Subheader::decode(buf)?;
+
+        Ok(meta)
+    }
+    pub fn decode(buf: &mut ByteCursor) -> Result<Self, CursorErr> {
+        let common = DataSectorHeader::decode(buf)?;
+        Self::decode_partial(common, buf)
+    }
+}
+
 impl SyncHeader {
-    fn decode(buf: &mut Cursor) -> Result<Self, CursorErr> {
+    fn decode(buf: &mut ByteCursor) -> Result<Self, CursorErr> {
         buf.advance(SYNC_HEADER_LEN)?;
         Ok(SyncHeader)
     }
 }
 
 impl Header {
-    fn decode(buf: &mut Cursor) -> Result<Self, CursorErr> {
+    fn decode(buf: &mut ByteCursor) -> Result<Self, CursorErr> {
         let mss = buf.read_chunk::<3>()?;
-        let mss = Mss::new(mss[0], mss[1], mss[2]);
+        let mss = Mss::new(
+            Bcd::new_with_raw_value(mss[0]),
+            Bcd::new_with_raw_value(mss[1]),
+            Bcd::new_with_raw_value(mss[2]),
+        );
 
         let mode = buf.read_chunk::<1>()?[0];
         let mode = match mode {
-            2 => HeaderMode::Mode2,
-            _ => {
-                tracing::warn!("todo: different modes");
-                HeaderMode::Mode2
-            }
+            2 => SectorMode::Mode2,
+            _ => SectorMode::Mode2,
         };
         Ok(Self { mss, mode })
     }
 }
 
 impl Subheader {
-    fn decode(buf: &mut Cursor) -> Result<Self, CursorErr> {
+    fn decode(buf: &mut ByteCursor) -> Result<Self, CursorErr> {
         Ok(Self {
             file:    FileNumber::decode(buf)?,
             channel: ChannelNumber::decode(buf)?,
@@ -380,35 +416,35 @@ impl Subheader {
 }
 
 impl FileNumber {
-    fn decode(buf: &mut Cursor) -> Result<Self, CursorErr> {
+    fn decode(buf: &mut ByteCursor) -> Result<Self, CursorErr> {
         let number = buf.read(1)?[0];
         Ok(Self(number))
     }
 }
 
 impl ChannelNumber {
-    fn decode(buf: &mut Cursor) -> Result<Self, CursorErr> {
+    fn decode(buf: &mut ByteCursor) -> Result<Self, CursorErr> {
         let number = buf.read(1)?[0];
         Ok(Self(number))
     }
 }
 
 impl Submode {
-    fn decode(buf: &mut Cursor) -> Result<Self, CursorErr> {
+    fn decode(buf: &mut ByteCursor) -> Result<Self, CursorErr> {
         let number = buf.read(1)?[0];
         Ok(Self::new_with_raw_value(number))
     }
 }
 
 impl CodingInfo {
-    fn decode(buf: &mut Cursor) -> Result<Self, CursorErr> {
+    fn decode(buf: &mut ByteCursor) -> Result<Self, CursorErr> {
         let number = buf.read(1)?[0];
         Ok(Self::new_with_raw_value(number))
     }
 }
 
 impl<'buf> XaAdpcmSectorData<'buf> {
-    pub fn decode(buf: &mut Cursor<'buf>) -> Result<Self, XaAdpcmSectorDecodeError> {
+    pub fn decode(buf: &mut ByteCursor<'buf>) -> Result<Self, XaAdpcmSectorDecodeError> {
         let mut sections = const { [const { MaybeUninit::<XaAdpcmSection>::uninit() }; 0x12] };
         for section in &mut sections {
             section.write(XaAdpcmSection::decode(buf)?);
@@ -422,7 +458,7 @@ impl<'buf> XaAdpcmSectorData<'buf> {
 }
 
 impl<'buf> XaAdpcmSection<'buf> {
-    pub fn decode(buf: &mut Cursor<'buf>) -> Result<Self, XaAdpcmSectorDecodeError> {
+    pub fn decode(buf: &mut ByteCursor<'buf>) -> Result<Self, XaAdpcmSectorDecodeError> {
         let headers = XaAdpcmSectionHeader::decode(buf)?;
         let bytes = buf.read_chunk::<XA_ADPCM_SECTION_DATA>()?;
 
@@ -434,7 +470,7 @@ impl<'buf> XaAdpcmSection<'buf> {
 }
 
 impl XaAdpcmSectionHeader {
-    fn decode(buf: &mut Cursor) -> Result<Self, XaAdpcmSectorDecodeError> {
+    fn decode(buf: &mut ByteCursor) -> Result<Self, XaAdpcmSectorDecodeError> {
         buf.advance(4)?;
 
         let header = buf.read_chunk::<8>()?;

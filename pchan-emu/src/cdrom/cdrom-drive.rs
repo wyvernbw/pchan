@@ -2,7 +2,7 @@ use alloc::collections::VecDeque;
 use core::hint::cold_path;
 use core::marker::PhantomData;
 use core::{cmp, fmt, io};
-use pchan_utils::{Hex, hex_pref};
+use pchan_utils::{Hex, hex, hex_pref};
 
 // FIXME: replace with non-std compatible versions
 use std::io::{BufReader, Read, Seek};
@@ -14,9 +14,10 @@ use smallvec::{SmallVec, smallvec};
 use crate::cdrom::cdrom_cmds::{CommandStateV2, SetMode, SetModeSpeed, StatusCode};
 use crate::cdrom::cdrom_cue_parser::{CueFormatParseErr, CueParser, CueParserState, CueSheet};
 use crate::cdrom::cdrom_format::{
-    Bcd, CdromCursor, Mss, SECTOR_TOTAL_SIZE, lba_to_mss, mss_to_lba,
+    Bcd, ByteCursor, CdromCursor, CursorErr, DataSectorHeader, Mode2SectorMetadata, Mss,
+    SECTOR_TOTAL_SIZE, lba_to_mss, mss_to_lba,
 };
-use crate::cdrom::{CDRomStatusReg, DriveStatus};
+use crate::cdrom::{CDRomStatusReg, DriveStatus, RingbufferExt};
 use crate::cpu::Cpu;
 use crate::evque::EventId;
 use crate::{Emu, spu};
@@ -107,7 +108,7 @@ pub type Lba = u64;
 pub enum SectorKind {
     DataSector,
     CDDASector,
-    XaAdpcmSector,
+    CdXaSector,
 }
 
 impl SectorKind {
@@ -115,7 +116,7 @@ impl SectorKind {
         match self {
             SectorKind::DataSector => "DataSector",
             SectorKind::CDDASector => "CDDASector",
-            SectorKind::XaAdpcmSector => "XAADPCMSector",
+            SectorKind::CdXaSector => "CDXASector",
         }
     }
 }
@@ -137,7 +138,7 @@ impl CDRomSink for VecDeque<u8> {
     }
 
     fn write(&mut self, data: &[u8]) {
-        self.extend(data);
+        self.extend_and_overwrite(SECTOR_TOTAL_SIZE * 2, data);
     }
 }
 
@@ -208,22 +209,27 @@ impl CdromDrive {
         self.status_code.reset_state();
     }
 
+    pub fn slice_sector_bytes<'a>(&self, bytes: &'a [u8]) -> &'a [u8] {
+        match self.mode.sect_size() {
+            SetModeSectSize::DataOnly0x800 => &bytes[0x18..0x18 + 0x800],
+            SetModeSectSize::Whole0x924 => &bytes[0xc..],
+        }
+    }
+
     pub fn request_sector(
         &mut self,
         sector_kind: SectorKind,
         status: &mut CDRomStatusReg,
         data_fifo: &mut dyn CDRomSink,
     ) {
-        // fifo can only hold up to one sector
         data_fifo.clear();
 
-        let mut bytes = [0u8; SECTOR_TOTAL_SIZE];
-        self.request_raw_sector(sector_kind, status, &mut bytes);
+        status.set_data_req(true);
 
-        let sector = match self.mode.sect_size() {
-            SetModeSectSize::DataOnly0x800 => &bytes[0x18..0x18 + 0x800],
-            SetModeSectSize::Whole0x924 => &bytes[0xc..],
-        };
+        let mut bytes = [0u8; SECTOR_TOTAL_SIZE];
+        self.request_raw_sector(sector_kind, &mut bytes);
+
+        let sector = self.slice_sector_bytes(&bytes);
 
         if tracing::enabled!(Level::TRACE) {
             let mut first32bytes: [Hex<false>; 32] = [hex_pref(0); _];
@@ -240,57 +246,116 @@ impl CdromDrive {
         data_fifo.write(sector);
     }
 
-    pub fn request_raw_sector(
-        &mut self,
-        sector_kind: SectorKind,
-        status: &mut CDRomStatusReg,
-        sink: &mut dyn CDRomSink,
-    ) {
-        status.set_data_req(true);
+    pub fn request_raw_sector(&mut self, sector_kind: SectorKind, sink: &mut dyn CDRomSink) {
+        let Some(disc) = &mut self.disc else { return };
 
-        if let Some(disc) = &mut self.disc {
-            match sector_kind {
-                SectorKind::DataSector | SectorKind::XaAdpcmSector => {
-                    tracing::info!(
-                        target: "cdrom",
-                        "{sector_kind:<14.14}{cursor} lba={lba} size={size} file=#{file}",
-                        cursor = self.cursor.to_mss::<u8>(),
-                        lba = self.cursor.lba,
-                        size = self.mode.sect_size().raw_value(),
-                        file = disc.current_file()+1
-                    );
-                }
-                SectorKind::CDDASector => {
-                    let (_, rel_lba) = disc.toc.relative_lba(self.cursor.lba);
-                    let rel_time = lba_to_mss::<u8>(rel_lba);
-                    tracing::info!(
-                        target: "cdrom",
-                        "{sector_kind:<14.14}{cursor} lba={lba} file=#{file} rel={rel_time}",
-                        lba = self.cursor.lba,
-                        cursor = self.cursor.to_mss::<u8>(),
-                        file = disc.current_file()+1
-                    );
-                }
+        let old_cursor = self.cursor;
+
+        let bytes = match disc.readn::<SECTOR_TOTAL_SIZE>(&mut self.cursor) {
+            Ok(res) => res,
+            Err(err) => {
+                self.host_disc_err = Some(err.into());
+                return;
             }
+        };
 
-            let bytes = match disc.readn::<SECTOR_TOTAL_SIZE>(&mut self.cursor) {
-                Ok(res) => res,
-                Err(err) => {
-                    self.host_disc_err = Some(err.into());
-                    return;
-                }
-            };
+        Self::log_sector(disc, self.mode, sector_kind, old_cursor, &bytes);
 
-            sink.write(&bytes);
+        sink.write(&bytes);
+    }
+
+    fn log_sector(
+        disc: &Disc,
+        mode: SetMode,
+        sector_kind: SectorKind,
+        cursor: CdromCursor,
+        bytes: &[u8],
+    ) {
+        if let Err(_) = Self::try_log_sector(disc, mode, sector_kind, cursor, bytes) {
+            Self::log_invalid_sector(disc, mode, cursor);
         }
     }
 
-    fn audio_playback_time(&self) -> u64 {
+    fn try_log_sector(
+        disc: &Disc,
+        mode: SetMode,
+        sector_kind: SectorKind,
+        cursor: CdromCursor,
+        bytes: &[u8],
+    ) -> Result<(), CursorErr> {
+        let mut byte_cursor = ByteCursor::new(&bytes);
+        let meta = DataSectorHeader::decode(&mut byte_cursor);
+
+        match (sector_kind, meta) {
+            (SectorKind::DataSector, Ok(meta)) => {
+                tracing::info!(
+                    target: "cdrom",
+                    "{sector_kind:<14.14}{cursor} lba={lba} size={size} mode={mode:?} file=#{file}",
+                    cursor = meta.header.mss,
+                    lba = cursor.lba,
+                    size = mode.sect_size().raw_value(),
+                    mode = meta.header.mode,
+                    file = disc.current_file()+1
+                );
+            }
+            (SectorKind::CDDASector, _) => {
+                let (_, rel_lba) = disc.toc.relative_lba(cursor.lba);
+                let rel_time = lba_to_mss::<u8>(rel_lba);
+                tracing::info!(
+                    target: "cdrom",
+                    "{sector_kind:<14.14}{cursor} lba={lba} file=#{file} rel={rel_time}",
+                    lba = cursor.lba,
+                    cursor = cursor.to_mss::<u8>(),
+                    file = disc.current_file()+1
+                );
+            }
+            (SectorKind::CdXaSector, Ok(meta)) => {
+                let time = meta.header.mss;
+                let meta = Mode2SectorMetadata::decode_partial(meta, &mut byte_cursor)?;
+                tracing::info!(
+                    target: "cdrom",
+                    "{sector_kind:<14.14}{time} lba={lba} size={size} mode={mode:?} submode={submode} file=#{file}",
+                    lba = cursor.lba,
+                    size = mode.sect_size().raw_value(),
+                    mode = meta.common.header.mode,
+                    file = disc.current_file()+1,
+                    submode = hex(meta.subheader.submode)
+                );
+            }
+            (_, Err(err)) => {
+                return Err(err);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn log_invalid_sector(disc: &Disc, mode: SetMode, cursor: CdromCursor) {
+        tracing::warn!(
+            target: "cdrom",
+            "{:<14.14}{cursor} lba={lba} size={size} file=#{file}",
+            "InvalidSector",
+            cursor = cursor.to_mss::<u8>(),
+            lba = cursor.lba,
+            size = mode.sect_size().raw_value(),
+            file = disc.current_file()+1
+        );
+    }
+
+    pub fn audio_playback_time(&self) -> u64 {
         match self.mode.speed() {
             // 44100 Hz / 75 Hz
             SetModeSpeed::Normal => spu::CLOCK_CYCLES,
             // 44100 Hz / (2 * 75 Hz)
             SetModeSpeed::Double => spu::CLOCK_CYCLES / 2,
+        }
+    }
+
+    pub fn cdda_or_cdxa_time(&self) -> u64 {
+        const TIME: u64 = u64::from(Cpu::CLOCK) * 0x930 / 4 / 44100;
+        match self.mode.speed() {
+            SetModeSpeed::Normal => TIME,
+            SetModeSpeed::Double => TIME / 2,
         }
     }
 
@@ -304,7 +369,10 @@ impl CdromDrive {
         Ok(())
     }
 
-    pub(crate) fn play_xa_audio(&mut self) -> Result<(), AudioPlaybackErr> {
+    pub(crate) fn play_xa_audio(
+        &mut self,
+        status: &mut CDRomStatusReg,
+    ) -> Result<(), AudioPlaybackErr> {
         let DriveState::Reading = self.drive_state else {
             return Err(AudioPlaybackErr::XaAdpcmNotReading);
         };
@@ -314,6 +382,7 @@ impl CdromDrive {
 
         // signals to the spu to start scheduling events. ensures sync
         self.xa_adpcm_pending = true;
+        status.set_adpcm_busy(true);
         Ok(())
     }
 
@@ -541,7 +610,7 @@ impl StreamedDiskReader {
         }
     }
 
-    #[tracing::instrument(target = "cdrom", skip(self), err)]
+    #[tracing::instrument(target = "cdrom", skip(self, toc, cursor), err, fields(%cursor), level = Level::TRACE)]
     fn readn<const BYTES: usize>(
         &mut self,
         toc: &CueSheet,
@@ -836,6 +905,7 @@ impl Emu {
 
     pub(crate) fn handle_ev_cdrom_xa_adpcm_playback(&mut self) {
         let DriveState::Reading = self.cdrom.drive.drive_state else {
+            tracing::info!(target: "cdrom", "xa-adpcm read dropped.");
             return;
         };
 
@@ -861,11 +931,13 @@ impl Emu {
         };
 
         self.cdrom.audio_sample = audio_sample;
+
+        self.cdrom.drive.play_xa_audio(&mut self.cdrom.status);
     }
 
     pub(crate) fn handle_ev_cdrom_cdda_playback(&mut self) {
         let DriveState::Playing(_) = self.cdrom.drive.drive_state else {
-            tracing::warn!(target:"cdrom", "cdda playback dropped.");
+            tracing::info!(target:"cdrom", "cdda playback dropped.");
             return;
         };
 
