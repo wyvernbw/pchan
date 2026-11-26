@@ -1,3 +1,5 @@
+use core::{fmt, mem};
+
 use arbitrary_int::prelude::*;
 use bitbybit::*;
 
@@ -9,7 +11,7 @@ impl Emu {
         let address = address & 0x1fff_ffff;
         match address {
             0x1f801820 => trace_todo!(0xff, "read at mdec response register"),
-            0x1f801824 => Ok(self.mdec.status.raw_value().io_from_u32()),
+            0x1f801824 => Ok(self.mdec.stat.raw_value().io_from_u32()),
             _ => Err(UnhandledIO(address)),
         }
     }
@@ -33,22 +35,29 @@ impl Emu {
     fn mdec_write_ctrl(&mut self, value: MDecCtrl) {
         if value.reset() {
             // TODO: abort mdec cmd
-            self.mdec.status = MDecStatus::new_with_raw_value(0x80040000);
+            self.mdec.stat = MDecStatus::new_with_raw_value(0x80040000);
         }
         let dma0on = value.data_in_toggle();
         let dma1on = value.data_out_toggle();
         self.dma.dpcr.set_dma0on(dma0on);
         self.dma.dpcr.set_dma1on(dma1on);
-        self.mdec.status.set_dreq0(dma0on);
-        self.mdec.status.set_dreq1(dma1on);
+        self.mdec.stat.set_dreq0(dma0on);
+        self.mdec.stat.set_dreq1(dma1on);
     }
 
     pub(crate) fn mdec_cmd_send(&mut self, cmd: MDecCmd) {
         match &mut self.mdec.cmd {
             MDecCmdState::Idle => match cmd.cmd().value() {
                 2 => {
+                    self.mdec.stat_cpy_bits(cmd);
                     let cmd = cmd.to_cmd2();
-                    self.mdec.cmd = MDecCmdState::Cmd2SQT(MDecCmd2SQTState { cmd, count: 0 });
+                    self.mdec
+                        .cmd_begin(MDecCmdState::Cmd2SQT(MDecCmd2SQTState { cmd, count: 0 }));
+                }
+                3 => {
+                    self.mdec.stat_cpy_bits(cmd);
+                    self.mdec
+                        .cmd_begin(MDecCmdState::Cmd3SS(MDecCmd3SetScaleState { count: 0 }));
                 }
                 0..8 => {
                     todo!("mdec cmd{}", cmd.cmd())
@@ -56,17 +65,35 @@ impl Emu {
                 8.. => unreachable!(),
             },
             MDecCmdState::Cmd2SQT(state) => {
-                let param = cmd.as_u8();
-                match (state.cmd.color(), state.count) {
-                    (MDecCmd2SQTColor::Luma | MDecCmd2SQTColor::LumaAndColor, 0..64) => {
-                        self.mdec.luma_table[usize::from(state.count)] = param;
-                        state.count += 1;
+                let params = cmd.as_bytes();
+                for param in params {
+                    tracing::trace!(target:"mdec", "sqt {:?} {}", state.cmd.color(), state.count);
+                    match (state.cmd.color(), state.count) {
+                        (MDecCmd2SQTColor::Luma | MDecCmd2SQTColor::LumaAndColor, 0..63) => {
+                            self.mdec.luma_table[usize::from(state.count)] = param;
+                            state.count += 1;
+                        }
+                        (MDecCmd2SQTColor::LumaAndColor, 63..127) => {
+                            self.mdec.color_table[usize::from(state.count - 63)] = param;
+                            state.count += 1;
+                        }
+                        (MDecCmd2SQTColor::Luma, 63..)
+                        | (MDecCmd2SQTColor::LumaAndColor, 127..) => {
+                            self.mdec.cmd_end();
+                            break;
+                        }
                     }
-                    (MDecCmd2SQTColor::LumaAndColor, 64..128) => {
-                        self.mdec.color_table[usize::from(state.count - 64)] = param;
-                        state.count += 1;
+                }
+            }
+            MDecCmdState::Cmd3SS(state) => {
+                let params = unsafe { mem::transmute::<_, [i16; 2]>(cmd.raw_value()) };
+                match state.count {
+                    0..63 => {
+                        self.mdec.scale_table[usize::from(state.count)] = params[0];
+                        self.mdec.scale_table[usize::from(state.count + 1)] = params[1];
+                        state.count += 2;
                     }
-                    (MDecCmd2SQTColor::Luma, 64..) | (MDecCmd2SQTColor::LumaAndColor, 128..) => {
+                    63.. => {
                         self.mdec.cmd_end();
                     }
                 }
@@ -76,18 +103,28 @@ impl Emu {
 }
 
 impl MDec {
+    fn cmd_begin(&mut self, cmd: MDecCmdState) {
+        tracing::info!(target: "mdec", "{:<14.14}", cmd);
+        self.stat.set_busy(true);
+        self.cmd = cmd;
+    }
     fn cmd_end(&mut self) {
+        self.stat.set_busy(false);
         self.cmd = MDecCmdState::Idle;
+    }
+    fn stat_cpy_bits(&mut self, cmd: MDecCmd) {
+        self.stat.set_cpy_dst(cmd.cpy_src());
     }
 }
 
 #[derive(Default, Debug, Clone)]
 pub struct MDec {
-    status: MDecStatus,
+    stat: MDecStatus,
     cmd:    MDecCmdState,
 
     luma_table:  [u8; 64] = [0; 64],
     color_table: [u8; 64] = [0; 64],
+    scale_table: [i16; 64] = [0; 64]
 }
 
 /// ```plaintext
@@ -124,9 +161,9 @@ struct MDecStatus {
     #[bit(23)]
     out_stp:   bool,
 
-    /// MDEC(2) cmd sets these bits
+    /// MDEC(2,3) cmds sets these bits
     #[bits(23..=26, rw)]
-    sqt_cpy_dest: u4,
+    cpy_dst: u4,
 
     #[bits(16..=18, rw)]
     curr_block: MDecBlock,
@@ -179,12 +216,14 @@ pub struct MDecCtrl {
 #[must_use]
 pub struct MDecCmd {
     #[bits(29..=31, rw)]
-    cmd: u3,
+    cmd:     u3,
+    #[bits(25..=28, rw)]
+    cpy_src: u4,
 }
 
 impl MDecCmd {
-    fn as_u8(self) -> u8 {
-        self.raw_value() as u8
+    fn as_bytes(self) -> [u8; 4] {
+        self.raw_value().to_le_bytes()
     }
     fn to_cmd2(self) -> MDecCmd2SQT {
         MDecCmd2SQT::new_with_raw_value(self.raw_value())
@@ -196,11 +235,27 @@ enum MDecCmdState {
     #[default]
     Idle,
     Cmd2SQT(MDecCmd2SQTState),
+    Cmd3SS(MDecCmd3SetScaleState),
+}
+
+impl fmt::Display for MDecCmdState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            MDecCmdState::Idle => write!(f, "Idle"),
+            MDecCmdState::Cmd2SQT(_) => write!(f, "Cmd2SQT"),
+            MDecCmdState::Cmd3SS(_) => write!(f, "Cmd3SS"),
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone)]
 struct MDecCmd2SQTState {
     cmd:   MDecCmd2SQT,
+    count: u8,
+}
+
+#[derive(Debug, Default, Clone)]
+struct MDecCmd3SetScaleState {
     count: u8,
 }
 
