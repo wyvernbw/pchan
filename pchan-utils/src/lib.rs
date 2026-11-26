@@ -113,10 +113,10 @@ pub mod trace_utils {
 
         let file_layer = file.then(|| {
             fmt::layer()
+                .with_writer(std::fs::File::create("pchan.log").unwrap())
                 .with_ansi(false)
                 .with_file(false)
                 .without_time()
-                .with_writer(std::fs::File::create("pchan.log").unwrap())
                 .with_line_number(false)
         });
 

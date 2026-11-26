@@ -387,7 +387,7 @@ impl Runner {
             return None;
         }
 
-        let _span = tracing::info_span!("", frame = self.frame_idx).entered();
+        // let _span = tracing::info_span!("", frame = self.frame_idx).entered();
         let start = Instant::now();
         while !emu.consume_vblank_signal() {
             pin_await!(self.execute(emu));

@@ -159,7 +159,6 @@ impl Emu {
             0x1f8010fc => trace_todo!(0x0, "todo(dma): read at dma otc fill value"),
             _ => Err(UnhandledIO(address)),
         }
-        .inspect(|v| tracing::debug!(target: "dma", "r({})={}", hex(address), hex(*v)))
     }
     #[pchan_instrument_write("dma:w")]
     pub fn dma_write<T: Copy>(&mut self, address: u32, value: T) -> IOResult<()> {
